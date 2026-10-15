@@ -77,8 +77,15 @@ Relatórios: `docs/research/checkup/` (local). Tudo abaixo marcado [x] tem teste
   muda o tempo; os dois caros trazem branch/CI e saúde do Brain, que valem num resume que pode vir dias depois (a compactação acontece
   dentro da mesma sessão, o resume é um processo novo). Não é ganho puro.
 - [ ] **Hooks**: Workers sem `resourceLimits` (plataforma-09).
-- [ ] **Duplicação restante**: leitores de transcript (`retrieval-feedback` × `transcript-turns`, reuso-08); `readJson` com contratos
+- [x] **Duplicação restante**: leitores de transcript (`retrieval-feedback` × `transcript-turns`, reuso-08); `readJson` com contratos
   próprios em `dashboard.js`, `dashboard-start.js`, `marketplace-autoupdate.js`; normalização de caminho/hash espalhada (reuso-09).
+  Feito, sem mudar comportamento (testes existentes de cada um passam): `extractAssistantText`/`extractUserText` num extrator por papel;
+  `graph/client` `callers`/`references` numa só requisição; `dashboard-start.readJson` = `readJsonLoud` (o `dashboard.js` já não tinha).
+  **Não feito, de propósito:** unir o extrator do `retrieval-feedback` ao do `transcript-block` muda a saída (junta com espaço × quebra de
+  linha, aceita `rec.text`/`rec.role`, e o `transcript-block` descarta o turno com `tool_result` em vez de filtrar); o `readJson` do
+  `marketplace-autoupdate` devolve `{ok, missing, error}` porque precisa separar "ausente" de "corrompido" antes de gravar; os dois
+  `sourceStamp` só compartilham o corpo de uma linha (cada um com o próprio `CONFIG_PATH`, `filesStamp` já é comum); os ~28 `replace(/\\/g,'/')`
+  e ~27 `createHash` têm cortes e usos diferentes (chave de arquivo, comparação, id) — trocar em massa arrisca mudar chaves já gravadas.
 - [x] **Motor, passo 2**: núcleo movido para `engine/` (41 arquivos; 740 `require`/caminhos reescritos por codemod, o resto à mão);
   `dataDir` por chamada nos stores (`init`, leituras isoladas, `listProjects`, `recall-health`, `scope-search`), resolvido no 1º uso
   em vez de no `require`; `projectRoot` em `metrics.record`; `project-id`/`metrics`/`metrics-project` leem `engine/lib/host-env.js`
