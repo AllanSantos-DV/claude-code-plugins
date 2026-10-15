@@ -175,7 +175,14 @@ function applyTtl(ctx, reply) {
  * @param {{end?: boolean}} [opts]  end = the session is closing (leaves the folder)
  */
 async function reportFolder($, ctx, { end = false } = {}) {
-  if (!ctx.folder || !ctx.interactive || !ctx.configLoaded || ctx.config.folderTtl === false) return;
+  if (!ctx.folder || !ctx.interactive || !ctx.configLoaded) return;
+  if (ctx.config.folderTtl === false) {
+    // The feature was turned off: a folder left at 5m by the time it was on would stay there for good, because no session
+    // reports any more (and the daemon sweeps only on a report). Leave the folder once, so the daemon restores what is ours.
+    if (ctx.folderOffReleased) return;
+    ctx.folderOffReleased = true;
+    end = true;
+  }
   const reply = await send($, ctx, end ? 'folder-end' : 'folder', { folder: ctx.folder, above: ctx.folderAbove });
   ctx.folderTtl = reply.folderTtl || null;
   if (ctx.folderTtl && ctx.folderTtl.action === 'error') $.ui.log(`compaction: folder TTL not managed: ${ctx.folderTtl.detail}`);
