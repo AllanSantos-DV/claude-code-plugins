@@ -7,9 +7,6 @@ const http = require('http');
 const { URL } = require('url');
 const EventEmitter = require('events');
 
-const { dataDir } = require('./lib/data-dir.js');
-const DATA_DIR = dataDir();
-
 /** The rejection for a call cancelled through its AbortSignal (no retry, not a transport failure). */
 function abortError(method, signal) {
   const why = signal && signal.reason && signal.reason.message ? `: ${signal.reason.message}` : '';
@@ -21,22 +18,13 @@ class McpClient extends EventEmitter {
 
   constructor(opts = {}) {
     super();
-    this.jarPath = opts.jarPath || path.join(DATA_DIR, 'mcp-memory-server.jar');
-    this.workspacePath = opts.workspacePath || DATA_DIR;
-    this.javaArgs = opts.javaArgs || ['-Xmx512m'];
-    this.downloadUrl = opts.downloadUrl || '';
-    this.expectedSha256 = opts.expectedSha256 || '';
     this.requestTimeout = opts.timeout || 60000;
     this._requestId = 0;
-    this._pending = new Map();
-    this._buffer = '';
-    this._process = null;
     this._initialized = false;
-    this._startTime = 0;
 
-    // ── HTTP (StreamableHTTP /mcp) transport — talk to an already-running daemon ──
-    // transport: 'stdio' (default, spawns the JAR) | 'http' (connects to a daemon).
-    this.transport = 'http'; // the only transport (native-java ADR-023: one HTTP daemon per user)
+    // StreamableHTTP /mcp against the ONE per-user daemon (native-java ADR-023). The stdio
+    // transport (a private JAR process per client) is gone.
+    this.transport = 'http';
     // Explicit daemon base URL (e.g. http://127.0.0.1:61756). Empty in http mode
     // → auto-discover via the daemon registry (~/.mcp-memory/run/daemon.json).
     this.serverUrl = opts.serverUrl || '';
@@ -45,7 +33,7 @@ class McpClient extends EventEmitter {
     this.projectId = opts.projectId || '';
     this.runDir = opts.runDir || process.env.MCP_RUN_DIR
       || path.join(os.homedir(), '.mcp-memory', 'run');
-    this._protocolVersion = this.transport === 'http' ? '2025-06-18' : '2024-11-05';
+    this._protocolVersion = '2025-06-18';
     this._sessionId = '';
     this._resolvedUrl = '';
     // Tool names advertised by the daemon's tools/list at handshake. Populated in
@@ -333,37 +321,11 @@ class McpClient extends EventEmitter {
 
   _sendRequest(method, params, opts = {}) {
     const timeoutMs = Number.isFinite(opts.timeoutMs) && opts.timeoutMs > 0 ? opts.timeoutMs : this.requestTimeout;
-    if (this.transport === 'http') return this._httpSend(method, params, false, timeoutMs, opts.signal);
-    return new Promise((resolve, reject) => {
-      const id = ++this._requestId;
-      const msg = JSON.stringify({
-        jsonrpc: '2.0',
-        id,
-        method,
-        params,
-      }) + '\n';
-
-      const timer = setTimeout(() => {
-        this._pending.delete(id);
-        reject(new Error(`MCP request "${method}" timed out after ${timeoutMs}ms`));
-      }, timeoutMs);
-
-      this._pending.set(id, { resolve, reject, timer, method });
-      this._process.stdin.write(msg);
-    });
+    return this._httpSend(method, params, false, timeoutMs, opts.signal);
   }
 
   _sendNotification(method, params) {
-    if (this.transport === 'http') {
-      this._httpSend(method, params, true).catch(err => console.error(`[MCP] notification "${method}": ${err.message}`));
-      return;
-    }
-    const msg = JSON.stringify({
-      jsonrpc: '2.0',
-      method,
-      ...(params ? { params } : {}),
-    }) + '\n';
-    this._process.stdin.write(msg);
+    this._httpSend(method, params, true).catch(err => console.error(`[MCP] notification "${method}": ${err.message}`));
   }
 
   /** Unwrap a JSON-RPC result into {text, raw} when it's MCP text content, else the raw result. */
@@ -375,76 +337,27 @@ class McpClient extends EventEmitter {
     return result || {};
   }
 
-  _processBuffer() {
-    const lines = this._buffer.split('\n');
-    this._buffer = lines.pop() || '';
-    for (const line of lines) {
-      if (!line.trim()) continue;
-      try {
-        const msg = JSON.parse(line);
-        this._handleMessage(msg);
-      } catch (err) { console.error(`[MCP] Buffer parse error: ${err.message}`); }
-    }
-  }
-
-  _handleMessage(msg) {
-    if (msg.id != null && this._pending.has(msg.id)) {
-      const { resolve, reject, timer, method } = this._pending.get(msg.id);
-      clearTimeout(timer);
-      this._pending.delete(msg.id);
-
-      if (msg.error) {
-        reject(new Error(`MCP "${method}" error: ${JSON.stringify(msg.error)}`));
-      } else {
-        resolve(this._unwrapResult(msg.result));
-      }
-    }
-  }
-
   isConnected() {
-    if (this.transport === 'http') return this._initialized;
-    return this._initialized && this._process !== null && !this._process.killed;
+    return this._initialized;
   }
 
   close({ skipRemote = false } = {}) {
-    if (this.transport === 'http') {
-      // Best-effort DELETE /mcp to end the daemon session; never throw on close.
-      if (!skipRemote && this._sessionId && this._resolvedUrl) {
-        try {
-          const u = new URL(this._resolvedUrl + '/mcp');
-          const lib = u.protocol === 'https:' ? https : http;
-          const req = lib.request(
-            { hostname: u.hostname, port: u.port, path: u.pathname, method: 'DELETE', headers: { 'Mcp-Session-Id': this._sessionId }, timeout: 3000 },
-            (res) => res.resume(),
-          );
-          req.on('timeout', () => req.destroy());
-          req.on('error', (err) => console.error(`[MCP] close DELETE: ${err.message}`));
-          req.end();
-        } catch (err) { console.error(`[MCP] close DELETE: ${err.message}`); }
-      }
-      for (const [id, { reject }] of this._pending) {
-        reject(new Error('MCP client closed'));
-        this._pending.delete(id);
-      }
-      this._sessionId = '';
-      this._initialized = false;
-      return;
+    // Best-effort DELETE /mcp to end the daemon session; never throw on close.
+    if (!skipRemote && this._sessionId && this._resolvedUrl) {
+      try {
+        const u = new URL(this._resolvedUrl + '/mcp');
+        const lib = u.protocol === 'https:' ? https : http;
+        const req = lib.request(
+          { hostname: u.hostname, port: u.port, path: u.pathname, method: 'DELETE', headers: { 'Mcp-Session-Id': this._sessionId }, timeout: 3000 },
+          (res) => res.resume(),
+        );
+        req.on('timeout', () => req.destroy());
+        req.on('error', (err) => console.error(`[MCP] close DELETE: ${err.message}`));
+        req.end();
+      } catch (err) { console.error(`[MCP] close DELETE: ${err.message}`); }
     }
-    if (this._process) {
-      const proc = this._process; // capture BEFORE nulling, else the 2s fallback kill sees null and never fires (JVM leak)
-      this._sendNotification('notifications/exit');
-      setTimeout(() => {
-        if (proc && !proc.killed) {
-          proc.kill();
-        }
-      }, 2000);
-      for (const [id, { reject }] of this._pending) {
-        reject(new Error('MCP client closed'));
-        this._pending.delete(id);
-      }
-      this._initialized = false;
-      this._process = null;
-    }
+    this._sessionId = '';
+    this._initialized = false;
   }
 }
 

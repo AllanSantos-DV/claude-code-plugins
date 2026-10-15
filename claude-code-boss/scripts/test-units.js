@@ -9179,10 +9179,13 @@ test('C1 brain-backend.saveLocal: embeds buildEmbedText (title+summary), single 
   assert(/try \{[\s\S]*?_embedder\.embed/.test(fn[0]) && /catch/.test(fn[0]), 'a failing embed must not lose the entry (embed in try/catch, still save)');
 });
 
-test('C2 mcp-client.close: captures the process ref before nulling (JVM kill fires)', () => {
+test('mcp-client: so o transporte HTTP (o ramo stdio, que rodava um JAR por cliente, foi removido — inalcancavel desde ADR-023)', () => {
   const src = fs.readFileSync(path.join(SCRIPTS, 'mcp-client.js'), 'utf-8');
-  assert(/const proc = this\._process;/.test(src), 'must capture proc before nulling');
-  assert(/if \(proc && !proc\.killed\)/.test(src) && /proc\.kill\(\)/.test(src), 'the timeout must kill the captured proc, not this._process (which is null by then)');
+  assert(!/this\._process|_processBuffer|_handleMessage|stdin\.write|jarPath|javaArgs/.test(src), 'no stdio/JAR code left');
+  const McpClient = require('./mcp-client.js');
+  const c = new McpClient({ jarPath: 'ignored.jar', serverUrl: 'http://127.0.0.1:1' });
+  assertEq([c.transport, c.serverUrl, c.isConnected()], ['http', 'http://127.0.0.1:1', false]);
+  c.close(); // no session: nothing to DELETE, never throws
 });
 
 test('C5 brain-store.close: resets _useSqlite/_useJson (no stale-true null-deref)', () => {
