@@ -20140,7 +20140,7 @@ test('data-dir: migrated consumers import the shared resolver', () => {
     'lib/cooldown-store.js', 'lib/session-journal.js', // the journals resolve it through session-journal
     'lib/recall-health.js', 'lib/scope-search.js', 'conversation-ingest.js',
     'curation-session.js', 'curation-detect.js', 'decision-detect.js',
-    'brain-index-native.js', 'brain-promote.js', 'dashboard.js',
+    'brain-promote.js', 'dashboard.js',
     // Phase-1 inliners repointed off the bare fallback onto the shared resolver.
     // project-identity-advisory.js dropped in 2.29.1: no cooldown stamp → no data dir.
     'brain-embedder.js', 'doctor-advisory.js',
@@ -20158,7 +20158,7 @@ test('atomic-write: broadened shared-snapshot writers route through atomic-write
   // Gate finding (scope): the same torn-write class covered more than the first 8
   // stores. These hook-writable shared-snapshot writers were migrated too.
   const writers = [
-    'auto-continue-stop.js', 'brain-graph.js', 'brain-index.js', 'brain-index-native.js',
+    'auto-continue-stop.js', 'brain-graph.js', 'brain-index.js',
     'brain-health.js', 'session-whitelist.js', 'decision-detect.js', 'decision-promote.js',
     'decision-scan-response.js', 'model-router-ensure.js', 'lib/session-counter.js',
     'self-review.js', 'session-summary.js', 'skill-success-detect.js', 'verify-nudge.js',

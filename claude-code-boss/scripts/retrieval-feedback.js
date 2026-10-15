@@ -15,8 +15,6 @@
  */
 'use strict';
 
-const path = require('path');
-
 const { runStopDetectorCli } = require('./lib/hook-io.js');
 const retrievalJournal = require('./lib/retrieval-journal.js');
 const { extractKeywords } = require('./lib/text-utils.js');
