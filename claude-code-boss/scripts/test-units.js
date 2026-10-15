@@ -25786,7 +25786,7 @@ test('compaction-core.planCompaction: stale results truncated with a note, every
 
 test('compaction-core.buildBrief: model-free brief — user text verbatim, tool outputs dropped, errors kept short, tail never starts on an orphan result', () => {
   const msgs = cmpSession();
-  const b = cmpCore.buildBrief(msgs, { preserveRecentMessages: 3, memoryNote: 'MEMORY-NOTE' });
+  const b = cmpCore.buildBrief(msgs, { preserveRecentMessages: 3, briefTailTokens: 0, memoryNote: 'MEMORY-NOTE' });
   assertEq(b.userTextIntact, true);
   assert(b.messages[0] === msgs[0], 'first message kept as the engine object');
   const brief = b.messages[1];
@@ -25799,13 +25799,177 @@ test('compaction-core.buildBrief: model-free brief — user text verbatim, tool 
   for (const m of tail) for (const u of m.toolUses || []) tailUses.add(u.tool_use_id);
   for (const m of tail) for (const r of m.toolResults || []) assert(tailUses.has(r.tool_use_id), `no orphan result ${r.tool_use_id}`);
   assert(b.charsAfter < b.charsBefore / 2, `brief ${b.charsAfter} vs ${b.charsBefore}`);
-  assertEq(cmpCore.buildBrief(msgs.slice(0, 2), { preserveRecentMessages: 6 }).cutMessages, 0, 'nothing to condense → history unchanged');
+  assertEq(cmpCore.buildBrief(msgs.slice(0, 2), { preserveRecentMessages: 6, briefTailTokens: 0 }).cutMessages, 0, 'nothing to condense → history unchanged');
+});
+
+test('compaction-core.buildBrief: the verbatim tail by tokens (briefTailTokens, default 2000) — newest messages up to the budget, never an orphan result', () => {
+  assertEq(cmpCore.DEFAULTS.briefTailTokens, 2000, 'the calibrated 2k tail (6 real compactions: ~81% kept vs 73% for the summary)');
+  const msgs = cmpSession();
+  const small = cmpCore.buildBrief(msgs, { briefTailTokens: 1 }); // 1 token: only the newest message (+ its call)
+  const tailSmall = small.messages.slice(2);
+  assert(tailSmall.length >= 1 && tailSmall.length <= 2, `tiny budget keeps the newest message(s): ${tailSmall.length}`);
+  const big = cmpCore.buildBrief(msgs, { briefTailTokens: 200 }); // README read result (~100 chars) etc.
+  assert(big.messages.length - 2 > tailSmall.length, 'a larger budget keeps more messages verbatim');
+  for (const b of [small, big]) {
+    const uses = new Set(); const tail = b.messages.slice(2);
+    for (const m of tail) for (const u of m.toolUses || []) uses.add(u.tool_use_id);
+    for (const m of tail) for (const r of m.toolResults || []) assert(uses.has(r.tool_use_id), `no orphan result ${r.tool_use_id}`);
+    assertEq(b.userTextIntact, true);
+    assert(tail.every((m) => msgs.includes(m)), 'the tail messages are the engine objects (handles kept)');
+  }
+  const all = cmpCore.buildBrief(msgs, { briefTailTokens: 1e9 });
+  assertEq(all.cutMessages, 0, 'a budget past the whole history condenses nothing');
+});
+
+test('compaction-core.isMechanicalCut + chooseCompaction: the brief only with a COLD cache and never for a person\'s own /compact', () => {
+  const plan = (ratio) => ({ ratio, duplicatesDropped: 0, verbatimTextIntact: true });
+  assertEq(cmpCore.isMechanicalCut({ warm: true, trigger: 'manual', reason: 'over-threshold-cache-cold' }), false, 'warm: never');
+  assertEq(cmpCore.isMechanicalCut({ warm: false, trigger: 'manual', reason: 'over-threshold-cache-cold' }), true, 'our gate runs /compact (trigger manual) with a reason');
+  assertEq(cmpCore.isMechanicalCut({ warm: false, trigger: 'manual', reason: null }), false, 'a person\'s /compact keeps the summary');
+  assertEq(cmpCore.isMechanicalCut({ warm: false, trigger: 'auto', reason: null }), true, 'a cold engine auto-compaction');
+  assertEq(cmpCore.chooseCompaction({ plan: plan(0.3), trigger: 'manual', warm: false, mechanical: true }), { ours: true, kind: 'brief', why: 'cold-mechanical' });
+  assertEq(cmpCore.chooseCompaction({ plan: plan(0.9), trigger: 'manual', warm: false, mechanical: true }).kind, 'prune', 'a >= 85% pruning still wins (it keeps every message)');
+  assertEq(cmpCore.chooseCompaction({ plan: plan(0.3), trigger: 'manual', warm: false, mechanical: true }, { mechanicalCut: false }).kind, null, 'mechanicalCut off → the summary');
+  assertEq(cmpCore.chooseCompaction({ plan: { ratio: 0.3, verbatimTextIntact: false }, trigger: 'auto', warm: false, mechanical: true }).kind, 'brief', 'the brief rebuilds user text itself');
+  const hook = fs.readFileSync(path.join(ROOT, 'hooks', 'compaction.mjs'), 'utf8');
+  assert(/isMechanicalCut\(\{ warm, trigger: e\.trigger, reason: ctx\.compactReason \}\)/.test(hook), 'the hook judges the brief by warm + trigger + our reason');
+  assert(/if \(!b\.cutMessages \|\| !b\.userTextIntact\)[\s\S]{0,300}return next\(e\);/.test(hook), 'a brief that cuts nothing or loses user text → the engine summary');
+  assert(/await leaveAbove\(\$, ctx\);\s*emit\(\$, ctx, 'run', \{/.test(hook), 'the folder TTL is released BEFORE the brief is handed back');
+  assert(/const r = await next\(e\);[^\n]*\n\s*await leaveAbove\(\$, ctx\);/.test(hook) && /await leaveAbove\(\$, ctx\);\s*\$\.ui\.toast\(`compaction: every message kept/.test(hook), 'pruning and the engine summary release it too (any compaction leaves the session below)');
+  assert(/if \(!reply \|\| !\(reply\.recorded > 0\)\) return;/.test(hook) && /const tokens = \(Number\(o\.input\) \|\| 0\) \+ \(Number\(o\.read\) \|\| 0\) \+ \(Number\(o\.write\) \|\| 0\);/.test(hook), '"above" comes from the last REAL call (a held prompt\'s turn has none and usage() is stale)');
+  assert(/ctx\.awaitCallAfterCut = true;/.test(hook) && /ctx\.awaitCallAfterCut = false; \/\/ a real call after the cut/.test(hook), 'after a cut, readings are stale until a real call is observed');
+  assert(/if \(ctx\.transcriptPath\) \{ const \{ reply \} = await observeCalls\(\$, ctx\); await folderFromReply\(\$, ctx, reply\); \}/.test(hook), 'the heartbeat picks up calls that landed after their turn ended (the switch no longer waits a turn)');
+  assert(/on\('session\.end'[\s\S]{0,400}reportFolder\(\$, ctx, \{ end: true \}\)[\s\S]{0,300}observeCalls\(\$, ctx\)/.test(hook), 'session.end leaves the folder BEFORE the transcript read (short budget)');
+  assert(/if \(!d && ctx\.awaitCallAfterCut\) d = \{ action: 'none', reason: 'just-compacted' \};/.test(hook) && /if \(ctx\.awaitCallAfterCut\) return; \/\/ just compacted/.test(hook), 'neither the gate nor the turn-end rule compacts again from a pre-cut reading (E2E: a second, needless summary)');
+  assert(/if \(seen > 0\) ctx\.sessionTtlMs = seen;/.test(hook), 'the TTL in use is the latest call\'s (a 1h→5m switch is seen)');
+});
+
+// ─── folder TTL (lib/folder-ttl.js): 1h → 5m while EVERY live session of the launch folder is past the threshold ──
+
+function folderTtlSandbox() {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-folder-ttl-'));
+  const state = path.join(root, 'state.json');
+  const local = (dir) => path.join(dir, '.claude', 'settings.local.json');
+  const read = (dir) => (fs.existsSync(local(dir)) ? JSON.parse(fs.readFileSync(local(dir), 'utf8')) : null);
+  return { root, state, local, read, done: () => fs.rmSync(root, { recursive: true, force: true }) };
+}
+
+test('folder-ttl.folderKey: exact launch cwd, case/slashes normalized on Windows, a subfolder is a DIFFERENT folder (never a prefix)', () => {
+  const ft = require('./lib/folder-ttl.js');
+  assertEq(ft.folderKey('C:\\Users\\A\\Proj\\', 'win32'), 'c:/users/a/proj');
+  assertEq(ft.folderKey('c:/users/a/PROJ', 'win32'), 'c:/users/a/proj', 'same folder whatever the case/slashes');
+  assert(ft.folderKey('C:\\Users\\A\\Proj\\sub', 'win32') !== ft.folderKey('C:\\Users\\A\\Proj', 'win32'), 'subfolder ≠ folder');
+  assertEq(ft.folderKey('C:\\', 'win32'), 'c:/', 'a drive root keeps its slash');
+  assertEq(ft.folderKey('/home/a/Proj/', 'linux'), '/home/a/Proj', 'case kept off Windows');
+  let threw = false; try { ft.folderKey(''); } catch (err) { threw = /folder is required/.test(err.message); }
+  assert(threw, 'no folder → throws');
+});
+
+test('folder-ttl.planFolder: 5m only when EVERY live session is past the threshold; a session silent for LIVE_MS is gone', () => {
+  const ft = require('./lib/folder-ttl.js');
+  const now = 1e9;
+  const e = (sessions) => ({ sessions });
+  assertEq(ft.planFolder(e({ a: { above: true, seenAt: now } }), now).want, '5m', 'the only session past it');
+  assertEq(ft.planFolder(e({ a: { above: true, seenAt: now }, b: { above: false, seenAt: now } }), now).want, null, 'one below → the folder stays as it was');
+  assertEq(ft.planFolder(e({ a: { above: true, seenAt: now }, b: { above: false, seenAt: now - ft.LIVE_MS - 1 } }), now).want, '5m', 'the silent one is gone');
+  assertEq(ft.planFolder(e({}), now).want, null, 'no live session → nothing');
+});
+
+test('folder-ttl.report: switch when all are past it, restore after the cut, other folders (incl. parent/sub) untouched, the user file kept intact', () => {
+  const ft = require('./lib/folder-ttl.js');
+  const sb = folderTtlSandbox();
+  try {
+    const big = path.join(sb.root, 'proj'); const sub = path.join(big, 'sub');
+    fs.mkdirSync(path.join(big, '.claude'), { recursive: true }); fs.mkdirSync(sub, { recursive: true });
+    fs.writeFileSync(sb.local(big), JSON.stringify({ permissions: { allow: ['Bash(ls)'] }, env: { FOO: '1' } }));
+    const run = () => ({ status: 128, stdout: '', stderr: '' }); // not a git repo
+    const opts = (now) => ({ now, file: sb.state, run });
+    // Two sessions in `big`, one in `sub`.
+    let r = ft.report({ sessionId: 'A', folder: big, above: true }, opts(1000));
+    assertEq([r.ttl, r.action, r.live], ['5m', 'switched', 1], 'alone and past it → 5m');
+    assertEq(sb.read(big), { permissions: { allow: ['Bash(ls)'] }, env: { FOO: '1', CLAUDE_CODE_PROMPT_CACHE_TTL: '5m' } }, 'only our key added, the rest kept');
+    r = ft.report({ sessionId: 'B', folder: big, above: false }, opts(2000));
+    assertEq([r.ttl, r.action, r.allAbove], [null, 'restored', false], 'a second session below → restored at once (rule: ALL past it)');
+    assertEq(sb.read(big), { permissions: { allow: ['Bash(ls)'] }, env: { FOO: '1' } }, 'restored exactly');
+    r = ft.report({ sessionId: 'B', folder: big.toUpperCase().replace(/\\/g, '/'), above: true }, opts(3000));
+    assertEq([r.ttl, r.action, r.live], ['5m', 'switched', 2], 'both past it (same folder in another case/slashes) → 5m');
+    r = ft.report({ sessionId: 'S', folder: sub, above: false }, opts(3500));
+    assertEq(sb.read(sub), null, 'the subfolder session never touches anything');
+    assertEq(sb.read(big).env.CLAUDE_CODE_PROMPT_CACHE_TTL, '5m', 'and does not count against the parent folder');
+    r = ft.report({ sessionId: 'A', folder: big, above: false }, opts(4000)); // A was cut
+    assertEq([r.ttl, r.action], [null, 'restored'], 'after the cut → back to what it was');
+    // The user changes the key while we own it → theirs, left alone.
+    ft.report({ sessionId: 'A', folder: big, above: true }, opts(5000));
+    const cur = sb.read(big); cur.env.CLAUDE_CODE_PROMPT_CACHE_TTL = '1h'; fs.writeFileSync(sb.local(big), JSON.stringify(cur));
+    r = ft.report({ sessionId: 'B', folder: big, above: false }, opts(6000));
+    assertEq(r.action, 'released', 'the user\'s change is never overwritten');
+    assertEq(sb.read(big).env.CLAUDE_CODE_PROMPT_CACHE_TTL, '1h');
+    // Their own value there before us → we never switch.
+    r = ft.report({ sessionId: 'B', folder: big, above: true }, opts(7000));
+    assertEq(r.action, 'skipped', 'a TTL the user put in the folder file is theirs');
+    assertEq(sb.read(big).env.CLAUDE_CODE_PROMPT_CACHE_TTL, '1h');
+  } finally { sb.done(); }
+});
+
+test('folder-ttl.report: a file we create is removed on restore (and its .claude dir), a dead owner is swept at anyone\'s next report, session end restores', () => {
+  const ft = require('./lib/folder-ttl.js');
+  const sb = folderTtlSandbox();
+  try {
+    const p = path.join(sb.root, 'p'); const q = path.join(sb.root, 'q');
+    fs.mkdirSync(p); fs.mkdirSync(q);
+    const run = () => ({ status: 128, stdout: '', stderr: '' });
+    ft.report({ sessionId: 'A', folder: p, above: true }, { now: 1000, file: sb.state, run });
+    assertEq(sb.read(p), { env: { CLAUDE_CODE_PROMPT_CACHE_TTL: '5m' } }, 'created');
+    let r = ft.report({ sessionId: 'A', folder: p, end: true }, { now: 2000, file: sb.state, run });
+    assertEq(r.action, 'restored');
+    assert(!fs.existsSync(path.join(p, '.claude')), 'our file and our .claude dir are gone');
+    // A crashes (no end); B in another folder reports after LIVE_MS → A's folder restored.
+    ft.report({ sessionId: 'A', folder: p, above: true }, { now: 10000, file: sb.state, run });
+    r = ft.report({ sessionId: 'B', folder: q, above: false }, { now: 10000 + ft.LIVE_MS + 1, file: sb.state, run });
+    assertEq(r.swept.map((s) => s.action), ['restored'], 'the dead owner\'s switch is swept');
+    assert(!fs.existsSync(sb.local(p)), 'restored');
+    // Unparsable user file: never touched, the error is reported (fail-loud).
+    fs.mkdirSync(path.join(q, '.claude')); fs.writeFileSync(sb.local(q), '{ broken');
+    r = ft.report({ sessionId: 'B', folder: q, above: true }, { now: 20000, file: sb.state, run });
+    assertEq(r.action, 'error');
+    assertEq(fs.readFileSync(sb.local(q), 'utf8'), '{ broken', 'the broken file is left as it was');
+  } finally { sb.done(); }
+});
+
+test('folder-ttl.excludeFromGit: a file we create inside a git repo goes to info/exclude (never committed), once; an ignored file is left alone', () => {
+  const ft = require('./lib/folder-ttl.js');
+  const sb = folderTtlSandbox();
+  try {
+    const repo = path.join(sb.root, 'repo'); const sub = path.join(repo, 'pkg');
+    fs.mkdirSync(sub, { recursive: true });
+    const g = require('child_process').spawnSync('git', ['init', '-q', repo], { windowsHide: true, encoding: 'utf8' });
+    if (g.status !== 0) throw new Error(`git init failed: ${g.stderr}`);
+    const r1 = ft.report({ sessionId: 'A', folder: sub, above: true }, { now: 1000, file: sb.state });
+    assertEq(r1.action, 'switched');
+    const ex = fs.readFileSync(path.join(repo, '.git', 'info', 'exclude'), 'utf8');
+    assert(ex.split(/\r?\n/).includes('/pkg/.claude/settings.local.json'), `info/exclude has the subfolder file: ${ex}`);
+    const ci = require('child_process').spawnSync('git', ['-C', sub, 'check-ignore', '-q', '.claude/settings.local.json'], { windowsHide: true });
+    assertEq(ci.status, 0, 'git now ignores it');
+    ft.report({ sessionId: 'A', folder: sub, end: true }, { now: 2000, file: sb.state });
+    ft.report({ sessionId: 'A', folder: sub, above: true }, { now: 3000, file: sb.state });
+    const ex2 = fs.readFileSync(path.join(repo, '.git', 'info', 'exclude'), 'utf8');
+    assertEq(ex2.split(/\r?\n/).filter((l) => l === '/pkg/.claude/settings.local.json').length, 1, 'added once');
+  } finally { sb.done(); }
+});
+
+test('compaction-event: folder / folder-end reach folder-ttl with the session id; no session id → throws', async () => {
+  const ev = require('./compaction-event.js');
+  const src = fs.readFileSync(path.join(SCRIPTS, 'compaction-event.js'), 'utf8');
+  assert(/kind === 'folder' \|\| kind === 'folder-end'/.test(src) && /folder-ttl\.js'\)\.report\(\{ sessionId: ctx\.sessionId, folder: data\.folder/.test(src), 'routed to folder-ttl.report');
+  let threw = false;
+  try { await ev.run({ payload: { kind: 'folder', folder: 'C:/x', above: true } }); } catch (err) { threw = /without session_id/.test(err.message); }
+  assert(threw, 'a folder report needs the session id');
 });
 
 test('compaction-core.chooseCompaction: the engine SUMMARY unless pruning cuts >= 85% — warm or cold, auto or manual (pruned sessions re-read the kept 75–95% on every call: measured US$0.50/call vs US$0.075 after a summary)', () => {
   const plan = (ratio, extra = {}) => ({ ratio, duplicatesDropped: 0, verbatimTextIntact: true, ...extra });
   const c = (s) => cmpCore.chooseCompaction(s);
-  const summary = { ours: false, why: 'summary-is-cheaper' };
+  const summary = { ours: false, kind: null, why: 'summary-is-cheaper' };
   // The real compactions measured in the transcripts (docs/research/compaction-cache, 2026-10-11).
   assertEq(c({ plan: plan(0.18), trigger: 'auto', warm: true }), summary, 'claude-code 09/10 12:41: 18% cut, warm → summary');
   assertEq(c({ plan: plan(0.18), trigger: 'auto', warm: false }), summary, 'cerne 10/10 11:43: 18% cut with a COLD cache still re-read ~900k per call afterwards → summary');
@@ -25814,7 +25978,7 @@ test('compaction-core.chooseCompaction: the engine SUMMARY unless pruning cuts >
   assertEq(c({ plan: plan(0.26, { duplicatesDropped: 3 }), trigger: 'manual', warm: false }), summary, 'engine copies of a resumed history: the summary drops them too');
   assertEq(c({ plan: plan(0.05), trigger: 'manual', warm: false }), summary);
   for (const [trigger, warm] of [['auto', true], ['auto', false], ['manual', true], ['manual', false]]) {
-    assertEq(c({ plan: plan(0.9), trigger, warm }), { ours: true, why: 'big-cut' }, `>= 85% cut prunes (${trigger}, warm=${warm})`);
+    assertEq(c({ plan: plan(0.9), trigger, warm }), { ours: true, kind: 'prune', why: 'big-cut' }, `>= 85% cut prunes (${trigger}, warm=${warm})`);
   }
   assertEq(c({ plan: plan(0.9, { verbatimTextIntact: false }), trigger: 'manual', warm: false }).ours, false, 'never a broken transcript');
   assertEq(cmpCore.DEFAULTS.minReductionRatio, 0.85, 'one bar for every trigger and cache state');
@@ -25823,7 +25987,7 @@ test('compaction-core.chooseCompaction: the engine SUMMARY unless pruning cuts >
   assertEq(cmpCore.isCacheWarm({ now: 1000, lastAnswerAt: 600, ttlMs: 300 }), false);
   assertEq(cmpCore.isCacheWarm({ now: 1000, lastAnswerAt: null, ttlMs: 300 }), true, 'unknown → warm (auto-compaction fires right after turns)');
   const hook = fs.readFileSync(path.join(ROOT, 'hooks', 'compaction.mjs'), 'utf8');
-  assert(/chooseCompaction\(\{ plan, trigger: e\.trigger, warm \}/.test(hook) && /isCacheWarm\(/.test(hook) && !/plan\.ratio >= ctx\.config\.minReductionRatio/.test(hook), 'the session.compact hook decides through chooseCompaction (the old ratio-only rule is gone)');
+  assert(/chooseCompaction\(\{ plan, trigger: e\.trigger, warm, mechanical \}/.test(hook) && /isCacheWarm\(/.test(hook) && !/plan\.ratio >= ctx\.config\.minReductionRatio/.test(hook), 'the session.compact hook decides through chooseCompaction (the old ratio-only rule is gone)');
   assert(/const warm = ctx\.busy \|\| isCacheWarm\(/.test(hook), 'an auto-compaction in the middle of a turn counts as warm (the turn keeps the cache alive, whatever the last answer\'s age)');
   assert(/why: choice\.why, cacheWarm: warm/.test(hook), 'the run event records why and whether the cache was warm');
 });

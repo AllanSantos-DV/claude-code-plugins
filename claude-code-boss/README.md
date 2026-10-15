@@ -244,6 +244,19 @@ Módulo de *function hook* do Claude Code (`hooks/compaction.mjs`, declarado em 
   segurado, o `/compact` roda e o mesmo texto é reenviado como seu. Com o cache válido ele espera —
   reescrever o histórico regravaria no cache o que ainda está pago; se o cache nunca esfriar, quem age é a
   compactação automática do próprio engine no limite dela (com a mesma escolha abaixo).
+- **Corte frio sem modelo**: com o cache frio, nas compactações que o boss inicia e na automática do engine a frio, o
+  histórico vira o "brief": seus pedidos na íntegra, uma linha por ferramenta (arquivo, URL, comando), as mensagens dos
+  últimos ~2 mil tokens na íntegra (`briefTailTokens`). Não há chamada de resumo. Em 6 compactações reais, guardou ~81% do que
+  os turnos seguintes citaram, contra 73% do resumo do modelo. O seu `/compact` continua com o resumo do modelo, e uma poda
+  de 85% ou mais tem prioridade. Desliga com `mechanicalCut: false`.
+- **Cache de 5 min por pasta** (`folderTtl`, `scripts/lib/folder-ttl.js`): cada sessão diz ao daemon se passou do %.
+  Enquanto TODAS as sessões abertas no mesmo cwd de abertura passaram, o boss grava `env.CLAUDE_CODE_PROMPT_CACHE_TTL=5m` no
+  `<cwd>/.claude/settings.local.json` (o Claude Code relê o arquivo na hora, e ele vale acima do env do usuário), o cache
+  esfria em 5 min e o corte vem. Depois do corte, quando uma sessão da pasta fica abaixo, ao fechar, ou quando uma sessão
+  some por 5 min (ela avisa a cada 2 min), o valor anterior volta. Uma subpasta é outra pasta (cada sessão lê só o arquivo do
+  próprio cwd, medido). Cada sessão só é cortada com o próprio cache frio. Um valor seu no arquivo nunca é sobrescrito, e um
+  arquivo criado pelo boss vai para o `info/exclude` do git. Não age com `FORCE_PROMPT_CACHING_5M` nem com o TTL no
+  `--settings`, que ganham do arquivo.
 - **Sessões autônomas**: um turno que nenhum prompt de pessoa abriu (mensagem de outra sessão, notificação de
   tarefa, comando na fila) não passa pelo gate. No fim dele, passado o limiar, o boss compacta se o cache já
   esfriou; com o cache quente, agenda nova checagem para quando ele vencer. Nada é segurado nem reenviado.

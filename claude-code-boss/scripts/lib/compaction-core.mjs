@@ -46,6 +46,15 @@ export const DEFAULTS = Object.freeze({
   // ~r × that and re-reads (0.95 − r) × pre × US$0.20/MTok per call — break-even after
   // 25r/(0.95 − r) calls (~7 at r = 0.2), and sessions run ~185–309 calls between compactions.
   minReductionRatio: 0.85,
+  // Cold-cache compactions WE start (the prompt gate, the turn-end rule) and a cold engine auto-compaction use the
+  // model-free brief instead of the summary call (owner, 14/10): nothing is warm to lose, and the brief with a 2k
+  // verbatim tail kept ~81% of what the next turns cited against 73% for the summary (6 real compactions,
+  // docs/BACKLOG.md "5ª rodada"). A manual /compact keeps the engine's summary (the person asked for one).
+  mechanicalCut: true,
+  briefTailTokens: 2000,       // the brief's verbatim tail, in tokens (0 = preserveRecentMessages messages)
+  // The launch folder's cache TTL goes 1h → 5m while every live session there is past the threshold, and back after
+  // the cut (scripts/lib/folder-ttl.js, through the daemon).
+  folderTtl: true,
   // TTL used while no cache write has been observed for this host. The LONGER window on
   // purpose: assuming 5 min when the contract is 1 h would compact with the cache alive.
   unknownTtlMs: 60 * 60000,
@@ -246,21 +255,36 @@ export function isCacheWarm(s) {
 
 /**
  * WHO compacts when the engine's compaction runs: our pruning (every message kept, stale tool
- * results cut) or the engine's own summary.
- *   - verbatim text not intact → the summary (never a broken transcript);
- *   - pruning only when it cuts at least `minReductionRatio` (85%), whatever the trigger (auto,
- *     manual, ours) and the cache state: below it the kept context is re-read on every later call
- *     and costs more than the summary (measured — see DEFAULTS). The summary also drops the
- *     engine's duplicate copies of a resumed history, so they no longer force a pruning.
+ * results cut), our model-free brief, or the engine's own summary.
+ *   - pruning when it cuts at least `minReductionRatio` (85%) with the verbatim text intact, whatever the
+ *     trigger and the cache state: below it the kept context is re-read on every later call and costs more
+ *     than the summary (measured — see DEFAULTS);
+ *   - else the brief when `mechanical` (cold cache, not a person's /compact — isMechanicalCut) and
+ *     `mechanicalCut` is on;
+ *   - else the summary (it also drops the engine's duplicate copies of a resumed history).
  * `trigger`/`warm` stay in the input: the run event records them.
- * @param {{plan:{ratio:number, duplicatesDropped:number, verbatimTextIntact:boolean}, trigger:string, warm:boolean}} s
- * @returns {{ours:boolean, why:string}}
+ * @param {{plan:{ratio:number, duplicatesDropped:number, verbatimTextIntact:boolean}, trigger:string, warm:boolean, mechanical?:boolean}} s
+ * @returns {{ours:boolean, kind:('prune'|'brief'|null), why:string}}
  */
 export function chooseCompaction(s, options = {}) {
   const o = { ...DEFAULTS, ...options };
   const { plan } = s;
-  if (!plan.verbatimTextIntact) return { ours: false, why: 'verbatim-not-intact' };
-  return plan.ratio >= o.minReductionRatio ? { ours: true, why: 'big-cut' } : { ours: false, why: 'summary-is-cheaper' };
+  if (plan.verbatimTextIntact && plan.ratio >= o.minReductionRatio) return { ours: true, kind: 'prune', why: 'big-cut' };
+  // Cold and not a person's manual /compact: the model-free brief (see DEFAULTS.mechanicalCut).
+  if (s.mechanical && o.mechanicalCut) return { ours: true, kind: 'brief', why: 'cold-mechanical' };
+  if (!plan.verbatimTextIntact) return { ours: false, kind: null, why: 'verbatim-not-intact' };
+  return { ours: false, kind: null, why: 'summary-is-cheaper' };
+}
+
+/**
+ * Is this compaction one the brief may answer? Only with a COLD cache, and only when it is not a person's own
+ * /compact: ours (the gate or the turn-end rule set `reason`) or the engine's automatic one.
+ * @param {{warm:boolean, trigger:string, reason:(string|null)}} s
+ * @returns {boolean}
+ */
+export function isMechanicalCut(s) {
+  if (s.warm) return false;
+  return Boolean(s.reason) || s.trigger === 'auto';
 }
 
 /**
@@ -317,9 +341,10 @@ function briefArg(input) {
 }
 
 /**
- * The curated transcript a forced compaction can use INSTEAD of the engine's summary call (phase 1 of the
- * proactive compaction: built and sized in shadow, not yet substituted). Deterministic, no model call:
- *   - the first message and the newest `preserveRecentMessages` stay as the very same objects;
+ * The curated transcript a cold compaction uses INSTEAD of the engine's summary call (chooseCompaction kind
+ * 'brief'). Deterministic, no model call:
+ *   - the first message and the newest ones stay as the very same objects: `briefTailTokens` worth of them when
+ *     set (default 2000), else the newest `preserveRecentMessages`;
  *   - everything between becomes ONE user message: every user message verbatim, assistant text cut to
  *     `briefAssistantChars`, each tool call one line (tool + file/command), failed results a short head;
  *     successful tool outputs are dropped — they are what MCP memory (ingested transcripts) recovers;
@@ -333,6 +358,11 @@ export function buildBrief(messages, options = {}) {
   const { list } = dropEngineCopies(Array.isArray(messages) ? messages : []);
   const n = list.length;
   let tailStart = Math.max(1, n - o.preserveRecentMessages);
+  if (Number(o.briefTailTokens) > 0) { // the tail by size: newest messages until briefTailTokens (4 chars/token)
+    let acc = 0;
+    tailStart = n;
+    while (tailStart > 1 && acc < o.briefTailTokens) { tailStart--; acc += size(list[tailStart]) / 4; }
+  }
   while (tailStart > 1) { // an orphan result at the cut: pull its call into the tail
     const uses = new Set();
     for (let k = tailStart; k < n; k++) for (const u of list[k].toolUses || []) uses.add(u.tool_use_id);

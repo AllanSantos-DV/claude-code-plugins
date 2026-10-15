@@ -137,6 +137,45 @@ Achados fora do escopo (não implementados, por regra):
 - **Trade-off do 1M:** sem janela fixa o engine só compacta em janela−33k (~967k). Em sessões interativas sempre quentes o
   gate/turn-end não age (esperam cache frio); só o engine compacta. Decisão do Allan (ver TTL dinâmico abaixo).
 
+### Implementado: TTL por pasta + corte mecânico no cache frio (branch `feat/folder-ttl-cold-cut`, 2026-10-14)
+
+Aprovado pelo Allan via orquestrador. Código: `scripts/lib/folder-ttl.js` (daemon), `hooks/compaction.mjs` (módulo),
+`compaction-core.mjs` (`isMechanicalCut`, `chooseCompaction` kind `brief`, `buildBrief` com `briefTailTokens`),
+`compaction-event.js` (kinds `folder`/`folder-end`), `hooks-config.js` (`mechanicalCut`, `briefTailTokens`, `folderTtl`).
+
+- **Descoberta, sessão interativa real (7 sessões):** a sessão lê só o `<cwd>/.claude/settings.local.json` do cwd de
+  abertura. Gravar o da raiz do git ou o da pasta-mãe com `.claude` não mudou a sessão da subpasta; gravar o da subpasta
+  mudou; a sessão na pasta grande não mudou quando a subpasta mudou; criar a pasta `.claude` no meio da sessão funcionou.
+  Então "mesma pasta" é o cwd exato normalizado (`folderKey`), nunca prefixo (`docs/research/ttl-switch/which-local-settings.py`).
+- **E2E com o boss real (sandbox isolado, ConPTY, Haiku), 4 rodadas** (`e2e-folder-ttl.py`, `e2e-brief.py`):
+  - pasta com 2 sessões acima → trocou para 5m; pasta com uma acima e uma abaixo → nunca trocou; P/sub sozinha acima →
+    trocou só P/sub, P (pasta-mãe, sessão abaixo) nunca foi tocada;
+  - frias cortadas, quente intocada, abaixo do limiar não cortadas; a pasta foi restaurada ANTES do evento do corte;
+  - brief aceito pelo engine (rodada 3): 24 mensagens condensadas, 19,4k → 11,3k caracteres, a sessão seguiu
+    respondendo e o contexto foi de 44k para 31k;
+  - quando a poda corta ≥ 85% (contexto dominado por um Read grande), a poda tem prioridade (rodada 1, 98%).
+- **Achados no E2E, corrigidos com teste:**
+  - "acima" lido de `usage()` depois de um prompt segurado pelo gate devolvia o tamanho antes do corte (a pasta ficava em
+    5m). Agora vem da última chamada real à API, e toda compactação libera a pasta na hora (0ad6558);
+  - o gate compactava de novo a sessão recém-cortada a partir da mesma leitura velha (um resumo de modelo desnecessário).
+    Agora nem o gate nem o fim de turno compactam até haver uma chamada real depois do corte (8dcdf1b).
+  - o `folder-end` ia depois da leitura do transcript no `session.end`, cujo prazo é curto. Agora sai primeiro (a1d107b);
+  - a troca atrasava um turno: no fim do turno a resposta ainda não está no transcript (modo interativo). Agora o heartbeat
+    de 2 min também lê as chamadas novas, mesmo no meio de um turno, e recalcula o "acima": a troca veio em 50 s no 1º
+    turno (016c3ec, 9d9d755);
+  - na abertura o daemon pode ainda não estar no ar (`ECONNREFUSED` no log), e a entrada na pasta falha nesse momento; o
+    módulo se recupera no 1º turno.
+- **Não provado de ponta a ponta:** a saída limpa (`session.end` → `folder-end`). Pela ConPTY, nem `/exit`, nem Ctrl-D, nem
+  Ctrl-C duas vezes encerraram a sessão, então o caminho não rodou. A ordem do código está coberta por teste unitário, e a
+  queda está coberta pela varredura de dono morto, provada no daemon real: sessão de E morta à força, E em 5m; 342 s depois,
+  um relato de outra pasta restaurou E, e o arquivo e a pasta `.claude` criados pelo boss sumiram (`sweep-report.js`).
+- **Limites do teste:**
+  - no sandbox todas as gravações já saem em 5m (o perfil isolado não tem o env `1h`), então o efeito da troca no TTL
+    gravado foi provado só nos testes interativos anteriores (3 rodadas, 13 sessões);
+  - uma sessão que recebeu prompts enquanto ainda gerava perdeu esses prompts (limite do script, não do boss);
+  - o `folder-end` de uma sessão encerrada à força não chega; a varredura de dono morto (5 min) cobre isso, provado em
+    teste unitário.
+
 ### Troca do TTL de uma sessão já aberta + corte com cauda pequena (5ª rodada, 2026-10-14, nada implementado)
 
 Pedido do Allan via orquestrador. Scripts: `docs/research/ttl-switch/interactive-switch*.py` (TUI real via ConPTY) e

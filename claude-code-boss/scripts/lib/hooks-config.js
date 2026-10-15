@@ -354,6 +354,11 @@ function getCompaction() {
     minIntervalMs: clampInterval(c.minIntervalMinutes ?? 10) * 60000,
     minIntervalRange: MIN_INTERVAL_RANGE,
     preserveRecentMessages: Number.isInteger(c.preserveRecentMessages) && c.preserveRecentMessages >= 0 ? c.preserveRecentMessages : 6,
+    // Cold cut = model-free brief with a verbatim tail; the launch folder's TTL 1h→5m while every live session there
+    // is past the threshold (lib/folder-ttl.js). Both on unless set to false.
+    mechanicalCut: c.mechanicalCut !== false,
+    briefTailTokens: Number.isFinite(Number(c.briefTailTokens)) ? Math.min(20000, Math.max(0, Math.round(Number(c.briefTailTokens)))) : core.DEFAULTS.briefTailTokens,
+    folderTtl: c.folderTtl !== false,
   };
 }
 
