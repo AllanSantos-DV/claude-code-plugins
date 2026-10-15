@@ -66,7 +66,8 @@ async function run(event) {
         const stamp = path.join(DATA_DIR, '.runtime', `session-start-${safe}.json`);
         if (!fs.existsSync(stamp)) {
           fs.mkdirSync(path.dirname(stamp), { recursive: true });
-          writeFileAtomic(stamp, JSON.stringify({ ts: Date.now(), project: path.basename(cwd) }));
+          // The metrics key session-summary falls back to (not the folder name).
+          writeFileAtomic(stamp, JSON.stringify({ ts: Date.now(), project: require('./lib/metrics-project.js').sessionMetricsKey(cwd) }));
         }
       }
     } catch (e) { void e; /* stamp is best-effort */ }
