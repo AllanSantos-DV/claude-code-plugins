@@ -134,6 +134,9 @@ function summarizeCompaction(rows, { timeline = 20 } = {}) {
   }
   s.windows = [...windowsSeen.values()].sort((a, b) => b.lastTs - a.lastTs);
   s.timeline = runsList.sort((a, b) => (b.ts || 0) - (a.ts || 0)).slice(0, timeline);
+  // Per-compaction history, per session and per model|window, with the "compacts too much" indicator (compaction-episodes.js).
+  const ep = require('./compaction-episodes.js').buildEpisodes(rows);
+  s.episodes = { total: ep.episodes.length, recent: ep.episodes.slice(0, timeline), sessions: ep.sessions.slice(0, 50), groups: ep.groups };
   return s;
 }
 
