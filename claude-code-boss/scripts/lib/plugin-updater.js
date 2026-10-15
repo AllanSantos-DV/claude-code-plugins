@@ -31,8 +31,9 @@ const fs = require('fs');
 const path = require('path');
 const os = require('os');
 const https = require('https');
-const { spawnSync } = require('child_process');
+const { spawn, spawnSync } = require('child_process');
 const crypto = require('crypto');
+const { writeFileAtomic } = require('./atomic-write.js');
 
 const DEFAULT_REPO = 'AllanSantos-DV/claude-code-plugins';
 const MARKETPLACE = 'allansantos-plugins';
@@ -335,26 +336,22 @@ function sha256File(file) {
   return crypto.createHash('sha256').update(fs.readFileSync(file)).digest('hex');
 }
 
-function unzip(zipFile, destDir) {
+async function unzip(zipFile, destDir) {
   fs.mkdirSync(destDir, { recursive: true });
   if (process.platform === 'win32') {
     const esc = (s) => s.replace(/'/g, "''");
     const psCmd =
       `$ProgressPreference='SilentlyContinue'; ` +
       `Expand-Archive -LiteralPath '${esc(zipFile)}' -DestinationPath '${esc(destDir)}' -Force`;
-    const r = spawnSync(
-      'powershell',
-      ['-NoProfile', '-NonInteractive', '-Command', psCmd],
-      { encoding: 'utf8', windowsHide: true }
-    );
+    const r = await hiddenRun('powershell', ['-NoProfile', '-NonInteractive', '-Command', psCmd]);
     if (r.status !== 0) {
       throw new Error(`Expand-Archive falhou: ${String(r.stderr || '').split('\n')[0]}`);
     }
     return;
   }
-  let r = spawnSync('unzip', ['-o', zipFile, '-d', destDir], { encoding: 'utf8', windowsHide: true });
-  if (r.error || r.status !== 0) {
-    r = spawnSync('tar', ['-xf', zipFile, '-C', destDir], { encoding: 'utf8', windowsHide: true });
+  let r = await hiddenRun('unzip', ['-o', zipFile, '-d', destDir]);
+  if (r.status !== 0) {
+    r = await hiddenRun('tar', ['-xf', zipFile, '-C', destDir]);
     if (r.status !== 0) {
       throw new Error(`unzip/tar falhou: ${String(r.stderr || '').split('\n')[0]}`);
     }
@@ -362,17 +359,21 @@ function unzip(zipFile, destDir) {
 }
 
 /**
- * Kill node processes that loaded a claude-code-boss module from a cache folder
- * OTHER than keepSha — but never `selfPid` (the dashboard answering this call
+ * Kill node processes that loaded a claude-code-boss module from a plugin-cache folder
+ * OTHER than keepSha (only the cache: a development checkout named claude-code-boss
+ * is not an installed version) — but never `selfPid` (the dashboard answering this call
  * runs from the old cache and must survive to return the response).
  */
+// The module path every installed version loads from; a dev checkout does not match it.
+const CACHE_MODULE_LIKE = '*\\plugins\\cache\\*\\claude-code-boss\\*';
+
 function killStale(keepSha, selfPid) {
   try {
     if (process.platform === 'win32') {
       const ps =
         `$keep='${keepSha}'; $self=${selfPid}; ` +
         `Get-Process node -ErrorAction SilentlyContinue | Where-Object { $_.Id -ne $self } | Where-Object { ` +
-        `try { @($_.Modules | Where-Object { $_.FileName -like '*\\claude-code-boss\\*' -and $_.FileName -notlike ('*\\' + $keep + '\\*') }).Count -gt 0 } catch { $false } ` +
+        `try { @($_.Modules | Where-Object { $_.FileName -like '${CACHE_MODULE_LIKE}' -and $_.FileName -notlike ('*\\' + $keep + '\\*') }).Count -gt 0 } catch { $false } ` +
         `} | ForEach-Object { Stop-Process -Id $_.Id -Force -ErrorAction SilentlyContinue }`;
       spawnSync('powershell', ['-NoProfile', '-NonInteractive', '-Command', ps], {
         encoding: 'utf8',
@@ -398,13 +399,32 @@ async function checkForUpdate(root) {
   return { ...state, repo, sha: info.sha, node: info.node };
 }
 
-// Default seam: windowsHide forced after the spread, never trusted to callers.
-// args must be an array: anything else in that slot would be read by Node as
-// the options and the forced windowsHide ignored — fail loud instead.
-const hiddenSpawnSync = (cmd, args, opts) => {
-  if (!Array.isArray(args)) throw new TypeError('hiddenSpawnSync: args must be an array (options go in the 3rd argument)');
-  return spawnSync(cmd, args, { ...opts, windowsHide: true });
-};
+// Default seam: asynchronous, so the dashboard that serves this call keeps answering
+// while npm install / Expand-Archive run (the sync form froze it for up to 5 min).
+// windowsHide forced after the spread, never trusted to callers. args must be an
+// array: anything else in that slot would be read by Node as the options and the
+// forced windowsHide ignored — fail loud instead.
+// Resolves { status, stdout, stderr }; status null = could not start or timed out.
+function hiddenRun(cmd, args, opts = {}) {
+  if (!Array.isArray(args)) throw new TypeError('hiddenRun: args must be an array (options go in the 3rd argument)');
+  const { timeout, encoding, ...rest } = opts;
+  void encoding;
+  return new Promise((resolve) => {
+    let stdout = '';
+    let stderr = '';
+    let timer = null;
+    let child;
+    try { child = spawn(cmd, args, { ...rest, windowsHide: true }); } catch (err) {
+      resolve({ status: null, stdout, stderr: err.message });
+      return;
+    }
+    if (child.stdout) child.stdout.on('data', (d) => { stdout += d; });
+    if (child.stderr) child.stderr.on('data', (d) => { stderr += d; });
+    if (timeout) timer = setTimeout(() => { stderr += `\n${cmd} timed out after ${timeout} ms`; child.kill(); }, timeout);
+    child.on('error', (err) => { clearTimeout(timer); resolve({ status: null, stdout, stderr: stderr + err.message }); });
+    child.on('close', (code) => { clearTimeout(timer); resolve({ status: code, stdout, stderr }); });
+  });
+}
 
 async function performUpdate(root, opts = {}) {
   // Injectable IO seams (default = the real functions) so the apply/registry/
@@ -413,7 +433,7 @@ async function performUpdate(root, opts = {}) {
   const _download = io.download || download;
   const _unzip = io.unzip || unzip;
   const _sha256File = io.sha256File || sha256File;
-  const _spawnSync = io.spawnSync || hiddenSpawnSync;
+  const _run = io.spawnSync || hiddenRun;
   const _fetchRelease = io.fetchRelease || fetchLatestRelease;
   const _resolveSha = io.resolveSha || resolveCommitSha;
   const _killStale = io.killStale || killStale;
@@ -463,7 +483,7 @@ async function performUpdate(root, opts = {}) {
       throw new Error('Release sem digest .sha256 publicado — abortando (integridade não verificável). Passe allowUnsignedLegacy para forçar num release legado.');
     }
 
-    _unzip(zipFile, extractDir);
+    await _unzip(zipFile, extractDir);
 
     const pkgPath = path.join(extractDir, 'package.json');
     if (!fs.existsSync(pkgPath)) {
@@ -482,7 +502,7 @@ async function performUpdate(root, opts = {}) {
     fs.cpSync(extractDir, destDir, { recursive: true });
 
     if (!opts.skipInstall) {
-      const r = _spawnSync('npm', ['install', '--omit=dev', '--no-audit', '--no-fund'], {
+      const r = await _run('npm', ['install', '--omit=dev', '--no-audit', '--no-fund'], {
         cwd: destDir,
         encoding: 'utf8',
         timeout: 5 * 60 * 1000,
@@ -526,7 +546,7 @@ async function performUpdate(root, opts = {}) {
         gitCommitSha: sha,
       },
     ];
-    fs.writeFileSync(registryPath, JSON.stringify(registry, null, 2));
+    writeFileAtomic(registryPath, JSON.stringify(registry, null, 2));
 
     _killStale(path.basename(destDir), process.pid);
 
@@ -570,6 +590,7 @@ module.exports = {
   DEFAULT_REPO,
   MARKETPLACE,
   PLUGIN,
-  // test seam: the default spawnSync used by performUpdate (forces windowsHide)
-  _hiddenSpawnSync: hiddenSpawnSync,
+  // test seam: the default async runner used by performUpdate (forces windowsHide)
+  _hiddenRun: hiddenRun,
+  CACHE_MODULE_LIKE,
 };
