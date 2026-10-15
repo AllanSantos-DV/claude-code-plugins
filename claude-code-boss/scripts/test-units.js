@@ -26041,6 +26041,20 @@ test('compaction-core.decideTiming: waits for the cache to expire, compacts cold
   assertEq(cmpCore.decideTiming({ busy: false, now: 1, tokens: 900000, lastAnswerAt: 0, ttlMs: 1 }, {}), { action: 'none', reason: 'no-window' }, 'no window reading = no threshold = never act on a guess');
 });
 
+test('compaction-core.resumedAnswerAt: a resumed session reads as cold under any TTL (its first request re-writes the history), never newer than the real last answer', () => {
+  const NOW = 100_000_000;
+  const T = { thresholdTokens: 250000, minIntervalMs: 600000 };
+  const at = cmpCore.resumedAnswerAt(NOW, 360); // resumed 6 min after the last answer
+  assertEq(at, NOW - cmpCore.RESUMED_CACHE_AGE_MS, 'a 6 min pause still counts as older than the 1h TTL');
+  assertEq(cmpCore.decideTiming({ busy: false, now: NOW, tokens: 470000, lastAnswerAt: at, ttlMs: 3600000 }, T), { action: 'compact', reason: 'cache-cold' }, 'past the threshold, 1h TTL: the first prompt of a resumed session is cut');
+  assertEq(cmpCore.decideTiming({ busy: false, now: NOW, tokens: 100000, lastAnswerAt: at, ttlMs: 3600000 }, T), { action: 'none', reason: 'below-threshold' }, 'below the threshold nothing changes');
+  assertEq(cmpCore.isCacheWarm({ now: NOW, lastAnswerAt: at, ttlMs: 3600000 }), false, 'the cut is the model-free one, not a summary call');
+  assertEq(cmpCore.resumedAnswerAt(NOW, 5 * 3600), NOW - 5 * 3600000, 'an older real answer is kept');
+  assertEq(cmpCore.resumedAnswerAt(NOW, null), NOW - cmpCore.RESUMED_CACHE_AGE_MS, 'no age reported: still cold');
+  const hook = fs.readFileSync(path.join(__dirname, '..', 'hooks', 'compaction.mjs'), 'utf8');
+  assert(/e\.source === 'resume'\) ctx\.lastAnswerAt = resumedAnswerAt\(/.test(hook), 'the SessionStart handler applies it to resume only');
+});
+
 test('compaction-core.decideTurnEnd: an autonomous turn (no person prompt gated) past the threshold compacts at its end ONLY with a cold cache — warm waits; person turns, busy, cooldown, no reading stay out', () => {
   const T = { thresholdTokens: 60000, minIntervalMs: 600000 };
   const NOW = 100_000_000;
