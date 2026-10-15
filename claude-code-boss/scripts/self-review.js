@@ -31,6 +31,7 @@ const hooksCfg = require('./lib/hooks-config.js');
 const selfReviewRetrieve = require('./lib/self-review-retrieve.js');
 const { extractKeywords } = require('./lib/text-utils.js');
 const metrics = require('./lib/metrics.js');
+const { tryResolveProjectId } = require('./lib/project-id.js');
 
 function dataDir() {
   return require('./lib/data-dir.js').dataDir();
@@ -148,7 +149,11 @@ async function run(event, deps = {}) {
   if (ev.stop_hook_active) return {};
 
   const sid = ev.session_id || ev.sessionId || 'default';
-  const project = ev.cwd ? path.basename(ev.cwd) : 'default';
+  // The KB is keyed by the folder's STRICT project id, not its name: a basename was
+  // refused by the daemon (PROJECT_MISMATCH) and missed the local index, so the
+  // detector never found a lesson. No id = memory is off in this folder.
+  const project = ev.cwd ? tryResolveProjectId({ cwd: ev.cwd }) : null;
+  if (!project) return {};
   const dir = deps.dataDir || dataDir();
 
   // Edited paths this turn (read-only; verify-nudge owns the journal clear).
@@ -163,7 +168,7 @@ async function run(event, deps = {}) {
   const retrieveFn = deps.retrieve || selfReviewRetrieve.retrieve;
   const { entries, source } = await retrieveFn(
     { query, keywords },
-    { dataDir: dir, project, topK: cfg.topK, minScore: cfg.minScore, types: cfg.types },
+    { dataDir: dir, project, cwd: ev.cwd, topK: cfg.topK, minScore: cfg.minScore, types: cfg.types },
   );
   if (!entries.length) return {};
 
