@@ -1,11 +1,6 @@
 #!/usr/bin/env node
-const fs = require('fs');
-const path = require('path');
 const crypto = require('crypto');
 const { buildEmbedText } = require('./lib/embed-text.js');
-
-const { dataDir } = require('./lib/data-dir.js');
-const DATA_DIR = dataDir();
 
 let _config = null;
 let _mode = null;
@@ -146,37 +141,17 @@ function deriveTitle(text) {
 async function initMcp() {
   const config = loadConfig();
   const mcpCfg = (config.backend && config.backend.mcpMemory) || {};
-  const transport = mcpCfg.transport === 'http' ? 'http' : 'stdio';
   const McpClient = require('./mcp-client.js');
-
-  if (transport === 'http') {
-    // Remote mode: talk to an already-running daemon. URL is explicit or
-    // auto-discovered from ~/.mcp-memory/run/daemon.json. No JAR, no spawn.
-    _mcp = new McpClient({
-      transport: 'http',
-      serverUrl: mcpCfg.serverUrl || '',
-      runDir: mcpCfg.runDir || '',
-      projectId: mcpCfg.projectId || _project,
-      timeout: mcpCfg.timeout || 60000,
-      // The brain daemon answers tools in-session: fail fast while the server restarts (Q59).
-      restartMode: process.env.CCB_MCP_RESTART_MODE === 'background' ? 'background' : 'wait',
-    });
-    await _mcp.connect();
-    return;
-  }
-
-  const jarDir = path.join(DATA_DIR, 'mcp');
-  if (!fs.existsSync(jarDir)) fs.mkdirSync(jarDir, { recursive: true });
-  const jarPath = mcpCfg.jarPath || path.join(jarDir, 'mcp-memory-server.jar');
+  // ONE per-user HTTP daemon (native-java ADR-023), whatever the config's legacy
+  // `transport` says: the URL is explicit or auto-discovered from
+  // ~/.mcp-memory/run/daemon.json. The client never runs the jar.
   _mcp = new McpClient({
-    jarPath,
-    workspacePath: path.join(DATA_DIR, 'brain', _project),
-    javaArgs: mcpCfg.javaArgs || ['-Xmx512m'],
-    downloadUrl: mcpCfg.downloadUrl || '',
-    expectedSha256: mcpCfg.expectedSha256 || '',
+    serverUrl: mcpCfg.serverUrl || '',
+    runDir: mcpCfg.runDir || '',
     projectId: mcpCfg.projectId || _project,
     timeout: mcpCfg.timeout || 60000,
-    restartMode: process.env.CCB_MCP_RESTART_MODE === 'background' ? 'background' : 'wait', // Q59
+    // The brain daemon answers tools in-session: fail fast while the server restarts (Q59).
+    restartMode: process.env.CCB_MCP_RESTART_MODE === 'background' ? 'background' : 'wait',
   });
   await _mcp.connect();
 }
