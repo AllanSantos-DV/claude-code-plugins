@@ -137,6 +137,27 @@ Achados fora do escopo (não implementados, por regra):
 - **Trade-off do 1M:** sem janela fixa o engine só compacta em janela−33k (~967k). Em sessões interativas sempre quentes o
   gate/turn-end não age (esperam cache frio); só o engine compacta. Decisão do Allan (ver TTL dinâmico abaixo).
 
+### Economia em dólar do TTL por pasta + corte frio, e o "embedder none" (2026-10-14)
+
+Detalhe e método em `docs/research/ttl-switch/economia-ttl-pasta.md` (local); resumo salvo no Brain.
+
+- **Economia (replay de 13 session-days reais cacheadas, 6990 chamadas, preços do gateway), contra cache 1 h + resumo do modelo
+  na mesma janela:** 1M: US$ 945,52 → 768,67 (−18,7%, IC 90% 10,9–29,7%); 200k: US$ 402,54 → 364,79 (−9,4%, IC 8,3–11,1%).
+  O dinheiro vem do cache esfriar em 5 min (1M: só o TTL −16,9%, só o corte −0,5%), não do resumo evitado. As 13 sessões
+  economizaram. Faixa honesta: ~10–30% a 1M, ~8–11% a 200k.
+- **Incertezas medidas:** erro do replay por sessão de 0,34× a 4× do custo real (o total bateu em 0,06%, em parte
+  coincidência); a regra "todas as sessões da pasta" não está no replay, mas só 0–1% do tempo ativo tem outra sessão viva na
+  mesma pasta (215 sessões, 7 dias); sessões abertas e ociosas não aparecem nessa medida; a janela é uma alavanca maior que a
+  política (as sessões de 13–14/10 com a janela fixa de 153k custaram US$ 29–33 contra US$ 47–53 a 1M).
+- **Encontrado e registrado:** a sessão do orquestrador de 10/10 rodou 792 chamadas SEM cache (US$ 1.264 de entrada não
+  cacheada, mais da metade dos US$ 2.249 reais do período). Fora do escopo do replay; vale checar de onde veio (o gateway daquele
+  dia). Não corrigido.
+- **"Embedder none" no 3.9.0:** não é o padrão (`embedder.provider` segue `transformers`). É uma rede de segurança: o teste de
+  carga (`lib/embedder-guard.js`, uma vez por versão do plugin + Node + modelo) só força `none` se o onnxruntime abortar o processo
+  (0xC0000409 / 134), que antes derrubava o daemon a cada prompt, e o próprio teste religa a busca quando volta a passar. Nesta
+  máquina `embedder-guard.json` diz `ok: true` (busca semântica ligada). A redação do CHANGELOG e da vitrine dava a entender o
+  contrário e foi corrigida.
+
 ### Implementado: TTL por pasta + corte mecânico no cache frio (branch `feat/folder-ttl-cold-cut`, 2026-10-14)
 
 Aprovado pelo Allan via orquestrador. Código: `scripts/lib/folder-ttl.js` (daemon), `hooks/compaction.mjs` (módulo),
