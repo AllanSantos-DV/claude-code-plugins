@@ -25912,7 +25912,8 @@ test('folder-ttl.report: switch when all are past it, restore after the cut, oth
     r = ft.report({ sessionId: 'B', folder: big, above: false }, opts(2000));
     assertEq([r.ttl, r.action, r.allAbove], [null, 'restored', false], 'a second session below → restored at once (rule: ALL past it)');
     assertEq(sb.read(big), { permissions: { allow: ['Bash(ls)'] }, env: { FOO: '1' } }, 'restored exactly');
-    r = ft.report({ sessionId: 'B', folder: big.toUpperCase().replace(/\\/g, '/'), above: true }, opts(3000));
+    // Case/slash variants name the same folder only on Windows (folderKey keeps the case elsewhere, and /TMP/PROJ is another path there).
+    r = ft.report({ sessionId: 'B', folder: process.platform === 'win32' ? big.toUpperCase().replace(/\\/g, '/') : big, above: true }, opts(3000));
     assertEq([r.ttl, r.action, r.live], ['5m', 'switched', 2], 'both past it (same folder in another case/slashes) → 5m');
     r = ft.report({ sessionId: 'S', folder: sub, above: false }, opts(3500));
     assertEq(sb.read(sub), null, 'the subfolder session never touches anything');
