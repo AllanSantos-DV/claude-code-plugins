@@ -14,11 +14,11 @@
  * a mesma lógica de find-or-start/swap já usada elsewhere; sem novo
  * código de ciclo de vida de daemon aqui.
  *
- * Auto-setup: se o daemon está ABSENT e o node_modules do plugin está
- * faltando, roda plugin-setup.js em background (detached, non-blocking)
- * ANTES de tentar o spawn do daemon. Isso garante que as dependências
- * estão presentes na próxima tentativa, sem precisar que a LLM repasse
- * um aviso ao usuário.
+ * Auto-setup: se as dependências do plugin estão faltando, roda
+ * plugin-setup.js em background (detached, non-blocking) e NÃO sobe o daemon
+ * nesta rodada: sem as deps ele morre na importação (ERR_MODULE_NOT_FOUND,
+ * crash-report de 2026-10-14). O próximo SessionStart/UserPromptSubmit acha as
+ * deps prontas e sobe. A saída do setup vai para `plugin-setup.log` no data dir.
  *
  * Fail-open: qualquer erro significa apenas que a primeira ferramenta de
  * KB da sessão pode falhar e retentar num prompt posterior (o próximo
@@ -53,10 +53,15 @@ function runSetupInBackground(root, dataDir) {
   // missing (brain-health reports it and promises this background re-install).
   if (fs.existsSync(nodeModules) && require('./brain-health.js').brainServerDepsOk(root).ok) return false;
   if (!fs.existsSync(setupScript)) return false;
+  let log = 'ignore';
+  try {
+    fs.mkdirSync(dataDir, { recursive: true });
+    log = fs.openSync(path.join(dataDir, 'plugin-setup.log'), 'a');
+  } catch (err) { console.error(`[brain-daemon-ensure] setup log unavailable: ${err.message}`); }
   try {
     const child = spawn(process.execPath, [setupScript], {
       detached: true,
-      stdio: 'ignore',
+      stdio: ['ignore', log, log],
       windowsHide: true,
       env: { ...process.env, CLAUDE_PLUGIN_ROOT: root, CLAUDE_PLUGIN_DATA: dataDir },
     });
@@ -65,6 +70,8 @@ function runSetupInBackground(root, dataDir) {
   } catch (err) {
     console.error(`[brain-daemon-ensure] não pôde spawn plugin-setup: ${err.message}`);
     return false;
+  } finally {
+    if (typeof log === 'number') fs.closeSync(log);
   }
 }
 
@@ -93,11 +100,12 @@ async function run(event, deps = {}) {
     const data = deps.data || dataDir();
     const setup = deps.runSetupInBackground || runSetupInBackground;
 
-    // Auto-setup: se node_modules está faltando, roda plugin-setup.js em
-    // background ANTES de chamar ensureDaemon. O daemon precisa das
-    // dependências para subir saudável; se o setup está rodando, a próxima
-    // tentativa de spawn vai encontrar tudo pronto.
-    const setupStarted = setup(root, data);
+    // Deps missing → install in background and leave the spawn to the next
+    // hook run; spawning now only crashes the daemon on import.
+    if (setup(root, data)) {
+      return `[BRAIN] Installing the plugin dependencies in the background (log: ${path.join(data, 'plugin-setup.log')}). ` +
+        'Memory tools start working on one of the next prompts, once the install finishes.';
+    }
 
     let ensureDaemon = deps.ensureDaemon;
     if (!ensureDaemon) {
@@ -111,10 +119,7 @@ async function run(event, deps = {}) {
     const crashNote = result.crash ? crashAdvisory(result.crash) + '\n' : '';
 
     if (result.status === 'error') {
-      const setupNote = setupStarted
-        ? ' [setup em background — tente novamente se o daemon não subir]'
-        : '';
-      return crashNote + `[BRAIN] daemon único não pôde ser garantido (${result.error})${setupNote}. ` +
+      return crashNote + `[BRAIN] daemon único não pôde ser garantido (${result.error}). ` +
         'O brain-server tentará reiniciar automaticamente no próximo prompt; se falhar, ' +
         'rode `node scripts/plugin-setup.js && node servers/brain-server/index.js` manualmente.';
     }

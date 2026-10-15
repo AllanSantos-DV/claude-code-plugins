@@ -15871,6 +15871,27 @@ test('mcp-launcher (native-java ADR-023 contract): one JSON line → url; exit 1
   } finally { fs.rmSync(home, { recursive: true, force: true }); }
 });
 
+test('brain-daemon-ensure: deps faltando = setup em background e NADA de spawn do daemon (ele morria na importacao: ERR_MODULE_NOT_FOUND, 2026-10-14)', async () => {
+  const ens = require('./brain-daemon-ensure.js');
+  let spawned = 0;
+  const out = await ens.run({ hook_event_name: 'UserPromptSubmit' }, {
+    root: ROOT, data: os.tmpdir(), runSetupInBackground: () => true,
+    ensureDaemon: async () => { spawned++; return { status: 'started' }; },
+  });
+  assertEq(spawned, 0, 'daemon not spawned while its deps are being installed');
+  assert(/Installing the plugin dependencies/.test(out) && /plugin-setup\.log/.test(out), `visible notice with the log path: ${out}`);
+  const ok = await ens.run({ hook_event_name: 'UserPromptSubmit' }, {
+    root: ROOT, data: os.tmpdir(), runSetupInBackground: () => false,
+    ensureDaemon: async () => { spawned++; return { status: 'current' }; },
+  });
+  assertEq([spawned, ok], [1, null], 'deps present → ensure runs, silent');
+});
+
+test('brain-daemon-ensure.runSetupInBackground: a saida do setup vai para plugin-setup.log no data dir (antes: stdio ignore, o log do npm sumia)', () => {
+  const src = fs.readFileSync(path.join(__dirname, 'brain-daemon-ensure.js'), 'utf8');
+  assert(/plugin-setup\.log/.test(src) && /stdio: \['ignore', log, log\]/.test(src), 'setup stdout/stderr appended to a log file');
+});
+
 test('SessionStart runs the server launcher (contract step 1) on a local mcp-memory backend only — not for a user-given server, not on the local backend', async () => {
   const ens = require('./brain-daemon-ensure.js');
   const run = async (cfg) => {
