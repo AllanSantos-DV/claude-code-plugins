@@ -19,7 +19,7 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 // the worker in between, it is recycled; the death path re-queues background jobs once.
 const STALL_TIMEOUTS = 3;
 
-export function createHookWorker({ pluginRoot, callTimeoutMs = 60000, stallTimeouts = STALL_TIMEOUTS, workerPath } = {}) {
+export function createHookWorker({ pluginRoot, callTimeoutMs = 60000, stallTimeouts = STALL_TIMEOUTS, workerPath, onBackgroundDone } = {}) {
   if (!pluginRoot) throw new Error('createHookWorker: pluginRoot is required');
   let worker = null;
   let nextId = 1;
@@ -47,7 +47,14 @@ export function createHookWorker({ pluginRoot, callTimeoutMs = 60000, stallTimeo
     spawned++;
     w.on('message', (msg) => {
       silentTimeouts = 0;
-      if (msg.bgDone !== undefined) { bgPending.delete(msg.bgDone); return; }
+      if (msg.bgDone !== undefined) {
+        const job = bgPending.get(msg.bgDone);
+        bgPending.delete(msg.bgDone);
+        if (job && onBackgroundDone && Number.isFinite(msg.ms)) {
+          try { onBackgroundDone(job.name, msg.ms, Date.now() - job.queuedAt, msg.ok !== false); } catch (err) { console.error(`[hook-worker] background stat: ${err.message}`); }
+        }
+        return;
+      }
       if (msg.expired) expired++;
       const p = pending.get(msg.id);
       if (!p) return;
@@ -114,7 +121,7 @@ export function createHookWorker({ pluginRoot, callTimeoutMs = 60000, stallTimeo
     if (closed) { console.error(`[hook-worker] shut down; dropped ${name}`); return; }
     try {
       const id = nextId++;
-      bgPending.set(id, { name, args, attempt });
+      bgPending.set(id, { name, args, attempt, queuedAt: Date.now() });
       ensure().postMessage({ id, name, args, background: true });
     } catch (err) {
       console.error(`[hook-worker] enqueue ${name} failed: ${err.message}`);

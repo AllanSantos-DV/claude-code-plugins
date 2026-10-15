@@ -77,7 +77,14 @@ export async function startHttpDaemon({ pluginRoot, dataDir, port, host = '127.0
   const kbWorker = createKbWorkerPool({ pluginRoot });
   // ONE heavy-lane hook worker for the whole daemon (G2): Stop + PostToolUse hooks
   // run there, off the thread that serves every session's HTTP and fast guards.
-  const hookWorker = createHookWorker({ pluginRoot });
+  // Background (fire-and-forget) hooks report how long they ran and how long they
+  // waited in the queue: nobody waits on them, but a slow one delays every later Stop.
+  const hookWorker = createHookWorker({
+    pluginRoot,
+    onBackgroundDone: (name, runMs, lagMs, ok) => {
+      createRequire(import.meta.url)(path.join(pluginRoot, 'scripts', 'lib', 'hook-tools.js')).recordBackgroundLatency(name, runMs, lagMs, ok);
+    },
+  });
   // C4c: per-hook latency (process-wide accumulator shared by every session's hookTools).
   // Read at /health time; an unloadable module must not stop the boot — reported, not hidden.
   const hookLatencyStats = () => {

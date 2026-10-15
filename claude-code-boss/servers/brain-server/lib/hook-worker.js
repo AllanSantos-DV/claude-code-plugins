@@ -66,18 +66,21 @@ async function pump() {
       parentPort.postMessage({ id, ok: false, expired: true, error: 'deadline passed while queued' });
       continue;
     }
+    const t0 = Date.now();
     try {
       let text = await runHookInline(pluginRoot, name, args);
       if (background) {
-        if (DEGRADED_RE.test(text)) noteDegraded(args, name);
-        parentPort.postMessage({ bgDone: id }); // the client re-queues un-acked jobs if we die
+        const ok = !DEGRADED_RE.test(text);
+        if (!ok) noteDegraded(args, name);
+        // ms = how long it ran; the client re-queues un-acked jobs if we die.
+        parentPort.postMessage({ bgDone: id, ms: Date.now() - t0, ok });
         continue;
       }
       if (name === 'hook_stop_dispatcher') text = withBackgroundDegradation(args, text);
       parentPort.postMessage({ id, ok: true, text });
     } catch (err) {
       const error = err && err.message ? err.message : String(err);
-      if (background) { console.error(`[hook-worker] ${name}: ${error}`); noteDegraded(args, name); parentPort.postMessage({ bgDone: id }); continue; }
+      if (background) { console.error(`[hook-worker] ${name}: ${error}`); noteDegraded(args, name); parentPort.postMessage({ bgDone: id, ms: Date.now() - t0, ok: false }); continue; }
       parentPort.postMessage({ id, ok: false, error });
     }
   }
