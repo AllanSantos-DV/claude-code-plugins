@@ -3321,6 +3321,35 @@ test('retrieval-feedback: so o que entrou no prompt conta (injectedIds), recall 
   assert(!/retrieve\.fired/.test(fs.readFileSync(path.join(__dirname, 'dashboard.js'), 'utf8')) && !/retrieve\.fired/.test(fs.readFileSync(path.join(__dirname, 'tuning-advisory.js'), 'utf8')), 'nenhum leitor de evento que ninguem grava');
 });
 
+test('P12 retrieval-feedback: no mcp-memory a citacao vai ao SERVIDOR (signal_memory_feedback helpful), sem criar banco local vazio por escopo', async () => {
+  const rf = require('./retrieval-feedback.js');
+  const backend = require('./brain-backend.js');
+  const store = require('./brain-store.js');
+  const journal = require('./lib/retrieval-journal.js');
+  const sid = 'p12-' + Date.now();
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-p12-'));
+  const tp = path.join(dir, 't.jsonl');
+  fs.writeFileSync(tp, JSON.stringify({ type: 'assistant', message: { role: 'assistant', content: [{ type: 'text', text: 'Following the database migration ordering lesson, I ran them in sequence.' }] } }) + '\n');
+  const orig = { peek: backend.peekMode, init: backend.init, sig: backend.signalHelpful, sinit: store.init, rc: store.recordCitation };
+  const calls = { signal: [], storeInit: 0 };
+  backend.peekMode = () => 'mcp-memory';
+  backend.init = async () => {};
+  backend.signalHelpful = async (id) => { calls.signal.push(id); return true; };
+  store.init = async () => { calls.storeInit++; };
+  store.recordCitation = () => { calls.storeInit++; };
+  try {
+    journal.appendEntry(sid, { retrievalId: 'r1', ts: Date.now(), sid, tool: 'UserPromptSubmit', project: 'own/p12', returnedIds: ['doc-1'], returnedTitles: ['database migration ordering'], injectedIds: ['doc-1'], injectedChars: 80 });
+    await rf.run({ hook_event_name: 'Stop', session_id: sid, transcript_path: tp, cwd: dir });
+    assertEq(calls.signal, ['doc-1'], 'cited doc signalled to the server');
+    assertEq(calls.storeInit, 0, 'no local store touched on mcp-memory');
+  } finally {
+    Object.assign(backend, { peekMode: orig.peek, init: orig.init, signalHelpful: orig.sig });
+    Object.assign(store, { init: orig.sinit, recordCitation: orig.rc });
+    journal.clearEntries(sid);
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 test('metrics-store: recordMetric rejects invalid event names', () => {
   delete require.cache[require.resolve('./lib/metrics-store.js')];
   const prevDataDir = process.env.CLAUDE_PLUGIN_DATA;

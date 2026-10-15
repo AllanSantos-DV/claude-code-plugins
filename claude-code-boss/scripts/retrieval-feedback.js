@@ -232,7 +232,16 @@ async function run(event) {
         if (!byScope.has(scope)) byScope.set(scope, []);
         byScope.get(scope).push(c.id);
       }
+      // On mcp-memory the entries live on the server: the citation goes there as a "helpful"
+      // feedback signal; store.init would only create an empty local db per scope.
+      const backend = require('./brain-backend.js');
+      const remote = backend.peekMode() === 'mcp-memory';
       for (const [scope, ids] of byScope) {
+        if (remote) {
+          await backend.init({ project: scope, skipEmbedder: true });
+          for (const id of ids) await backend.signalHelpful(id);
+          continue;
+        }
         await store.init({ project: scope });
         for (const id of ids) store.recordCitation(id);
       }
