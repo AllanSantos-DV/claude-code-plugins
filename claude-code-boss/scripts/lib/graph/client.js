@@ -189,17 +189,15 @@ async function search(base, ctx, { query, topK, hops, fetchImpl = globalThis.fet
   const { json } = await post(base, 'search', ctx, { query: String(query), topK: clampInt(topK, 8, 25), hops: clampInt(hops, 1, 2) }, { fetchImpl });
   return json; // {seed:[...], expanded:[...], truncated?}
 }
-async function callers(base, ctx, { id, limit, fetchImpl = globalThis.fetch } = {}) {
-  if (!id) throw new GraphError(0, 'BAD_FIELD', "graph_callers requires 'id'.");
-  // Cut 1: /callers accepts ONLY {id} (no pagination). Fetch the whole list and TRUNCATE client-side.
-  const { json } = await post(base, 'callers', ctx, { id: String(id) }, { fetchImpl });
-  return capList(json, 'callers', clampInt(limit, 50, 100));
+/** `kind` = 'callers' | 'references': same request and the same client-side cap. */
+async function edgeList(kind, base, ctx, { id, limit, fetchImpl = globalThis.fetch } = {}) {
+  if (!id) throw new GraphError(0, 'BAD_FIELD', `graph_${kind} requires 'id'.`);
+  // Cut 1: /callers and /references accept ONLY {id} (no pagination). Fetch the whole list and TRUNCATE client-side.
+  const { json } = await post(base, kind, ctx, { id: String(id) }, { fetchImpl });
+  return capList(json, kind, clampInt(limit, 50, 100));
 }
-async function references(base, ctx, { id, limit, fetchImpl = globalThis.fetch } = {}) {
-  if (!id) throw new GraphError(0, 'BAD_FIELD', "graph_references requires 'id'.");
-  const { json } = await post(base, 'references', ctx, { id: String(id) }, { fetchImpl });
-  return capList(json, 'references', clampInt(limit, 50, 100));
-}
+const callers = (base, ctx, opts) => edgeList('callers', base, ctx, opts);
+const references = (base, ctx, opts) => edgeList('references', base, ctx, opts);
 
 /**
  * Truncate CLIENT-side (Cut 1 server does not paginate callers/references): keep the top-N by
