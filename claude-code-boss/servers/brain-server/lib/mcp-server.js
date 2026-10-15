@@ -1251,12 +1251,10 @@ export function createBrainServer({ pluginRoot, mode = 'http', kbWorker, kbLock,
           const root = findProjectRoot(a.cwd);
           if (!root) return { isError: true, content: [{ type: 'text', text: `curation_prune_unused: no project root (shells config) found from ${a.cwd}` }] };
           const days = Math.max(1, Math.min(365, Number(a.days) || 30));
-          // Usage metrics are keyed by the SESSION root (lib/metrics.js), which differs from
-          // the shells.json root when that lives in a subfolder of the session's project.
-          const sessRoot = sessionRoots[0] || (mode !== 'http' ? process.env.CLAUDE_PROJECT_DIR : '');
-          const rel = sessRoot ? path.relative(path.resolve(sessRoot), path.resolve(root)) : '..';
-          const project = rel && (rel.startsWith('..') || path.isAbsolute(rel)) ? path.basename(path.resolve(root)) : path.basename(path.resolve(sessRoot));
-          const res = a.apply ? prune.pruneShells({ root, ids: a.ids, days, project }) : prune.pruneCandidates({ root, days, project });
+          // No `project`: shells-prune resolves the metrics key of `root` itself (the project id,
+          // where lib/metrics.js writes). A folder name read the frozen legacy db (history stops
+          // at the id adoption) and sessionRoots[0] is the daemon's FIRST session, not this one.
+          const res = a.apply ? prune.pruneShells({ root, ids: a.ids, days }) : prune.pruneCandidates({ root, days });
           if (!res.ok) return { isError: true, content: [{ type: 'text', text: `curation_prune_unused: ${res.error}` }] };
           return { content: [{ type: 'text', text: JSON.stringify({ root, ...res }, null, 2) }] };
         } catch (err) {
