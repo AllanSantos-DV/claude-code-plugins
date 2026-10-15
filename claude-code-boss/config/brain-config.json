@@ -59,13 +59,6 @@
       "minConfidence": 0.8,
       "types": ["lesson", "pattern"]
     },
-    "skillCapture": {
-      "descriptionMin": 40,
-      "descriptionMax": 280,
-      "useForMax": 400,
-      "doNotUseForMax": 400,
-      "_comment_skillCapture": "Limites do capture_lesson type:\"skill\" (validação mecânica em scripts/lib/skill-capture.js). descriptionMax=280 é o mesmo teto que brain-promote.js's legacy truncateDescription() já usava — skills sao always-loaded context, por isso o teto existe. Fora do range -> capture_lesson rejeita (isError), nada e truncado silenciosamente."
-    },
     "capture": {
       "maxBlockAttempts": 5,
       "turns": 3,

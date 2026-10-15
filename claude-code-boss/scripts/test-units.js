@@ -5941,56 +5941,23 @@ test('brain-config.getContextExcludeTypes: non-array → []', () => {
   });
 });
 
-test('brain-config.getSkillCapture: shipped defaults (40/280/400/400)', () => {
-  withUserConfig(undefined, () => {
-    assertEq(brainConfig.getSkillCapture(), { descriptionMin: 40, descriptionMax: 280, useForMax: 400, doNotUseForMax: 400 });
-  });
-});
 
-test('brain-config.getSkillCapture: user override tunes limits without touching siblings', () => {
-  withUserConfig({ kb: { skillCapture: { descriptionMax: 200 } } }, () => {
-    const s = brainConfig.getSkillCapture();
-    assertEq(s.descriptionMax, 200, 'override wins');
-    assertEq(s.descriptionMin, 40, 'untouched sibling keeps the shipped default');
-  });
-});
-
-// ─── skill-capture.validateSkillFields: pure mechanical validation (type:"skill") ──
-const skillCapture = require('./lib/skill-capture.js');
-
-test('skill-capture.validateSkillFields: accepts a well-formed skill (trims fields)', () => {
-  const r = skillCapture.validateSkillFields({
-    description: '  ' + 'x'.repeat(50) + '  ', useFor: '  applies here  ', doNotUseFor: '  does not apply there  ',
-  });
-  assert(r.ok, 'well-formed fields must be accepted');
-  assertEq(r.description, 'x'.repeat(50));
-  assertEq(r.useFor, 'applies here');
-  assertEq(r.doNotUseFor, 'does not apply there');
-});
-
-test('skill-capture.validateSkillFields: rejects missing/short/long description', () => {
-  assertEq(skillCapture.validateSkillFields({}).reason, 'description-missing');
-  assertEq(skillCapture.validateSkillFields({ description: 'short' }).reason, 'description-too-short');
-  assertEq(skillCapture.validateSkillFields({ description: 'x'.repeat(281) }).reason, 'description-too-long');
-});
-
-test('skill-capture.validateSkillFields: rejects missing/too-long useFor and doNotUseFor', () => {
-  const desc = 'x'.repeat(50);
-  assertEq(skillCapture.validateSkillFields({ description: desc }).reason, 'use-for-missing');
-  assertEq(skillCapture.validateSkillFields({ description: desc, useFor: 'x'.repeat(401) }).reason, 'use-for-too-long');
-  assertEq(skillCapture.validateSkillFields({ description: desc, useFor: 'ok' }).reason, 'do-not-use-for-missing');
-  assertEq(skillCapture.validateSkillFields({ description: desc, useFor: 'ok', doNotUseFor: 'x'.repeat(401) }).reason, 'do-not-use-for-too-long');
-});
-
-test('skill-capture.validateSkillFields: custom limits override the module defaults', () => {
-  const shortDesc = 'x'.repeat(10); // below the default min (40)
-  assertEq(skillCapture.validateSkillFields({ description: shortDesc }).reason, 'description-too-short',
-    'default limits (no override) reject a 10-char description');
-  const accepted = skillCapture.validateSkillFields(
-    { description: shortDesc, useFor: 'ok', doNotUseFor: 'ok' },
-    { descriptionMin: 5 },
-  );
-  assert(accepted.ok, 'a lowered descriptionMin (config override) accepts what the default would reject as too short');
+test('P9 brain-promote export: o rascunho sai da fila de revisao para a pasta pedida e o scan nunca mais o recria (antes o descarte voltava no proximo scan)', () => {
+  const data = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-p9-'));
+  const dest = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-p9-dest-'));
+  try {
+    const slug = 'some-recurring-lesson';
+    fs.mkdirSync(path.join(data, 'skills-pending', slug), { recursive: true });
+    fs.writeFileSync(path.join(data, 'skills-pending', slug, 'SKILL.md'), '---\ndescription: "x"\n---\n# Draft\n');
+    const r = require('child_process').spawnSync(process.execPath, [path.join(__dirname, 'brain-promote.js'), 'export', slug, dest], { encoding: 'utf8', windowsHide: true, env: { ...process.env, CLAUDE_PLUGIN_DATA: data } });
+    assertEq(r.status, 0, r.stderr);
+    assert(fs.existsSync(path.join(dest, slug, 'SKILL.md')), 'copied to the export folder');
+    assertEq(fs.existsSync(path.join(data, 'skills-pending', slug)), false, 'gone from the review queue');
+    assertEq(JSON.parse(fs.readFileSync(path.join(data, 'skills-pending', '.handled.json'), 'utf8')), [slug], 'recorded as handled');
+    const src = fs.readFileSync(path.join(__dirname, 'brain-promote.js'), 'utf8');
+    assert(/if \(handled\.has\(slug\)\) continue;/.test(src), 'scan skips handled slugs');
+    assert(/markHandled\(slug\)/.test(fs.readFileSync(path.join(__dirname, 'dashboard.js'), 'utf8')), 'the dashboard discard marks it too');
+  } finally { fs.rmSync(data, { recursive: true, force: true }); fs.rmSync(dest, { recursive: true, force: true }); }
 });
 
 test('brain-config user-override: deep-merge keeps shipped retrieval fields', () => {
@@ -21574,7 +21541,7 @@ test('mcp-memory backend: scope routes to __user__ like the local path (writes s
       const sec = await tool('capture_lesson', { title: 'L', summary: 'token ghp_abcdefghijklmnopqrstuvwxyz0123456789AB', scope: 'user', cwd });
       assert(sec.isError && /rejected/.test(sec.content[0].text) && saves.length === 2, `secret in user scope refused, nothing saved: ${sec.content[0].text}`);
       const sk = await tool('capture_lesson', { title: 'S', summary: 'S', type: 'skill', description: 'short', useFor: 'x', doNotUseFor: 'y', cwd });
-      assert(sk.isError && saves.length === 2, `skill out of range refused on the remote path too, nothing saved: ${sk.content[0].text}`);
+      assert(sk.isError && /no longer accepted/.test(sk.content[0].text) && saves.length === 2, `type skill refused on the remote path too, nothing saved: ${sk.content[0].text}`);
       for (const [scope, want] of [['user', ['__user__']], ['project', ['owner/scoped']], [undefined, ['owner/scoped', '__user__']]]) {
         await tool('brain_search', { query: 'q', scope, cwd });
         assertEq(searches[searches.length - 1].projectIds, want, `search scope ${scope}`);
@@ -21608,7 +21575,7 @@ test('KB gate (http daemon): the lock slot follows the cwd id, and the daemon\'s
   }
 });
 
-test('capture_lesson type:"skill": out-of-range description is rejected — isError, nothing saved', async () => {
+test('capture_lesson type:"skill" foi removido (0 capturas em 74 dias): recusado com isError, nada gravado', async () => {
   const url = require('url');
   const R = process.env.CLAUDE_PLUGIN_ROOT;
   const saved = [];
@@ -21625,60 +21592,10 @@ test('capture_lesson type:"skill": out-of-range description is rejected — isEr
     title: 'T', summary: 'S', detail: 'D', type: 'skill', scope: 'project', project: 'pSkillReject',
     description: 'too short', useFor: 'x', doNotUseFor: 'y',
   });
-  assert(res.isError, 'a description below the minimum must be rejected');
-  assert(/description/.test(res.content[0].text), 'the rejection message names the field');
-  assertEq(saved.length, 0, 'nothing is persisted on a mechanical rejection');
-});
-
-test('capture_lesson type:"skill": valid fields admit with content.skill populated (source of truth for Fase 2/3)', async () => {
-  const url = require('url');
-  const R = process.env.CLAUDE_PLUGIN_ROOT;
-  const saved = [];
-  const mod = await import(url.pathToFileURL(path.join(R, 'servers', 'brain-server', 'lib', 'mcp-server.js')).href);
-  const server = mod.createBrainServer({ pluginRoot: R, mode: 'stdio', _testHooks: {
-    getKB: async () => ({
-      store: { search: async () => [], merge: async () => null, save: async (e) => { saved.push(e); } },
-      index: { index: async () => {} },
-      graph: { registerNode: async () => {} },
-    }),
-    embedder: { init: async () => {}, getStatus: () => ({ ready: true }), embed: async () => [0.1, 0.2, 0.3] },
-  } });
-  const description = 'Use this when a lesson is already a clear, reusable, generalizable instruction.';
-  const res = await server.handleTool('capture_lesson', {
-    title: 'T', summary: 'S', detail: 'D', type: 'skill', scope: 'project', project: 'pSkillAdmit',
-    description, useFor: 'Concrete situations where this applies.', doNotUseFor: 'Situations where it does not apply.',
-  });
-  assert(!res.isError, 'valid fields must not be rejected');
-  assertEq(saved.length, 1, 'the entry is persisted');
-  assertEq(saved[0].content.skill, { description, useFor: 'Concrete situations where this applies.', doNotUseFor: 'Situations where it does not apply.' },
-    'content.skill carries the validated fields, untouched, for later phases to consume');
-});
-
-test('capture_lesson type:"skill": a dedup MERGE hit also carries content.skill (not dropped)', async () => {
-  const url = require('url');
-  const R = process.env.CLAUDE_PLUGIN_ROOT;
-  let mergePatch = null;
-  const mod = await import(url.pathToFileURL(path.join(R, 'servers', 'brain-server', 'lib', 'mcp-server.js')).href);
-  const server = mod.createBrainServer({ pluginRoot: R, mode: 'stdio', _testHooks: {
-    getKB: async () => ({
-      store: {
-        search: async () => [{ id: 'existing-id', title: 'Existing' }],
-        merge: async (id, patch) => { mergePatch = patch; return { recurrence: 2 }; },
-        save: async () => {},
-      },
-      index: { index: async () => {} },
-      graph: { registerNode: async () => {} },
-    }),
-    embedder: { init: async () => {}, getStatus: () => ({ ready: true }), embed: async () => [0.1, 0.2, 0.3] },
-  } });
-  const description = 'Use this when a lesson is already a clear, reusable, generalizable instruction.';
-  const res = await server.handleTool('capture_lesson', {
-    title: 'T', summary: 'S', detail: 'D', type: 'skill', scope: 'project', project: 'pSkillMerge',
-    description, useFor: 'Applies here.', doNotUseFor: 'Does not apply there.',
-  });
-  assert(!res.isError, 'valid fields on the merge path must not be rejected either');
-  assert(mergePatch && mergePatch.content && mergePatch.content.skill, 'the merge patch must NOT silently drop the skill fields');
-  assertEq(mergePatch.content.skill, { description, useFor: 'Applies here.', doNotUseFor: 'Does not apply there.' });
+  assert(res.isError && /no longer accepted/.test(res.content[0].text), res.content[0].text);
+  assertEq(saved.length, 0, 'nothing is persisted');
+  const src = fs.readFileSync(path.join(R, 'servers', 'brain-server', 'lib', 'mcp-server.js'), 'utf8');
+  assert(!/'skill'\]/.test(src) && !/ONLY for type:"skill"/.test(src), 'the tool schema no longer offers type skill');
 });
 
 test('capture_ack: a forged outcome:"captured" is neutralized to "none" (only capture_lesson can mark captured)', async () => {

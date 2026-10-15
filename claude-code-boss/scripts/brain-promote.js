@@ -29,6 +29,24 @@ const { dataDir } = require('./lib/data-dir.js');
 const DATA_DIR = dataDir();
 const STAGING_DIR = path.join(DATA_DIR, 'skills-pending');
 const GLOBAL_SKILLS_DIR = path.join(HOME, '.claude', 'skills');
+// Drafts the owner already dealt with (exported or discarded). The scan rewrote every
+// qualifying draft each run, so a discarded one came back on the next scan.
+const HANDLED_FILE = path.join(STAGING_DIR, '.handled.json');
+
+function readHandled() {
+  try { const a = JSON.parse(fs.readFileSync(HANDLED_FILE, 'utf8')); return new Set(Array.isArray(a) ? a : []); } catch (err) {
+    if (err.code !== 'ENOENT') console.error(`[brain-promote] ${HANDLED_FILE}: ${err.message}`);
+    return new Set();
+  }
+}
+
+/** Record `slug` as dealt with so the scan never re-drafts it. */
+function markHandled(slug) {
+  const s = readHandled();
+  s.add(slug);
+  fs.mkdirSync(STAGING_DIR, { recursive: true });
+  require('./lib/atomic-write.js').writeJsonAtomic(HANDLED_FILE, [...s]);
+}
 
 function arg(name, fallback) {
   const i = process.argv.indexOf(`--${name}`);
@@ -154,8 +172,10 @@ async function scan() {
 
   fs.mkdirSync(STAGING_DIR, { recursive: true });
   const drafted = [];
+  const handled = readHandled();
   for (const e of candidates) {
     const slug = slugify(e.title);
+    if (handled.has(slug)) continue;
     const dir = path.join(STAGING_DIR, slug);
     fs.mkdirSync(dir, { recursive: true });
     fs.writeFileSync(path.join(dir, 'SKILL.md'), draftSkillMd(e));
@@ -216,14 +236,29 @@ function approve(slug) {
   console.log(JSON.stringify({ ok: true, approved: slug, installedAt: dest }));
 }
 
-module.exports = { truncateDescription, draftSkillMd, slugify, loadPromotionCfg, scan };
+/** Move a draft out of the staging area into `destDir` (kept for reference) and stop re-drafting it. */
+function exportDraft(slug, destDir) {
+  if (!slug || !destDir) { console.error('export requires <slug> <destDir>'); process.exit(1); }
+  const src = path.join(STAGING_DIR, slug);
+  if (!fs.existsSync(path.join(src, 'SKILL.md'))) { console.error(`No staged draft for "${slug}".`); process.exit(1); }
+  const dest = path.join(path.resolve(destDir), slug);
+  if (fs.existsSync(dest)) { console.error(`${dest} already exists — refusing to overwrite.`); process.exit(1); }
+  fs.mkdirSync(path.dirname(dest), { recursive: true });
+  fs.cpSync(src, dest, { recursive: true });
+  markHandled(slug);
+  fs.rmSync(src, { recursive: true, force: true });
+  console.log(JSON.stringify({ ok: true, exported: slug, to: dest }));
+}
+
+module.exports = { truncateDescription, draftSkillMd, slugify, loadPromotionCfg, scan, markHandled, readHandled, HANDLED_FILE };
 
 const cmd = process.argv[2];
 if (require.main === module) (async () => {
   if (cmd === 'scan' || !cmd) await scan();
   else if (cmd === 'list') list();
   else if (cmd === 'approve') approve(process.argv[3]);
-  else { console.error(`Unknown command: ${cmd}. Use scan|list|approve.`); process.exit(1); }
+  else if (cmd === 'export') exportDraft(process.argv[3], process.argv[4]);
+  else { console.error(`Unknown command: ${cmd}. Use scan|list|approve|export.`); process.exit(1); }
 })().catch(err => {
   console.error(`[BRAIN-PROMOTE] ${err.message}`);
   process.stdout.write(JSON.stringify({ ok: false, error: err.message }));

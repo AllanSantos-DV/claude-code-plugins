@@ -1166,6 +1166,8 @@ function discardSkillDraft(req, res, url) {
   const dir = path.join(SKILL_STAGING_DIR, slug);
   if (!fs.existsSync(dir)) return fail(res, 'draft not found', 404);
   fs.rmSync(dir, { recursive: true, force: true });
+  // Without the mark the next promotion scan drafts it again.
+  require('./brain-promote.js').markHandled(slug);
   json(res, { ok: true, discarded: slug });
 }
 
