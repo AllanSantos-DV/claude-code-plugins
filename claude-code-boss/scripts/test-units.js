@@ -15706,6 +15706,25 @@ test('self-review-retrieve.retrieveViaDaemon: REAL daemon — sessions do not ac
   }
 });
 
+test('http-daemon: rejeicao sem tratamento NAO derruba o daemon de todas as sessoes; fica contada no /health e o handler sai no shutdown', async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-unhandled-'));
+  const { startHttpDaemon } = await import(require('url').pathToFileURL(path.join(ROOT, 'servers', 'brain-server', 'lib', 'http-daemon.js')).href);
+  const before = process.listenerCount('unhandledRejection');
+  const d = await startHttpDaemon({ pluginRoot: ROOT, dataDir: dir, port: 0 });
+  try {
+    assertEq(process.listenerCount('unhandledRejection'), before + 1, 'handler installed');
+    Promise.reject(new Error('stray-rejection-probe'));
+    await new Promise((r) => setTimeout(r, 50));
+    const port = d.httpServer.address().port;
+    const h = await new Promise((resolve, reject) => {
+      require('http').get({ host: '127.0.0.1', port, path: '/health' }, (res) => { let b = ''; res.on('data', (c) => { b += c; }); res.on('end', () => resolve(JSON.parse(b))); }).on('error', reject);
+    });
+    assertEq(h.unhandledRejections.count, 1);
+    assertEq(h.unhandledRejections.last.message, 'stray-rejection-probe');
+  } finally { await d.shutdown(); fs.rmSync(dir, { recursive: true, force: true }); }
+  assertEq(process.listenerCount('unhandledRejection'), before, 'handler removed on shutdown');
+});
+
 test('http-daemon: hook_* tools are NOT in tools/list (model never sees them) but stay callable by name for mcp_tool hooks', async () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-hidehooks-'));
   const { startHttpDaemon } = await import(require('url').pathToFileURL(path.join(ROOT, 'servers', 'brain-server', 'lib', 'http-daemon.js')).href);
