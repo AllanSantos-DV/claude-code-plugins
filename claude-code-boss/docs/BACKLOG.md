@@ -1,5 +1,19 @@
 # Backlog
 
+## Auto-update do marketplace sobrescreve o build local (pedido do orquestrador, 2026-10-15) — causa verificada, não é defeito do plugin
+
+- **Visto**: o build local c26e4f5 (3.9.0) foi instalado às 22:02 de 14/10 e o registro voltou à 3.8.0 às 22:32 (`installed_plugins.json`,
+  `lastUpdated` 01:32:34Z), sem o Allan instalar nada.
+- **Causa verificada**: `known_marketplaces.json` tinha `allansantos-plugins.autoUpdate: true`. Na abertura de uma sessão, o Claude Code atualizou o
+  marketplace (`lastUpdated` 01:32:28Z) e, seis segundos depois, trocou o plugin instalado pela versão publicada na `main` (3.8.0; a pasta
+  `cache/.../3.8.0` é de 22:47 e a `c26e4f5ee93f-mv8u4osp`, de 22:32:34, é a cópia da troca). O `install-local.mjs` só grava o registro; não
+  toca em `autoUpdate`. É comportamento do Claude Code (atualiza quando a versão difere), não do código do plugin: nada a corrigir no repo.
+- **Contorno aplicado (fora do repo, reversível)**: `autoUpdate: false` em `~/.claude/plugins/known_marketplaces.json` para `allansantos-plugins`
+  (cópia em `known_marketplaces.json.bak.preautoupdate-off`) e reinstalação do HEAD da develop (94ea8fc, `3.9.0-dev.94ea8fc77bf4`).
+- **Falta (depois que o Allan validar)**: devolver `autoUpdate: true`. Se ele esquecer, o marketplace deixa de se atualizar sozinho.
+- **Melhoria proposta (fora do escopo, não feita)**: o `install-local.mjs` poderia avisar quando o marketplace tem `autoUpdate: true`, já que a
+  instalação local dura só até a próxima abertura de sessão.
+
 ## Auditoria de custo fixo no Doctor (pedido do orquestrador, 2026-10-14) — implementada, aguardando a validação do Allan
 
 O que cada mensagem paga antes de o usuário escrever: prompt de sistema, definições de ferramentas (MCP), lista de skills,
