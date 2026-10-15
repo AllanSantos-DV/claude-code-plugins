@@ -2015,7 +2015,18 @@ export function createBrainServer({ pluginRoot, mode = 'http', kbWorker, kbLock,
   // the model's to call: listing them cost context in every session and invited misuse.
   // Verified in real Claude Code 2.1.283 (2026-10-02): with them unlisted, PostToolUse
   // side effects ran and a blocking PreToolUse guard (error-guard) still denied.
-  server.setRequestHandler(ListToolsRequestSchema, async () => ({ tools: TOOLS.filter((t) => !t.name.startsWith('hook_')).map((t) => ({ ...t, annotations: toolHints(t.name) })) }));
+  // The glob/shadow policy tooling (shadow report, adjudication, self-update) only means
+  // something once a glob or shadow policy exists; the registry measured had only
+  // always-apply policies. Unlisted until then (still callable by name, like hook_*).
+  const CONDITIONAL_POLICY_TOOLS = new Set(['policy_shadow_report', 'policy_adjudication_prepare', 'policy_adjudication_record', 'policy_adjudication_report', 'policy_adjudication_purge', 'policy_trigger_evidence_purge', 'policy_self_update_report', 'policy_apply_candidate']);
+  const listed = (t) => {
+    if (t.name.startsWith('hook_')) return false;
+    if (!CONDITIONAL_POLICY_TOOLS.has(t.name)) return true;
+    try {
+      return require(path.join(PLUGIN_ROOT, 'scripts', 'lib', 'policy-store.js')).hasConditionalPolicies(require(path.join(PLUGIN_ROOT, 'scripts', 'lib', 'data-dir.js')).dataDir());
+    } catch (err) { console.error(`[brain-server] policy registry unreadable (${err.message}) — listing the policy tools`); return true; }
+  };
+  server.setRequestHandler(ListToolsRequestSchema, async () => ({ tools: TOOLS.filter(listed).map((t) => ({ ...t, annotations: toolHints(t.name) })) }));
   server.setRequestHandler(CallToolRequestSchema, async (request) => {
     const { name, arguments: args } = request.params;
     return KB_TOOLS.has(name) ? dispatchKbTool(name, args, () => handleTool(name, args)) : handleTool(name, args);
