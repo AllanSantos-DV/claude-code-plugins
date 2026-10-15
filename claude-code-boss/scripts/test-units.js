@@ -7016,6 +7016,40 @@ test('oneoff-store: load drops orphaned assignment-only keys', () => {
   assert(!('NODE_ENV=test' in store.entries), 'bare assignment key must be dropped');
   assert('npm test' in store.entries, 'real signature must survive');
 });
+test('oneoff-store: load reaproveita o store ja lido enquanto o arquivo nao muda (re-assinar ~3k chaves custava ~39 ms por Bash) e rele quando outro processo grava', () => {
+  const dataDir = freshDataDir();
+  const f = path.join(dataDir, 'curation-oneoff', 'proj.json');
+  fs.mkdirSync(path.dirname(f), { recursive: true });
+  fs.writeFileSync(f, JSON.stringify({ entries: { 'npm test': { sig: 'npm test', seen: [1], sessions: [] } } }));
+  const a = oneoff.load(dataDir, 'proj');
+  assert(oneoff.load(dataDir, 'proj') === a, 'same file stamp: no re-parse');
+  oneoff.touch(dataDir, 'proj', 'npm test', { sessionId: 's', create: false });
+  assert(oneoff.load(dataDir, 'proj') === a, 'our own save keeps the cached store current');
+  assertEq(JSON.parse(fs.readFileSync(f, 'utf8')).entries['npm test'].seen.length, 2, 'and the file has the write');
+  fs.writeFileSync(f, JSON.stringify({ entries: { 'npm run build': { sig: 'npm run build', seen: [1, 2, 3] } } }));
+  const b = oneoff.load(dataDir, 'proj');
+  assert(b !== a && 'npm run build' in b.entries && !('npm test' in b.entries), 'external write → fresh read');
+});
+
+test('curation-detect: saida volumosa de EXPLORACAO nao cria entrada no store de one-off (nunca vira script; so inchava o store)', async () => {
+  const detect = require('./curation-detect.js');
+  const journal = require('./lib/turn-journal.js');
+  const proj = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-oo-explore-'));
+  fs.writeFileSync(path.join(proj, 'package.json'), '{}');
+  const sid = 'oo-explore-' + Date.now();
+  const noisy = Array.from({ length: 300 }, (_, i) => `line ${i}`).join('\n');
+  const ev = (command) => ({ hook_event_name: 'PostToolUse', tool_name: 'Bash', tool_input: { command }, tool_response: { stdout: noisy, stderr: '' }, session_id: sid, cwd: proj });
+  const dd = require('./lib/data-dir.js').dataDir();
+  const pk = oneoff.resolveProjectKey(proj);
+  try {
+    await detect.run(ev('git log --stat'));
+    const store = oneoff.load(dd, pk);
+    assertEq(Object.keys(store.entries).filter((k) => k.startsWith('git log')), [], 'exploration: no entry');
+    await detect.run(ev('npm run rawcheck2'));
+    assert(Object.keys(oneoff.load(dd, pk).entries).some((k) => k.startsWith('npm run')), 'a task still gets its entry (its 2nd noisy run asks for a script)');
+  } finally { journal.clearEntries(sid); fs.rmSync(proj, { recursive: true, force: true }); }
+});
+
 test('oneoff-store: touch creates + counts masked recurrence (D1)', () => {
   const dd = freshDataDir(); const pk = 'p'; const t0 = 1_700_000_000_000;
   let r = oneoff.touch(dd, pk, 'git log', { sessionId: 's1', now: t0, create: true });
