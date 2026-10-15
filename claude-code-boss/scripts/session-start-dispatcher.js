@@ -91,6 +91,15 @@ const DETECTORS = [
   { name: 'policy-inject', mod: policyInject, timeoutMs: 10000 },
 ];
 
+// SessionStart also fires after every compaction (source 'compact' — more often than real
+// starts: 82 vs 62 in 3 days, p50 2 s each, blocking the session). There only what the
+// compacted context may have lost is re-sent, plus the daemon check; maintenance, digests,
+// the doctor and update checks already ran at the start of this session.
+const COMPACT_DETECTORS = new Set([
+  'brain-daemon-ensure', 'curation-session', 'review-checklist-advisory',
+  'project-identity-advisory', 'powershell-advisory', 'policy-inject',
+]);
+
 /**
  * Race a detector's `run(event)` against its own ceiling. Resolves to a
  * tagged outcome (never rejects) so the caller can log an accurate message
@@ -112,7 +121,8 @@ const DETECTORS = [
  * @returns {Promise<string|null>}
  */
 async function dispatch(event, opts = {}) {
-  const list = Array.isArray(opts.detectors) ? opts.detectors : DETECTORS;
+  const all = Array.isArray(opts.detectors) ? opts.detectors : DETECTORS;
+  const list = event && event.source === 'compact' ? all.filter((d) => COMPACT_DETECTORS.has(d.name)) : all;
   const results = await Promise.all(list.map(async ({ name, mod, timeoutMs }) => {
     const outcome = await withTimeout(Promise.resolve().then(() => mod.run(event)), timeoutMs || 5000);
     if (outcome.status === 'timeout') {
@@ -153,4 +163,4 @@ if (require.main === module) {
   });
 }
 
-module.exports = { dispatch, DETECTORS, SEP, withTimeout };
+module.exports = { dispatch, DETECTORS, COMPACT_DETECTORS, SEP, withTimeout };

@@ -17989,6 +17989,24 @@ test('stop-dispatcher.withNotices: notice-only Stop → {systemMessage}, never d
   assertEq(dispatcher.withNotices(dispatcher.mergeBlocks(r.blocks), r.notices), { systemMessage: 'N' });
 });
 
+test('stop-dispatcher.dispatch: detector pendurado e cortado no prazo por detector (registra timeout) e os seguintes rodam', async () => {
+  const errors = [];
+  const t0 = Date.now();
+  const r = await dispatcher.dispatch({}, {
+    profile: 'dev', shadowRate: 0, detectorTimeoutMs: 50,
+    onError: (name, msg) => errors.push({ name, msg }),
+    detectors: [
+      { name: 'retrieval-feedback', mod: { run: () => new Promise(() => {}) } },
+      { name: 'session-summary', mod: { run: () => ({ notice: 'still ran' }) } },
+    ],
+  });
+  assert(Date.now() - t0 < 2000, 'the hung detector did not hold the Stop');
+  assertEq(r.notices, ['still ran']);
+  const hung = r.detectors.find((d) => d.name === 'retrieval-feedback');
+  assertEq(hung.reason, 'timeout');
+  assert(errors.length === 1 && /timed out after 50ms/.test(errors[0].msg), JSON.stringify(errors));
+});
+
 test('stop-dispatcher.mergeBlocks: no blocks → {}', () => {
   assertEq(dispatcher.mergeBlocks([]), {});
   assertEq(dispatcher.mergeBlocks(null), {});
@@ -18255,6 +18273,19 @@ test('session-start-dispatcher.DETECTORS: 17 detectors, correct order + shape (m
   const sessionCommands = hooks.hooks.SessionStart.flatMap(group => group.hooks || []).map(h => (h.args || []).join(' '));
   assertEq(sessionCommands.filter(cmd => /mcp-memory-auto-update/.test(cmd)).length, 0,
     'auto-update deve permanecer dentro do dispatcher, nunca como hook separado');
+});
+
+test('session-start-dispatcher.dispatch: no SessionStart de COMPACT roda so o que o contexto compactado pode ter perdido + o daemon (era 1,0 s com todos os 18)', async () => {
+  const d = require('./session-start-dispatcher.js');
+  const ran = [];
+  const fakes = d.DETECTORS.map(({ name }) => ({ name, mod: { run: () => { ran.push(name); return null; } }, timeoutMs: 1000 }));
+  await d.dispatch({ hook_event_name: 'SessionStart', source: 'compact' }, { detectors: fakes });
+  assertEq(ran.sort(), [...d.COMPACT_DETECTORS].sort());
+  assert(ran.includes('policy-inject') && ran.includes('brain-daemon-ensure'), 'policies are re-injected and the daemon checked');
+  assert(!ran.includes('doctor-first-run') && !ran.includes('memory-rotate') && !ran.includes('marketplace-autoupdate'), 'maintenance does not rerun on compact');
+  ran.length = 0;
+  await d.dispatch({ hook_event_name: 'SessionStart', source: 'startup' }, { detectors: fakes });
+  assertEq(ran.length, d.DETECTORS.length, 'a real start runs every detector');
 });
 
 test('session-start-dispatcher.dispatch: side-effect-only detectors (non-string return) are excluded from the merged text', async () => {
