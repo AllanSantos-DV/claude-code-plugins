@@ -149,10 +149,13 @@ async function run(event) {
 
     // One-hit / recurrence accounting (cross-session, per-project). Count every
     // invocation that matches a known signature (D1); create a fresh entry only
-    // for volume-heavy commands (those that would be curated).
+    // for volume-heavy commands that could become a script: exploration and inline
+    // code are never curated (C3 below), and their entries only bloated the store
+    // (6.893 skipped events had each minted an entry nothing would ever read).
+    const cls = reason === 'needs-curation' ? classifyCommand(command) : null;
     const projectKey = oneoff.resolveProjectKey(cwd);
     const seen = oneoff.touch(DATA_DIR, projectKey, command, {
-      sessionId, windowDays: _curationCfg.oneHitWindowDays, create: !!reason,
+      sessionId, windowDays: _curationCfg.oneHitWindowDays, create: !!reason && (cls === null || cls === 'task'),
     });
 
     // C4: a curated script actually RAN (its path is a token — a raw alias match is not a
@@ -208,7 +211,6 @@ async function run(event) {
     // again (18 of 41 in the field). A task's FIRST noisy occurrence stays pending; the
     // second one asks for the script. A noisy CURATED script still asks (tune it).
     if (reason === 'needs-curation') {
-      const cls = classifyCommand(command);
       if (cls !== 'task') {
         metrics.fire('curation.skipped', { class: cls, chars: charCount, lines: lineCount }, { sessionId, cwd });
         return;
