@@ -771,7 +771,7 @@ function formatAudit(a) {
 }
 
 module.exports = {
-  estTokens, PRICING, SKILL_LISTING_CHARS, sanitize, DAY,
+  estTokens, parseRpcBody, PRICING, SKILL_LISTING_CHARS, sanitize, DAY,
   installedPluginRoots, listMcpServers, oauthNames, scanUsage, backendKey, toolNamesByServer, probeHttpTools, expandEnv,
   auditBossConfig, parseFrontmatter, listSkills, listInstructionFiles, readUsageCounters, listPlugins, buildAudit, runAudit,
   undoPath, resolveClaudeBin, applyActions, undoActions, listJournal, formatAudit,
