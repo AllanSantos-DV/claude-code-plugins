@@ -1,5 +1,46 @@
 # Backlog
 
+## Check-up do motor (2026-10-15, branch `fix/checkup-engine`) — achados corrigidos na hora e o que ficou
+
+Relatórios: `docs/research/checkup/` (local). Tudo abaixo marcado [x] tem teste e foi commitado na branch; aguarda a validação do Allan
+(build instalado na máquina dele). Números antes/depois nos commits e em `docs/research/checkup/exec-*.txt`.
+
+- [x] P1 fila de captura: oferta relentada fecha, sessão para de oferecer, ciclos adotados por outra sessão do projeto (2.103 ciclos parados).
+- [x] P2 decision-promote no gate de perfil; gatilho mantido (replay de 30 dias: toda regra mais restrita cortava capturas na mesma proporção).
+- [x] P3 os 8 detectores nunca executados no standard têm teste → ficam dev-only, com fumaça.
+- [x] P4 recall: cancelamento real no prazo, disjuntor por braço, métrica por braço, pool-warming opt-in.
+- [x] P5 perfil free desliga os guards; P6 SessionStart de compact enxuto (1,0 → 0,26 s); P7 retenção diária do ruído (14 d).
+- [x] P8 66 versões órfãs do cache apagadas (34,28 GB); P9 rascunhos exportados, tipo `skill` removido; P10 tools glob/shadow ocultas sem política.
+- [x] P11 modo per-turn removido (o caminho de classificação fica: sticky e byok-direct usam); P12 citação → `signal_memory_feedback` no mcp-memory.
+- [x] Fila do handoff: self-review por id, telemetria Skill, daemon-ensure, doctor (3), unhandledRejection, updater (3), router-ensure (selo),
+  metrics-store LRU, one-off store, inline-scripts, hooks em segundo plano medidos + orçamento absoluto, prazo por detector no Stop,
+  shells-prune, router.log, eventos (curation.stop.*, capture.acked/adopted, origem do lesson.captured), código morto e duplicações, motor (passo 1).
+- [x] Lixo de testes na pasta real de dados (`kbw-probe-*` ×8, `smoke-project-a/b`, `__kb-worker-smoke-test*__`, todos de 2026-09-21..23) apagado.
+- [x] Achado na hora: `test-hooks` file-edit-detect afirmava o journal sempre gravado (mudou em 9c26ce2); `stop-dispatcher` testes de sombra/gate atualizados.
+- [ ] **P13 (proposta, não implementar sem o Allan):** expor `mechanicalCut`, `briefTailTokens` e `folderTtl` na Home do painel.
+- [ ] **Smoke `smoke-decision` desatualizado** (4 de 8 asserções falham já antes da mudança; movido para `smoke/plugin-smokes/`). Visto ao
+  rodá-lo depois de mover. Proposta: o smoke passa `session_id` (o decision-promote só mostra a entrada da própria sessão desde a 3.x).
+- [ ] **Rascunhos de skill com descrição de OUTRA lição**: `draftSkillMd` usa o `summary` da entrada, que o merge de dedup sobrescreve com o
+  da lição absorvida (visto nos 4 rascunhos exportados: título de uma, descrição de outra). Proposta: guardar o summary original no merge ou
+  derivar a descrição do título + detalhe.
+- [ ] **Filas de captura com id de projeto legado** (`github_com_allansantos-dv_claude-code-plugins`, 327 ciclos) não são adotadas por sessões
+  com o id novo (`AllanSantos-DV/claude-code-plugins`). Proposta: mapa de aliases de id no `adoptOrphans`.
+- [ ] **Painel**: eventos sem leitor — `curation.stop.*`, funil `capture.*`, `shell-escape.*`, `stop.detector.error` (curadoria-12/13, reuso-13).
+  Proposta: card de funil e de guards (é UI nova → perguntar).
+- [ ] **decision-promote ainda bloqueia ~28 % dos Stops** (custo de turno extra). Proposta: juntar com a oferta do capture-dispatch num único
+  bloqueio por Stop (muda o fluxo → perguntar).
+- [ ] **Latência do compose no servidor** (`tool:compose_recall` p50 ~8 s no `memory_metrics`): causa raiz no servidor de memória (native-java).
+- [ ] **compactacao-router-07/13/14**: `compaction.run` sem `mechanical/mechanicalCut/warm`; `cache.turn` perde chamadas além de 512 KB sem
+  contar; preço por família de modelo (12 de 5.619 sem preço).
+- [ ] **Hooks**: SessionStart de `resume` ainda roda os 18 detectores (só `compact` foi enxugado, P6); Workers sem `resourceLimits` (plataforma-09).
+- [ ] **Duplicação restante**: leitores de transcript (`retrieval-feedback` × `transcript-turns`, reuso-08); `readJson` com contratos
+  próprios em `dashboard.js`, `dashboard-start.js`, `marketplace-autoupdate.js`; normalização de caminho/hash espalhada (reuso-09).
+- [ ] **Motor, próximos passos**: mover o núcleo para `engine/`, `dataDir`/`projectRoot` por parâmetro função a função (hoje: seam
+  `setDataDir`), tirar `hook-context` de `project-id`/`metrics` (já aceitam `env` por parâmetro).
+- [ ] **Retenção do one-off store** (6,2 MiB, 2.755 entradas vistas 1 vez): teto por projeto + poda das vistas uma vez (muda a contagem de
+  recorrência → perguntar).
+- [ ] **Medir depois de instalar**: precisão do recall (era 17,6 % com a chave errada), recall-health por braço, SessionStart real.
+
 ## Vitrine em três camadas: changelog fora da apresentação (pedido do Allan via orquestrador, 2026-10-15) — achado e corrigido na hora, aguardando a validação do Allan
 
 - [x] **Achado**: `pages/claude-code-boss/index.html` tinha 13 parágrafos de versão ("Também na 3.1.0", "Na 3.1.1", … "Novo na 3.9.0") empilhados na seção de compactação, nos dois temas
