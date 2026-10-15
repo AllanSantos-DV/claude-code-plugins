@@ -3625,6 +3625,8 @@ async function createServer(config, mode, routerToken) {
         return;
       }
 
+      // MODO 'byok-direct': o endpoint BYOK atende tudo; o tier pode vir do classify BYOK
+      // (opt-in byok.classifyRemote) com o teto, por request. Sem classificação → modelo do usuário.
       const originalModel = body.model || 'unknown';
       const origTier = modelTier(originalModel);
       const prompt = extractPrompt(body);
@@ -3752,11 +3754,10 @@ async function main() {
   }
   logger.info('Modo do proxy resolvido', { mode, envHint: process.env.BOSS_ROUTER_MODE || undefined });
 
-  // DEPRECAÇÃO: o per-turn routing reescreve o modelo a CADA request → flipa o modelo
-  // turno-a-turno → QUEBRA o prompt cache (cache é POR MODELO). Continua funcionando,
-  // mas avisamos p/ migrar ao sticky-tier (cache-safe: fixa o modelo por sessão).
-  if (mode === 'routing') {
-    logger.warn('Per-turn routing (enabled) é DEPRECADO: rotear por-request quebra o prompt cache da Anthropic. Prefira o roteador cache-safe {sticky:{enabled:true}} (/dashboard → Sticky Router).');
+  // O per-turn routing (config `enabled`) foi removido: reescrever o modelo a cada request
+  // quebrava o prompt cache. Uma config antiga que ainda o liga é dita, não ignorada em silêncio.
+  if (config.enabled === true) {
+    logger.warn('config enabled:true (per-turn routing) foi REMOVIDO e é ignorado. Use o roteador cache-safe {sticky:{enabled:true}} (/dashboard → Sticky Router).');
   }
 
   // O classificador local (MiniLM) é DESACOPLADO do boot: ele carrega DEPOIS que o
@@ -3816,7 +3817,7 @@ async function main() {
     // classificam; em 'fallback-only' é passthrough puro. Se o embedder falhar
     // (sharp/onnx ausente), o .catch isola: classifyLocal devolve null → passthrough e
     // o routing/os overrides seguem funcionando — o boot não trava mais no embedder.
-    if (mode === 'routing' || mode === 'sticky-tier') {
+    if (mode === 'sticky-tier') {
       initClassifier(config).catch((e) =>
         logger.warn('Classificador local não inicializado — NIM ou passthrough (routing segue vivo)', { err: e && e.message }));
     } else {
