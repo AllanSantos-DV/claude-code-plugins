@@ -21,6 +21,7 @@ const { sanitizeSessionId } = require('./session-id.js');
 const { dataDir } = require('./data-dir.js');
 const { packCycles } = require('./transcript-block.js');
 const { readLastTurns } = require('./transcript-turns.js');
+const { writeFileAtomic } = require('./atomic-write.js');
 
 const SEEN_CAP = 5000;
 
@@ -60,10 +61,7 @@ function _save(project, sid, state, expectRev) {
       const current = _load(project, sid).rev;
       if (current !== expectRev) return false; // stale — caller retries
     }
-    const f = _file(project, sid);
-    const tmp = `${f}.tmp-${process.pid}-${crypto.randomBytes(4).toString('hex')}`;
-    fs.writeFileSync(tmp, JSON.stringify(state));
-    fs.renameSync(tmp, f);
+    writeFileAtomic(_file(project, sid), JSON.stringify(state));
     return true;
   } catch (err) {
     console.error(`[capture-queue] save failed: ${err.message}`);
@@ -147,10 +145,7 @@ function recordAck(windowId, outcome) {
   try {
     const dir = _runtimeDir();
     if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
-    const f = _ackFile(windowId);
-    const tmp = `${f}.tmp-${process.pid}-${crypto.randomBytes(4).toString('hex')}`;
-    fs.writeFileSync(tmp, JSON.stringify({ outcome: outcome || 'captured', ts: Date.now() }));
-    fs.renameSync(tmp, f);
+    writeFileAtomic(_ackFile(windowId), JSON.stringify({ outcome: outcome || 'captured', ts: Date.now() }));
     return true;
   } catch (err) {
     console.error(`[capture-queue] recordAck failed: ${err.message}`);

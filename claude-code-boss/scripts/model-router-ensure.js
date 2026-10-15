@@ -35,7 +35,7 @@ const os     = require('os');
 const { spawn, execSync, execFileSync } = require('child_process');
 const shim   = require('./model-router-shim.js');
 const { resolveMode } = require('./lib/router-mode.js');
-const { writeJsonAtomic } = require('./lib/atomic-write.js');
+const { writeJsonAtomic, writeFileAtomic } = require('./lib/atomic-write.js');
 const { dataDir, globalDir } = require('./lib/data-dir.js');
 const costTuning = require('./lib/cost-tuning.js');
 const { routerUserConfigPath, backfillRouterUserConfig } = require('./lib/router-config-path.js');
@@ -552,10 +552,10 @@ function readSettings() {
   }
 }
 
+// Unique temp + retried rename (lib/atomic-write.js): the old fixed .tmp-router temp name was shared
+// by every ensure starting at once (one per opening session) and could publish another's half.
 function writeSettings(obj) {
-  const tmp = SETTINGS_FILE + '.tmp-router';
-  fs.writeFileSync(tmp, JSON.stringify(obj, null, 2) + '\n');
-  fs.renameSync(tmp, SETTINGS_FILE);
+  writeFileAtomic(SETTINGS_FILE, JSON.stringify(obj, null, 2) + '\n');
 }
 
 /**
@@ -742,10 +742,7 @@ function clearLegacyUrlFile() {
 // (temp + rename). Chamado só quando o roteador respondeu /health.
 function writeProxyUrlFile(url) {
   try {
-    fs.mkdirSync(path.dirname(PROXY_URL_FILE), { recursive: true });
-    const tmp = PROXY_URL_FILE + '.tmp-router';
-    fs.writeFileSync(tmp, url);
-    fs.renameSync(tmp, PROXY_URL_FILE);
+    writeFileAtomic(PROXY_URL_FILE, url);
   } catch (e) {
     log(`AVISO: não foi possível escrever ${PROXY_URL_FILE}: ${e.message}`);
   }

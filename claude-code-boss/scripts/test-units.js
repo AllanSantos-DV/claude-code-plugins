@@ -20157,6 +20157,16 @@ test('data-dir: migrated consumers import the shared resolver', () => {
   }
 });
 
+test('atomic-write (reuso-07): as copias de temp+rename sem retry ou com nome FIXO usam atomic-write.js', () => {
+  const files = ['lib/data-dir.js', 'lib/embedder-guard.js', 'lib/crash-evidence.js', 'lib/capture-queue.js', 'model-router-ensure.js'];
+  for (const rel of files) {
+    const src = fs.readFileSync(path.join(SCRIPTS, rel), 'utf8');
+    assert(/atomic-write\.js/.test(src), `${rel} uses atomic-write.js`);
+    assert(!/\.tmp-router'|\`\$\{file\}\.tmp\`|\.\$\{process\.pid\}\.tmp\`|_TRANSIENT_RENAME/.test(src), `${rel}: no private temp+rename left`);
+    assert(!/renameSync\(tmp,/.test(src), `${rel}: no hand-rolled rename`);
+  }
+});
+
 test('atomic-write: broadened shared-snapshot writers route through atomic-write.js', () => {
   // Gate finding (scope): the same torn-write class covered more than the first 8
   // stores. These hook-writable shared-snapshot writers were migrated too.

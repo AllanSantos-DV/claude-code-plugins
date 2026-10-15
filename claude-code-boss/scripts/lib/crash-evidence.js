@@ -188,10 +188,7 @@ function readRecords(dataDir) {
 }
 
 function writeRecords(dataDir, records) {
-  const file = crashLogFile(dataDir);
-  const tmp = `${file}.${process.pid}.tmp`;
-  fs.writeFileSync(tmp, records.slice(-MAX_RECORDS).map((r) => JSON.stringify(r)).join('\n') + '\n');
-  fs.renameSync(tmp, file);
+  require('./atomic-write.js').writeFileAtomic(crashLogFile(dataDir), records.slice(-MAX_RECORDS).map((r) => JSON.stringify(r)).join('\n') + '\n');
 }
 
 function stderrTail(dataDir) {
