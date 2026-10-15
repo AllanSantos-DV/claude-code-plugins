@@ -412,6 +412,25 @@ function saveCompaction(patch) {
   return getCompaction();
 }
 
+/**
+ * Add a name to `fixedCost.keep` (update-safe user-config.json): what the user gave back through the dashboard's undo is
+ * never turned off by the doctor again. Idempotent. Returns the effective fixed-cost config.
+ * @param {string} name server / skill / plugin name (or plugin id)
+ */
+function addFixedCostKeep(name) {
+  if (typeof name !== 'string' || !name.trim()) throw new Error('addFixedCostKeep: a name is required');
+  const file = userConfigPath();
+  const current = readUserConfigForWrite(file);
+  const fc = isPlainObject(current.fixedCost) ? current.fixedCost : {};
+  const keep = Array.isArray(fc.keep) ? fc.keep.filter((x) => typeof x === 'string') : [];
+  if (!keep.includes(name)) keep.push(name);
+  current.fixedCost = { ...fc, keep };
+  fs.mkdirSync(path.dirname(file), { recursive: true });
+  writeFileAtomic(file, `${JSON.stringify(current, null, 2)}\n`);
+  _resetCache();
+  return getFixedCost();
+}
+
 /** Valid profile names (the presets we ship). */
 function profileNames() {
   return Object.keys(PROFILE_PRESETS);
@@ -571,6 +590,7 @@ module.exports = {
   getCompaction,
   getCostTuning,
   getFixedCost,
+  addFixedCostKeep,
   saveCompaction,
   saveOverrides,
   isHookDisabled,

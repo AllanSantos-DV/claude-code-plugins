@@ -627,7 +627,7 @@ function applyActions(actions, { home = os.homedir(), env = process.env, run = h
   const results = [];
   for (const a of actions) {
     if (only && !only.includes(a.kind)) continue;
-    const entry = { id: `${Date.now().toString(36)}-${results.length}`, at: new Date().toISOString(), kind: a.kind, target: a.target };
+    const entry = { id: `${Date.now().toString(36)}-${results.length}`, at: new Date().toISOString(), kind: a.kind, target: a.target, why: a.why || null, tokens: a.tokens || 0 };
     try {
       if (a.kind === 'mcp-remove') {
         Object.assign(entry, { scope: a.scope, config: a.config });
@@ -660,15 +660,28 @@ function applyActions(actions, { home = os.homedir(), env = process.env, run = h
   return results;
 }
 
-/** Put back what `applyActions` changed (all of it, newest first); an entry that cannot be restored stays in the journal. */
-function undoActions({ home = os.homedir(), env = process.env, run = hiddenSpawnSync } = {}) {
+/**
+ * What the journal holds, for the dashboard: one row per change, WITHOUT the removed server's config (headers/env can hold secrets).
+ * @returns {Array<{id:string,at:string,kind:string,target:string,scope:(string|undefined),why:(string|null),tokens:number}>}
+ */
+function listJournal({ home = os.homedir() } = {}) {
+  return readUndo(undoPath(home)).map((e) => ({ id: e.id, at: e.at, kind: e.kind, target: e.target, scope: e.scope, why: e.why || null, tokens: e.tokens || 0 }));
+}
+
+/**
+ * Put back what `applyActions` changed (all of it, newest first), or only the entries with the given ids; an entry that
+ * cannot be restored stays in the journal, and so does every entry not asked for.
+ */
+function undoActions({ home = os.homedir(), env = process.env, run = hiddenSpawnSync, ids = null } = {}) {
   const jf = undoPath(home);
   const settingsFile = path.join(home, '.claude', 'settings.json');
   const claudeEnv = { ...env, CLAUDE_CONFIG_DIR: env.CLAUDE_CONFIG_DIR || path.join(home, '.claude') };
   const journal = readUndo(jf);
   const left = [];
   const results = [];
+  const want = ids ? new Set(ids) : null;
   for (const e of journal.slice().reverse()) {
+    if (want && !want.has(e.id)) { left.unshift(e); continue; }
     try {
       if (e.kind === 'mcp-remove') {
         _claude(['mcp', 'add-json', e.target, JSON.stringify(e.config), '-s', e.scope], { env: claudeEnv, run });
@@ -731,5 +744,5 @@ module.exports = {
   estTokens, PRICING, SKILL_LISTING_CHARS, sanitize, DAY,
   installedPluginRoots, listMcpServers, oauthNames, scanUsage, backendKey, toolNamesByServer, probeHttpTools, expandEnv,
   auditBossConfig, parseFrontmatter, listSkills, listInstructionFiles, readUsageCounters, listPlugins, buildAudit, runAudit,
-  undoPath, resolveClaudeBin, applyActions, undoActions, formatAudit,
+  undoPath, resolveClaudeBin, applyActions, undoActions, listJournal, formatAudit,
 };
