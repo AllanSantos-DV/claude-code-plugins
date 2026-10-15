@@ -41,6 +41,7 @@ function loadConfig() {
 const { runStopDetectorCli } = require('./lib/hook-io.js');
 const { sanitizeSessionId } = require('./lib/session-id.js');
 const turnJournal = require('./lib/turn-journal.js');
+const metrics = require('./lib/metrics.js');
 const oneoff = require('./lib/oneoff-store.js');
 const { reconcileEntries } = require('./lib/curation-reconcile.js');
 const { findProjectRoot, loadShellsConfig, matchCuratedShell } = require('./shells-config.js');
@@ -208,6 +209,9 @@ async function run(event) {
     const { maxAttempts } = cfg;
 
     const sessionId = event.session_id || event.sessionId || 'default';
+    // Blocks, releases and relents were stderr-only: no way to count what the curation
+    // Stop cost in extra turns or how often the agent was let go without acting.
+    const mctx = { sessionId, cwd: event.cwd };
     const entries = turnJournal.readEntries(sessionId);
 
     const escPath = escalationPath(sessionId);
@@ -258,6 +262,7 @@ async function run(event) {
           : editedCurated ? 'curated script(s) edited since first block'
           : 'new non-overlapping work';
         console.error(`[CURATION-STOP] progress detected (${why}), releasing stop`);
+        metrics.fire('curation.stop.released', { why, attempts: prev.attempts, entries: prevBlocked.length }, mctx);
         unlinkSafe(escPath);
         turnJournal.clearEntries(sessionId);
         return {};
@@ -266,6 +271,7 @@ async function run(event) {
       // Safety cap: relent after maxAttempts with no progress.
       if (prev.attempts >= maxAttempts) {
         console.error(`[CURATION-STOP] gave up after ${prev.attempts} attempts (no progress) — relenting`);
+        metrics.fire('curation.stop.relented', { attempts: prev.attempts, entries: prevPending.length }, mctx);
         unlinkSafe(escPath);
         turnJournal.clearEntries(sessionId);
         return {};
@@ -282,6 +288,7 @@ async function run(event) {
         firstBlockedAt: prev.firstBlockedAt,
       });
       turnJournal.clearEntries(sessionId);
+      metrics.fire('curation.stop.blocked', { attempt: nextAttempt, entries: escalateEntries.length }, mctx);
       const reason = buildReason(escalateEntries, nextAttempt, maxAttempts);
       return { block: true, reason };
     }
@@ -304,6 +311,7 @@ async function run(event) {
       firstBlockedAt: new Date().toISOString(),
     });
     turnJournal.clearEntries(sessionId);
+    metrics.fire('curation.stop.blocked', { attempt: 1, entries: pending.length }, mctx);
     const reason = buildReason(pending, 1, maxAttempts);
     return { block: true, reason };
   } catch (err) {

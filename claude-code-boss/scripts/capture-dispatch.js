@@ -22,7 +22,8 @@
  *
  * Cycles leave the queue ONLY on a matching ack — a lesson is never dropped just
  * because the agent's turn was interrupted (nor when the safety valve relents: the
- * offer + cycles stay durable for a future session, only the BLOCKING yields). Bounds
+ * offer closes, the session stops offering, and its cycles stay queued until a later
+ * session of the same project adopts them — capture-queue.adoptOrphans). Bounds
  * + an update-safe opt-out come from the merged config so the `standard` profile
  * stays sane.
  */
@@ -122,7 +123,13 @@ function run(event, deps) {
   // 1. Scan new cycles into the durable, redacted-at-rest, compaction-safe queue.
   queue.ingest(project, sid, transcriptPath, redactText, { turns: cfg.turns, includeThinking: cfg.includeThinking === true });
   // 2. Reconcile the open offer via the explicit ack marker: drain on ack, else re-block.
-  queue.reconcile(project, sid);
+  const rec = queue.reconcile(project, sid);
+  if (rec.acked) metrics.fire('capture.acked', { windowId: rec.windowId, outcome: rec.outcome, afterBlocks: rec.afterBlocks }, { sessionId: sid, cwd: ev.cwd });
+  // 2b. Cycles left by ended sessions of this project join this queue (offered under the cadence below).
+  if (!queue.getState(project, sid).offer) {
+    const adopted = queue.adoptOrphans(project, sid);
+    if (adopted.cycles) metrics.fire('capture.adopted', { files: adopted.files, cycles: adopted.cycles }, { sessionId: sid, cwd: ev.cwd });
+  }
 
   const st = queue.getState(project, sid);
   const model = _lastModel(_readTail(transcriptPath));
@@ -147,15 +154,17 @@ function run(event, deps) {
     const blocks = queue.noteBlock(project, sid); // per-offer re-block counter (CAS-safe, resets per offer)
     if (blocks >= maxBlockAttempts) {
       console.error(`[capture] relenting after ${blocks} blocks with no ack — allowing stop to avoid deadlock`);
+      // Close the offer and stop offering in this session; the cycles stay queued for adoption.
+      queue.releaseOffer(project, sid);
       metrics.fire('capture.relented', { windowId: cur.windowId, blocks, model }, { sessionId: sid, cwd: ev.cwd });
-      return {}; // cycle stays queued (lessons-never-dropped) — only the block yields this turn
+      return {};
     }
     metrics.fire('capture.reoffered', { windowId: cur.windowId, model }, { sessionId: sid, cwd: ev.cwd });
     return { block: true, reason: buildInstruction(cur.text, cur.windowId) };
   }
 
   // 4. No open offer → consider a NEW one, gated by cadence bounds + budget.
-  if (ev.stop_hook_active) return {};
+  if (ev.stop_hook_active || st.paused) return {};
   const bounds = {
     maxCapturesPerSession: cfg.maxCapturesPerSession != null ? cfg.maxCapturesPerSession : DEFAULT_BOUNDS.maxCapturesPerSession,
     cooldownMs: cfg.cooldownMs != null ? cfg.cooldownMs : DEFAULT_BOUNDS.cooldownMs,

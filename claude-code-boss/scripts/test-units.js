@@ -4954,6 +4954,40 @@ test('variant → alias: a recurring noisy uncovered VARIANT of a curated script
   }
 });
 
+test('curation-stop: bloqueio, desistencia e liberacao viram eventos (curation.stop.blocked/relented/released) — antes so stderr', async () => {
+  const detect = require('./curation-detect.js');
+  const stop = require('./curation-stop.js');
+  const journal = require('./lib/turn-journal.js');
+  const m = require('./lib/metrics.js');
+  const proj = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-cstop-ev-'));
+  fs.writeFileSync(path.join(proj, 'package.json'), '{}');
+  const sid = 'cstop-ev-' + Date.now();
+  const noisy = Array.from({ length: 300 }, (_, i) => `line ${i}`).join('\n');
+  const ev = (command) => ({ hook_event_name: 'PostToolUse', tool_name: 'Bash', tool_input: { command }, tool_response: { stdout: noisy, stderr: '' }, session_id: sid, cwd: proj });
+  const fired = [];
+  const orig = m.fire;
+  try {
+    await detect.run(ev('npm run evcheck')); await detect.run(ev('npm run evcheck')); // 2nd noisy task run is journaled
+    m.fire = (name, payload) => { if (name.startsWith('curation.stop.')) fired.push([name, payload]); };
+    const r1 = await stop.run({ hook_event_name: 'Stop', session_id: sid, cwd: proj });
+    assert(r1.block, 'first Stop blocks');
+    const r2 = await stop.run({ hook_event_name: 'Stop', session_id: sid, cwd: proj, stop_hook_active: true });
+    assert(!r2.block, 'no progress at the attempt cap (maxAttempts 1): relents');
+    await detect.run(ev('npm run evcheck')); // recurs → journaled again
+    const r3 = await stop.run({ hook_event_name: 'Stop', session_id: sid, cwd: proj });
+    assert(r3.block, 'blocks again on the next turn');
+    await detect.run(ev('npm run other-work-entirely')); await detect.run(ev('npm run other-work-entirely'));
+    await stop.run({ hook_event_name: 'Stop', session_id: sid, cwd: proj, stop_hook_active: true });
+    assertEq(fired.map((x) => x[0]), ['curation.stop.blocked', 'curation.stop.relented', 'curation.stop.blocked', 'curation.stop.released']);
+    assertEq([fired[0][1].attempt, fired[1][1].attempts], [1, 1]);
+    assertEq(fired[3][1].why, 'new non-overlapping work');
+  } finally {
+    m.fire = orig;
+    journal.clearEntries(sid);
+    fs.rmSync(proj, { recursive: true, force: true });
+  }
+});
+
 test('/dashboard without LLM: the expansion hook answers only /dashboard, blocks with the URL, and fails loud', async () => {
   const dc = require('./dashboard-command.js');
   let opened = null;
@@ -20554,16 +20588,64 @@ test('capture-dispatch (FIX #6): after maxBlockAttempts un-acked blocks it RELEN
   const r2 = t.cd.run(t.evt, deps); assert(r2 && r2.block === true, 'Stop 2: re-block below cap (blockCount 1 < 2)');
   const r3 = t.cd.run(t.evt, deps);
   assert(!(r3 && r3.block), 'Stop 3: at the cap it RELENTS — returns {} so the turn can end');
-  // No-loss invariant: the offer + queued cycles are PRESERVED — only the block yielded.
+  // No-loss invariant: the queued cycles are PRESERVED; the offer closes and this session
+  // stops offering (it used to stay open forever and re-relent on every Stop).
   const st = t.cq.getState(t.project, t.sid);
-  assert(st.offer, 'the offer stays OPEN after relenting (not cleared)');
+  assertEq(st.offer, null, 'the offer is released, not left open forever');
+  assertEq(st.paused, true, 'no new offers in this session');
   assertEq(st.queue.length, 6, 'the un-captured cycles are NEVER dropped by the relent');
-  assert(st.offer.blockCount >= 2, 'the per-offer block counter reached the cap');
-  // A further Stop keeps relenting (no re-nag, still no drop) — the cycle waits for a future session.
-  const r4 = t.cd.run(t.evt, deps);
-  assert(!(r4 && r4.block), 'past the cap it keeps allowing the stop');
-  assertEq(t.cq.getState(t.project, t.sid).queue.length, 6, 'cycle still queued after repeated relents');
+  const relents = [];
+  const m = require('./lib/metrics.js'); const origFire = m.fire;
+  m.fire = (name) => { if (name === 'capture.relented' || name === 'capture.offered') relents.push(name); };
+  try {
+    const r4 = t.cd.run(t.evt, deps);
+    assert(!(r4 && r4.block), 'past the relent it keeps allowing the stop');
+  } finally { m.fire = origFire; }
+  assertEq(relents, [], 'no repeated relent event and no new offer after relenting');
+  assertEq(t.cq.getState(t.project, t.sid).queue.length, 6, 'cycles still queued, waiting for adoption');
   t.cq.reset(t.project, t.sid);
+});
+
+test('capture-queue.adoptOrphans: ciclos de sessoes ENCERRADAS do mesmo projeto entram na fila da sessao viva; o arquivo orfao so some depois que ela salvou; outro projeto e sessao recente ficam', () => {
+  const q = require('./lib/capture-queue.js');
+  const dir = path.join(require('./lib/data-dir.js').dataDir(), '.runtime');
+  fs.mkdirSync(dir, { recursive: true });
+  const P = 'adopt-proj-' + Date.now();
+  const mk = (proj, sid, ids, ageMs, offer) => {
+    const st = { rev: 1, scan: { offset: 0, anchorHash: '' }, seen: ids, seenPrompts: [], queue: ids.map((id) => ({ id, promptId: id, user: 'u ' + id, assistant: 'a ' + id })), offer: offer ? { windowId: 'w', ids, at: 1, attempts: 9, blockCount: 9 } : null, offers: 1, captured: 0, lastOfferTs: 1 };
+    const f = q._file(proj, sid); fs.writeFileSync(f, JSON.stringify(st));
+    const t = (Date.now() - ageMs) / 1000; fs.utimesSync(f, t, t); return f;
+  };
+  const stuck = mk(P, 'old-a', ['c1', 'c2'], 3 * 864e5, true);   // ended 3 days ago with a stuck offer
+  const older = mk(P, 'old-b', ['c3'], 5 * 864e5, false);
+  const fresh = mk(P, 'live-other', ['c9'], 60e3, false);        // another LIVE session: untouched
+  const foreign = mk(P + '-x', 'old-c', ['z1'], 9 * 864e5, false); // other project: untouched
+  try {
+    const r1 = q.adoptOrphans(P, 'me', { force: true });
+    assertEq(r1, { files: 1, cycles: 1 }, 'oldest orphan first, one file per call');
+    assertEq(fs.existsSync(older), false);
+    const r2 = q.adoptOrphans(P, 'me', { force: true });
+    assertEq(r2, { files: 1, cycles: 2 }, 'the stuck offer\'s cycles are adopted too (never lost)');
+    assertEq(q.getState(P, 'me').queue.map((c) => c.id), ['c3', 'c1', 'c2']);
+    assertEq(fs.existsSync(stuck), false);
+    assertEq([fs.existsSync(fresh), fs.existsSync(foreign)], [true, true], 'live session and other project untouched');
+    assertEq(q.adoptOrphans(P, 'me'), { files: 0, cycles: 0 }, 'throttled to once an hour without force');
+  } finally { for (const f of [stuck, older, fresh, foreign, q._file(P, 'me')]) fs.rmSync(f, { force: true }); }
+});
+
+test('capture-queue.adoptOrphans: se salvar a fila da sessao falha, o orfao NAO e apagado (nenhum ciclo perdido)', () => {
+  const q = require('./lib/capture-queue.js');
+  const P = 'adopt-fail-' + Date.now();
+  const f = q._file(P, 'gone');
+  fs.mkdirSync(path.dirname(f), { recursive: true });
+  fs.writeFileSync(f, JSON.stringify({ rev: 1, queue: [{ id: 'k1', promptId: 'k1', user: 'u', assistant: 'a' }], seen: ['k1'] }));
+  const t = (Date.now() - 3 * 864e5) / 1000; fs.utimesSync(f, t, t);
+  const own = q._file(P, 'me');
+  fs.mkdirSync(own); // a DIRECTORY where the queue file goes: every save fails
+  try {
+    assertEq(q.adoptOrphans(P, 'me', { force: true }), { files: 0, cycles: 0 });
+    assertEq(fs.existsSync(f), true, 'orphan kept');
+  } finally { fs.rmSync(f, { force: true }); fs.rmSync(own, { recursive: true, force: true }); }
 });
 
 test('capture-dispatch (FIX #6): an ack drains the offer so a LATER offer starts the block counter fresh', () => {
@@ -20832,6 +20914,25 @@ test('capture_lesson local: a null merge (vanished dedup hit) does NOT phantom-a
   // With the pre-fix bug (ack on a null merge), decision would be 'merge' and nothing saved.
   assertEq(out.decision, 'admit', 'a vanished merge target falls through to admit (stores the lesson), never a phantom merge');
   assertEq(saved.length, 1, 'the lesson was actually persisted before the ack (no silent loss)');
+});
+
+test('capture_lesson: lesson.captured diz a ORIGEM (oferta do Stop com windowId, ou chamada direta) — 2.392 capturas nao eram atribuiveis', async () => {
+  const url = require('url');
+  const R = process.env.CLAUDE_PLUGIN_ROOT;
+  const mod = await import(url.pathToFileURL(path.join(R, 'servers', 'brain-server', 'lib', 'mcp-server.js')).href);
+  const server = mod.createBrainServer({ pluginRoot: R, mode: 'stdio', _testHooks: {
+    getKB: async () => ({ store: { search: async () => [], merge: async () => null, save: async () => {} }, index: { index: async () => {} }, graph: { registerNode: async () => {} } }),
+    embedder: { init: async () => {}, getStatus: () => ({ ready: true }), embed: async () => [0.1, 0.2, 0.3] },
+  } });
+  const project = 'pSrc' + Date.now();
+  const wid = 'w-src-' + Date.now();
+  await server.handleTool('capture_lesson', { title: 'A', summary: 'S1', type: 'lesson', scope: 'project', project, windowId: wid });
+  await server.handleTool('capture_lesson', { title: 'B', summary: 'S2', type: 'lesson', scope: 'project', project });
+  require('./lib/capture-queue.js').clearAck(wid);
+  const key = require('./lib/metrics-project.js').metricsKeyForId(project);
+  const rows = require('./lib/metrics-store.js').getEventLogIsolated(key, { eventName: 'lesson.captured' });
+  const srcs = rows.map((r) => r.payload).sort((x, y) => String(x.source).localeCompare(String(y.source)));
+  assertEq(srcs.map((p) => [p.source, p.windowId || null]), [['capture-dispatch', wid], ['direct', null]]);
 });
 
 test('capture_lesson (Q42): dedup merges only within the SAME type — a decision near-identical to a lesson is admitted, not merged into it', async () => {
