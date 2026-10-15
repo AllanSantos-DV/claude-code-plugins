@@ -16016,7 +16016,20 @@ test('http-daemon: hook_* tools are NOT in tools/list (model never sees them) bu
       assert(hints[n] && typeof hints[n].readOnlyHint === 'boolean' && typeof hints[n].destructiveHint === 'boolean', `${n} must declare both hints: ${JSON.stringify(hints[n])}`);
       assert(!(hints[n].readOnlyHint && hints[n].destructiveHint), `${n}: read-only cannot be destructive`);
     }
-    assertEq([...classified].filter((n) => !names.includes(n)), [], 'no stale names in the classification');
+    // P10: the glob/shadow policy tools are unlisted while no such policy exists (this data dir has none).
+    const CONDITIONAL = ['policy_shadow_report', 'policy_adjudication_prepare', 'policy_adjudication_record', 'policy_adjudication_report', 'policy_adjudication_purge', 'policy_trigger_evidence_purge', 'policy_self_update_report', 'policy_apply_candidate'];
+    assertEq([...classified].filter((n) => !names.includes(n)).sort(), [...CONDITIONAL].sort(), 'only the conditional policy tools are missing: no stale names in the classification');
+    // A glob policy in the registry brings them back on the next tools/list.
+    const reg = path.join(process.env.CLAUDE_PLUGIN_DATA, 'policies', 'registry.json');
+    const prevReg = fs.existsSync(reg) ? fs.readFileSync(reg) : null;
+    fs.mkdirSync(path.dirname(reg), { recursive: true });
+    fs.writeFileSync(reg, JSON.stringify({ records: { g1: { id: 'g1', mode: 'glob', scope: 'project', projectId: 'p', text: 't', globs: ['**/*.js'] } } }));
+    try {
+      const againTools = (await post({ jsonrpc: '2.0', id: 9, method: 'tools/list', params: {} }, sid)).json.result.tools;
+      const again = againTools.map((t) => t.name);
+      for (const n of CONDITIONAL) assert(again.includes(n), `${n} listed once a glob policy exists`);
+      for (const t of againTools) hints[t.name] = t.annotations;
+    } finally { if (prevReg) fs.writeFileSync(reg, prevReg); else fs.rmSync(reg, { force: true }); }
     for (const n of ['brain_count', 'policy_list', 'graph_search', 'project_list']) assertEq(hints[n].readOnlyHint, true, `${n} only reads`);
     // store.get() bumps access_count (ranking + prune utility) → these are NOT read-only.
     for (const n of ['brain_search', 'brain_related', 'brain_retrieve_context', 'backend_setup_status', 'graph_analyze']) assertEq(hints[n].readOnlyHint, false, `${n} writes something`);
