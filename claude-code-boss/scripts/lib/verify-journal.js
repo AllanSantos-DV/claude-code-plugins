@@ -25,12 +25,20 @@ const { createJournal } = require('./session-journal.js');
 const journal = createJournal({ prefix: 'turn-verify', label: 'verify-journal', seqNames: true, stampTs: true });
 const { readEntries, clearEntries, RUNTIME_DIR } = journal;
 
+// Only the verify-nudge reads this journal. Under a profile that switches it off nothing would ever drain what is written
+// here (the Stop detector that clears it is skipped), so nothing is written.
+function recording() {
+  const hooksConfig = require('./hooks-config.js');
+  return require('./stop-telemetry.js').gateState('verify-nudge', hooksConfig.getProfile(), hooksConfig).enabled;
+}
+
 /**
  * Record a file edit (Edit/Write/NotebookEdit).
  * @param {string} sessionId
  * @param {string} filePath
  */
 function appendEdit(sessionId, filePath) {
+  if (!recording()) return;
   journal.appendEntry(sessionId, { kind: 'edit', path: String(filePath || '') });
 }
 
@@ -40,6 +48,7 @@ function appendEdit(sessionId, filePath) {
  * @param {{ sig?: string, curated?: string|null }} info
  */
 function appendCommand(sessionId, info = {}) {
+  if (!recording()) return;
   journal.appendEntry(sessionId, {
     kind: 'cmd',
     sig: String(info.sig || ''),

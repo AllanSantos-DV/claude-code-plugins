@@ -3163,6 +3163,66 @@ test('dashboard Home: volta a Home mostra o que ja esta renderizado (sem apagar 
   assert(/warmHomeMetrics\(\);/.test(src), 'aquecimento no start');
 });
 
+test('session-journal.sweepStaleJournals: apaga journals velhos de qualquer prefixo/sessao, poupa os recentes e o que nao e journal, respeita o orcamento de tempo', () => {
+  const { sweepStaleJournals } = require('./lib/session-journal.js');
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-sweep-'));
+  try {
+    const NOW = 1_800_000_000_000;
+    const mk = (name) => fs.writeFileSync(path.join(dir, name), '{}');
+    const old = NOW - 2 * 86400000; const fresh = NOW - 3600000;
+    mk(`turn-verify-s1--${old}-000001-abc.json`); mk(`failure-turn-s2--${old}-deadbeef.json`); mk(`retrieval-turn-s3--${old}-1a2b3c4d.json`);
+    mk(`turn-verify-s1--${fresh}-000002-abc.json`);
+    mk('capture-queue-proj--sid.json'); mk('hook-errors.jsonl'); mk(`notes--${old}-x.txt`);
+    assertEq(sweepStaleJournals({ dir, now: () => NOW }), { scanned: 4, removed: 3, failed: 0, truncated: false });
+    assertEq(fs.readdirSync(dir).sort(), [`notes--${old}-x.txt`, 'capture-queue-proj--sid.json', 'hook-errors.jsonl', `turn-verify-s1--${fresh}-000002-abc.json`].sort());
+    for (let i = 0; i < 5; i++) mk(`turn-verify-s9--${old}-00000${i}-aa.json`);
+    let t = 0;
+    const budget = sweepStaleJournals({ dir, now: () => NOW + (t += 400), budgetMs: 1000 });
+    assert(budget.truncated && budget.removed >= 1 && budget.removed < 5, `budget stops the sweep: ${JSON.stringify(budget)}`);
+    assertEq(sweepStaleJournals({ dir: path.join(dir, 'nope'), now: () => NOW }).removed, 0, 'pasta ausente: nada a fazer');
+  } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+});
+
+test('verify-journal: sob o perfil standard (verify-nudge desligado) nada e gravado — ninguem drenaria — e sob dev grava', () => {
+  const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-vj-'));
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-vj-home-'));
+  const script = `
+    const fs = require('fs'); const path = require('path');
+    const root = process.argv[1];
+    const hc = require(root + '/lib/hooks-config.js');
+    const vj = require(root + '/lib/verify-journal.js');
+    const count = () => (fs.existsSync(vj.RUNTIME_DIR) ? fs.readdirSync(vj.RUNTIME_DIR).filter((f) => f.startsWith('turn-verify-')).length : 0);
+    const cfg = path.join(process.env.HOME, '.claude', 'claude-code-boss', 'hooks', 'user-config.json');
+    fs.mkdirSync(path.dirname(cfg), { recursive: true });
+    const out = {};
+    for (const profile of ['standard', 'dev']) {
+      fs.writeFileSync(cfg, JSON.stringify({ profile })); hc._resetCache();
+      const before = count(); vj.appendEdit('sid', '/x'); vj.appendCommand('sid', { sig: 'npm test' });
+      out[profile] = count() - before;
+    }
+    console.log(JSON.stringify(out));
+  `;
+  try {
+    const r = require('child_process').spawnSync(process.execPath, ['-e', script, __dirname], { env: { ...process.env, CLAUDE_PLUGIN_DATA: dataDir, HOME: home, USERPROFILE: home }, encoding: 'utf8', windowsHide: true, timeout: 60000 });
+    assert(r.status === 0, r.stderr);
+    assertEq(JSON.parse(r.stdout.trim().split('\n').pop()), { standard: 0, dev: 2 });
+  } finally { fs.rmSync(dataDir, { recursive: true, force: true }); fs.rmSync(home, { recursive: true, force: true }); }
+});
+
+test('runtime-sweep: o detector do SessionStart esta registrado e varre journals velhos e o estado de sessao com mais de 7 dias', async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-rs-'));
+  try {
+    const rs = require('./runtime-sweep.js');
+    const old = new Date(Date.now() - 8 * 86400000);
+    fs.writeFileSync(path.join(dir, 'session-start-a.json'), '{}'); fs.utimesSync(path.join(dir, 'session-start-a.json'), old, old);
+    fs.writeFileSync(path.join(dir, 'session-start-b.json'), '{}');
+    fs.writeFileSync(path.join(dir, 'other.json'), '{}'); fs.utimesSync(path.join(dir, 'other.json'), old, old);
+    assertEq(rs.sweepSessionState(dir), 1);
+    assertEq(fs.readdirSync(dir).sort(), ['other.json', 'session-start-b.json']);
+  } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+  assert(/name: 'runtime-sweep', mod: runtimeSweep/.test(fs.readFileSync(path.join(__dirname, 'session-start-dispatcher.js'), 'utf8')), 'registrado no SessionStart');
+});
+
 test('metrics-store: recordMetric rejects invalid event names', () => {
   delete require.cache[require.resolve('./lib/metrics-store.js')];
   const prevDataDir = process.env.CLAUDE_PLUGIN_DATA;
