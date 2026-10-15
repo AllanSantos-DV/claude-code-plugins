@@ -15,6 +15,10 @@ const CURATION_EVENTS = [
   'curation.used', 'curation.redirected', 'curation.uncovered', 'curation.skipped', 'curation.pending',
   'curation.bypass', 'curation.shaped', 'curation.flagged', 'curation.piped',
   'error-guard.denied', 'graph-guard.fired',
+  // Stop-time curation blocks, the Bash shell-escape fix and Stop detectors that threw.
+  'curation.stop.blocked', 'curation.stop.released', 'curation.stop.relented',
+  'shell-escape.rewritten', 'shell-escape.warned', 'shell-escape.denied',
+  'stop.detector.error',
   // Daily counts that replaced old raw noise rows (metrics-store.compactNoise): same totals.
   'metrics.daily',
 ];
@@ -43,6 +47,10 @@ function summarizeCuration(rows, { shellIds = [], limitUnitsPerPercent } = {}) {
     rawEnteredContext: { count: 0, chars: 0 },
     piped: { total: 0, byScript: {} }, // curated output filtered by the agent → tune that script
     guards: { errorGuardDenied: 0, graphGuardFired: 0 },
+    // Stop blocks asking to curate: released = the agent curated/marked, relented = gave up after maxAttempts.
+    stopBlocks: { blocked: 0, released: 0, relented: 0 },
+    shellEscape: { rewritten: 0, warned: 0, denied: 0 },
+    detectorErrors: {}, // Stop detector name → errors
     neverUsed: [],
     totals: { savedChars: 0, savedTokensApprox: 0 },
   };
@@ -84,6 +92,8 @@ function summarizeCuration(rows, { shellIds = [], limitUnitsPerPercent } = {}) {
         if (p.event === 'curation.skipped' && p.byClass) {
           bump(s.skipped, 'inline', num(p.byClass.inline));
           bump(s.skipped, 'exploration', num(p.byClass.exploration));
+        } else if (/^shell-escape\.(rewritten|warned|denied)$/.test(p.event || '')) {
+          bump(s.shellEscape, p.event.slice('shell-escape.'.length), num(p.count));
         }
         break;
       case 'curation.pending':
@@ -106,6 +116,13 @@ function summarizeCuration(rows, { shellIds = [], limitUnitsPerPercent } = {}) {
       case 'curation.piped': s.piped.total++; bump(s.piped.byScript, p.shellId || '?'); break;
       case 'error-guard.denied': s.guards.errorGuardDenied++; break;
       case 'graph-guard.fired': s.guards.graphGuardFired++; break;
+      case 'curation.stop.blocked': s.stopBlocks.blocked++; break;
+      case 'curation.stop.released': s.stopBlocks.released++; break;
+      case 'curation.stop.relented': s.stopBlocks.relented++; break;
+      case 'shell-escape.rewritten': s.shellEscape.rewritten++; break;
+      case 'shell-escape.warned': s.shellEscape.warned++; break;
+      case 'shell-escape.denied': s.shellEscape.denied++; break;
+      case 'stop.detector.error': bump(s.detectorErrors, p.name || '?'); break;
       default: break;
     }
   }
