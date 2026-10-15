@@ -17164,7 +17164,7 @@ test('context-bundle.smartSearch / mcpCallTool: handshake MCP, job pendente e po
   assertEq(await cb.mcpCallTool('http://x/mcp', 'ping', {}, { fetchImpl }), 'pong');
   assertEq(seen, ['initialize', 'notifications/initialized', 'tools/call:ping']);
   let polls = 0;
-  const call = async (url, name, args) => {
+  const call = async (url, name, _args) => {
     calls.push(name);
     if (name === 'smart_search') return JSON.stringify({ status: 'pending', job_id: 'j1', phase: 'indexing' });
     polls++;
