@@ -24239,6 +24239,21 @@ test('slow-hook alert: p95 at half the deadline (enough calls) or any expiry →
   assertEq(slowHooks({ unavailable: 'down' }, d).length, 0, 'unavailable → none');
 });
 
+test('slow-hook alert: orcamento ABSOLUTO por evento alem da fracao do prazo (o recall de 8 s no prompt nunca alertava)', () => {
+  const { slowHooks } = require('./lib/hook-latency-alert.js');
+  const d = { brain_retrieve_context: 9000, hook_curation_guard: 7000, hook_stop_dispatcher: 29000 };
+  const ev = { brain_retrieve_context: 'UserPromptSubmit', hook_curation_guard: 'PreToolUse', hook_stop_dispatcher: 'Stop' };
+  const lat = {
+    brain_retrieve_context: { calls: 50, queued: 0, expired: 0, p95Ms: 4000 },  // < half the deadline, > 1.5 s budget
+    hook_curation_guard: { calls: 50, queued: 0, expired: 0, p95Ms: 72 },       // within the 150 ms guard budget
+    hook_stop_dispatcher: { calls: 50, queued: 0, expired: 0, p95Ms: 654 },     // within the Stop budget
+  };
+  const out = slowHooks(lat, d, ev);
+  assertEq(out.map((h) => h.name), ['brain_retrieve_context']);
+  assertEq(out[0].budgetMs, 1500);
+  assertEq(slowHooks(lat, d).length, 0, 'without events: only the old fraction rule');
+});
+
 test('slow-hook alert: once per hook per 6 h per daemon pid; the BRAIN-HEALTH check only judges the daemon serving THIS install', async () => {
   const alert = require('./lib/hook-latency-alert.js');
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-slowhook-'));
@@ -26354,6 +26369,34 @@ test('plugin-updater.killStale: so casa modulos da PASTA DE CACHE do plugin, nao
       }
       assertEq(hw.stats().spawned, 1, 'one worker serves every call');
     } finally { await hw.shutdown(); }
+  });
+
+  test('G2: REAL hook worker — um hook em segundo plano devolve quanto rodou e quanto esperou na fila (antes: queued, sem duracao nenhuma)', async () => {
+    const done = [];
+    const hw = (await loadHookWorker())({ pluginRoot: ROOT, onBackgroundDone: (name, runMs, lagMs, ok) => done.push({ name, runMs, lagMs, ok }) });
+    try {
+      const fileEdit = PARITY.find(p => p[0] === 'hook_file_edit_detect')[2];
+      hw.enqueue('hook_file_edit_detect', { ...wire(fileEdit), project_dir: proj });
+      await hw.run('hook_stop_dispatcher', { ...wire(PARITY[11][2]), project_dir: proj }); // FIFO: the background job finished before this
+      assertEq(done.length, 1);
+      assert(done[0].name === 'hook_file_edit_detect' && done[0].ok === true && Number.isFinite(done[0].runMs) && done[0].lagMs >= done[0].runMs, JSON.stringify(done));
+    } finally { await hw.shutdown(); }
+  });
+
+  test('hook-tools.recordBackgroundLatency: /health mostra p50/p95 do tempo de execucao e a espera na fila dos hooks em segundo plano', () => {
+    const ht = require('./lib/hook-tools.js');
+    ht._resetLatencyStats();
+    ht.recordLatency('hook_file_edit_detect', 0, 'queued');
+    ht.recordBackgroundLatency('hook_file_edit_detect', 40, 55, true);
+    ht.recordBackgroundLatency('hook_file_edit_detect', 60, 900, false);
+    const st = ht.hookLatencyStats().hook_file_edit_detect;
+    assertEq([st.queued, st.background.done, st.background.failed, st.background.maxMs, st.background.queueLagP95Ms], [1, 2, 1, 60, 900]);
+    ht.recordLatency('brain_retrieve_context', 5600, 'ok');
+    assertEq(ht.hookLatencyStats().brain_retrieve_context.p95Ms, 5600, 'the prompt recall has a latency entry too');
+    ht._resetLatencyStats();
+    const dl = ht.deadlinesFromHooksJson(ROOT);
+    assert(Number.isFinite(dl.brain_retrieve_context), 'deadline known for the recall');
+    assertEq(ht.eventsFromHooksJson(ROOT).brain_retrieve_context, 'UserPromptSubmit');
   });
 
   test('G2: a crashed hook worker is replaced on the next call (no permanent outage)', async () => {

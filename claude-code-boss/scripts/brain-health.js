@@ -351,8 +351,8 @@ async function slowHookAlert(root, data) {
     // judge — and a test runner (repo root) never reads the machine's real daemon.
     const same = (a, b) => path.resolve(String(a || '')).toLowerCase() === path.resolve(String(b || '')).toLowerCase();
     if (!health.pluginRoot || !same(health.pluginRoot, root)) return null;
-    const { deadlinesFromHooksJson } = require('./lib/hook-tools.js');
-    return alert.alertOnce({ health, deadlines: deadlinesFromHooksJson(root), stampFile: path.join(data, '.runtime', 'hook-latency-alert.json') });
+    const { deadlinesFromHooksJson, eventsFromHooksJson } = require('./lib/hook-tools.js');
+    return alert.alertOnce({ health, deadlines: deadlinesFromHooksJson(root), events: eventsFromHooksJson(root), stampFile: path.join(data, '.runtime', 'hook-latency-alert.json') });
   } catch (err) {
     console.error(`[BRAIN-HEALTH] slow-hook check failed: ${err.message}`);
     return null;

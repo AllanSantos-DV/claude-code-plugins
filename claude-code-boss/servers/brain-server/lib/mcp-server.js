@@ -1133,6 +1133,13 @@ export function createBrainServer({ pluginRoot, mode = 'http', kbWorker, kbLock,
       }
 
       case 'brain_retrieve_context': {
+        // The UserPromptSubmit recall is the slowest thing a prompt waits on (p50 5.6 s
+        // measured) and was the one call missing from /health's hookLatency.
+        const t0 = Date.now();
+        const timed = (outcome) => {
+          try { require(path.join(PLUGIN_ROOT, 'scripts', 'lib', 'hook-tools.js')).recordLatency('brain_retrieve_context', Date.now() - t0, outcome); }
+          catch (err) { console.error(`[brain_retrieve_context] latency: ${err.message}`); }
+        };
         try {
           const { prompt, session_id } = args || {};
           // A background agent's result (<task-notification>) is not a user prompt:
@@ -1169,8 +1176,10 @@ export function createBrainServer({ pluginRoot, mode = 'http', kbWorker, kbLock,
             } catch (err) { console.error(`[brain_retrieve_context] journal: ${err.message}`); }
           }
           const payload = text ? JSON.stringify({ hookSpecificOutput: { hookEventName: 'UserPromptSubmit', additionalContext: text } }) : '';
+          timed('ok');
           return { content: [{ type: 'text', text: payload }] };
         } catch (err) {
+          timed('degraded');
           console.error(`[brain_retrieve_context] ${err.message}`);
           // Fail-open hides the failure from the turn — make it visible to brain-health
           // and the dashboard (the daemon's stderr is kept nowhere).
