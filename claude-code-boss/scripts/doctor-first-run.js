@@ -20,6 +20,13 @@ const { runTextCli } = require('./lib/hook-io.js');
 
 const AUTO_FIXERS = ['fixed-cost', 'boss-config'];
 
+// What the user must be told was turned off (the boss's own settings fixes are not "diverted" items).
+const TURNED_OFF_LABEL = {
+  'plugin-disable': 'plugin disabled',
+  'mcp-remove': 'MCP server removed',
+  'skill-name-only': 'skill now listed by name only',
+};
+
 function buildKey() {
   let version = 'unknown';
   try { version = JSON.parse(fs.readFileSync(path.resolve(__dirname, '..', 'package.json'), 'utf8')).version; } catch (err) { console.error(`[doctor-first-run] package.json: ${err.message}`); }
@@ -41,8 +48,16 @@ function claim(file) {
 }
 
 /** The notice: what the doctor found, what it changed, how to undo — compact, one build. */
-function composeNotice({ key, results, fixes, audit }) {
+function composeNotice({ key, results, fixes, audit, turnedOff = [], pluginRoot = process.env.CLAUDE_PLUGIN_ROOT || path.resolve(__dirname, '..') }) {
   const L = [`[DOCTOR] First run of build ${key}: full check done.`];
+  // Said first and plainly: these were switched off for the user, and why (unused / never authenticated), and how to get each back.
+  const off = turnedOff.filter((e) => TURNED_OFF_LABEL[e.kind]);
+  if (off.length) {
+    L.push(`ATTENTION — ${off.length} item(s) were switched off automatically to cut what every message costs (unused for ${audit && audit.days ? audit.days : 30} days, or never authenticated):`);
+    for (const e of off) L.push(`  - ${TURNED_OFF_LABEL[e.kind]}: ${e.target} — ${e.why || 'no reason recorded'}`);
+    L.push('  Need one back? Open the dashboard → Home → "Switched off by the doctor" and press Undo on it (it is never switched off again), or undo everything with `node scripts/doctor.js --undo`. The same card has the switch that stops the doctor from switching things off on its own: the final say is the user\'s.');
+    L.push('  INSTRUCTION FOR YOU (the agent): in your first reply, in the user\'s language, tell the user plainly what was switched off and why (the list above), that the doctor acts but the control is theirs (undo one by one, or turn the automatic switch-off off, both in the dashboard), and ASK whether they want to open the dashboard now to see it. If they say yes, run `node "' + path.join(pluginRoot, 'scripts', 'dashboard-open.js') + '"` yourself (do not ask them to type /dashboard) and give them the URL it prints; if it prints ok:false, show the error as it came. If they say no, drop it.');
+  }
   if (audit && !audit.error) {
     const t = audit.totals;
     L.push(`Fixed cost per message: ${t.mcpServers} MCP server(s) (${t.mcpUsed} called in ${audit.days}d, ${t.mcpTokens} tok), ${t.skillsTotal} skills (${t.skillsUsed} used, ${t.skillTokens} tok), ${t.pluginsTotal} plugin(s) (${t.pluginsUsed} used), instruction files ${t.instructionTokens} tok. Estimates, ${audit.msgsPerSession} requests per session.`);
@@ -58,10 +73,11 @@ function composeNotice({ key, results, fixes, audit }) {
   return L.join('\n');
 }
 
-async function run(_event, { dir, key = buildKey(), doctor = require('./doctor.js'), cfg } = {}) {
+async function run(_event, { dir, key = buildKey(), doctor = require('./doctor.js'), cfg, journal = () => require('./lib/fixed-cost.js').listJournal() } = {}) {
   const c = cfg || require('./lib/hooks-config.js').getFixedCost();
   if (!c.enabled) return null;
   if (!claim(markerPath(key, dir))) return null;
+  const startedAt = Date.now();
   const ctx = await doctor.gatherContext({ probe: false, audit: true });
   const results = doctor.runChecks(ctx);
   let fixes = [];
@@ -69,7 +85,8 @@ async function run(_event, { dir, key = buildKey(), doctor = require('./doctor.j
     const pick = Object.fromEntries(AUTO_FIXERS.map((k) => [k, doctor.FIXERS[k]]));
     fixes = doctor.applyFixes(results.filter((r) => AUTO_FIXERS.includes(r.autofix)), ctx, pick);
   }
-  return composeNotice({ key, results, fixes, audit: ctx.fixedCost });
+  const turnedOff = c.autoFix ? journal().filter((e) => Date.parse(e.at) >= startedAt) : [];
+  return composeNotice({ key, results, fixes, audit: ctx.fixedCost, turnedOff });
 }
 
 function main() { return runTextCli(run, 'DOCTOR-FIRST-RUN', 'SessionStart'); }

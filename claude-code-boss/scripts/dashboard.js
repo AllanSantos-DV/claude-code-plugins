@@ -1428,6 +1428,56 @@ async function getDoctor(req, res) {
   }
 }
 
+// What the doctor switched off on its own (plugins, MCP servers, skills listed by name), straight from the undo journal
+// (no server config: it can hold secrets), and the per-item undo. An item given back is added to fixedCost.keep so the
+// doctor never switches it off again.
+const DOCTOR_OFF_KINDS = ['plugin-disable', 'mcp-remove', 'skill-name-only'];
+
+function getDoctorSwitchedOff(req, res) {
+  try {
+    json(res, { items: require('./lib/fixed-cost.js').listJournal().filter((e) => DOCTOR_OFF_KINDS.includes(e.kind)).reverse() });
+  } catch (err) {
+    console.error(`[DASHBOARD] /api/doctor/switched-off failed: ${err.message}`);
+    fail(res, err.message, 500);
+  }
+}
+
+function getDoctorConfig(req, res) {
+  try { json(res, require('./lib/hooks-config.js').getFixedCost()); } catch (err) {
+    console.error(`[DASHBOARD] /api/doctor/config failed: ${err.message}`);
+    fail(res, err.message, 500);
+  }
+}
+
+async function saveDoctorConfig(req, res) {
+  let body;
+  try { body = JSON.parse((await readBody(req)) || '{}'); } catch (err) { return fail(res, `invalid JSON body: ${err.message}`, 400); }
+  try {
+    json(res, { ok: true, config: require('./lib/hooks-config.js').saveFixedCost(body) });
+  } catch (err) {
+    console.error(`[DASHBOARD] /api/doctor/config (PUT) failed: ${err.message}`);
+    fail(res, err.message, 400);
+  }
+}
+
+async function postDoctorUndo(req, res) {
+  let body;
+  try { body = JSON.parse((await readBody(req)) || '{}'); } catch (err) { return fail(res, `invalid JSON body: ${err.message}`, 400); }
+  if (typeof body.id !== 'string' || !body.id) return fail(res, 'id is required', 400);
+  try {
+    const fc = require('./lib/fixed-cost.js');
+    const entry = fc.listJournal().find((e) => e.id === body.id && DOCTOR_OFF_KINDS.includes(e.kind));
+    if (!entry) return fail(res, `no switched-off item with id ${body.id}`, 404);
+    const [r] = fc.undoActions({ ids: [entry.id] });
+    if (!r || !r.ok) return fail(res, `could not undo ${entry.target}: ${r ? r.message : 'nothing happened'}`, 500);
+    const config = require('./lib/hooks-config.js').addFixedCostKeep(entry.target);
+    json(res, { ok: true, restored: { kind: entry.kind, target: entry.target }, message: r.message, keep: config.keep, restartNeeded: true });
+  } catch (err) {
+    console.error(`[DASHBOARD] /api/doctor/undo failed: ${err.message}`);
+    fail(res, err.message, 500);
+  }
+}
+
 // ─── API: Brain migration (KB local → mcp-memory) ────────────────────
 // Dispara a migração one-time em background e reporta progresso por polling. A lógica
 // (idempotência, gate fail-loud mcp-memory, verify-after) vive em lib/migration-job.js.
@@ -2419,6 +2469,10 @@ function handleAPI(req, res, url) {
   if (p === '/api/compaction/config' && m === 'PUT') return saveCompactionConfig(req, res);
   if (p === '/api/curation/prune' && m === 'POST') return postCurationPrune(req, res, url);
   if (p === '/api/doctor' && m === 'GET') return getDoctor(req, res);
+  if (p === '/api/doctor/switched-off' && m === 'GET') return getDoctorSwitchedOff(req, res);
+  if (p === '/api/doctor/undo' && m === 'POST') return postDoctorUndo(req, res);
+  if (p === '/api/doctor/config' && m === 'GET') return getDoctorConfig(req, res);
+  if (p === '/api/doctor/config' && m === 'PUT') return saveDoctorConfig(req, res);
   if (p === '/api/brain/consolidate' && m === 'POST') return postBrainConsolidate(req, res, url);
   if (p === '/api/metrics/event-log' && m === 'GET') return getMetricsEventLog(req, res, url);
   if (p === '/api/metrics/cleanup' && m === 'POST') return postMetricsCleanup(req, res, url);
@@ -2542,4 +2596,4 @@ if (require.main === module) startDashboardServer();
 // exported so a test can call it with a fake res ({writeHead,end}) and assert
 // on the exact JSON it serializes — otherwise a bug in byokSafe (e.g. `x || null`
 // silently turning a valid `0` into `null`) would never be caught by any test.
-module.exports = { writeRouterOverride, resolveRouterFlags, getRouterConfig, fetchByokModelIds, getByokModels, opensWithField, postPluginUpdate, getProjectMarker, saveProjectMarker };
+module.exports = { getDoctorSwitchedOff, postDoctorUndo, getDoctorConfig, saveDoctorConfig, writeRouterOverride, resolveRouterFlags, getRouterConfig, fetchByokModelIds, getByokModels, opensWithField, postPluginUpdate, getProjectMarker, saveProjectMarker };

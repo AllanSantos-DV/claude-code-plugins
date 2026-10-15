@@ -16661,7 +16661,7 @@ test('fixed-cost.buildAudit plugins e economia: plugin sem uso vira plugin-disab
   const now = Date.parse('2026-10-14T12:00:00Z');
   const sk = { name: 'x:s', source: 'plugin:x', file: 'f', listedTokens: 500, nameOnlyTokens: 5 };
   const a = fixedCost.buildAudit(fcFacts({
-    plugins: [{ id: 'x@m', name: 'x', enabled: true }, { id: 'claude-code-boss@m', name: 'claude-code-boss', enabled: true }, { id: 'y@m', name: 'y', enabled: true }, { id: 'z@m', name: 'z', enabled: false }],
+    plugins: [{ id: 'x@m', name: 'x', enabled: true, installedAt: now - 60 * 86400000 }, { id: 'claude-code-boss@m', name: 'claude-code-boss', enabled: true, installedAt: now - 60 * 86400000 }, { id: 'y@m', name: 'y', enabled: true, installedAt: now - 60 * 86400000 }, { id: 'z@m', name: 'z', enabled: false, installedAt: now - 60 * 86400000 }],
     skills: [sk],
     counters: { skillUsage: {}, pluginUsage: { 'y@m': { usageCount: 4, lastUsedAt: now - 86400000 } } },
     pricing: { read: 1, write: 10 },
@@ -16674,6 +16674,42 @@ test('fixed-cost.buildAudit plugins e economia: plugin sem uso vira plugin-disab
   assertEq(a.savings.perMessageUsd, 500 * 1 / 1e6);
   assertEq(a.savings.perSessionUsd, 500 * (10 + 99 * 1) / 1e6);
   assert(/US\$/.test(fixedCost.formatAudit(a)) && /Undo: node scripts\/doctor.js --undo/.test(fixedCost.formatAudit(a)));
+});
+
+test('fixed-cost.buildAudit plugins (regra com evidencia): so desativa o que custa por mensagem, tem idade, historico e NENHUM uso — nem contador nem chamada de MCP (login que dura minutos nao importa)', () => {
+  const D = 86400000;
+  const now = Date.parse('2026-10-14T12:00:00Z');
+  const sk = (plugin, tokens = 400) => ({ name: `${plugin}:s`, source: `plugin:${plugin}`, file: 'f', listedTokens: tokens, nameOnlyTokens: 5 });
+  const mcpOf = (plugin, over = {}) => ({ name: `plugin:${plugin}:srv`, prefix: `plugin_${plugin}_srv`, scope: 'plugin', type: 'http', config: { type: 'http', url: 'http://h' }, disabled: false, ...over });
+  const P = (name, ageDays, enabled = true) => ({ id: `${name}@m`, name, enabled, installedAt: ageDays == null ? null : now - ageDays * D });
+  const a = fixedCost.buildAudit(fcFacts({
+    plugins: [
+      P('cinco-dias', 5), P('nunca-usado', 60), P('usado-ha-5d', 60), P('login-curto', 60), P('nunca-logou', 60), P('so-hooks', 60), P('velho-sem-uso-recente', 60), P('sem-data', null),
+    ],
+    skills: [sk('cinco-dias'), sk('nunca-usado'), sk('usado-ha-5d'), sk('velho-sem-uso-recente'), sk('sem-data')],
+    servers: [mcpOf('login-curto'), mcpOf('nunca-logou')],
+    // login-curto: the OAuth login lasts minutes, but it is called all the time. nunca-logou: asks for login, never had one.
+    usage: { byPrefix: { plugin_login_curto_srv: { calls: 0, lastAt: 0 }, 'plugin_login-curto_srv': { calls: 120, lastAt: now - 3600000 } }, sessions: 100, assistantMessages: 10000, oldestMs: now - 90 * D, delta: { names: ['mcp__plugin_login-curto_srv__t', 'mcp__plugin_nunca-logou_srv__t'], failed: [], pending: [], own: true } },
+    probes: { 'plugin:nunca-logou:srv': { ok: false, needsAuth: true, error: 'HTTP 401' }, 'plugin:login-curto:srv': { ok: false, needsAuth: true, error: 'HTTP 401' } },
+    counters: { skillUsage: {}, pluginUsage: {
+      'usado-ha-5d@m': { usageCount: 3, lastUsedAt: now - 5 * D },
+      'velho-sem-uso-recente@m': { usageCount: 40, lastUsedAt: now - 70 * D },
+    } },
+  }));
+  const by = Object.fromEntries(a.plugins.map((p) => [p.name, p]));
+  assertEq(by['cinco-dias'].verdict, 'keep'); assert(/too recent to judge/.test(by['cinco-dias'].reason), by['cinco-dias'].reason);
+  assertEq(by['usado-ha-5d'].verdict, 'keep'); assert(/used: 3 counted use\(s\).*last 5d ago/.test(by['usado-ha-5d'].reason), by['usado-ha-5d'].reason);
+  assertEq(by['login-curto'].verdict, 'keep'); assert(/120 MCP call\(s\)/.test(by['login-curto'].reason), 'usado direto, mesmo reautenticando: ' + by['login-curto'].reason);
+  assertEq(by['so-hooks'].verdict, 'keep'); assert(/nothing to save/.test(by['so-hooks'].reason), by['so-hooks'].reason);
+  assertEq(by['sem-data'].verdict, 'keep'); assert(/install date unknown/.test(by['sem-data'].reason), by['sem-data'].reason);
+  assertEq(by['nunca-usado'].verdict, 'unused'); assert(/never used since it was installed 60d ago/.test(by['nunca-usado'].reason), by['nunca-usado'].reason);
+  assertEq(by['velho-sem-uso-recente'].verdict, 'unused'); assert(/last used 70d ago \(40 use\(s\) in total\), none in the last 30 days/.test(by['velho-sem-uso-recente'].reason), by['velho-sem-uso-recente'].reason);
+  assertEq(a.actions.filter((x) => x.kind === 'plugin-disable').map((x) => x.target).sort(), ['nunca-logou@m', 'nunca-usado@m', 'velho-sem-uso-recente@m'], 'so os tres candidatos reais: nunca logou, nunca usado, sem uso ha 70 dias');
+  // nunca-logou has no skills and its server injects names but its tool names cost something: cost > 0, old, never used, never logged in → candidate with the stronger reason
+  assert(by['nunca-logou'].cost > 0, 'o nome das ferramentas do MCP conta como custo');
+  assertEq(by['nunca-logou'].verdict, 'unused'); assert(/never authenticated and never used since it was installed 60d ago/.test(by['nunca-logou'].reason), by['nunca-logou'].reason);
+  const short = fixedCost.buildAudit(fcFacts({ plugins: [P('x', 60)], skills: [sk('x')], usage: { byPrefix: {}, sessions: 3, assistantMessages: 30, oldestMs: now - 2 * D, delta: null } }));
+  assertEq(short.actions, [], 'historico curto demais: ninguem e condenado');
 });
 
 test('fixed-cost.applyActions/undoActions (settings.json real): name-only, plugin-disable/enable e env-set gravam so a chave e o undo restaura o estado anterior exato', () => {
@@ -16904,6 +16940,167 @@ test('doctor-first-run.composeNotice: auditoria que falhou aparece e correcao qu
   assert(/Fixed-cost audit failed: no transcripts/.test(t), t);
   assert(/FIX FAILED \(fixed-cost\): FAILED x: boom/.test(t), t);
   assert(!/Restart Claude Code/.test(t), 'nada aplicado, nada a reiniciar');
+});
+
+test('doctor-first-run: o aviso diz QUAIS itens foram desativados, POR QUE (sem uso / sem autenticacao) e onde desfazer um a um', async () => {
+  const firstRun = require('./doctor-first-run.js');
+  const dir = fcTmp('first-off');
+  const results = [{ id: 'fixed-cost', label: 'Fixed cost', status: 'warn', detail: 'd', fix: 'f', autofix: 'fixed-cost' }];
+  const fakeDoctor = {
+    gatherContext: async () => ({ fixedCost: { days: 30, totals: { mcpServers: 1, mcpUsed: 0, mcpTokens: 10, skillsTotal: 1, skillsUsed: 0, skillTokens: 5, pluginsTotal: 1, pluginsUsed: 0, instructionTokens: 1 }, msgsPerSession: 20 } }),
+    runChecks: () => results,
+    FIXERS: { 'fixed-cost': () => '2 changed', 'boss-config': () => 'x' },
+    applyFixes: (rs, ctx, fixers) => rs.filter((r) => r.autofix && fixers[r.autofix]).map((r) => ({ id: r.id, ok: true, message: fixers[r.autofix](ctx) })),
+  };
+  const entries = (at) => [
+    { id: 'a-0', at, kind: 'plugin-disable', target: 'pdf@mkt', why: 'installed but not used in the last 30 days (Claude Code\'s own pluginUsage)' },
+    { id: 'a-1', at, kind: 'mcp-remove', target: 'figma', scope: 'user', why: 'asks for authentication (HTTP 401) and was never authenticated: it cannot work' },
+    { id: 'a-2', at, kind: 'env-set', target: 'ENABLE_TOOL_SEARCH', why: 'Tool Search off' },
+  ];
+  const cfg = { enabled: true, autoFix: true, days: 30, keep: [] };
+  const text = await firstRun.run({}, { dir, key: 'off1', doctor: fakeDoctor, cfg, journal: () => entries(new Date(Date.now() + 1000).toISOString()) });
+  assert(/ATTENTION — 2 item\(s\) were switched off automatically/.test(text), text);
+  assert(/plugin disabled: pdf@mkt — installed but not used in the last 30 days/.test(text), 'plugin e o motivo (sem uso)');
+  assert(/MCP server removed: figma — asks for authentication .* never authenticated/.test(text), 'servidor e o motivo (sem autenticacao)');
+  assert(!/ENABLE_TOOL_SEARCH/.test(text.split('Applied')[0]), 'ajuste do proprio boss nao e listado como item desviado');
+  assert(/Switched off by the doctor/.test(text) && /press Undo/.test(text) && /doctor.js --undo/.test(text), 'diz onde desfazer um a um e tudo');
+  const old = await firstRun.run({}, { dir, key: 'off2', doctor: fakeDoctor, cfg, journal: () => entries('2020-01-01T00:00:00.000Z') });
+  assert(!/ATTENTION/.test(old), 'entradas de builds anteriores nao entram no aviso desta rodada');
+  const noFix = await firstRun.run({}, { dir, key: 'off3', doctor: fakeDoctor, cfg: { ...cfg, autoFix: false }, journal: () => entries(new Date(Date.now() + 1000).toISOString()) });
+  assert(!/ATTENTION/.test(noFix), 'autoFix desligado: nada foi desativado, nada a avisar');
+  fs.rmSync(dir, { recursive: true, force: true });
+});
+
+test('fixed-cost.listJournal / undoActions({ids}): a lista nao leva a config do servidor; desfazer um item deixa os outros no diario', () => {
+  const home = fcTmp('journal');
+  const env = { CLAUDE_CODE_EXECPATH: process.execPath };
+  const calls = [];
+  const run = (bin, args) => { calls.push(args); return { status: 0, stdout: '', stderr: '' }; };
+  const settingsFile = path.join(home, '.claude', 'settings.json');
+  fcWrite(settingsFile, { enabledPlugins: { 'pdf@mkt': true, 'xls@mkt': true } });
+  const secret = { type: 'http', url: 'http://h', headers: { Authorization: 'Bearer SEGREDO' } };
+  fixedCost.applyActions([
+    { kind: 'plugin-disable', target: 'pdf@mkt', tokens: 40, why: 'installed but not used in the last 30 days' },
+    { kind: 'plugin-disable', target: 'xls@mkt', tokens: 10, why: 'installed but not used in the last 30 days' },
+    { kind: 'mcp-remove', target: 'figma', scope: 'user', config: secret, tokens: 90, why: 'asks for authentication (HTTP 401) and was never authenticated' },
+  ], { home, env, run });
+  const list = fixedCost.listJournal({ home });
+  assertEq(list.map((e) => e.target), ['pdf@mkt', 'xls@mkt', 'figma']);
+  assertEq(list[0].why, 'installed but not used in the last 30 days');
+  assertEq(list[2].tokens, 90);
+  assert(!JSON.stringify(list).includes('SEGREDO') && !('config' in list[2]), 'headers/env do servidor nunca saem na lista');
+  const r = fixedCost.undoActions({ home, env, run, ids: [list[0].id] });
+  assertEq(r.map((x) => [x.target, x.ok]), [['pdf@mkt', true]], 'so o pedido foi desfeito');
+  assertEq(JSON.parse(fs.readFileSync(settingsFile, 'utf8')).enabledPlugins, { 'pdf@mkt': true, 'xls@mkt': false }, 'o plugin voltou, o outro continua desativado');
+  assertEq(fixedCost.listJournal({ home }).map((e) => e.target), ['xls@mkt', 'figma'], 'o resto segue no diario, na mesma ordem');
+  assert(!calls.some((a) => a[1] === 'add-json'), 'o servidor nao foi re-adicionado');
+  fs.rmSync(home, { recursive: true, force: true });
+});
+
+test('dashboard /api/doctor/switched-off e /api/doctor/undo: lista com o motivo, desfaz um plugin e o poe em fixedCost.keep para nao ser desativado de novo', async () => {
+  const { Readable } = require('stream');
+  delete require.cache[require.resolve('./dashboard.js')];
+  const dash = require('./dashboard.js');
+  const hc = require('./lib/hooks-config.js');
+  const call = async (fn, ...a) => { let status = 200; let body = null; await fn(...a, { writeHead: (c) => { status = c; }, end: (t) => { body = JSON.parse(t); } }); return { status, body }; };
+  const home = os.homedir();
+  assert(home.startsWith(os.tmpdir()) || home.startsWith(process.env.USERPROFILE), `the suite's temp HOME (${home})`);
+  const settingsFile = path.join(home, '.claude', 'settings.json');
+  const journalFile = fixedCost.undoPath(home);
+  const cfgFile = hc.userConfigPath();
+  const bak = [settingsFile, journalFile, cfgFile].map((f) => [f, fs.existsSync(f) ? fs.readFileSync(f, 'utf8') : null]);
+  try {
+    fcWrite(settingsFile, { enabledPlugins: { 'pdf@mkt': true } });
+    fs.rmSync(journalFile, { force: true });
+    fixedCost.applyActions([{ kind: 'plugin-disable', target: 'pdf@mkt', tokens: 40, why: 'installed but not used in the last 30 days' }, { kind: 'env-set', target: 'ENABLE_TOOL_SEARCH', value: 'true', tokens: 0, why: 'Tool Search off' }]);
+    const list = await call(dash.getDoctorSwitchedOff, {});
+    assertEq(list.body.items.map((e) => e.target), ['pdf@mkt'], 'so o que foi desviado; ajuste do boss fica de fora');
+    assertEq(list.body.items[0].why, 'installed but not used in the last 30 days');
+    const bad = await call(dash.postDoctorUndo, Readable.from([JSON.stringify({})]));
+    assertEq(bad.status, 400, 'sem id: falha alto');
+    const none = await call(dash.postDoctorUndo, Readable.from([JSON.stringify({ id: 'nao-existe' })]));
+    assertEq(none.status, 404, 'id desconhecido: 404');
+    const ok = await call(dash.postDoctorUndo, Readable.from([JSON.stringify({ id: list.body.items[0].id })]));
+    assertEq([ok.status, ok.body.ok, ok.body.restored.target, ok.body.restartNeeded], [200, true, 'pdf@mkt', true], JSON.stringify(ok.body));
+    assertEq(JSON.parse(fs.readFileSync(settingsFile, 'utf8')).enabledPlugins['pdf@mkt'], true, 'o plugin voltou no settings.json');
+    assert(hc.getFixedCost().keep.includes('pdf@mkt'), 'entrou em fixedCost.keep');
+    assertEq((await call(dash.getDoctorSwitchedOff, {})).body.items, [], 'saiu da lista');
+    const keep = hc.addFixedCostKeep('pdf@mkt');
+    assertEq(keep.keep.filter((k) => k === 'pdf@mkt').length, 1, 'idempotente');
+    const audit = fixedCost.buildAudit(fcFacts({ plugins: [{ id: 'pdf@mkt', name: 'pdf', enabled: true }], keep: hc.getFixedCost().keep }));
+    assert(!audit.actions.some((a) => a.target === 'pdf@mkt'), 'o proximo audit nao desativa de novo');
+  } finally {
+    for (const [f, txt] of bak) { if (txt == null) fs.rmSync(f, { force: true }); else fs.writeFileSync(f, txt); }
+    hc._resetCache();
+  }
+});
+
+test('doctor-first-run: o aviso instrui o agente a contar o que foi desativado, dizer que o controle e do usuario e PERGUNTAR se abre o dashboard (ele mesmo abre, sem a barra)', () => {
+  const firstRun = require('./doctor-first-run.js');
+  const t = firstRun.composeNotice({ key: 'k', results: [], fixes: [{ id: 'fixed-cost', ok: true, message: 'x' }], audit: null, pluginRoot: 'C:\\plug\\3.9.0', turnedOff: [{ kind: 'plugin-disable', target: 'pdf@mkt', why: 'never used' }] });
+  assert(/INSTRUCTION FOR YOU \(the agent\)/.test(t), t);
+  assert(/tell the user plainly what was switched off and why/.test(t) && /control is theirs/.test(t) && /ASK whether they want to open the dashboard/.test(t), 'avisa, devolve o controle e pergunta');
+  assert(/run `node "C:\\plug\\3\.9\.0[\\/]scripts[\\/]dashboard-open\.js"` yourself \(do not ask them to type \/dashboard\)/.test(t), 'o proprio agente abre, com o caminho do plugin instalado');
+  assert(/turn the automatic switch-off off/.test(t) || /switch that stops the doctor/.test(t), 'diz onde desligar o autoFix');
+  const none = firstRun.composeNotice({ key: 'k', results: [], fixes: [], audit: null, turnedOff: [] });
+  assert(!/INSTRUCTION FOR YOU/.test(none), 'nada desativado: o agente nao e instruido a perguntar nada');
+});
+
+test('dashboard-open: sobe o dashboard (idempotente), abre o navegador na aba Home e devolve a URL; falha do starter sai alto', async () => {
+  const dOpen = require('./dashboard-open.js');
+  const opened = [];
+  const ok = await dOpen.run({ ensure: async () => ({ ok: true, url: 'http://localhost:4321/', status: 'already-running' }), open: (u) => { opened.push(u); return true; } });
+  assertEq(ok, { ok: true, url: 'http://localhost:4321/#home', status: 'already-running', opened: true });
+  assertEq(opened, ['http://localhost:4321/#home']);
+  const bad = await dOpen.run({ ensure: async () => ({ ok: false, error: 'port busy' }), open: () => { throw new Error('nao deve abrir'); } });
+  assertEq(bad, { ok: false, error: 'port busy' });
+  const noOpen = await dOpen.run({ ensure: async () => ({ ok: true, url: 'http://localhost:1', status: 'started' }), open: () => false });
+  assertEq([noOpen.ok, noOpen.opened], [true, false], 'sem navegador: a URL ainda volta');
+});
+
+test('hooks-config.saveFixedCost + dashboard /api/doctor/config: o usuario liga/desliga o autoFix (update-safe), valores invalidos falham alto', async () => {
+  const { Readable } = require('stream');
+  delete require.cache[require.resolve('./dashboard.js')];
+  const dash = require('./dashboard.js');
+  const hc = require('./lib/hooks-config.js');
+  const file = hc.userConfigPath();
+  assert(file.startsWith(process.env.USERPROFILE), `the suite's temp HOME (${file})`);
+  const prev = fs.existsSync(file) ? fs.readFileSync(file, 'utf8') : null;
+  const call = async (fn, ...a) => { let status = 200; let body = null; await fn(...a, { writeHead: (c) => { status = c; }, end: (t) => { body = JSON.parse(t); } }); return { status, body }; };
+  try {
+    assertEq((await call(dash.getDoctorConfig, {})).body.autoFix, true, 'padrao: ligado');
+    const off = await call(dash.saveDoctorConfig, Readable.from([JSON.stringify({ autoFix: false })]));
+    assertEq([off.status, off.body.config.autoFix], [200, false]);
+    assertEq(JSON.parse(fs.readFileSync(file, 'utf8')).fixedCost.autoFix, false, 'gravado no user-config (nunca no arquivo entregue)');
+    assertEq(hc.getFixedCost().autoFix, false);
+    hc.addFixedCostKeep('pdf@mkt');
+    assertEq(hc.saveFixedCost({ autoFix: true }).keep, ['pdf@mkt'], 'ligar de novo preserva o keep');
+    assertEq((await call(dash.saveDoctorConfig, Readable.from([JSON.stringify({ autoFix: 'sim' })]))).status, 400, 'nao booleano: 400');
+    assertEq((await call(dash.saveDoctorConfig, Readable.from([JSON.stringify({})]))).status, 400, 'vazio: 400');
+    // The first-run hook honours it: autoFix off → nothing is applied and the notice does not claim anything was switched off.
+    const firstRun = require('./doctor-first-run.js');
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-fr-cfg-'));
+    let applied = 0;
+    const fakeDoctor = { gatherContext: async () => ({ fixedCost: null }), runChecks: () => [{ id: 'fixed-cost', label: 'F', status: 'warn', detail: 'd', fix: 'f', autofix: 'fixed-cost' }], FIXERS: { 'fixed-cost': () => { applied++; return 'x'; } }, applyFixes: () => { applied++; return []; } };
+    hc.saveFixedCost({ autoFix: false });
+    const text = await firstRun.run({}, { dir, key: 'cfg1', doctor: fakeDoctor, journal: () => [{ id: 'z', at: new Date(Date.now() + 5000).toISOString(), kind: 'plugin-disable', target: 'p@m', why: 'w' }] });
+    assertEq(applied, 0, 'autoFix desligado: o doctor nao aplica nada');
+    assert(!/ATTENTION/.test(text), text);
+    fs.rmSync(dir, { recursive: true, force: true });
+  } finally {
+    if (prev == null) fs.rmSync(file, { force: true }); else fs.writeFileSync(file, prev);
+    hc._resetCache();
+  }
+});
+
+test('dashboard Home: card "Desativados pelo doctor" tem a lista, o Desfazer por item (sem onclick com string), o interruptor do autoFix e pt/en', () => {
+  const html = fs.readFileSync(path.join(ROOT, 'dashboard', 'index.html'), 'utf8');
+  assert(/id="home-switched-off-card"/.test(html) && /id="home-switched-off"/.test(html) && /id="doctor-autofix"/.test(html), 'card, lista e interruptor');
+  assert(/api\('GET', '\/api\/doctor\/switched-off'\)/.test(html) && /api\('POST', '\/api\/doctor\/undo', \{ id \}\)/.test(html), 'chama a lista e o undo por id');
+  assert(/api\('PUT', '\/api\/doctor\/config', \{ autoFix: want \}\)/.test(html), 'o interruptor grava o autoFix');
+  assert(/data-id="\$\{escapeHtml\(e\.id\)\}" onclick="undoSwitchedOff\(this\)"/.test(html), 'o id vai em data-id (convencao: nada de onclick com arg-string)');
+  assert(/'home\.switchedOff': 'Desativados pelo doctor'/.test(html) && /'home\.switchedOff': 'Switched off by the doctor'/.test(html), 'pt e en');
+  assert(/loadSwitchedOff\(\);\n\}/.test(html.replace(/\r\n/g, '\n')), 'carrega junto com a Home');
 });
 
 test('doctor: nenhum evento do NOSSO hooks.json cai como DESCONHECIDO', () => {

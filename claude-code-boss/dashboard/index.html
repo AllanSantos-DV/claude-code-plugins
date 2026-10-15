@@ -480,6 +480,12 @@ table{font-variant-numeric:tabular-nums}
       <div class="text-muted" id="home-learning-loop-summary" style="font-size:.85rem;margin-bottom:.5rem"></div>
       <div id="home-learning-loop-weeks"></div>
     </div>
+    <div class="card" id="home-switched-off-card">
+      <h2 style="margin:0 0 .25rem 0"><span data-i18n="home.switchedOff">Switched off by the doctor</span></h2>
+      <label class="flex" style="gap:.5rem;align-items:center;font-size:.85rem;margin-bottom:.5rem"><input type="checkbox" id="doctor-autofix" onchange="saveDoctorAutoFix(this)"> <span data-i18n="home.autoFix">Let the doctor switch things off on its own (after an update). You always keep the final say: undo any item below.</span></label>
+      <p class="text-muted" id="home-switched-off-hint" style="font-size:.85rem;margin:0 0 .5rem 0" data-i18n="home.switchedOffHint">The doctor switches off, on its own, what every message pays for and you do not use: plugins and MCP servers unused for the audit period or never authenticated, and skills that stay listed by name only. Press Undo to bring one back; it is never switched off again. Restart Claude Code after an undo.</p>
+      <div id="home-switched-off"></div>
+    </div>
     <div class="card">
       <div class="flex mb-1" style="align-items:center;justify-content:space-between">
         <h2 style="margin:0">Doctor <span class="text-muted" style="font-size:.8rem">setup health</span></h2>
@@ -1494,6 +1500,9 @@ const I18N = {
     'action.close': 'Close',
     'brain.testInstall': 'Test / Install',
     'home.title': 'System Overview', 'home.brain': 'Brain Knowledge Base', 'home.value': 'Value at a glance', 'home.curation': 'Curation & guards', 'home.compaction': 'Compaction & cache',
+    'home.switchedOff': 'Switched off by the doctor', 'home.switchedOffHint': 'The doctor switches off, on its own, what every message pays for and you do not use: plugins and MCP servers unused for the audit period or never authenticated, and skills that stay listed by name only. Press Undo to bring one back; it is never switched off again. Restart Claude Code after an undo.',
+    'home.autoFix': 'Let the doctor switch things off on its own (after an update). You always keep the final say: undo any item below.', 'home.autoFixSaved': 'Saved.', 'home.switchedOffNone': 'Nothing has been switched off.',
+    'home.undo': 'Undo', 'home.undone': 'Restored — restart Claude Code to load it.', 'home.undoFailed': 'Could not undo',
     'home.start.title': 'Getting started', 'home.start.lead': 'This panel fills itself as you use Claude Code. Nothing to set up.',
     'home.start.s1t': 'Correct the agent when it gets something wrong', 'home.start.s1': 'The correction becomes a lesson and shows up under Lessons learned. Next time, it is remembered.',
     'home.start.s2t': 'Repeat a command with long output', 'home.start.s2': 'It gets a curated script that returns a summary; the saving shows up under Curation & guards.',
@@ -1723,6 +1732,9 @@ const I18N = {
     'action.close': 'Fechar',
     'brain.testInstall': 'Testar / Instalar',
     'home.title': 'Visão Geral', 'home.brain': 'Base de Conhecimento (Brain)', 'home.value': 'Valor gerado', 'home.curation': 'Curadoria e guards', 'home.compaction': 'Compactação e cache',
+    'home.switchedOff': 'Desativados pelo doctor', 'home.switchedOffHint': 'O doctor desativa sozinho o que pesa em toda mensagem e você não usa: plugins e servidores MCP sem uso no período da auditoria ou sem autenticação, e skills que passam a aparecer só pelo nome. Clique em Desfazer para trazer um de volta; ele não é desativado de novo. Reinicie o Claude Code depois de desfazer.',
+    'home.autoFix': 'Deixar o doctor desativar coisas sozinho (depois de uma atualização). A palavra final é sua: desfaça qualquer item abaixo.', 'home.autoFixSaved': 'Salvo.', 'home.switchedOffNone': 'Nada foi desativado.',
+    'home.undo': 'Desfazer', 'home.undone': 'Restaurado — reinicie o Claude Code para carregar.', 'home.undoFailed': 'Não foi possível desfazer',
     'home.start.title': 'Primeiros passos', 'home.start.lead': 'Este painel se preenche sozinho conforme você usa o Claude Code. Nada a configurar.',
     'home.start.s1t': 'Corrija o agente quando ele errar', 'home.start.s1': 'A correção vira uma lição e aparece em Lições aprendidas. Na próxima vez, ele lembra.',
     'home.start.s2t': 'Repita um comando de saída longa', 'home.start.s2': 'Ele ganha um script curado que devolve um resumo; a economia aparece em Curadoria e guards.',
@@ -2683,6 +2695,7 @@ async function loadHome() {
   } catch { el.innerHTML = '<p class="text-muted">Failed to load status.</p>'; }
   loadValueSummary();
   loadTuningRecs();
+  loadSwitchedOff();
 }
 
 async function loadTuningRecs() {
@@ -2978,6 +2991,60 @@ async function runDoctor() {
     ).join('') + '</tbody></table>'
       + `<p class="text-muted" style="font-size:.8rem;margin-top:.5rem">${d.summary.counts.ok} ok · ${d.summary.counts.warn} warn · ${d.summary.counts.fail} fail</p>`;
   } catch { el.innerHTML = '<p class="text-muted">Doctor check failed to run.</p>'; }
+}
+
+// What the doctor switched off on its own, with the reason, and a per-item undo (the journal behind `doctor --undo`).
+const SWITCHED_OFF_KIND = { 'plugin-disable': 'plugin', 'mcp-remove': 'MCP server', 'skill-name-only': 'skill (name only)' };
+
+async function loadSwitchedOff() {
+  const card = document.getElementById('home-switched-off-card');
+  const el = document.getElementById('home-switched-off');
+  if (!card || !el) return;
+  try {
+    const d = await api('GET', '/api/doctor/switched-off');
+    if (d.error) throw new Error(d.error);
+    const items = d.items || [];
+    const cfg = await api('GET', '/api/doctor/config');
+    if (cfg.error) throw new Error(cfg.error);
+    document.getElementById('doctor-autofix').checked = cfg.autoFix !== false;
+    if (!items.length) { el.innerHTML = `<p class="text-muted" style="font-size:.85rem">${escapeHtml(t('home.switchedOffNone'))}</p>`; return; }
+    el.innerHTML = '<table style="width:100%;font-size:.85rem"><thead><tr><th>Item</th><th>Why</th><th>When</th><th></th></tr></thead><tbody>' + items.map((e) =>
+      `<tr><td><span class="badge badge-yellow">${escapeHtml(SWITCHED_OFF_KIND[e.kind] || e.kind)}</span> <strong>${escapeHtml(e.target)}</strong></td>`
+      + `<td class="text-muted">${escapeHtml(e.why || '—')}</td><td class="text-muted" style="white-space:nowrap">${escapeHtml(String(e.at || '').slice(0, 10))}</td>`
+      + `<td style="text-align:right"><button class="btn-sm" data-id="${escapeHtml(e.id)}" onclick="undoSwitchedOff(this)">${escapeHtml(t('home.undo'))}</button></td></tr>`
+    ).join('') + '</tbody></table>';
+  } catch (err) {
+    el.innerHTML = `<p class="text-muted">Could not read the doctor's journal: ${escapeHtml(err.message)}</p>`;
+  }
+}
+
+async function saveDoctorAutoFix(box) {
+  const want = box.checked;
+  try {
+    const r = await api('PUT', '/api/doctor/config', { autoFix: want });
+    if (r.error) throw new Error(r.error);
+    box.checked = r.config.autoFix !== false;
+    box.insertAdjacentHTML('afterend', `<span class="badge badge-green" style="margin-left:.4rem">${escapeHtml(t('home.autoFixSaved'))}</span>`);
+  } catch (err) {
+    box.checked = !want;
+    box.insertAdjacentHTML('afterend', `<span class="badge badge-red" style="margin-left:.4rem">${escapeHtml(err.message)}</span>`);
+  }
+}
+
+async function undoSwitchedOff(btn) {
+  const id = btn.dataset.id;
+  btn.disabled = true;
+  const el = document.getElementById('home-switched-off');
+  try {
+    const r = await api('POST', '/api/doctor/undo', { id });
+    if (r.error) throw new Error(r.error);
+    await loadSwitchedOff();
+    const note = document.getElementById('home-switched-off-hint');
+    if (note) note.insertAdjacentHTML('afterend', `<p class="badge badge-green" style="display:block;font-size:.85rem;margin:.25rem 0">${escapeHtml(r.restored.target)}: ${escapeHtml(t('home.undone'))}</p>`);
+  } catch (err) {
+    btn.disabled = false;
+    if (el) el.insertAdjacentHTML('beforebegin', `<p class="badge badge-red" style="display:block;font-size:.85rem">${escapeHtml(t('home.undoFailed'))}: ${escapeHtml(err.message)}</p>`);
+  }
 }
 
 // D4 — learning-loop card: captured vs merged per week + merge-rate reading.
