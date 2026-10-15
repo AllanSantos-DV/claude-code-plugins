@@ -16906,6 +16906,99 @@ test('doctor-first-run.composeNotice: auditoria que falhou aparece e correcao qu
   assert(!/Restart Claude Code/.test(t), 'nada aplicado, nada a reiniciar');
 });
 
+test('doctor-first-run: o aviso diz QUAIS itens foram desativados, POR QUE (sem uso / sem autenticacao) e onde desfazer um a um', async () => {
+  const firstRun = require('./doctor-first-run.js');
+  const dir = fcTmp('first-off');
+  const results = [{ id: 'fixed-cost', label: 'Fixed cost', status: 'warn', detail: 'd', fix: 'f', autofix: 'fixed-cost' }];
+  const fakeDoctor = {
+    gatherContext: async () => ({ fixedCost: { days: 30, totals: { mcpServers: 1, mcpUsed: 0, mcpTokens: 10, skillsTotal: 1, skillsUsed: 0, skillTokens: 5, pluginsTotal: 1, pluginsUsed: 0, instructionTokens: 1 }, msgsPerSession: 20 } }),
+    runChecks: () => results,
+    FIXERS: { 'fixed-cost': () => '2 changed', 'boss-config': () => 'x' },
+    applyFixes: (rs, ctx, fixers) => rs.filter((r) => r.autofix && fixers[r.autofix]).map((r) => ({ id: r.id, ok: true, message: fixers[r.autofix](ctx) })),
+  };
+  const entries = (at) => [
+    { id: 'a-0', at, kind: 'plugin-disable', target: 'pdf@mkt', why: 'installed but not used in the last 30 days (Claude Code\'s own pluginUsage)' },
+    { id: 'a-1', at, kind: 'mcp-remove', target: 'figma', scope: 'user', why: 'asks for authentication (HTTP 401) and was never authenticated: it cannot work' },
+    { id: 'a-2', at, kind: 'env-set', target: 'ENABLE_TOOL_SEARCH', why: 'Tool Search off' },
+  ];
+  const cfg = { enabled: true, autoFix: true, days: 30, keep: [] };
+  const text = await firstRun.run({}, { dir, key: 'off1', doctor: fakeDoctor, cfg, journal: () => entries(new Date(Date.now() + 1000).toISOString()) });
+  assert(/ATTENTION — 2 item\(s\) were switched off automatically/.test(text), text);
+  assert(/plugin disabled: pdf@mkt — installed but not used in the last 30 days/.test(text), 'plugin e o motivo (sem uso)');
+  assert(/MCP server removed: figma — asks for authentication .* never authenticated/.test(text), 'servidor e o motivo (sem autenticacao)');
+  assert(!/ENABLE_TOOL_SEARCH/.test(text.split('Applied')[0]), 'ajuste do proprio boss nao e listado como item desviado');
+  assert(/Switched off by the doctor/.test(text) && /press Undo/.test(text) && /doctor.js --undo/.test(text), 'diz onde desfazer um a um e tudo');
+  const old = await firstRun.run({}, { dir, key: 'off2', doctor: fakeDoctor, cfg, journal: () => entries('2020-01-01T00:00:00.000Z') });
+  assert(!/ATTENTION/.test(old), 'entradas de builds anteriores nao entram no aviso desta rodada');
+  const noFix = await firstRun.run({}, { dir, key: 'off3', doctor: fakeDoctor, cfg: { ...cfg, autoFix: false }, journal: () => entries(new Date(Date.now() + 1000).toISOString()) });
+  assert(!/ATTENTION/.test(noFix), 'autoFix desligado: nada foi desativado, nada a avisar');
+  fs.rmSync(dir, { recursive: true, force: true });
+});
+
+test('fixed-cost.listJournal / undoActions({ids}): a lista nao leva a config do servidor; desfazer um item deixa os outros no diario', () => {
+  const home = fcTmp('journal');
+  const env = { CLAUDE_CODE_EXECPATH: process.execPath };
+  const calls = [];
+  const run = (bin, args) => { calls.push(args); return { status: 0, stdout: '', stderr: '' }; };
+  const settingsFile = path.join(home, '.claude', 'settings.json');
+  fcWrite(settingsFile, { enabledPlugins: { 'pdf@mkt': true, 'xls@mkt': true } });
+  const secret = { type: 'http', url: 'http://h', headers: { Authorization: 'Bearer SEGREDO' } };
+  fixedCost.applyActions([
+    { kind: 'plugin-disable', target: 'pdf@mkt', tokens: 40, why: 'installed but not used in the last 30 days' },
+    { kind: 'plugin-disable', target: 'xls@mkt', tokens: 10, why: 'installed but not used in the last 30 days' },
+    { kind: 'mcp-remove', target: 'figma', scope: 'user', config: secret, tokens: 90, why: 'asks for authentication (HTTP 401) and was never authenticated' },
+  ], { home, env, run });
+  const list = fixedCost.listJournal({ home });
+  assertEq(list.map((e) => e.target), ['pdf@mkt', 'xls@mkt', 'figma']);
+  assertEq(list[0].why, 'installed but not used in the last 30 days');
+  assertEq(list[2].tokens, 90);
+  assert(!JSON.stringify(list).includes('SEGREDO') && !('config' in list[2]), 'headers/env do servidor nunca saem na lista');
+  const r = fixedCost.undoActions({ home, env, run, ids: [list[0].id] });
+  assertEq(r.map((x) => [x.target, x.ok]), [['pdf@mkt', true]], 'so o pedido foi desfeito');
+  assertEq(JSON.parse(fs.readFileSync(settingsFile, 'utf8')).enabledPlugins, { 'pdf@mkt': true, 'xls@mkt': false }, 'o plugin voltou, o outro continua desativado');
+  assertEq(fixedCost.listJournal({ home }).map((e) => e.target), ['xls@mkt', 'figma'], 'o resto segue no diario, na mesma ordem');
+  assert(!calls.some((a) => a[1] === 'add-json'), 'o servidor nao foi re-adicionado');
+  fs.rmSync(home, { recursive: true, force: true });
+});
+
+test('dashboard /api/doctor/switched-off e /api/doctor/undo: lista com o motivo, desfaz um plugin e o poe em fixedCost.keep para nao ser desativado de novo', async () => {
+  const { Readable } = require('stream');
+  delete require.cache[require.resolve('./dashboard.js')];
+  const dash = require('./dashboard.js');
+  const hc = require('./lib/hooks-config.js');
+  const call = async (fn, ...a) => { let status = 200; let body = null; await fn(...a, { writeHead: (c) => { status = c; }, end: (t) => { body = JSON.parse(t); } }); return { status, body }; };
+  const home = os.homedir();
+  assert(home.startsWith(os.tmpdir()) || home.startsWith(process.env.USERPROFILE), `the suite's temp HOME (${home})`);
+  const settingsFile = path.join(home, '.claude', 'settings.json');
+  const journalFile = fixedCost.undoPath(home);
+  const cfgFile = hc.userConfigPath();
+  const bak = [settingsFile, journalFile, cfgFile].map((f) => [f, fs.existsSync(f) ? fs.readFileSync(f, 'utf8') : null]);
+  try {
+    fcWrite(settingsFile, { enabledPlugins: { 'pdf@mkt': true } });
+    fs.rmSync(journalFile, { force: true });
+    fixedCost.applyActions([{ kind: 'plugin-disable', target: 'pdf@mkt', tokens: 40, why: 'installed but not used in the last 30 days' }, { kind: 'env-set', target: 'ENABLE_TOOL_SEARCH', value: 'true', tokens: 0, why: 'Tool Search off' }]);
+    const list = await call(dash.getDoctorSwitchedOff, {});
+    assertEq(list.body.items.map((e) => e.target), ['pdf@mkt'], 'so o que foi desviado; ajuste do boss fica de fora');
+    assertEq(list.body.items[0].why, 'installed but not used in the last 30 days');
+    const bad = await call(dash.postDoctorUndo, Readable.from([JSON.stringify({})]));
+    assertEq(bad.status, 400, 'sem id: falha alto');
+    const none = await call(dash.postDoctorUndo, Readable.from([JSON.stringify({ id: 'nao-existe' })]));
+    assertEq(none.status, 404, 'id desconhecido: 404');
+    const ok = await call(dash.postDoctorUndo, Readable.from([JSON.stringify({ id: list.body.items[0].id })]));
+    assertEq([ok.status, ok.body.ok, ok.body.restored.target, ok.body.restartNeeded], [200, true, 'pdf@mkt', true], JSON.stringify(ok.body));
+    assertEq(JSON.parse(fs.readFileSync(settingsFile, 'utf8')).enabledPlugins['pdf@mkt'], true, 'o plugin voltou no settings.json');
+    assert(hc.getFixedCost().keep.includes('pdf@mkt'), 'entrou em fixedCost.keep');
+    assertEq((await call(dash.getDoctorSwitchedOff, {})).body.items, [], 'saiu da lista');
+    const keep = hc.addFixedCostKeep('pdf@mkt');
+    assertEq(keep.keep.filter((k) => k === 'pdf@mkt').length, 1, 'idempotente');
+    const audit = fixedCost.buildAudit(fcFacts({ plugins: [{ id: 'pdf@mkt', name: 'pdf', enabled: true }], keep: hc.getFixedCost().keep }));
+    assert(!audit.actions.some((a) => a.target === 'pdf@mkt'), 'o proximo audit nao desativa de novo');
+  } finally {
+    for (const [f, txt] of bak) { if (txt == null) fs.rmSync(f, { force: true }); else fs.writeFileSync(f, txt); }
+    hc._resetCache();
+  }
+});
+
 test('doctor: nenhum evento do NOSSO hooks.json cai como DESCONHECIDO', () => {
   // Guard anti-regressao: o plugin nunca mais pode alarmar contra si mesmo. O
   // veredito pode ser `warn` (temos eventos runtime-dependentes), mas NENHUM
