@@ -164,6 +164,50 @@ function curationHome(projectRoot) {
   return home;
 }
 
+const CURATION_KEY = /^[\w.-]+(\/[\w.-]+){0,3}$/;
+
+/**
+ * Curation home of a key as listed by listCurationHomes (`owner/repo`, `host/owner/repo`,
+ * `local/<name>-<hash>`). Null for anything that is not such a key — the key comes from an
+ * HTTP query, so `..` or a separator trick must never leave the curation folder.
+ * @param {string} key
+ * @returns {string|null}
+ */
+function curationHomeOfKey(key) {
+  const k = String(key || '');
+  if (!CURATION_KEY.test(k) || k.split('/').some((s) => s === '.' || s === '..')) return null;
+  const { globalDir } = require('../engine/lib/data-dir.js');
+  return path.join(globalDir(), 'curation', ...k.split('/'));
+}
+
+/**
+ * Every project with curated scripts: the curation homes holding a shells.json. The homes
+ * are the source of truth (no cwd is recorded for a project); `_`-prefixed folders are
+ * archives (`_superseded`), and the walk stops at a home, never entering its scripts/.
+ * @returns {{key:string, home:string, shellsPath:string}[]}
+ */
+function listCurationHomes() {
+  const { globalDir } = require('../engine/lib/data-dir.js');
+  const out = [];
+  const walk = (dir, segs) => {
+    let entries;
+    try { entries = fs.readdirSync(dir, { withFileTypes: true }); } catch (err) {
+      if (err.code !== 'ENOENT') console.error(`[curation-paths] cannot list ${dir}: ${err.message}`);
+      return;
+    }
+    for (const e of entries) {
+      if (!e.isDirectory() || e.name.startsWith('_')) continue;
+      const home = path.join(dir, e.name);
+      const key = [...segs, e.name];
+      const shellsPath = path.join(home, 'shells.json');
+      if (fs.existsSync(shellsPath)) out.push({ key: key.join('/'), home, shellsPath });
+      else if (key.length < 4) walk(home, key);
+    }
+  };
+  walk(path.join(globalDir(), 'curation'), []);
+  return out.sort((a, b) => a.key.localeCompare(b.key));
+}
+
 /**
  * Resolve the scripts dir for a given project root: `<home>/scripts`.
  * @param {string|null} projectRoot
@@ -551,6 +595,8 @@ module.exports = {
   findProjectRoot,
   curationHome,
   curationKeyOf,
+  curationHomeOfKey,
+  listCurationHomes,
   getScriptsDir,
   getShellsConfigPath,
   resolveScriptPath,

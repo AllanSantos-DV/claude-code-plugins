@@ -3988,32 +3988,31 @@ async function loadCurationProjects() {
     const projects = await api('GET', '/api/curation/projects');
     const sel = document.getElementById('shells-project-select');
     if (projects.length === 0) {
-      sel.innerHTML = '<option value="">Nenhum projeto detectado ainda — curation-detect registrará automaticamente</option>';
+      sel.innerHTML = '<option value="">Nenhum projeto com scripts curados ainda</option>';
       return;
     }
     sel.innerHTML = projects.map(p =>
-      `<option value="${encodeURIComponent(p.cwd)}">${p.cwd} (${p.shellCount} shell${p.shellCount !== 1 ? 's' : ''}${p.hasShells ? '' : ' — sem shells.json ainda'})</option>`
+      `<option value="${encodeURIComponent(p.key)}">${escapeHtml(p.key)} (${p.shellCount} shell${p.shellCount !== 1 ? 's' : ''})</option>`
     ).join('');
     // Auto-load first project
     onShellsProjectChange(sel.value);
   } catch {}
 }
 
-function onShellsProjectChange(cwdEnc) {
-  if (!cwdEnc) return;
-  const cwd = decodeURIComponent(cwdEnc);
-  loadCuratedShells(cwd);
+function onShellsProjectChange(keyEnc) {
+  if (!keyEnc) return;
+  loadCuratedShells(decodeURIComponent(keyEnc));
 }
 
-async function loadCuratedShells(cwd) {
-  if (!cwd) cwd = decodeURIComponent(document.getElementById('shells-project-select').value || '');
+async function loadCuratedShells(key) {
+  if (!key) key = decodeURIComponent(document.getElementById('shells-project-select').value || '');
   const statusEl = document.getElementById('shells-status');
   const tableEl = document.getElementById('shells-table');
-  if (!cwd) { statusEl.textContent = ''; tableEl.innerHTML = ''; return; }
+  if (!key) { statusEl.textContent = ''; tableEl.innerHTML = ''; return; }
   statusEl.textContent = 'Carregando...';
   tableEl.innerHTML = '';
   try {
-    const data = await api('GET', `/api/curation/shells?cwd=${encodeURIComponent(cwd)}`);
+    const data = await api('GET', `/api/curation/shells?key=${encodeURIComponent(key)}`);
     if (!data.found) {
       statusEl.textContent = 'shells.json não encontrado neste projeto';
       tableEl.innerHTML = '<p class="text-muted" style="margin-top:.5rem">Nenhum shell curado ainda. Os scripts curados ficam na sua pasta de usuário (<code>~/.claude/claude-code-boss/curation/&lt;projeto&gt;/</code>), nunca dentro do repositório.</p>';
@@ -4043,7 +4042,7 @@ async function loadCuratedShells(cwd) {
         <td><span class="tag ${s.scriptExists ? 'tag-green' : 'badge-red'}">${s.scriptExists ? 'OK' : 'Script ausente'}</span></td>
         <td>
           ${s.scriptContent ? `<button class="btn-sm btn-primary" data-shell-act="view" data-idx="${i}">Ver</button> ` : ''}
-          <button class="btn-sm btn-danger" data-shell-act="delete" data-idx="${i}" data-cwd="${escapeHtml(cwd)}">Remover</button>
+          <button class="btn-sm btn-danger" data-shell-act="delete" data-idx="${i}" data-key="${escapeHtml(key)}">Remover</button>
         </td>
       </tr>`).join('') +
       '</tbody></table>';
@@ -4051,7 +4050,7 @@ async function loadCuratedShells(cwd) {
       btn.addEventListener('click', () => {
         const idx = parseInt(btn.dataset.idx, 10);
         if (btn.dataset.shellAct === 'view') viewShellScript(idx);
-        else deleteShell(idx, btn.dataset.cwd);
+        else deleteShell(idx, btn.dataset.key);
       });
     });
 
@@ -4066,11 +4065,10 @@ function viewShellScript(idx) {
   alert(`Script: ${s.scriptPath}\n\n${s.scriptContent || '(vazio)'}`);
 }
 
-async function deleteShell(idx, cwdRaw) {
+async function deleteShell(idx, key) {
   if (!confirm('Remover este shell da lista?')) return;
-  const cwdEnc = encodeURIComponent(cwdRaw);
-  await api('DELETE', `/api/curation/shells/${idx}?cwd=${cwdEnc}`);
-  loadCuratedShells(decodeURIComponent(cwdEnc));
+  await api('DELETE', `/api/curation/shells/${idx}?key=${encodeURIComponent(key)}`);
+  loadCuratedShells(key);
 }
 
 const PROFILE_DESCS = {
