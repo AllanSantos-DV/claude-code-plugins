@@ -21,7 +21,7 @@ const MESSAGE = [
 ].join(' '); // one line: Claude Code prefixes EACH line with "UserPromptSubmit says:"
 
 function markerPath(dir) {
-  return path.join(dir || require('./data-dir.js').globalDir(), 'welcome.json');
+  return path.join(dir || require('../../engine/lib/data-dir.js').globalDir(), 'welcome.json');
 }
 
 /**

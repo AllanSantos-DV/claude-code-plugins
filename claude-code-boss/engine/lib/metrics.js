@@ -16,8 +16,9 @@ function _resolveProject(ctx) {
   // current directory and drifts with `cd` — one session's events landed under two
   // project keys (seen live: curation.piped under the subfolder, curation.used under
   // the root). In the shared daemon process.cwd() is the first session's folder, so
-  // it is only the last resort (hookEnv = process.env outside the daemon).
-  const cwd = require('./hook-context.js').hookEnv().CLAUDE_PROJECT_DIR || (ctx && ctx.cwd) || process.cwd();
+  // it is only the last resort (hostEnv = process.env outside the daemon). A host that is not
+  // Claude Code passes the session root as ctx.projectRoot.
+  const cwd = (ctx && ctx.projectRoot) || require('./host-env.js').hostEnv().CLAUDE_PROJECT_DIR || (ctx && ctx.cwd) || process.cwd();
   // The strict project id, not the folder name: two repos named alike shared one metrics.db.
   try { return require('./metrics-project.js').metricsKeyFor(cwd); } catch (err) { console.error(`[metrics] project key: ${err.message}`); return 'default'; }
 }
@@ -28,7 +29,7 @@ function _resolveProject(ctx) {
  *
  * @param {string} eventName  snake.case event id (e.g. `retrieve.injected`)
  * @param {object} [payload]  arbitrary JSON-serializable object
- * @param {object} [ctx]      { sessionId, project, cwd } — project derived from cwd if omitted
+ * @param {object} [ctx]      { sessionId, project, projectRoot, cwd } — project derived from projectRoot/cwd if omitted
  */
 async function record(eventName, payload = {}, ctx = {}) {
   try {

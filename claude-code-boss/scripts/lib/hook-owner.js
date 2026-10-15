@@ -26,7 +26,7 @@ const KEEP_SEEN = 60;
 const MAX_SHOWN = 3;
 const FAIL_TYPES = new Set(['hook_non_blocking_error', 'hook_cancelled']);
 
-const readJson = (file) => require('./json-file.js').readJsonLoud(file, 'hook-owner');
+const readJson = (file) => require('../../engine/lib/json-file.js').readJsonLoud(file, 'hook-owner');
 
 function claudeDir(env = process.env) {
   return env.CLAUDE_CONFIG_DIR || path.join(os.homedir(), '.claude');
@@ -161,7 +161,7 @@ function takeFailureNotices({ event, stateDir, env = process.env } = {}) {
   if (!event || !event.transcript_path || !event.session_id) return null;
   const failures = readFailures(event.transcript_path);
   if (!failures.length) return null;
-  const file = path.join(stateDir || require('./data-dir.js').globalDir(), STATE);
+  const file = path.join(stateDir || require('../../engine/lib/data-dir.js').globalDir(), STATE);
   const state = readJson(file) || {};
   const seen = new Set((state.seen && state.seen[event.session_id]) || []);
   const fresh = failures.filter((f) => !seen.has(f.uuid));
@@ -175,7 +175,7 @@ function takeFailureNotices({ event, stateDir, env = process.env } = {}) {
   const ids = Object.keys(state.seen);
   if (ids.length > 20) for (const id of ids.slice(0, ids.length - 20)) delete state.seen[id];
   fs.mkdirSync(path.dirname(file), { recursive: true });
-  require('./atomic-write.js').writeFileAtomic(file, JSON.stringify(state, null, 2) + '\n');
+  require('../../engine/lib/atomic-write.js').writeFileAtomic(file, JSON.stringify(state, null, 2) + '\n');
   return lines.join(' ');
 }
 

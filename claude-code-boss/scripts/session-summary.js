@@ -18,18 +18,18 @@
 'use strict';
 
 const fs = require('fs');
-const { writeFileAtomic } = require('./lib/atomic-write.js');
+const { writeFileAtomic } = require('../engine/lib/atomic-write.js');
 const path = require('path');
 
 const hooksCfg = require('./lib/hooks-config.js');
 const { countLessonsSince } = require('./lib/value-summary.js');
 
 function dataDir() {
-  return require('./lib/data-dir.js').dataDir();
+  return require('../engine/lib/data-dir.js').dataDir();
 }
 
 function safeSid(sid) {
-  return require('./lib/session-id.js').sanitizeSessionId(sid);
+  return require('../engine/lib/session-id.js').sanitizeSessionId(sid);
 }
 
 function startStampPath(dir, sid) {
@@ -41,7 +41,7 @@ function counterPath(dir, sid) {
 }
 
 // A corrupt stamp was swallowed as "absent"; now it is said.
-const readJson = (p) => require('./lib/json-file.js').readJsonLoud(p, 'session-summary');
+const readJson = (p) => require('../engine/lib/json-file.js').readJsonLoud(p, 'session-summary');
 
 function buildNotice(n) {
   const s = n === 1 ? '' : 's';
@@ -73,9 +73,9 @@ async function run(event, deps = {}) {
   // Missing stamp → count nothing this session (avoid reporting the all-time
   // total once). A present stamp bounds the count to the session lifetime.
   const sinceTs = start && Number.isFinite(start.ts) ? start.ts : Date.now();
-  const project = (ev.cwd || process.env.CLAUDE_PROJECT_DIR) ? require('./lib/metrics-project.js').sessionMetricsKey(ev.cwd) : (start && start.project) || 'default';
+  const project = (ev.cwd || process.env.CLAUDE_PROJECT_DIR) ? require('../engine/lib/metrics-project.js').sessionMetricsKey(ev.cwd) : (start && start.project) || 'default';
 
-  const metricsStore = deps.metricsStore || require('./lib/metrics-store.js');
+  const metricsStore = deps.metricsStore || require('../engine/lib/metrics-store.js');
   // Count lessons captured this session across BOTH the project DB and the global
   // __user__ DB — user-scoped captures (type reference/research or user-tagged)
   // land in __user__, so a project-only read would miss/undercount them.

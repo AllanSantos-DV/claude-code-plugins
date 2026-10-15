@@ -139,7 +139,7 @@ const _homeMemo = new Map();
  * @returns {string}
  */
 function curationKeyOf(projectRoot) {
-  const pid = require('./lib/project-id.js');
+  const pid = require('../engine/lib/project-id.js');
   const id = pid.sanitizeLogicalProjectId(pid.tryResolveProjectId({ cwd: projectRoot }) || '');
   if (id) return id;
   const abs = path.resolve(projectRoot);
@@ -157,7 +157,7 @@ function curationHome(projectRoot) {
   if (!projectRoot) return null;
   const hit = _homeMemo.get(projectRoot);
   if (hit && Date.now() - hit.at < ROOT_TTL_MS) return hit.home;
-  const { globalDir } = require('./lib/data-dir.js');
+  const { globalDir } = require('../engine/lib/data-dir.js');
   const home = path.join(globalDir(), 'curation', ...curationKeyOf(projectRoot).split('/'));
   if (_homeMemo.size >= ROOT_MEMO_MAX) _homeMemo.delete(_homeMemo.keys().next().value);
   _homeMemo.set(projectRoot, { home, at: Date.now() });

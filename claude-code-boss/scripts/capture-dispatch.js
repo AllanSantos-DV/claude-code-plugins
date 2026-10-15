@@ -31,9 +31,9 @@ const fs = require('fs');
 const queue = require('./lib/capture-queue.js');
 const { budgetForModel, shouldFire, DEFAULT_BOUNDS } = require('./lib/turn-budget.js');
 const { renderBlock } = require('./lib/transcript-block.js');
-const { redact } = require('./lib/redact.js');
-const brainConfig = require('./lib/brain-config.js');
-const metrics = require('./lib/metrics.js');
+const { redact } = require('../engine/lib/redact.js');
+const brainConfig = require('../engine/lib/brain-config.js');
+const metrics = require('../engine/lib/metrics.js');
 
 // Safety valve for the block-until-ack loop (step 3): after this many CONSECUTIVE
 // un-acked Stop re-blocks we RELENT (allow the stop) to avoid a hard deadlock when
@@ -47,7 +47,7 @@ function _project(event) {
   // Fresh require (module-cache hit, cheap) so a test can swap the resolver export.
   // STRICT contract: tryResolveProjectId returns null (never a basename) when scope is
   // unresolved → run() blocks capture rather than staging lessons under scope-junk.
-  return require('./lib/project-id.js').tryResolveProjectId({ cwd: event && event.cwd });
+  return require('../engine/lib/project-id.js').tryResolveProjectId({ cwd: event && event.cwd });
 }
 
 function _safeSize(p) {
@@ -115,7 +115,7 @@ function run(event, deps) {
   if (!project) {
     // Ingestion boundary: no stable scope ⇒ do NOT stage/capture under scope-junk.
     // Fail-LOUD (actionable) but fail-OPEN for the hook (return {} — never crash Stop).
-    console.error('[capture] ' + require('./lib/project-id.js').SCOPE_HELP);
+    console.error('[capture] ' + require('../engine/lib/project-id.js').SCOPE_HELP);
     return {};
   }
   const redactText = s => redact(s).text;

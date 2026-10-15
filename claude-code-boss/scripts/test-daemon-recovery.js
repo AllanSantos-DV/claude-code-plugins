@@ -5,8 +5,8 @@ const { execSync } = require('child_process');
 const path = require('path');
 const fs = require('fs');
 const os = require('os');
-const McpClient = require('./mcp-client.js');
-const { dataDir } = require('./lib/data-dir.js');
+const McpClient = require('../engine/mcp-client.js');
+const { dataDir } = require('../engine/lib/data-dir.js');
 
 async function runTest() {
   const data = dataDir();

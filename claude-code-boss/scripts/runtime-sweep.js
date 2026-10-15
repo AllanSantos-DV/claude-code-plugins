@@ -10,7 +10,7 @@ const fs = require('fs');
 const path = require('path');
 
 const { sweepStaleJournals } = require('./lib/session-journal.js');
-const { dataDir } = require('./lib/data-dir.js');
+const { dataDir } = require('../engine/lib/data-dir.js');
 
 const DAY_MS = 86400000;
 const STATE_TTL_MS = 7 * DAY_MS;

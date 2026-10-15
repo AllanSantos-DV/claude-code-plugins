@@ -27,8 +27,8 @@
  */
 const fs = require('fs');
 const path = require('path');
-const { canonicalSig } = require('./command-signature.js');
-const { redact } = require('./redact.js');
+const { canonicalSig } = require('../../engine/lib/command-signature.js');
+const { redact } = require('../../engine/lib/redact.js');
 
 const EDIT_TOOLS = new Set(['Edit', 'Write', 'MultiEdit', 'NotebookEdit']);
 const COLD_MAX_BYTES = 8 * 1024 * 1024;

@@ -246,7 +246,7 @@ const _gg = (() => {
 // subprocess resolve the SAME projectId we seeded, each fixture computes
 // projectId = basename(cwd) (resolveProjectId's marker-less fallback) and the
 // tests pass CCB_PROJECT_ID:'' so the env-forced id can't shadow it.
-const _policyStore = require('./lib/policy-store.js');
+const _policyStore = require('../engine/lib/policy-store.js');
 const POLICY_TEXT = 'never let pre-existing code errors pass';
 function seedPolicy(text, { scope = 'project' } = {}) {
   const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-pol-proj-'));
@@ -338,7 +338,7 @@ function shadowMetricsKey(cwd) {
 // array of payload objects, null if none were written (a proven no-metric path), or
 // {skip:true} if no SQLite backend is present (outcome unverifiable; silence still checked).
 function readShadowOutcomes(dataDir, cwd) {
-  const Database = require('./lib/sqlite-compat').loadSqlite();
+  const Database = require('../engine/lib/sqlite-compat').loadSqlite();
   if (!Database) return { skip: true };
   const dbPath = path.join(dataDir, 'metrics', shadowMetricsKey(cwd), 'metrics.db');
   if (!fs.existsSync(dbPath)) return null;
@@ -2891,7 +2891,7 @@ console.log(DIM('─'.repeat(70)));
     if (r.status !== 0) issue = `exit code ${r.status}: ${r.stderr || ''}`;
     else if ((r.stdout || '').trim() !== '{}') issue = `stdout not "{}": ${r.stdout}`;
     else {
-      const Database = require('./lib/sqlite-compat').loadSqlite();
+      const Database = require('../engine/lib/sqlite-compat').loadSqlite();
       if (Database) {
         const dbPath = path.join(smDataDir, 'metrics', projectName, 'metrics.db');
         if (!fs.existsSync(dbPath)) issue = `metrics.db not created at ${dbPath}`;

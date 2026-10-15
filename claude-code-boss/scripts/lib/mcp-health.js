@@ -10,7 +10,7 @@
 const fs = require('fs');
 const path = require('path');
 const net = require('net');
-const { dataDir } = require('./data-dir.js');
+const { dataDir } = require('../../engine/lib/data-dir.js');
 
 const HEALTH_TIMEOUT_MS = 2000;
 const HTTP_TIMEOUT_MS = 3000;

@@ -249,9 +249,9 @@ export function createBrainServer({ pluginRoot, mode = 'http', kbWorker, kbLock,
   async function getKB(project) {
     if (_testHooks && typeof _testHooks.getKB === 'function') return _testHooks.getKB(project);
     const clients = kbWorker ? kbWorker.clientsFor(project) : null;
-    const store = clients ? clients.storeClient : require(path.join(PLUGIN_ROOT, 'scripts', 'brain-store.js'));
-    const index = clients ? clients.indexClient : require(path.join(PLUGIN_ROOT, 'scripts', 'brain-index.js'));
-    const graph = clients ? clients.graphClient : require(path.join(PLUGIN_ROOT, 'scripts', 'brain-graph.js'));
+    const store = clients ? clients.storeClient : require(path.join(PLUGIN_ROOT, 'engine', 'brain-store.js'));
+    const index = clients ? clients.indexClient : require(path.join(PLUGIN_ROOT, 'engine', 'brain-index.js'));
+    const graph = clients ? clients.graphClient : require(path.join(PLUGIN_ROOT, 'engine', 'brain-graph.js'));
     await store.init({ project });
     await index.init({ project });
     await graph.init({ project });
@@ -275,10 +275,10 @@ export function createBrainServer({ pluginRoot, mode = 'http', kbWorker, kbLock,
 
   async function recordLessonMetric(project, payload) {
     try {
-      const metricsStore = kbWorker ? kbWorker.clientsFor(project).metricsClient : require(path.join(PLUGIN_ROOT, 'scripts', 'lib', 'metrics-store.js'));
+      const metricsStore = kbWorker ? kbWorker.clientsFor(project).metricsClient : require(path.join(PLUGIN_ROOT, 'engine', 'lib', 'metrics-store.js'));
       // The metrics key the readers use (owner__repo), not the raw id: written under `owner/repo`
       // it landed in a nested dir the session summary never read.
-      const metricsKey = require(path.join(PLUGIN_ROOT, 'scripts', 'lib', 'metrics-project.js')).metricsKeyForId(project);
+      const metricsKey = require(path.join(PLUGIN_ROOT, 'engine', 'lib', 'metrics-project.js')).metricsKeyForId(project);
       if (await metricsStore.init({ project: metricsKey })) await metricsStore.recordMetric('lesson.captured', payload, null);
     } catch (err) {
       console.error(`[BRAIN-SERVER] recordLessonMetric failed: ${err.message}`);
@@ -323,15 +323,15 @@ export function createBrainServer({ pluginRoot, mode = 'http', kbWorker, kbLock,
    */
   async function findRemoteDuplicate(backend, { type, projectId, title, summary }) {
     const DEDUP = 0.9;
-    const { buildEmbedText } = require(path.join(PLUGIN_ROOT, 'scripts', 'lib', 'embed-text.js'));
+    const { buildEmbedText } = require(path.join(PLUGIN_ROOT, 'engine', 'lib', 'embed-text.js'));
     const text = buildEmbedText({ title, summary });
     try {
       const hits = await backend.search(text, { topK: 3, type, projectIds: [projectId] });
       if (!hits || !hits.length) return null;
-      const embedder = (_testHooks && _testHooks.embedder) || require(path.join(PLUGIN_ROOT, 'scripts', 'brain-embedder.js'));
+      const embedder = (_testHooks && _testHooks.embedder) || require(path.join(PLUGIN_ROOT, 'engine', 'brain-embedder.js'));
       await embedder.init();
       if (!embedder.getStatus().ready) return null;
-      const { cosineSimilarity } = require(path.join(PLUGIN_ROOT, 'scripts', 'brain-store.js'));
+      const { cosineSimilarity } = require(path.join(PLUGIN_ROOT, 'engine', 'brain-store.js'));
       const v = await embedder.embed(text);
       let best = null;
       for (const h of hits) {
@@ -422,8 +422,8 @@ export function createBrainServer({ pluginRoot, mode = 'http', kbWorker, kbLock,
     }
   }
 
-  const scopeSanitizer = require(path.join(PLUGIN_ROOT, 'scripts', 'lib', 'scope-sanitizer.js'));
-  const scopeSearch = require(path.join(PLUGIN_ROOT, 'scripts', 'lib', 'scope-search.js'));
+  const scopeSanitizer = require(path.join(PLUGIN_ROOT, 'engine', 'lib', 'scope-sanitizer.js'));
+  const scopeSearch = require(path.join(PLUGIN_ROOT, 'engine', 'lib', 'scope-search.js'));
   const { USER_SENTINEL, inferDefaultScope, prepareForUserScope } = scopeSanitizer;
   const { searchTwoPass } = scopeSearch;
 
@@ -466,7 +466,7 @@ export function createBrainServer({ pluginRoot, mode = 'http', kbWorker, kbLock,
     },
   };
 
-  const _textUtils = require(path.join(PLUGIN_ROOT, 'scripts', 'lib', 'text-utils.js'));
+  const _textUtils = require(path.join(PLUGIN_ROOT, 'engine', 'lib', 'text-utils.js'));
   function extractKeywords(text) {
     return _textUtils.extractKeywords(text, { minLen: 4, maxTokens: 1000, allowPath: true });
   }
@@ -484,7 +484,7 @@ export function createBrainServer({ pluginRoot, mode = 'http', kbWorker, kbLock,
   // in http mode would silently misattribute every caller that omits an
   // explicit `project` to whichever session's hook happened to (re)spawn the
   // daemon, for the daemon's entire lifetime.
-  const projectId = require(path.join(PLUGIN_ROOT, 'scripts', 'lib', 'project-id.js'));
+  const projectId = require(path.join(PLUGIN_ROOT, 'engine', 'lib', 'project-id.js'));
   function resolveProject(args) {
     const a = args || {};
     if (a.project) {
@@ -695,7 +695,7 @@ export function createBrainServer({ pluginRoot, mode = 'http', kbWorker, kbLock,
   function graphConfigResolver(opts) {
     let mcp = {};
     try {
-      const cfg = require(path.join(PLUGIN_ROOT, 'scripts', 'lib', 'brain-config.js')).load();
+      const cfg = require(path.join(PLUGIN_ROOT, 'engine', 'lib', 'brain-config.js')).load();
       mcp = (cfg && cfg.backend && cfg.backend.mcpMemory) || {};
     } catch (err) { void err; /* config unreadable → default run-dir discovery (fail-open) */ }
     return graphDaemon.makeResolver({ serverUrl: mcp.serverUrl || '', runDir: mcp.runDir || '' })(opts);
@@ -907,14 +907,14 @@ export function createBrainServer({ pluginRoot, mode = 'http', kbWorker, kbLock,
     if (graphTools.names.has(name)) {
       const graphMode = (_testHooks && typeof _testHooks.peekMode === 'function')
         ? _testHooks.peekMode()
-        : require(path.join(PLUGIN_ROOT, 'scripts', 'brain-backend.js')).peekMode();
+        : require(path.join(PLUGIN_ROOT, 'engine', 'brain-backend.js')).peekMode();
       if (graphMode !== 'mcp-memory') {
         return { content: [{ type: 'text', text: `🕸️ As tools de grafo exigem o backend "mcp-memory" (o grafo vive no memory server). O backend atual é "${graphMode}". O agente pode ativar o servidor de memória para o usuário: chame backend_status e, com o OK do usuário, backend_setup (ou /dashboard → Brain → backend: mcp-memory).` }] };
       }
       return graphTools.handle(name, args);
     }
     if (!forceLocal && REMOTE_KB_TOOLS.has(name)) {
-      const backend = require(path.join(PLUGIN_ROOT, 'scripts', 'brain-backend.js'));
+      const backend = require(path.join(PLUGIN_ROOT, 'engine', 'brain-backend.js'));
       if (backend.peekMode() === 'mcp-memory') {
         return handleRemoteKbTool(backend, name, args);
       }
@@ -958,7 +958,7 @@ export function createBrainServer({ pluginRoot, mode = 'http', kbWorker, kbLock,
           const currentProject = resolveKbProject(args);
           let vector = null;
           try {
-            const embedder = require(path.join(PLUGIN_ROOT, 'scripts', 'brain-embedder.js'));
+            const embedder = require(path.join(PLUGIN_ROOT, 'engine', 'brain-embedder.js'));
             await embedder.init();
             if (embedder.getStatus().ready) vector = await embedder.embed(query);
           } catch { /* embedding optional */ }
@@ -1015,8 +1015,8 @@ export function createBrainServer({ pluginRoot, mode = 'http', kbWorker, kbLock,
           const entry = { title: safeTitle, summary: safeSummary, detail: safeDetail || safeSummary, content: { detail: safeDetail || safeSummary, files: [] }, type, tags: Array.isArray(tags) ? tags : [], project: storageProject, scope: effectiveScope, confidence, sourceUrl: sourceUrl || '', created: new Date().toISOString() };
           let vector = null;
           try {
-            const embedder = require(path.join(PLUGIN_ROOT, 'scripts', 'brain-embedder.js'));
-            const { buildEmbedText } = require(path.join(PLUGIN_ROOT, 'scripts', 'lib', 'embed-text.js'));
+            const embedder = require(path.join(PLUGIN_ROOT, 'engine', 'brain-embedder.js'));
+            const { buildEmbedText } = require(path.join(PLUGIN_ROOT, 'engine', 'lib', 'embed-text.js'));
             await embedder.init();
             if (embedder.getStatus().ready) vector = await embedder.embed(buildEmbedText({ title: safeTitle, summary: safeSummary }));
           } catch { /* embedding optional */ }
@@ -1046,11 +1046,11 @@ export function createBrainServer({ pluginRoot, mode = 'http', kbWorker, kbLock,
           }
           const storageProject = effectiveScope === 'user' ? USER_SENTINEL : currentProject;
           const { store: kbStore, index: kbIndex, graph: kbGraph } = await getKB(storageProject);
-          const { buildEmbedText } = require(path.join(PLUGIN_ROOT, 'scripts', 'lib', 'embed-text.js'));
+          const { buildEmbedText } = require(path.join(PLUGIN_ROOT, 'engine', 'lib', 'embed-text.js'));
           const text = buildEmbedText({ title: safeTitle, summary: safeSummary });
           let vector = null;
           try {
-            const embedder = (_testHooks && _testHooks.embedder) || require(path.join(PLUGIN_ROOT, 'scripts', 'brain-embedder.js'));
+            const embedder = (_testHooks && _testHooks.embedder) || require(path.join(PLUGIN_ROOT, 'engine', 'brain-embedder.js'));
             await embedder.init();
             if (embedder.getStatus().ready) vector = await embedder.embed(text);
           } catch { /* embedding optional */ }
@@ -1148,7 +1148,7 @@ export function createBrainServer({ pluginRoot, mode = 'http', kbWorker, kbLock,
           // `project` no longer re-scopes the recall of an id-less folder.
           if (args && args.cwd && !focusId) return { content: [{ type: 'text', text: '' }] };
           const project = resolveProject(args);
-          const retrieveCore = require(path.join(PLUGIN_ROOT, 'scripts', 'lib', 'retrieve-core.js'));
+          const retrieveCore = require(path.join(PLUGIN_ROOT, 'engine', 'lib', 'retrieve-core.js'));
           // Same rationale as getKB()/recordLessonMetric() above: the LOCAL (non
           // mcp-memory) search path inside retrieve() runs synchronous better-sqlite3
           // work — route it through kbWorker in 'http' mode so brain_retrieve_context
@@ -1176,7 +1176,7 @@ export function createBrainServer({ pluginRoot, mode = 'http', kbWorker, kbLock,
           console.error(`[brain_retrieve_context] ${err.message}`);
           // Fail-open hides the failure from the turn — make it visible to brain-health
           // and the dashboard (the daemon's stderr is kept nowhere).
-          try { require(path.join(PLUGIN_ROOT, 'scripts', 'lib', 'recall-health.js')).record('retrieve-error', err.message); }
+          try { require(path.join(PLUGIN_ROOT, 'engine', 'lib', 'recall-health.js')).record('retrieve-error', err.message); }
           catch (e) { console.error(`[brain_retrieve_context] recall-health: ${e.message}`); }
           return { content: [{ type: 'text', text: '' }] }; // fail-open: never break the prompt
         }
@@ -1190,7 +1190,7 @@ export function createBrainServer({ pluginRoot, mode = 'http', kbWorker, kbLock,
           if (aliases.length === 0 && sigs.length === 0) {
             return { isError: true, content: [{ type: 'text', text: 'curation_mark_oneoff: sigs[] or aliases[] required — pass the `sig` values from the Stop-hook reason verbatim (preferred), or raw command forms, e.g. ["npm test","npm run test"].' }] };
           }
-          const cmdSig = require(path.join(PLUGIN_ROOT, 'scripts', 'lib', 'command-signature.js'));
+          const cmdSig = require(path.join(PLUGIN_ROOT, 'engine', 'lib', 'command-signature.js'));
           // Only raw ALIASES are refused as too broad. A verbatim `sig` of 1 token
           // (`pytest`) is marked by exact match (oneoff-store isCeilingExempt) — it
           // can't silence `pytest x`, and refusing it left the flagged sig with no
@@ -1204,7 +1204,7 @@ export function createBrainServer({ pluginRoot, mode = 'http', kbWorker, kbLock,
           if (tooBroad.length) {
             return { isError: true, content: [{ type: 'text', text: `curation_mark_oneoff: alias/sig too broad: ${tooBroad.join(', ')}. A 1-token form (e.g. "git") would silence unrelated subcommands — name the subcommand (e.g. "git log").` }] };
           }
-          const cfg =require(path.join(PLUGIN_ROOT, 'scripts', 'lib', 'brain-config.js')).getCuration();
+          const cfg =require(path.join(PLUGIN_ROOT, 'engine', 'lib', 'brain-config.js')).getCuration();
           const projectKey = oneoff.resolveProjectKey(callerCwd(a));
           const res = oneoff.mark(process.env.CLAUDE_PLUGIN_DATA, projectKey, { aliases, sigs, sessionId: a.session_id || null, maxRecurrence: cfg.oneHitMaxRecurrence, windowDays: cfg.oneHitWindowDays });
           if (res.decision === 'rejected') {
@@ -1274,8 +1274,8 @@ export function createBrainServer({ pluginRoot, mode = 'http', kbWorker, kbLock,
             return { content: [{ type: 'text', text: JSON.stringify({ activated: false, reason: 'assert-requires-globs', message: msg }, null, 2) }] };
           }
           const scope = hasGlobs ? 'project' : (a.scope === 'user' ? 'user' : 'project');
-          const policyStore = require(path.join(PLUGIN_ROOT, 'scripts', 'lib', 'policy-store.js'));
-          const { dataDir } = require(path.join(PLUGIN_ROOT, 'scripts', 'lib', 'data-dir.js'));
+          const policyStore = require(path.join(PLUGIN_ROOT, 'engine', 'lib', 'policy-store.js'));
+          const { dataDir } = require(path.join(PLUGIN_ROOT, 'engine', 'lib', 'data-dir.js'));
           // user-scope policies are project-independent; only resolve a project id
           // for project-scope activations (all glob policies are project-scoped).
           const pid = scope === 'user' ? '' : resolveProject(a);
@@ -1337,8 +1337,8 @@ export function createBrainServer({ pluginRoot, mode = 'http', kbWorker, kbLock,
       case 'policy_list': {
         try {
           const a = args || {};
-          const policyStore = require(path.join(PLUGIN_ROOT, 'scripts', 'lib', 'policy-store.js'));
-          const { dataDir } = require(path.join(PLUGIN_ROOT, 'scripts', 'lib', 'data-dir.js'));
+          const policyStore = require(path.join(PLUGIN_ROOT, 'engine', 'lib', 'policy-store.js'));
+          const { dataDir } = require(path.join(PLUGIN_ROOT, 'engine', 'lib', 'data-dir.js'));
           const pid = resolveProject(a);
           const active = policyStore.listVisible(dataDir(), { projectId: pid });
           const policies = active.map(r => ({
@@ -1367,8 +1367,8 @@ export function createBrainServer({ pluginRoot, mode = 'http', kbWorker, kbLock,
           if (!id.trim()) {
             return { isError: true, content: [{ type: 'text', text: 'policy_deactivate: id is required (from policy_activate / policy_list).' }] };
           }
-          const policyStore = require(path.join(PLUGIN_ROOT, 'scripts', 'lib', 'policy-store.js'));
-          const { dataDir } = require(path.join(PLUGIN_ROOT, 'scripts', 'lib', 'data-dir.js'));
+          const policyStore = require(path.join(PLUGIN_ROOT, 'engine', 'lib', 'policy-store.js'));
+          const { dataDir } = require(path.join(PLUGIN_ROOT, 'engine', 'lib', 'data-dir.js'));
           const res = policyStore.deactivate(dataDir(), id);
           return { content: [{ type: 'text', text: JSON.stringify(res, null, 2) }] };
         } catch (err) {
@@ -1383,13 +1383,13 @@ export function createBrainServer({ pluginRoot, mode = 'http', kbWorker, kbLock,
           // the read/write agree on the metrics db regardless of marker/env/basename.
           const cwd = callerCwd(a);
           const pid = resolveProject(a);
-          const policyStore = require(path.join(PLUGIN_ROOT, 'scripts', 'lib', 'policy-store.js'));
-          const { dataDir } = require(path.join(PLUGIN_ROOT, 'scripts', 'lib', 'data-dir.js'));
+          const policyStore = require(path.join(PLUGIN_ROOT, 'engine', 'lib', 'policy-store.js'));
+          const { dataDir } = require(path.join(PLUGIN_ROOT, 'engine', 'lib', 'data-dir.js'));
           // Same rationale as recordLessonMetric above: getEvaluationCountsIsolated is
           // synchronous SQLite (better-sqlite3) — routed through kbWorker in 'http' mode
           // so this report can't freeze /health for other sessions on the daemon.
-          const metricsStore = kbWorker ? kbWorker.clientsFor(pid).metricsClient : require(path.join(PLUGIN_ROOT, 'scripts', 'lib', 'metrics-store.js'));
-          const { metricsProjectKey } = require(path.join(PLUGIN_ROOT, 'scripts', 'lib', 'metrics-project.js'));
+          const metricsStore = kbWorker ? kbWorker.clientsFor(pid).metricsClient : require(path.join(PLUGIN_ROOT, 'engine', 'lib', 'metrics-store.js'));
+          const { metricsProjectKey } = require(path.join(PLUGIN_ROOT, 'engine', 'lib', 'metrics-project.js'));
 
           const rangeDays = (typeof a.rangeDays === 'number' && a.rangeDays > 0) ? a.rangeDays : 7;
           const sinceTs = Date.now() - rangeDays * 86400000;
@@ -1456,8 +1456,8 @@ export function createBrainServer({ pluginRoot, mode = 'http', kbWorker, kbLock,
         try {
           const a = args || {};
           const pid = resolveProject(a);
-          const { dataDir } = require(path.join(PLUGIN_ROOT, 'scripts', 'lib', 'data-dir.js'));
-          const policyStore = require(path.join(PLUGIN_ROOT, 'scripts', 'lib', 'policy-store.js'));
+          const { dataDir } = require(path.join(PLUGIN_ROOT, 'engine', 'lib', 'data-dir.js'));
+          const policyStore = require(path.join(PLUGIN_ROOT, 'engine', 'lib', 'policy-store.js'));
           const adjStore = require(path.join(PLUGIN_ROOT, 'scripts', 'lib', 'adjudication-store.js'));
           const { planSelfUpdate } = require(path.join(PLUGIN_ROOT, 'scripts', 'lib', 'self-update-plan.js'));
 
@@ -1501,8 +1501,8 @@ export function createBrainServer({ pluginRoot, mode = 'http', kbWorker, kbLock,
           if (!expectedSourceHash) return adjErr('policy_apply_candidate: expectedSourceHash is required — the EXACT current sourceHash from policy_self_update_report (a CAS guard); nothing was applied.');
           const pid = resolveProject(a);
 
-          const { dataDir } = require(path.join(PLUGIN_ROOT, 'scripts', 'lib', 'data-dir.js'));
-          const policyStore = require(path.join(PLUGIN_ROOT, 'scripts', 'lib', 'policy-store.js'));
+          const { dataDir } = require(path.join(PLUGIN_ROOT, 'engine', 'lib', 'data-dir.js'));
+          const policyStore = require(path.join(PLUGIN_ROOT, 'engine', 'lib', 'policy-store.js'));
           const adjStore = require(path.join(PLUGIN_ROOT, 'scripts', 'lib', 'adjudication-store.js'));
           const ledger = require(path.join(PLUGIN_ROOT, 'scripts', 'lib', 'revision-ledger.js'));
           const { planSelfUpdate } = require(path.join(PLUGIN_ROOT, 'scripts', 'lib', 'self-update-plan.js'));
@@ -1588,11 +1588,11 @@ export function createBrainServer({ pluginRoot, mode = 'http', kbWorker, kbLock,
           const cwd = callerCwd(a);
           const pid = resolveProject(a);
 
-          const policyStore = require(path.join(PLUGIN_ROOT, 'scripts', 'lib', 'policy-store.js'));
-          const { dataDir } = require(path.join(PLUGIN_ROOT, 'scripts', 'lib', 'data-dir.js'));
-          const { anyGlobMatches } = require(path.join(PLUGIN_ROOT, 'scripts', 'lib', 'glob-match.js'));
-          const { redact } = require(path.join(PLUGIN_ROOT, 'scripts', 'lib', 'redact.js'));
-          const { writeFileAtomic } = require(path.join(PLUGIN_ROOT, 'scripts', 'lib', 'atomic-write.js'));
+          const policyStore = require(path.join(PLUGIN_ROOT, 'engine', 'lib', 'policy-store.js'));
+          const { dataDir } = require(path.join(PLUGIN_ROOT, 'engine', 'lib', 'data-dir.js'));
+          const { anyGlobMatches } = require(path.join(PLUGIN_ROOT, 'engine', 'lib', 'glob-match.js'));
+          const { redact } = require(path.join(PLUGIN_ROOT, 'engine', 'lib', 'redact.js'));
+          const { writeFileAtomic } = require(path.join(PLUGIN_ROOT, 'engine', 'lib', 'atomic-write.js'));
           const adjStore = require(path.join(PLUGIN_ROOT, 'scripts', 'lib', 'adjudication-store.js'));
 
           const visible = policyStore.listVisible(dataDir(), { projectId: pid });
@@ -1783,8 +1783,8 @@ export function createBrainServer({ pluginRoot, mode = 'http', kbWorker, kbLock,
           if (!/^[0-9a-f]{6,64}$/i.test(manifestHash)) return adjErr('policy_adjudication_record: manifestHash is missing or malformed (expect the hex hash from policy_adjudication_prepare).');
           const pid = resolveProject(a);
 
-          const { dataDir } = require(path.join(PLUGIN_ROOT, 'scripts', 'lib', 'data-dir.js'));
-          const policyStore = require(path.join(PLUGIN_ROOT, 'scripts', 'lib', 'policy-store.js'));
+          const { dataDir } = require(path.join(PLUGIN_ROOT, 'engine', 'lib', 'data-dir.js'));
+          const policyStore = require(path.join(PLUGIN_ROOT, 'engine', 'lib', 'policy-store.js'));
           const adjStore = require(path.join(PLUGIN_ROOT, 'scripts', 'lib', 'adjudication-store.js'));
 
           const bundlePath = path.join(adjStore.adjudicationDir(dataDir(), pid), `bundle-${manifestHash}.json`);
@@ -1900,7 +1900,7 @@ export function createBrainServer({ pluginRoot, mode = 'http', kbWorker, kbLock,
           const a = args || {};
           const pid = resolveProject(a);
           const policyId = typeof a.policyId === 'string' && a.policyId.trim() ? a.policyId.trim() : undefined;
-          const { dataDir } = require(path.join(PLUGIN_ROOT, 'scripts', 'lib', 'data-dir.js'));
+          const { dataDir } = require(path.join(PLUGIN_ROOT, 'engine', 'lib', 'data-dir.js'));
           const adjStore = require(path.join(PLUGIN_ROOT, 'scripts', 'lib', 'adjudication-store.js'));
           const dispositions = adjStore.listDispositions(dataDir(), pid, { policyId });
           return adjJson({
@@ -1920,7 +1920,7 @@ export function createBrainServer({ pluginRoot, mode = 'http', kbWorker, kbLock,
         try {
           const a = args || {};
           const pid = resolveProject(a);
-          const { dataDir } = require(path.join(PLUGIN_ROOT, 'scripts', 'lib', 'data-dir.js'));
+          const { dataDir } = require(path.join(PLUGIN_ROOT, 'engine', 'lib', 'data-dir.js'));
           const adjStore = require(path.join(PLUGIN_ROOT, 'scripts', 'lib', 'adjudication-store.js'));
           // Project-wide orphan sweep: bundles are keyed by manifestHash (not by
           // activationId/ts), so a policyId/age filter wouldn't map cleanly — the honest
@@ -1943,8 +1943,8 @@ export function createBrainServer({ pluginRoot, mode = 'http', kbWorker, kbLock,
           const a = args || {};
           const pid = resolveProject(a);
           const policyId = typeof a.policyId === 'string' && a.policyId.trim() ? a.policyId.trim() : undefined;
-          const { dataDir } = require(path.join(PLUGIN_ROOT, 'scripts', 'lib', 'data-dir.js'));
-          const policyStore = require(path.join(PLUGIN_ROOT, 'scripts', 'lib', 'policy-store.js'));
+          const { dataDir } = require(path.join(PLUGIN_ROOT, 'engine', 'lib', 'data-dir.js'));
+          const policyStore = require(path.join(PLUGIN_ROOT, 'engine', 'lib', 'policy-store.js'));
           const triggerStore = require(path.join(PLUGIN_ROOT, 'scripts', 'lib', 'trigger-evidence-store.js'));
 
           const opts = {};
@@ -2023,7 +2023,7 @@ export function createBrainServer({ pluginRoot, mode = 'http', kbWorker, kbLock,
     if (t.name.startsWith('hook_')) return false;
     if (!CONDITIONAL_POLICY_TOOLS.has(t.name)) return true;
     try {
-      return require(path.join(PLUGIN_ROOT, 'scripts', 'lib', 'policy-store.js')).hasConditionalPolicies(require(path.join(PLUGIN_ROOT, 'scripts', 'lib', 'data-dir.js')).dataDir());
+      return require(path.join(PLUGIN_ROOT, 'engine', 'lib', 'policy-store.js')).hasConditionalPolicies(require(path.join(PLUGIN_ROOT, 'engine', 'lib', 'data-dir.js')).dataDir());
     } catch (err) { console.error(`[brain-server] policy registry unreadable (${err.message}) — listing the policy tools`); return true; }
   };
   server.setRequestHandler(ListToolsRequestSchema, async () => ({ tools: TOOLS.filter(listed).map((t) => ({ ...t, annotations: toolHints(t.name) })) }));

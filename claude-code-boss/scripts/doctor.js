@@ -350,7 +350,7 @@ function checkCrashes(ctx) {
 const CRASH_WINDOW_DAYS = 14;
 // Exit-status meanings and the load test itself live in lib/embedder-guard.js, shared with
 // the daemon's boot check.
-const embedderGuard = require('./lib/embedder-guard.js');
+const embedderGuard = require('../engine/lib/embedder-guard.js');
 const { FAST_FAIL_STATUSES, NODE_ABORT_STATUS } = embedderGuard;
 
 function checkEmbedderProbe(ctx) {
@@ -478,7 +478,7 @@ function pluginRoot() {
 }
 
 function dataDir() {
-  return require('./lib/data-dir.js').dataDir();
+  return require('../engine/lib/data-dir.js').dataDir();
 }
 
 /**
@@ -516,7 +516,7 @@ function findDataDirCandidates(active, opts) {
  *  Read-only throwaway connections, mirroring consolidate-datadirs.readShardDefault. */
 function _countEntries(dir) {
   let Database;
-  try { Database = require('./lib/sqlite-compat.js').loadSqlite(); } catch (e) { void e; return null; }
+  try { Database = require('../engine/lib/sqlite-compat.js').loadSqlite(); } catch (e) { void e; return null; }
   if (!Database) return null;
   const brain = path.join(dir, 'brain');
   let total = 0;
@@ -584,7 +584,7 @@ async function gatherContext({ probe = false, audit = false } = {}) {
   let modelCacheDir = '';
   let modelPresent = false;
   try {
-    modelCacheDir = require('./brain-embedder.js').getModelCacheDir();
+    modelCacheDir = require('../engine/brain-embedder.js').getModelCacheDir();
     modelPresent = _modelPresent(modelCacheDir);
   } catch (e) { void e; }
 

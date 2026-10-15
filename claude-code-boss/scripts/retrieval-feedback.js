@@ -17,7 +17,7 @@
 
 const { runStopDetectorCli } = require('./lib/hook-io.js');
 const retrievalJournal = require('./lib/retrieval-journal.js');
-const { extractKeywords } = require('./lib/text-utils.js');
+const { extractKeywords } = require('../engine/lib/text-utils.js');
 const { readTailLines } = require('./lib/transcript-tail.js');
 
 // ── Pure helpers (testable) ───────────────────────────────────────────────
@@ -214,15 +214,15 @@ async function run(event) {
   if (replyText) {
     const cited = findCitations(entries, replyText);
     try {
-      const store = require('./brain-store.js');
-      const metrics = require('./lib/metrics.js');
+      const store = require('../engine/brain-store.js');
+      const metrics = require('../engine/lib/metrics.js');
       if (injectedIds.size && injectedChars(entries) > 0) metrics.fire('retrieve.injected', { count: injectedIds.size, chars: injectedChars(entries) }, mctx);
       else if (returnedCount) metrics.fire('retrieve.empty', { returned: returnedCount, reason: 'filtered' }, mctx);
       // KB citations go to the scope each entry was retrieved from. It used to be
       // basename(cwd): the UPDATE then hit a shard without the entry and silently
       // changed 0 rows, so citations of real lessons were never counted. No scope
       // (folder without a project id = memory off) → nothing recorded.
-      const fallback = require('./lib/project-id.js').tryResolveProjectId({ cwd: ev.cwd });
+      const fallback = require('../engine/lib/project-id.js').tryResolveProjectId({ cwd: ev.cwd });
       const byScope = new Map();
       for (const c of cited) {
         const scope = c.project || fallback;
@@ -232,7 +232,7 @@ async function run(event) {
       }
       // On mcp-memory the entries live on the server: the citation goes there as a "helpful"
       // feedback signal; store.init would only create an empty local db per scope.
-      const backend = require('./brain-backend.js');
+      const backend = require('../engine/brain-backend.js');
       const remote = backend.peekMode() === 'mcp-memory';
       for (const [scope, ids] of byScope) {
         if (remote) {

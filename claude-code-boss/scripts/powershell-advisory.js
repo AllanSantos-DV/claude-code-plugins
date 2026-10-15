@@ -26,7 +26,7 @@ function advisory(pwsh) {
 async function run() {
   const cfg = hooksConfig.getPowershellGuard();
   if (!cfg.enabled || !cfg.platforms.includes(process.platform)) return null;
-  return advisory(require('./lib/powershell-compat.js').pwshOnPath());
+  return advisory(require('../engine/lib/powershell-compat.js').pwshOnPath());
 }
 
 function main() { return runTextCli(run, 'POWERSHELL-ADVISORY', 'SessionStart'); }

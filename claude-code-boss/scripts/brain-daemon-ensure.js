@@ -31,8 +31,8 @@ const path = require('path');
 const fs = require('fs');
 const { spawn } = require('child_process');
 const { readStdin, emitEmpty, emitJson, parsePayload } = require('./lib/hook-io.js');
-const { dataDir } = require('./lib/data-dir.js');
-const brainConfig = require('./lib/brain-config.js');
+const { dataDir } = require('../engine/lib/data-dir.js');
+const brainConfig = require('../engine/lib/brain-config.js');
 const mcpAutoUpdate = require('./lib/mcp-memory-auto-update.js');
 const crashEvidence = require('./lib/crash-evidence.js');
 
@@ -150,7 +150,7 @@ async function run(event, deps = {}) {
  * @returns {Promise<'alive'|'kicked'|'error'>}
  */
 async function ensureMemoryServer(deps = {}) {
-  const Client = deps.McpClient || require('./mcp-client.js');
+  const Client = deps.McpClient || require('../engine/mcp-client.js');
   // The real kick is CONFIRMED (kickLauncherVerified): a hidden launch that silently failed
   // reported "kicked" forever. The sync test seam (deps.kickLauncher) stays as it was.
   let verify = null;

@@ -20,8 +20,8 @@
  *   <dataDir>/policy-revisions/<project>/ledger.json
  */
 const path = require('path');
-const { loadList, appendCapped, newestByPolicy } = require('./json-list-store.js');
-const { sanitizeProjectId } = require('./project-id.js');
+const { loadList, appendCapped, newestByPolicy } = require('../../engine/lib/json-list-store.js');
+const { sanitizeProjectId } = require('../../engine/lib/project-id.js');
 
 /** Cap of retained revisions per project (newest kept) — bounds file growth. */
 const MAX_REVISIONS = 500;

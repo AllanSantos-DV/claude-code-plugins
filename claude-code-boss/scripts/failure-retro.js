@@ -25,7 +25,7 @@ const failureJournal = require('./lib/failure-journal.js');
 const cooldown = require('./lib/cooldown-store.js');
 const turnJournal = require('./lib/turn-journal.js');
 const hooksCfg = require('./lib/hooks-config.js');
-const metrics = require('./lib/metrics.js');
+const metrics = require('../engine/lib/metrics.js');
 
 function loadConfig() {
   // Read through the profile-resolved getter so `standard`/`free` can silence it

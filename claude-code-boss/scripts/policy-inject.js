@@ -21,9 +21,9 @@
  * → empty. No active policies (and registry not corrupt) → empty.
  */
 const { runTextCli } = require('./lib/hook-io.js');
-const { dataDir } = require('./lib/data-dir.js');
-const { resolveLocalScopeId } = require('./lib/project-id.js');
-const policyStore = require('./lib/policy-store.js');
+const { dataDir } = require('../engine/lib/data-dir.js');
+const { resolveLocalScopeId } = require('../engine/lib/project-id.js');
+const policyStore = require('../engine/lib/policy-store.js');
 const { getPolicyInject } = require('./lib/hooks-config.js');
 
 /**

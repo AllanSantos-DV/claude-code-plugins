@@ -22,10 +22,10 @@
  * empty. Non-edit tool / no path / outside-project path / no match → empty.
  */
 const { readStdin, emitEmpty, emitJson } = require('./lib/hook-io.js');
-const { dataDir } = require('./lib/data-dir.js');
-const { resolveLocalScopeId } = require('./lib/project-id.js');
-const policyStore = require('./lib/policy-store.js');
-const { firstGlobMatch } = require('./lib/glob-match.js');
+const { dataDir } = require('../engine/lib/data-dir.js');
+const { resolveLocalScopeId } = require('../engine/lib/project-id.js');
+const policyStore = require('../engine/lib/policy-store.js');
+const { firstGlobMatch } = require('../engine/lib/glob-match.js');
 const { getPolicyInject } = require('./lib/hooks-config.js');
 
 // Belt-and-suspenders beyond the hooks.json matcher: only these tools carry a file

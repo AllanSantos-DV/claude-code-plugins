@@ -23,7 +23,7 @@ const { URL } = require('url');
 const cacheCycle = require('./cache-cycle.js');
 const contextRewrite = require('./context-rewrite.js');
 const byok = require('./byok.js');
-const { appendRotating } = require('../../scripts/lib/log-rotate.js');
+const { appendRotating } = require('../../engine/lib/log-rotate.js');
 const byokModel = require('./byok-model.js');
 const catalog = require('./catalog.js');
 const upstreamProfile = require('./upstream-profile.js');
@@ -263,7 +263,7 @@ let _embedder = null;
 let _anchors  = null;
 
 async function loadEmbedder(_config) {
-  const embedderPath = path.join(PLUGIN_ROOT, 'scripts', 'brain-embedder.js');
+  const embedderPath = path.join(PLUGIN_ROOT, 'engine', 'brain-embedder.js');
   if (!fs.existsSync(embedderPath)) {
     throw new Error(`brain-embedder.js não encontrado em ${embedderPath}`);
   }

@@ -24,12 +24,12 @@
  */
 'use strict';
 const fs   = require('fs');
-const { writeJsonAtomic } = require('./lib/atomic-write.js');
+const { writeJsonAtomic } = require('../engine/lib/atomic-write.js');
 const path = require('path');
 
 const { getShellsConfigPath } = require('./curation-paths.js');
 
-const { dataDir } = require('./lib/data-dir.js');
+const { dataDir } = require('../engine/lib/data-dir.js');
 const DATA_DIR = dataDir();
 const RUNTIME_DIR = path.join(DATA_DIR, '.runtime');
 
@@ -39,9 +39,9 @@ function loadConfig() {
 }
 
 const { runStopDetectorCli } = require('./lib/hook-io.js');
-const { sanitizeSessionId } = require('./lib/session-id.js');
+const { sanitizeSessionId } = require('../engine/lib/session-id.js');
 const turnJournal = require('./lib/turn-journal.js');
-const metrics = require('./lib/metrics.js');
+const metrics = require('../engine/lib/metrics.js');
 const oneoff = require('./lib/oneoff-store.js');
 const { reconcileEntries } = require('./lib/curation-reconcile.js');
 const { findProjectRoot, loadShellsConfig, matchCuratedShell } = require('./shells-config.js');
@@ -59,7 +59,7 @@ const { findProjectRoot, loadShellsConfig, matchCuratedShell } = require('./shel
  */
 function filterUnresolved(entries, cwd, { shellsSinceMs = Infinity } = {}) {
   if (!Array.isArray(entries) || entries.length === 0) return { pending: [], resolved: [] };
-  const { oneHitMaxRecurrence, oneHitWindowDays } = require('./lib/brain-config.js').getCuration();
+  const { oneHitMaxRecurrence, oneHitWindowDays } = require('../engine/lib/brain-config.js').getCuration();
   const store = oneoff.load(DATA_DIR, oneoff.resolveProjectKey(cwd));
   let matchShell = () => null;
   try {
@@ -82,7 +82,7 @@ function escalationPath(sessionId) {
   return path.join(RUNTIME_DIR, `curation-stop-${sanitizeSessionId(sessionId)}.json`);
 }
 
-const loadJson = (p) => require('./lib/json-file.js').readJsonLoud(p, 'CURATION-STOP');
+const loadJson = (p) => require('../engine/lib/json-file.js').readJsonLoud(p, 'CURATION-STOP');
 
 function saveJson(p, data) {
   try {
@@ -138,7 +138,7 @@ function curatedScriptsTouchedSince(prev, cwd) {
 }
 
 function buildReason(entries, attempt, maxAttempts) {
-  const { oneHitMaxRecurrence } = require('./lib/brain-config.js').getCuration();
+  const { oneHitMaxRecurrence } = require('../engine/lib/brain-config.js').getCuration();
   const refineEntries = entries.filter(e => e.curatedScript);
   const extendEntries = entries.filter(e => !e.curatedScript && e.extendShell);
   const createEntries = entries.filter(e => !e.curatedScript && !e.extendShell);

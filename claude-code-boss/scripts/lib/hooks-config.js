@@ -24,9 +24,9 @@
  * so a plugin auto-update never reverts the user's choice.
  */
 const fs = require('fs');
-const { writeFileAtomic } = require('./atomic-write.js');
+const { writeFileAtomic } = require('../../engine/lib/atomic-write.js');
 const path = require('path');
-const { isPlainObject, deepMerge, filesStamp, loadLayered } = require('./config-merge.js');
+const { isPlainObject, deepMerge, filesStamp, loadLayered } = require('../../engine/lib/config-merge.js');
 
 const PLUGIN_ROOT = process.env.CLAUDE_PLUGIN_ROOT || path.resolve(__dirname, '..', '..');
 const CONFIG_PATH = path.join(PLUGIN_ROOT, 'config', 'hooks-config.json');
@@ -35,14 +35,14 @@ const CONFIG_PATH = path.join(PLUGIN_ROOT, 'config', 'hooks-config.json');
 // CLAUDE_PLUGIN_DATA + _resetCache(). GLOBAL (not data-dir-scoped) so switching
 // the data folder never orphans the user's profile choice.
 function userConfigPath() {
-  const { globalDir } = require('./data-dir.js');
+  const { globalDir } = require('../../engine/lib/data-dir.js');
   return path.join(globalDir(), 'hooks', 'user-config.json');
 }
 
 // Pre-Phase-1.5 location of the override (under the resolved active data dir).
 // Retained only so load() can backfill it up to the global path exactly once.
 function legacyUserConfigPath() {
-  const { dataDir } = require('./data-dir.js');
+  const { dataDir } = require('../../engine/lib/data-dir.js');
   return path.join(dataDir(), 'hooks', 'user-config.json');
 }
 

@@ -1,7 +1,7 @@
 'use strict';
 
 const fs = require('fs');
-const { pidAlive } = require('./process-lock.js');
+const { pidAlive } = require('../../engine/lib/process-lock.js');
 const os = require('os');
 const path = require('path');
 const crypto = require('crypto');

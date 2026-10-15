@@ -7,7 +7,7 @@
  */
 'use strict';
 
-const { load: loadBrainConfig } = require('./lib/brain-config.js');
+const { load: loadBrainConfig } = require('../engine/lib/brain-config.js');
 const { probeHealth } = require('./lib/mcp-health.js');
 const { readStdin, emitJson } = require('./lib/hook-io.js');
 
@@ -20,7 +20,7 @@ const NO_ID = '(none — memory is off in this folder)';
  * handed the other detectors in that process a made-up id.
  */
 function statusProject(cwd) {
-  try { return require('./lib/project-id.js').tryResolveProjectId({ cwd }) || null; }
+  try { return require('../engine/lib/project-id.js').tryResolveProjectId({ cwd }) || null; }
   catch (err) { console.error(`[brain-status] project id: ${err.message}`); return null; }
 }
 

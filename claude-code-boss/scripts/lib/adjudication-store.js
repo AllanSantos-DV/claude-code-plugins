@@ -22,8 +22,8 @@
  */
 const fs = require('fs');
 const path = require('path');
-const { loadList, appendCapped, newestByPolicy } = require('./json-list-store.js');
-const { sanitizeProjectId } = require('./project-id.js');
+const { loadList, appendCapped, newestByPolicy } = require('../../engine/lib/json-list-store.js');
+const { sanitizeProjectId } = require('../../engine/lib/project-id.js');
 
 /** Cap of retained dispositions per project (newest kept) — bounds file growth. */
 const MAX_DISPOSITIONS = 200;

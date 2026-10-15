@@ -128,8 +128,8 @@ function findMapSections(root, theme, { mapFiles, mapLines }) {
 
 /** The Brain's recall for the theme (what the prompt hook would inject), as text; {error} when it cannot answer. */
 async function brainMemory(theme, root) {
-  const projectId = require('./project-id.js');
-  const rc = require('./retrieve-core.js');
+  const projectId = require('../../engine/lib/project-id.js');
+  const rc = require('../../engine/lib/retrieve-core.js');
   const project = projectId.resolveProjectId({ cwd: root });
   const r = await rc.retrieve(theme, { project });
   if (!r.entries || !r.entries.length) return { entries: 0, text: '', reason: r.reason || 'no-match' };

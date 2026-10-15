@@ -29,7 +29,7 @@ const { pathToFileURL } = require('url');
 const ENSURE_BUDGET_MS = 8000; // under Claude Code's 10 s helper limit
 
 async function headers({ argvDataDir, root = path.resolve(__dirname, '..'), ensure, budgetMs = ENSURE_BUDGET_MS } = {}) {
-  const { validEnvDir, dataDir } = require('./lib/data-dir.js');
+  const { validEnvDir, dataDir } = require('../engine/lib/data-dir.js');
   // Same data dir the plugin's hooks resolve (they get CLAUDE_PLUGIN_DATA in their env).
   if (validEnvDir(argvDataDir)) process.env.CLAUDE_PLUGIN_DATA = argvDataDir;
   const data = dataDir();

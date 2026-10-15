@@ -10,7 +10,7 @@
 'use strict';
 
 const { readStdin, parsePayload, emitEmpty } = require('./lib/hook-io.js');
-const metrics = require('./lib/metrics.js');
+const metrics = require('../engine/lib/metrics.js');
 
 /** Side-effect only (records the metric); the reply is always `{}`. */
 async function run(ev) {

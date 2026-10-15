@@ -25,14 +25,14 @@ const path = require('path');
 // CLAUDE_PLUGIN_DATA and observe the new location. GLOBAL (home-based, not
 // data-dir-scoped) so every process agrees on one file.
 function routerUserConfigPath() {
-  const { globalDir } = require('./data-dir.js');
+  const { globalDir } = require('../../engine/lib/data-dir.js');
   return path.join(globalDir(), 'model-router', 'user-config.json');
 }
 
 // Pre-Phase-1.5 location of the override (under the resolved active data dir).
 // Retained only so backfillRouterUserConfig() can migrate it up exactly once.
 function legacyRouterUserConfigPath() {
-  const { dataDir } = require('./data-dir.js');
+  const { dataDir } = require('../../engine/lib/data-dir.js');
   return path.join(dataDir(), 'model-router', 'user-config.json');
 }
 
@@ -59,7 +59,7 @@ function backfillRouterUserConfig() {
     if (fs.existsSync(globalPath)) return;
     const legacyPath = legacyRouterUserConfigPath();
     if (!fs.existsSync(legacyPath)) return;
-    const { writeFileAtomic } = require('./atomic-write.js');
+    const { writeFileAtomic } = require('../../engine/lib/atomic-write.js');
     writeFileAtomic(globalPath, fs.readFileSync(legacyPath));
     hardenRouterConfigPerms(globalPath);
   } catch (err) {

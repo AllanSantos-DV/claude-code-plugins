@@ -22,19 +22,19 @@
 'use strict';
 
 const fs = require('fs');
-const { writeJsonAtomic } = require('./lib/atomic-write.js');
+const { writeJsonAtomic } = require('../engine/lib/atomic-write.js');
 const path = require('path');
 
 const verifyJournal = require('./lib/verify-journal.js');
 const retrievalJournal = require('./lib/retrieval-journal.js');
 const hooksCfg = require('./lib/hooks-config.js');
 const selfReviewRetrieve = require('./lib/self-review-retrieve.js');
-const { extractKeywords } = require('./lib/text-utils.js');
-const metrics = require('./lib/metrics.js');
-const { tryResolveProjectId } = require('./lib/project-id.js');
+const { extractKeywords } = require('../engine/lib/text-utils.js');
+const metrics = require('../engine/lib/metrics.js');
+const { tryResolveProjectId } = require('../engine/lib/project-id.js');
 
 function dataDir() {
-  return require('./lib/data-dir.js').dataDir();
+  return require('../engine/lib/data-dir.js').dataDir();
 }
 
 // ── Pure helpers ─────────────────────────────────────────────────────────────
@@ -124,7 +124,7 @@ function buildAdvisory(entries) {
 // ── Per-session "already surfaced" guard ──────────────────────────────────────
 
 function surfacedPath(dir, sid) {
-  const safe = require('./lib/session-id.js').sanitizeSessionId(sid);
+  const safe = require('../engine/lib/session-id.js').sanitizeSessionId(sid);
   return path.join(dir, '.runtime', `self-review-surfaced-${safe}.json`);
 }
 

@@ -25,7 +25,7 @@ function looksLikeCorrection(msg) {
 }
 
 const { runSideEffectTextCli } = require('./lib/hook-io.js');
-const metrics = require('./lib/metrics.js');
+const metrics = require('../engine/lib/metrics.js');
 const hooksCfg = require('./lib/hooks-config.js');
 
 const NUDGE_TEXT =

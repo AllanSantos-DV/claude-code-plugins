@@ -11,7 +11,7 @@
 const fs = require('fs');
 const path = require('path');
 const http = require('http');
-const { writeJsonAtomic } = require('./atomic-write.js');
+const { writeJsonAtomic } = require('../../engine/lib/atomic-write.js');
 
 const MIN_CALLS = 10;          // no verdict on a handful of samples
 const P95_FRACTION = 0.5;      // p95 at half the deadline = no headroom left
