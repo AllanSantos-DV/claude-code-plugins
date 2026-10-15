@@ -183,7 +183,9 @@ function run(event, deps) {
   if (!decision.fire) return {};
   const off = queue.offer(project, sid, budget.maxChars);
   if (!off) return {};
-  metrics.fire('capture.offered', { cycles: off.cycles, windowId: off.windowId, queueLen: st.queue.length, model, reason: decision.reason }, { sessionId: sid, cwd: ev.cwd });
+  // ackTracked: this build records the offer's outcome (capture.acked / a closing capture.relented), so the
+  // funnel can count it; offers from older builds have no outcome event and would read as never answered.
+  metrics.fire('capture.offered', { cycles: off.cycles, windowId: off.windowId, queueLen: st.queue.length, model, reason: decision.reason, ackTracked: true }, { sessionId: sid, cwd: ev.cwd });
   return { block: true, reason: buildInstruction(off.text, off.windowId) };
 }
 

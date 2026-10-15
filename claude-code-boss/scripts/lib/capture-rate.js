@@ -46,18 +46,26 @@ function aggregateCaptureRate(events) {
   for (const k of KINDS) byKind[k] = { kind: k, nudges: 0, captures: 0, rate: null };
   const spontaneous = {};
   // The [BRAIN capture] review offer: offered → acked (captured or "none") / relented (gave up after
-  // maxBlockAttempts) / reoffered; adopted = queued cycles of an ended session taken over by another.
-  const funnel = { offered: 0, acked: 0, ackedNone: 0, relented: 0, reoffered: 0, adopted: 0, adoptedCycles: 0 };
+  // maxBlockAttempts) / still open; reoffered = re-blocks; adopted = queued cycles of an ended session
+  // taken over by another. Outcomes are counted PER OFFER (windowId) and only for offers whose build
+  // records them (`ackTracked`): capture.acked only exists since 3.9.x, so 30 days of offers against a
+  // few hours of acks read as "2 of 280 answered" while the transcripts showed 287 of 296 answered; and
+  // before the relent fix one stuck window re-relented on every Stop (177 events from 8 windows).
+  const funnel = { offered: 0, untracked: 0, acked: 0, ackedNone: 0, relented: 0, open: 0, reoffered: 0, adopted: 0, adoptedCycles: 0 };
+  const tracked = new Set(); const ackedW = new Map(); const relentedW = new Set();
   for (const e of events || []) {
     const p = e.payload || {};
     switch (e.eventName) {
-      case 'capture.offered': funnel.offered++; break;
-      case 'capture.acked': funnel.acked++; if (p.outcome === 'none') funnel.ackedNone++; break;
-      case 'capture.relented': funnel.relented++; break;
+      case 'capture.offered': funnel.offered++; if (p.ackTracked && p.windowId) tracked.add(p.windowId); else funnel.untracked++; break;
+      case 'capture.acked': if (p.windowId) ackedW.set(p.windowId, p.outcome); break;
+      case 'capture.relented': if (p.windowId) relentedW.add(p.windowId); break;
       case 'capture.reoffered': funnel.reoffered++; break;
       case 'capture.adopted': funnel.adopted++; funnel.adoptedCycles += Number(p.cycles) || 0; break;
       default: break;
     }
+  }
+  for (const w of tracked) {
+    if (ackedW.has(w)) { funnel.acked++; if (ackedW.get(w) === 'none') funnel.ackedNone++; } else if (relentedW.has(w)) funnel.relented++; else funnel.open++;
   }
 
   for (const [, evs] of byProject) {

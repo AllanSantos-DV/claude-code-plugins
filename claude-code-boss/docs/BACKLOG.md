@@ -27,10 +27,14 @@ Relatórios: `docs/research/checkup/` (local). Tudo abaixo marcado [x] tem teste
   chave da home (`?key=`, validada por `curationHomeOfKey`: nada sai da pasta de curadoria). Teste `dashboard curadoria` (lista, shells, remoção,
   chave com `..` recusada). Achado junto e corrigido: o teste `metrics totals` cortava o `dashboard.js` por `'\n}\n'` e falhava
   num checkout CRLF (o arquivo regravado em CRLF pelo autocrlf); agora normaliza o EOL antes de cortar.
-- [ ] **Revisão de captura quase nunca é respondida** (visto no funil novo do painel, build instalado d961738): 280 ofertas, 2 respondidas,
-  243 desistidas pelo limite de bloqueios, 63 re-pedidas (todos os projetos). Ou o agente não chama `capture_lesson`/`capture_ack` com o
-  `windowId` (ack não casa) ou a reconciliação não vê o ack. Proposta: cruzar `capture.offered.windowId` com as chamadas de
-  `capture_ack`/`capture_lesson` no log do daemon e nos transcripts; corrigir a ponta que perde o ack, com teste.
+- [x] **Revisão de captura quase nunca é respondida** (visto no funil novo do painel, build instalado d961738): 280 ofertas, 2 respondidas,
+  243 desistidas. **Era a medição, não o ack.** Cruzando os transcripts (30 d): 296 ofertas, 287 com `capture_ack`/`capture_lesson`
+  aceito com o `windowId` certo; a reconciliação drena (o contador `captured` das filas sobe). O evento `capture.acked` só existe desde
+  05fd6f4 (instalado em 15/10 ~19:30Z), então o funil comparava 30 dias de ofertas com poucas horas de respostas; e as 177 desistências
+  vinham de 8 janelas presas que re-desistiam a cada Stop (bug anterior ao fechamento do P1). Corrigido no leitor (`capture-rate.js`):
+  desfecho por `windowId`, uma vez por oferta, só para ofertas marcadas `ackTracked` (gravado pelo `capture-dispatch` a partir de agora);
+  as anteriores aparecem como "não registradas". Teste `leitores:` (janela que re-desiste conta 1; oferta sem marca não vira "não
+  respondida") e `capture-dispatch: emits capture.offered`. `docs/research/checkup/s4-capture-ack.txt`.
 - [ ] **SessionStart real do build novo, amostra pequena** (n=7 depois das 19:30Z de 15/10): dispatcher p50 de 2.954 ms no startup (n=3)
   e 3.088 ms no resume (n=4), contra 2.177/2.318 ms antes (n=109/55). O comando no transcript não diz o build. Remedir com n ≥ 30
   (`.claude/scripts/transcript-sessionstart.cjs`) antes de concluir melhora ou piora.
