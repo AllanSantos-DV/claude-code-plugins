@@ -67,7 +67,12 @@ Relatórios: `docs/research/checkup/` (local). Tudo abaixo marcado [x] tem teste
   passa a responder em vez de expirar. Cache por consulta não compensa: só repetição exata acertaria. `s3-compose-latency.txt`.
 - [ ] **compactacao-router-07/13/14**: `compaction.run` sem `mechanical/mechanicalCut/warm`; `cache.turn` perde chamadas além de 512 KB sem
   contar; preço por família de modelo (12 de 5.619 sem preço).
-- [ ] **Hooks**: SessionStart de `resume` ainda roda os 18 detectores (só `compact` foi enxugado, P6); Workers sem `resourceLimits` (plataforma-09).
+- [x] **Hooks — SessionStart de `resume` roda os 18 detectores** (só `compact` foi enxugado, P6). **Medido, não feito:** cada detector
+  sozinho num resume real deste projeto (`.claude/scripts/bench-sessionstart-detectors.cjs`): `project-snapshot` 1.457 ms (git + `gh`
+  na rede, já com cache de 5 min), `brain-health` 669 ms, os outros 16 somam 147 ms e rodam em paralelo. Cortar os 16 no resume não
+  muda o tempo; os dois caros trazem branch/CI e saúde do Brain, que valem num resume que pode vir dias depois (a compactação acontece
+  dentro da mesma sessão, o resume é um processo novo). Não é ganho puro.
+- [ ] **Hooks**: Workers sem `resourceLimits` (plataforma-09).
 - [ ] **Duplicação restante**: leitores de transcript (`retrieval-feedback` × `transcript-turns`, reuso-08); `readJson` com contratos
   próprios em `dashboard.js`, `dashboard-start.js`, `marketplace-autoupdate.js`; normalização de caminho/hash espalhada (reuso-09).
 - [x] **Motor, passo 2**: núcleo movido para `engine/` (41 arquivos; 740 `require`/caminhos reescritos por codemod, o resto à mão);
