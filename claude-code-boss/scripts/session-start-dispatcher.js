@@ -64,6 +64,7 @@ const backendOnboardingAdvisory = require('./backend-onboarding-advisory.js');
 const marketplaceAutoupdate = require('./marketplace-autoupdate-ensure.js');
 const graphWarm = require('./graph-warm.js');
 const policyInject = require('./policy-inject.js');
+const runtimeSweep = require('./runtime-sweep.js');
 
 const SEP = '\n\n';
 
@@ -71,6 +72,7 @@ const SEP = '\n\n';
 const DETECTORS = [
   { name: 'brain-daemon-ensure', mod: brainDaemonEnsure, timeoutMs: 120000 },
   { name: 'memory-rotate', mod: memoryRotate, timeoutMs: 10000 },
+  { name: 'runtime-sweep', mod: runtimeSweep, timeoutMs: 5000 },
   { name: 'session-whitelist', mod: sessionWhitelist, timeoutMs: 10000 },
   { name: 'brain-health', mod: brainHealth, timeoutMs: 5000 },
   { name: 'project-snapshot', mod: projectSnapshot, timeoutMs: 5000 },
