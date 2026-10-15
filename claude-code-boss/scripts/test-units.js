@@ -3133,6 +3133,44 @@ test('metrics-store: hooks de projetos intercalados reusam a conexao de cada pro
   }
 });
 
+test('P7 metrics-store.compactNoise: ruido bruto antigo vira 1 linha diaria por (dia, evento) e o total do painel de curadoria NAO muda', () => {
+  delete require.cache[require.resolve('./lib/metrics-store.js')];
+  const prevDataDir = process.env.CLAUDE_PLUGIN_DATA;
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-p7-'));
+  process.env.CLAUDE_PLUGIN_DATA = dir;
+  const store = require('./lib/metrics-store.js');
+  const { summarizeCuration } = require('./lib/curation-metrics.js');
+  try {
+    if (!store.init({ project: 'p7' })) return; // no SQLite backend
+    const db = store._getDbForTests();
+    const ins = db.prepare('INSERT INTO metrics_event (ts, event_name, payload, session_id, project) VALUES (?, ?, ?, ?, ?)');
+    const now = Date.UTC(2026, 9, 15, 12);
+    const day = 86400_000;
+    const old1 = Date.UTC(2026, 7, 1, 10); const old2 = Date.UTC(2026, 7, 1, 18); const old3 = Date.UTC(2026, 7, 2, 9);
+    ins.run(old1, 'curation.skipped', JSON.stringify({ class: 'exploration' }), 's', 'p7');
+    ins.run(old2, 'curation.skipped', JSON.stringify({ class: 'inline' }), 's', 'p7');
+    ins.run(old3, 'curation.skipped', JSON.stringify({ class: 'exploration' }), 's', 'p7');
+    ins.run(old1, 'shell-escape.rewritten', JSON.stringify({ kinds: ['heredoc'] }), 's', 'p7');
+    ins.run(old1, 'curation.pending', JSON.stringify({ sig: 'npm test', chars: 900 }), 's', 'p7'); // feeds the savings baseline: never compacted
+    ins.run(now - 2 * day, 'curation.skipped', JSON.stringify({ class: 'inline' }), 's', 'p7');   // recent: kept raw
+    const rowsOf = () => db.prepare('SELECT ts, event_name AS eventName, payload FROM metrics_event').all().map((r) => ({ ...r, payload: JSON.parse(r.payload) }));
+    const before = summarizeCuration(rowsOf());
+    const r = store.compactNoise({ now });
+    assertEq(r, { summarized: 3, deleted: 4 }, '2 days of curation.skipped + 1 day of shell-escape, 4 raw rows gone');
+    const after = summarizeCuration(rowsOf());
+    assertEq(after.skipped, before.skipped, 'panel totals unchanged');
+    assertEq(after.pending, before.pending, 'pending (savings baseline) untouched');
+    const names = rowsOf().map((x) => x.eventName).sort();
+    assertEq(names, ['curation.pending', 'curation.skipped', 'metrics.daily', 'metrics.daily', 'metrics.daily']);
+    assertEq(store.compactNoise({ now }), { summarized: 0, deleted: 0 }, 'idempotent: nothing left to compact');
+  } finally {
+    store.close();
+    if (prevDataDir === undefined) delete process.env.CLAUDE_PLUGIN_DATA; else process.env.CLAUDE_PLUGIN_DATA = prevDataDir;
+    delete require.cache[require.resolve('./lib/metrics-store.js')];
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 test('metrics-memo: um resultado so e reaproveitado enquanto os arquivos do projeto nao mudam (db, -wal, adopted.json); escrita invalida so o projeto escrito', () => {
   const { createMemo, dbSignature, bucketTs } = require('./lib/metrics-memo.js');
   delete require.cache[require.resolve('./lib/metrics-store.js')];

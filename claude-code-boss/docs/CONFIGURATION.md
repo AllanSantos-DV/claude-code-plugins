@@ -281,6 +281,11 @@ Iniciar: `/dashboard` (slash command) ou `node scripts/dashboard-start.js`.
   de um projeto com `shells.json`, para listar scripts nunca usados (o campo
   "project folder" do painel guarda no navegador). Daemon fora → a latência
   aparece como indisponível, nunca vazia.
+- **Retenção de métricas (janela):** os eventos de alto volume que só alimentam contagem —
+  `curation.skipped` e `shell-escape.*` — ficam brutos por **14 dias**; depois viram uma linha
+  `metrics.daily` por dia e evento com a contagem (e, para `curation.skipped`, a contagem por
+  classe), então os totais do painel não mudam. Roda no SessionStart, no máximo uma vez por dia
+  por projeto (`metrics-store.compactNoise`). Os demais eventos não são apagados.
 - O painel Router configura custom upstream e BYOK por operação. A precedência é
   `dashboard/user-config.json` > variáveis de ambiente > defaults versionados.
 - As rotas locais consumidas pelo Claude Code permanecem Anthropic. Quando
