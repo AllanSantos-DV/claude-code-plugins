@@ -8983,6 +8983,21 @@ test('S4 dashboard.countEntriesInDb: caches by db+wal mtime (WAL-safe) + cache d
 
 // ─── model-router-ensure: opt-in merge (shipped ⊕ DATA_DIR user-config) ──────
 const routerEnsure = require('./model-router-ensure.js');
+
+test('model-router-ensure.cleanupGlobalEnv: com o selo, nenhum spawn de PowerShell (eram ~450 ms em todo SessionStart); sem selo, uma passada limpa grava o selo', () => {
+  const d = fs.mkdtempSync(path.join(os.tmpdir(), 'mre-seal-'));
+  try {
+    const seal = path.join(d, 'legacy-env-clean.json');
+    fs.writeFileSync(seal, '{}');
+    const t0 = Date.now();
+    assertEq(routerEnsure.cleanupGlobalEnv(seal), 'sealed');
+    assert(Date.now() - t0 < 50, 'sealed path spawns nothing');
+    fs.rmSync(seal);
+    const first = routerEnsure.cleanupGlobalEnv(seal);
+    assert(first === 'cleaned' || first === 'dirty', first);
+    if (first === 'cleaned') assertEq(fs.existsSync(seal), true, 'clean pass seals');
+  } finally { fs.rmSync(d, { recursive: true, force: true }); }
+});
 // ─── cost-tuning: 1 h cache + auto-compact window in settings.json env (ownership-safe) ──
 const costTuning = require('./lib/cost-tuning.js');
 const CT_WANT = { CLAUDE_CODE_PROMPT_CACHE_TTL: '1h', CLAUDE_CODE_AUTO_COMPACT_WINDOW: '153000' };
