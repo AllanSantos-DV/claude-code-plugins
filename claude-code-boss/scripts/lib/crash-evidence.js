@@ -27,7 +27,6 @@ const v8 = require('v8');
 const { spawn, spawnSync } = require('child_process');
 
 const LOG_NAME = 'brain-crash.log';
-const REPORT_DIR = 'crash-reports';
 const MAX_RECORDS = 20;
 const MAX_REPORTS = 10;
 const STDERR_TAIL_LINES = 60;
@@ -35,14 +34,11 @@ const NATIVE_PACKAGES = ['onnxruntime-node', 'onnxruntime-common', '@huggingface
 const SYSTEM_DLLS = ['msvcp140.dll', 'vcruntime140.dll', 'vcruntime140_1.dll', 'onnxruntime.dll'];
 
 function crashLogFile(dataDir) { return path.join(dataDir, LOG_NAME); }
-function reportDir(dataDir) { return path.join(dataDir, REPORT_DIR); }
 function lockPath(dataDir) { return path.join(dataDir, 'brain-http.lock.json'); }
 function spawnLogPath(dataDir) { return path.join(dataDir, 'brain-http.spawn.log'); }
 
-/** Node flags for the daemon: a V8 fatal error or an uncaught exception writes a report. */
-function reportFlags(dataDir) {
-  return ['--report-on-fatalerror', '--report-uncaught-exception', `--report-directory=${reportDir(dataDir)}`];
-}
+// Report dir + flags live in crash-report-flags.js (engine side); re-exported here for the old callers.
+const { reportDir, reportFlags } = require('./crash-report-flags.js');
 
 /** kill(pid, 0) probes without signalling; EPERM means the pid exists under another user. */
 function pidAlive(pid) {

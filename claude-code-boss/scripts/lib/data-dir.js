@@ -263,7 +263,15 @@ function bootstrapMostRecent() {
  * absorbs POPULATED siblings, and the stray dir here is empty by definition.
  * @returns {string}
  */
+// Engine seam: a host that is not Claude Code (codex-boss, OpenCode, Copilot) passes its data
+// dir once, before requiring the engine modules — several read dataDir() at load. Then none of
+// the Claude Code resolution below (CLAUDE_PLUGIN_DATA, active pointer, sibling consolidation) runs.
+let _hostDataDir = null;
+/** @param {string|null} dir absolute data dir for this process, or null to go back to the Claude Code resolution */
+function setDataDir(dir) { _hostDataDir = dir ? path.resolve(dir) : null; }
+
 function dataDir() {
+  if (_hostDataDir) return _hostDataDir;
   const env = validEnvDir(process.env.CLAUDE_PLUGIN_DATA);
   // publishAndFollow honors the SAME verdict the publish reaches: when a heavier
   // live folder owns the KB, FOLLOW it instead of stranding this caller in an
@@ -278,6 +286,7 @@ function dataDir() {
 
 module.exports = {
   dataDir,
+  setDataDir,
   validEnvDir,
   globalDir,
   activePointerPath,
