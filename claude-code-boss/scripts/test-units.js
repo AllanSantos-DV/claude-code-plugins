@@ -16300,6 +16300,8 @@ test('self-review.run: edits + retrieved lesson → block, journals, dedups next
   // a UNIQUE sid + a STUB retrieve (DI) → no cache/env swapping, no store race.
   const sid = 'srsession-' + Date.now();
   const cwd = path.join(os.tmpdir(), 'srproj');
+  fs.mkdirSync(path.join(cwd, '.memory'), { recursive: true });
+  fs.writeFileSync(path.join(cwd, '.memory', 'project.json'), JSON.stringify({ metadata: { defaults: { project_id: 'owner/srproj' } } }));
   const dir = process.env.CLAUDE_PLUGIN_DATA; // where the top-level journals live
   const stubRetrieve = async () => ({ entries: [{ id: 'lesX', title: 'widget parser off-by-one', type: 'lesson', recurrence: 2, score: 0.8 }], source: 'index' });
   const noopMetrics = { fire: () => {} }; // don't touch the shared brain-store singleton in-process
@@ -16318,6 +16320,35 @@ test('self-review.run: edits + retrieved lesson → block, journals, dedups next
   const second = await selfReview.run({ hook_event_name: 'Stop', session_id: sid, cwd }, { retrieve: stubRetrieve, dataDir: dir, metrics: noopMetrics, cfg: srCfg });
   assertEq(Object.keys(second).length, 0);
 }));
+
+test('self-review.run: busca a memoria pelo ID do projeto da pasta (nao pelo nome) e manda o cwd; pasta sem id = memoria off, nem busca', () => withDevProfile(async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'sr-id-'));
+  const named = path.join(root, 'claude-code'); // folder name != project id
+  const bare = path.join(root, 'no-id');
+  try {
+    fs.mkdirSync(path.join(named, '.memory'), { recursive: true });
+    fs.mkdirSync(bare, { recursive: true });
+    fs.writeFileSync(path.join(named, '.memory', 'project.json'), JSON.stringify({ metadata: { defaults: { project_id: 'AllanSantos-DV/claude-code-plugins' } } }));
+    const seen = [];
+    const stub = async (_q, opts) => { seen.push(opts); return { entries: [], source: 'none' }; };
+    const deps = { retrieve: stub, dataDir: process.env.CLAUDE_PLUGIN_DATA, metrics: { fire: () => {} }, cfg: { enabled: true, topK: 2, minScore: 0.2, types: ['lesson'] } };
+    const sidA = 'sr-id-a-' + Date.now();
+    verifyJournalTop.appendEdit(sidA, 'scripts/lib/widget-parser.js');
+    await selfReview.run({ hook_event_name: 'Stop', session_id: sidA, cwd: named }, deps);
+    assertEq(seen.length, 1, 'retrieve called once');
+    assertEq(seen[0].project, 'AllanSantos-DV/claude-code-plugins', 'project id, not basename "claude-code" (PROJECT_MISMATCH no daemon)');
+    assertEq(seen[0].cwd, named, 'cwd travels so the daemon resolves the id itself');
+    const sidB = 'sr-id-b-' + Date.now();
+    verifyJournalTop.appendEdit(sidB, 'scripts/lib/widget-parser.js');
+    assertEq(await selfReview.run({ hook_event_name: 'Stop', session_id: sidB, cwd: bare }, deps), {});
+    assertEq(seen.length, 1, 'no id → no retrieve at all');
+  } finally { fs.rmSync(root, { recursive: true, force: true }); }
+}));
+
+test('self-review-retrieve.retrieveViaDaemon: manda o cwd no brain_search quando recebe', () => {
+  const src = fs.readFileSync(path.join(__dirname, 'lib', 'self-review-retrieve.js'), 'utf8');
+  assert(/opts\.cwd \? \{ cwd: opts\.cwd \}/.test(src), 'brain_search args carry cwd');
+});
 
 // ─── U2 value-summary (aggregation) + session-summary detector ───────────────
 const valueSummary = require('./lib/value-summary.js');
