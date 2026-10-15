@@ -12,7 +12,9 @@
 // all live sessions of its launch folder are, the daemon switches that folder's cache TTL to 5m
 // (scripts/lib/folder-ttl.js), so the cache cools in 5 min and the cut comes; restored after it.
 // RESUME: `--resume`/`-c` reload the ORIGINAL history after a hook compaction (engine
-// behavior, measured); the first prompt re-prunes it before anything is sent.
+// behavior, measured); the first prompt re-prunes it before anything is sent. A resumed
+// session's cache counts as cold (its first request re-writes everything), so past the threshold
+// the first prompt is cut instead of re-writing the whole history.
 //
 // Engine rules this shape follows (Claude Code 2.1.291, measured — BACKLOG Q35):
 //   - session.compact is refused inside prompt.submit → hold ({drop}), compact, re-send;
@@ -23,7 +25,7 @@
 // Observability: every decision and cut goes to the boss metrics store through the
 // daemon (POST /hook/compaction-event → tool hook_compaction_event → scripts/compaction-event.js).
 
-import { planCompaction, buildBrief, decideTiming, decideTurnEnd, classifyResume, estimateTokens, thresholdFor, chooseCompaction, isCacheWarm, isMechanicalCut, DEFAULTS } from '../scripts/lib/compaction-core.mjs';
+import { planCompaction, buildBrief, decideTiming, decideTurnEnd, classifyResume, estimateTokens, thresholdFor, chooseCompaction, isCacheWarm, isMechanicalCut, resumedAnswerAt, DEFAULTS } from '../scripts/lib/compaction-core.mjs';
 
 const PERSON_ORIGINS = new Set(['composer', 'bridge', 'sdk']);
 // Folder TTL (scripts/lib/folder-ttl.js): the daemon drops a session that stops reporting for 5 min; this keeps an
@@ -508,7 +510,8 @@ export const register = (on) => {
     ctx.transcriptPath = e.transcript_path || '';
     ctx.start = { source: e.source, lastTokens: e.context_tokens, secondsSince: e.seconds_since_last_response };
     if (e.source === 'resume') ctx.resumeChecked = false;
-    if (e.seconds_since_last_response != null) ctx.lastAnswerAt = (await $.clock.now()) - e.seconds_since_last_response * 1000;
+    if (e.source === 'resume') ctx.lastAnswerAt = resumedAnswerAt(await $.clock.now(), e.seconds_since_last_response);
+    else if (e.seconds_since_last_response != null) ctx.lastAnswerAt = (await $.clock.now()) - e.seconds_since_last_response * 1000;
     return next(e);
   });
 

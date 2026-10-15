@@ -16916,11 +16916,11 @@ test('doctor.runChecks + summarize: criticalFail flagged, counts add up', () => 
     hooksEvents: ['Stop'],
   };
   const results = doctor.runChecks(ctx);
-  assertEq(results.length, 15);
+  assertEq(results.length, 16);
   const s = doctor.summarize(results);
   assert(s.criticalFail, 'old node → criticalFail');
   assertEq(s.ok, false);
-  assertEq(s.counts.ok + s.counts.warn + s.counts.fail, 15);
+  assertEq(s.counts.ok + s.counts.warn + s.counts.fail, 16);
 });
 
 test('doctor.runChecks: all-healthy ctx → ok summary', () => {
@@ -26041,6 +26041,20 @@ test('compaction-core.decideTiming: waits for the cache to expire, compacts cold
   assertEq(cmpCore.decideTiming({ busy: false, now: 1, tokens: 900000, lastAnswerAt: 0, ttlMs: 1 }, {}), { action: 'none', reason: 'no-window' }, 'no window reading = no threshold = never act on a guess');
 });
 
+test('compaction-core.resumedAnswerAt: a resumed session reads as cold under any TTL (its first request re-writes the history), never newer than the real last answer', () => {
+  const NOW = 100_000_000;
+  const T = { thresholdTokens: 250000, minIntervalMs: 600000 };
+  const at = cmpCore.resumedAnswerAt(NOW, 360); // resumed 6 min after the last answer
+  assertEq(at, NOW - cmpCore.RESUMED_CACHE_AGE_MS, 'a 6 min pause still counts as older than the 1h TTL');
+  assertEq(cmpCore.decideTiming({ busy: false, now: NOW, tokens: 470000, lastAnswerAt: at, ttlMs: 3600000 }, T), { action: 'compact', reason: 'cache-cold' }, 'past the threshold, 1h TTL: the first prompt of a resumed session is cut');
+  assertEq(cmpCore.decideTiming({ busy: false, now: NOW, tokens: 100000, lastAnswerAt: at, ttlMs: 3600000 }, T), { action: 'none', reason: 'below-threshold' }, 'below the threshold nothing changes');
+  assertEq(cmpCore.isCacheWarm({ now: NOW, lastAnswerAt: at, ttlMs: 3600000 }), false, 'the cut is the model-free one, not a summary call');
+  assertEq(cmpCore.resumedAnswerAt(NOW, 5 * 3600), NOW - 5 * 3600000, 'an older real answer is kept');
+  assertEq(cmpCore.resumedAnswerAt(NOW, null), NOW - cmpCore.RESUMED_CACHE_AGE_MS, 'no age reported: still cold');
+  const hook = fs.readFileSync(path.join(__dirname, '..', 'hooks', 'compaction.mjs'), 'utf8');
+  assert(/e\.source === 'resume'\) ctx\.lastAnswerAt = resumedAnswerAt\(/.test(hook), 'the SessionStart handler applies it to resume only');
+});
+
 test('compaction-core.decideTurnEnd: an autonomous turn (no person prompt gated) past the threshold compacts at its end ONLY with a cold cache — warm waits; person turns, busy, cooldown, no reading stay out', () => {
   const T = { thresholdTokens: 60000, minIntervalMs: 600000 };
   const NOW = 100_000_000;
@@ -26170,6 +26184,73 @@ test('compaction-metrics.summarizeCompaction: when/how much/cache per host — e
   assertEq(sub.hitPct, 90);
   assertEq(api.afterCompaction.turns, 1);
   assertEq(s.timeline[0].ts, 4, 'newest run first');
+});
+
+function episodeRows() {
+  const M = 'claude-sonnet-5-5';
+  const rows = [{ ts: 1, eventName: 'compaction.gate', sessionId: 's1', payload: { action: 'none', reason: 'below-threshold', windowTokens: 1000000, thresholdPercent: 30 } }];
+  let ts = 1000;
+  for (let c = 0; c < 6; c++) {
+    for (let i = 0; i < 10; i++) {
+      ts += 1000;
+      if (c > 0 && i === 0) rows.push({ ts: ts - 1, eventName: 'compaction.run', sessionId: 's1', payload: { trigger: 'auto', outcome: 'brief', tokensBefore: 70000 } });
+      rows.push({ ts, eventName: 'cache.turn', sessionId: 's1', payload: { model: M, input: 0, output: 0, read: 50000 + i * 2000, write: 0, afterCompaction: c > 0 && i === 0 } });
+    }
+  }
+  // s2: two compactions by the engine in 6 calls (no run rows); its old run is far before and must not claim them
+  rows.push({ ts: 5, eventName: 'compaction.run', sessionId: 's2', payload: { trigger: 'auto', outcome: 'brief' } });
+  [[0, false], [1, true], [2, false], [3, true], [4, false], [5, false]].forEach(([i, after]) => rows.push({ ts: 9_000_000 + i * 1000, eventName: 'cache.turn', sessionId: 's2', payload: { model: M, input: 10, output: 0, read: 0, write: 40000, write5m: 40000, afterCompaction: after } }));
+  return rows;
+}
+
+test('compaction-episodes.buildEpisodes: one episode per compaction with who/when/window/%/cost, per session and model|window, "too much" indicator', () => {
+  const { buildEpisodes, turnCostUsd } = require('./lib/compaction-episodes.js');
+  const { episodes, sessions, groups } = buildEpisodes(episodeRows());
+  const s1 = episodes.filter((e) => e.sessionId === 's1');
+  assertEq(s1.length, 5, 'five cuts in s1');
+  assertEq(s1.every((e) => e.origin === 'boss-auto' && e.windowTokens === 1000000 && e.thresholdPercent === 30), true, 'run matched → boss; window/% from the session gate');
+  assertEq(s1[0].tokensBefore, 70000); assertEq(s1[0].tokensAfter, 50000); assertEq(s1[0].pctOfWindowAtTrigger, 7);
+  assertEq(s1[0].costUsd, 0.005, 'read 50k × 0.05 × US$2/MTok');
+  const s2 = episodes.filter((e) => e.sessionId === 's2');
+  assertEq(s2.map((e) => e.origin), ['engine', 'engine'], 'a run older than 30 min does not claim the cut');
+  assertEq(s2[0].windowTokens, null, 'no gate seen → window unknown, not invented');
+  assertEq(s2[0].tokensBefore, 40010, 'before = the previous call');
+  assertEq(turnCostUsd({ model: 'm-unknown', input: 1 }), null, 'unpriced model → null cost, not 0');
+  const ss2 = sessions.find((s) => s.sessionId === 's2');
+  assertEq(ss2.compactions, 2); assertEq(ss2.engine, 2); assertEq(ss2.per100Turns, 33.3); assertEq(ss2.compactsTooMuch, 'yes');
+  assertEq(sessions.find((s) => s.sessionId === 's1').per100Turns, 8.3);
+  assertEq(sessions.find((s) => s.sessionId === 's1').compactsTooMuch, 'yes', '5 cuts in 60 calls: over 5 per 100');
+  assertEq(require('./lib/compaction-episodes.js').tooMuch(1, 10, 1), 'insufficient', 'one cut says nothing about frequency');
+  assertEq(require('./lib/compaction-episodes.js').tooMuch(2, 200, 10), 'no');
+  const g = groups.find((x) => x.windowTokens === 1000000);
+  assertEq(g.compactions, 5); assertEq(g.medianGrowthPerTurn, 2000); assertEq(g.medianTokensAfter, 50000);
+  assertEq(g.suggestion.ok, true); assertEq(g.suggestion.tokens, 120711); assertEq(g.suggestion.percent, 12.1);
+});
+
+test('compaction-episodes.suggestLimit: withheld with the reason while samples/window/price/growth are missing', () => {
+  const { suggestLimit } = require('./lib/compaction-episodes.js');
+  const ok = { model: 'claude-opus-5-5', windowTokens: 1000000, episodes: 5, afterTokens: 50000, growthPerTurn: 2000 };
+  assertEq(suggestLimit(ok).ok, true);
+  const few = suggestLimit({ ...ok, episodes: 2, windowTokens: null, model: 'x', growthPerTurn: null });
+  assertEq(few.ok, false); assertEq(few.missing.length, 4, 'every gap is named');
+  assertEq(few.missing.some((m) => /2 of 5/.test(m)), true);
+});
+
+test('doctor.checkCompactionRate + compaction-report.formatReport: warns only on a group that compacts too much; states missing samples', () => {
+  const doctor = require('./doctor.js');
+  const { summarizeCompaction } = require('./lib/compaction-metrics.js');
+  const { formatReport } = require('./lib/compaction-report.js');
+  const sum = summarizeCompaction(episodeRows());
+  const res = doctor.runChecks({ compaction: sum.episodes }).find((r) => r.id === 'compaction-rate');
+  assertEq(res.status, 'warn', 'the s2 group (2 cuts / 6 calls, window unknown) compacts too much');
+  assertEq(/window \?/.test(res.detail), true);
+  assertEq(doctor.runChecks({ compaction: { total: 0, groups: [] } }).find((r) => r.id === 'compaction-rate').status, 'ok');
+  assertEq(doctor.runChecks({}).find((r) => r.id === 'compaction-rate').status, 'ok', 'not probed → says so, no alarm');
+  assertEq(doctor.runChecks({ compaction: { error: 'x' } }).find((r) => r.id === 'compaction-rate').status, 'warn', 'a read failure is shown, not hidden');
+  const txt = formatReport(sum);
+  assertEq(/suggested ceiling ~121k \(12\.1% of the window\)/.test(txt), true);
+  assertEq(/no suggestion — missing: window size/.test(txt), true, 'the group without gate says what is missing');
+  assertEq(/default threshold is unchanged/.test(txt), true);
 });
 
 function cmpTranscript(dir, rows) {
