@@ -22,7 +22,8 @@
  *
  * Cycles leave the queue ONLY on a matching ack — a lesson is never dropped just
  * because the agent's turn was interrupted (nor when the safety valve relents: the
- * offer + cycles stay durable for a future session, only the BLOCKING yields). Bounds
+ * offer closes, the session stops offering, and its cycles stay queued until a later
+ * session of the same project adopts them — capture-queue.adoptOrphans). Bounds
  * + an update-safe opt-out come from the merged config so the `standard` profile
  * stays sane.
  */
@@ -30,9 +31,9 @@ const fs = require('fs');
 const queue = require('./lib/capture-queue.js');
 const { budgetForModel, shouldFire, DEFAULT_BOUNDS } = require('./lib/turn-budget.js');
 const { renderBlock } = require('./lib/transcript-block.js');
-const { redact } = require('./lib/redact.js');
-const brainConfig = require('./lib/brain-config.js');
-const metrics = require('./lib/metrics.js');
+const { redact } = require('../engine/lib/redact.js');
+const brainConfig = require('../engine/lib/brain-config.js');
+const metrics = require('../engine/lib/metrics.js');
 
 // Safety valve for the block-until-ack loop (step 3): after this many CONSECUTIVE
 // un-acked Stop re-blocks we RELENT (allow the stop) to avoid a hard deadlock when
@@ -46,7 +47,7 @@ function _project(event) {
   // Fresh require (module-cache hit, cheap) so a test can swap the resolver export.
   // STRICT contract: tryResolveProjectId returns null (never a basename) when scope is
   // unresolved → run() blocks capture rather than staging lessons under scope-junk.
-  return require('./lib/project-id.js').tryResolveProjectId({ cwd: event && event.cwd });
+  return require('../engine/lib/project-id.js').tryResolveProjectId({ cwd: event && event.cwd });
 }
 
 function _safeSize(p) {
@@ -114,7 +115,7 @@ function run(event, deps) {
   if (!project) {
     // Ingestion boundary: no stable scope ⇒ do NOT stage/capture under scope-junk.
     // Fail-LOUD (actionable) but fail-OPEN for the hook (return {} — never crash Stop).
-    console.error('[capture] ' + require('./lib/project-id.js').SCOPE_HELP);
+    console.error('[capture] ' + require('../engine/lib/project-id.js').SCOPE_HELP);
     return {};
   }
   const redactText = s => redact(s).text;
@@ -122,7 +123,13 @@ function run(event, deps) {
   // 1. Scan new cycles into the durable, redacted-at-rest, compaction-safe queue.
   queue.ingest(project, sid, transcriptPath, redactText, { turns: cfg.turns, includeThinking: cfg.includeThinking === true });
   // 2. Reconcile the open offer via the explicit ack marker: drain on ack, else re-block.
-  queue.reconcile(project, sid);
+  const rec = queue.reconcile(project, sid);
+  if (rec.acked) metrics.fire('capture.acked', { windowId: rec.windowId, outcome: rec.outcome, afterBlocks: rec.afterBlocks }, { sessionId: sid, cwd: ev.cwd });
+  // 2b. Cycles left by ended sessions of this project join this queue (offered under the cadence below).
+  if (!queue.getState(project, sid).offer) {
+    const adopted = queue.adoptOrphans(project, sid);
+    if (adopted.cycles) metrics.fire('capture.adopted', { files: adopted.files, cycles: adopted.cycles }, { sessionId: sid, cwd: ev.cwd });
+  }
 
   const st = queue.getState(project, sid);
   const model = _lastModel(_readTail(transcriptPath));
@@ -147,15 +154,17 @@ function run(event, deps) {
     const blocks = queue.noteBlock(project, sid); // per-offer re-block counter (CAS-safe, resets per offer)
     if (blocks >= maxBlockAttempts) {
       console.error(`[capture] relenting after ${blocks} blocks with no ack — allowing stop to avoid deadlock`);
+      // Close the offer and stop offering in this session; the cycles stay queued for adoption.
+      queue.releaseOffer(project, sid);
       metrics.fire('capture.relented', { windowId: cur.windowId, blocks, model }, { sessionId: sid, cwd: ev.cwd });
-      return {}; // cycle stays queued (lessons-never-dropped) — only the block yields this turn
+      return {};
     }
     metrics.fire('capture.reoffered', { windowId: cur.windowId, model }, { sessionId: sid, cwd: ev.cwd });
     return { block: true, reason: buildInstruction(cur.text, cur.windowId) };
   }
 
   // 4. No open offer → consider a NEW one, gated by cadence bounds + budget.
-  if (ev.stop_hook_active) return {};
+  if (ev.stop_hook_active || st.paused) return {};
   const bounds = {
     maxCapturesPerSession: cfg.maxCapturesPerSession != null ? cfg.maxCapturesPerSession : DEFAULT_BOUNDS.maxCapturesPerSession,
     cooldownMs: cfg.cooldownMs != null ? cfg.cooldownMs : DEFAULT_BOUNDS.cooldownMs,

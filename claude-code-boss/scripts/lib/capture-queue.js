@@ -17,10 +17,11 @@
 const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
-const { sanitizeSessionId } = require('./session-id.js');
-const { dataDir } = require('./data-dir.js');
+const { sanitizeSessionId } = require('../../engine/lib/session-id.js');
+const { dataDir } = require('../../engine/lib/data-dir.js');
 const { packCycles } = require('./transcript-block.js');
 const { readLastTurns } = require('./transcript-turns.js');
+const { writeFileAtomic } = require('../../engine/lib/atomic-write.js');
 
 const SEEN_CAP = 5000;
 
@@ -29,7 +30,7 @@ function _file(project, sid) {
   return path.join(_runtimeDir(), `capture-queue-${sanitizeSessionId(project)}--${sanitizeSessionId(sid)}.json`);
 }
 
-function _default() { return { rev: 0, scan: { offset: 0, anchorHash: '' }, seen: [], seenPrompts: [], queue: [], offer: null, offers: 0, captured: 0, lastOfferTs: 0 }; }
+function _default() { return { rev: 0, scan: { offset: 0, anchorHash: '' }, seen: [], seenPrompts: [], queue: [], offer: null, offers: 0, captured: 0, lastOfferTs: 0, paused: false, adoptCheckedAt: 0 }; }
 
 function _load(project, sid) {
   try {
@@ -44,6 +45,8 @@ function _load(project, sid) {
       offers: o.offers || 0,       // review interruptions opened this session (cadence cap)
       captured: o.captured || 0,   // real captures (non-'none' acks) — evolution telemetry
       lastOfferTs: o.lastOfferTs || 0,
+      paused: o.paused === true,          // relented this session: no new offers here, the cycles wait for adoption
+      adoptCheckedAt: o.adoptCheckedAt || 0,
     };
   } catch (err) { void err; return _default(); }
 }
@@ -58,10 +61,7 @@ function _save(project, sid, state, expectRev) {
       const current = _load(project, sid).rev;
       if (current !== expectRev) return false; // stale — caller retries
     }
-    const f = _file(project, sid);
-    const tmp = `${f}.tmp-${process.pid}-${crypto.randomBytes(4).toString('hex')}`;
-    fs.writeFileSync(tmp, JSON.stringify(state));
-    fs.renameSync(tmp, f);
+    writeFileAtomic(_file(project, sid), JSON.stringify(state));
     return true;
   } catch (err) {
     console.error(`[capture-queue] save failed: ${err.message}`);
@@ -145,10 +145,7 @@ function recordAck(windowId, outcome) {
   try {
     const dir = _runtimeDir();
     if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
-    const f = _ackFile(windowId);
-    const tmp = `${f}.tmp-${process.pid}-${crypto.randomBytes(4).toString('hex')}`;
-    fs.writeFileSync(tmp, JSON.stringify({ outcome: outcome || 'captured', ts: Date.now() }));
-    fs.renameSync(tmp, f);
+    writeFileAtomic(_ackFile(windowId), JSON.stringify({ outcome: outcome || 'captured', ts: Date.now() }));
     return true;
   } catch (err) {
     console.error(`[capture-queue] recordAck failed: ${err.message}`);
@@ -228,6 +225,84 @@ function noteBlock(project, sid) {
   return (s.offer && s.offer.blockCount) || 0;
 }
 
+/**
+ * The safety valve relented (the agent never acked): close the offer WITHOUT dropping its
+ * cycles and stop offering in this session. Before, the offer stayed open forever — every
+ * later Stop re-ran the relent (376 `capture.relented` in 14 windows) and the session never
+ * offered again; its cycles waited for "a future session" that never read another
+ * session's queue. Now they stay queued here until adoptOrphans moves them.
+ * @returns {boolean} whether the offer was released
+ */
+function releaseOffer(project, sid) {
+  for (let i = 0; i < 5; i++) {
+    const state = _load(project, sid);
+    if (!state.offer) return false;
+    const expect = state.rev;
+    state.offer = null;
+    state.paused = true;
+    state.rev = expect + 1;
+    if (_save(project, sid, state, expect)) return true;
+  }
+  return false;
+}
+
+// A session whose queue file has not changed in this long is over: its queued cycles
+// belong to the project, not to that session.
+const ORPHAN_STALE_MS = 24 * 3600e3;
+const ADOPT_CHECK_EVERY_MS = 3600e3;
+
+/**
+ * Move the queued cycles of ended sessions of the SAME project into this session's queue
+ * (oldest file first, at most `maxFiles` per call), so they are offered here under the
+ * normal cadence. The orphan file is deleted only after this session's queue holding its
+ * cycles is durably saved — a crash in between duplicates a cycle, never loses one.
+ * Checked at most once an hour per session (it lists the runtime dir).
+ * @returns {{files:number, cycles:number}}
+ */
+function adoptOrphans(project, sid, { now = Date.now(), staleMs = ORPHAN_STALE_MS, maxFiles = 1, force = false } = {}) {
+  const out = { files: 0, cycles: 0 };
+  const own = _load(project, sid);
+  if (!force && now - (own.adoptCheckedAt || 0) < ADOPT_CHECK_EVERY_MS) return out;
+  const dir = _runtimeDir();
+  const prefix = `capture-queue-${sanitizeSessionId(project)}--`;
+  const ownName = path.basename(_file(project, sid));
+  let names = [];
+  try { names = fs.readdirSync(dir); } catch (err) { if (err.code !== 'ENOENT') console.error(`[capture-queue] adopt: ${err.message}`); }
+  const orphans = [];
+  for (const n of names) {
+    if (!n.startsWith(prefix) || !n.endsWith('.json') || n === ownName) continue;
+    try { const mtime = fs.statSync(path.join(dir, n)).mtimeMs; if (now - mtime > staleMs) orphans.push({ n, mtime }); } catch (err) { void err; }
+  }
+  orphans.sort((a, b) => a.mtime - b.mtime);
+  for (let i = 0; i < 5; i++) {
+    const state = _load(project, sid);
+    const expect = state.rev;
+    state.adoptCheckedAt = now;
+    const have = new Set(state.queue.map((c) => c.id));
+    const seen = new Set(state.seen);
+    const taken = [];
+    for (const { n } of orphans.slice(0, maxFiles)) {
+      let o = null;
+      try { o = JSON.parse(fs.readFileSync(path.join(dir, n), 'utf-8')); } catch (err) { console.error(`[capture-queue] adopt ${n}: ${err.message}`); continue; }
+      const cycles = Array.isArray(o && o.queue) ? o.queue : [];
+      for (const c of cycles) {
+        if (!c || !c.id || have.has(c.id)) continue;
+        have.add(c.id);
+        state.queue.push(c);
+        if (!seen.has(c.id)) { seen.add(c.id); state.seen.push(c.id); }
+        out.cycles++;
+      }
+      taken.push(n);
+    }
+    if (state.seen.length > SEEN_CAP) state.seen = state.seen.slice(-SEEN_CAP);
+    state.rev = expect + 1;
+    if (!_save(project, sid, state, expect)) { out.cycles = 0; continue; }
+    for (const n of taken) { try { fs.unlinkSync(path.join(dir, n)); out.files++; } catch (err) { console.error(`[capture-queue] adopt cleanup ${n}: ${err.message}`); } }
+    return out;
+  }
+  return { files: 0, cycles: 0 };
+}
+
 /** Remove the offered window's cycles and clear the offer — only for a MATCHING windowId. */
 function ack(project, sid, windowId, outcome) {
   const state = _load(project, sid);
@@ -262,6 +337,7 @@ function reconcile(project, sid, deps) {
   const wid = state.offer.windowId;
   const ackRec = readAck(wid);
   if (ackRec) {
+    const afterBlocks = state.offer.blockCount || 0;
     const ids = new Set(state.offer.ids);
     const outcome = ackRec.outcome || 'captured';
     const expect = state.rev;
@@ -271,7 +347,7 @@ function reconcile(project, sid, deps) {
     state.rev = expect + 1;
     if (!save(project, sid, state, expect)) return { acked: false, dropped: false }; // commit failed → keep marker + offer for a retry
     clearAck(wid); // consume the marker only after the drain is durably committed
-    return { acked: true, dropped: false, outcome };
+    return { acked: true, dropped: false, outcome, windowId: wid, afterBlocks };
   }
   // No ack → re-block (offer stays open, cycles stay queued). attempts is metrics-only.
   const expect = state.rev;
@@ -281,4 +357,4 @@ function reconcile(project, sid, deps) {
   return { acked: false, dropped: false, retry: state.offer.attempts };
 }
 
-module.exports = { ingest, getState, reset, offer, currentOfferText, noteBlock, ack, reconcile, recordAck, readAck, clearAck, _hash, _load, _save, _file };
+module.exports = { ingest, getState, reset, offer, currentOfferText, noteBlock, releaseOffer, adoptOrphans, ORPHAN_STALE_MS, ack, reconcile, recordAck, readAck, clearAck, _hash, _load, _save, _file };

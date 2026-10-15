@@ -5,10 +5,10 @@
 //   node scripts/scope-bulk-reclassify.js <project> --type=lesson --commit
 
 'use strict';
-const store = require('./brain-store.js');
-const index = require('./brain-index.js');
-const graph = require('./brain-graph.js');
-const { inferDefaultScope, prepareForUserScope, USER_SENTINEL } = require('./lib/scope-sanitizer.js');
+const store = require('../engine/brain-store.js');
+const index = require('../engine/brain-index.js');
+const graph = require('../engine/brain-graph.js');
+const { inferDefaultScope, prepareForUserScope, USER_SENTINEL } = require('../engine/lib/scope-sanitizer.js');
 
 function parseArgs(argv) {
   const args = { project: '', commit: false, type: '' };

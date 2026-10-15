@@ -11,10 +11,10 @@
  * Silently fails if RUNTIME_DIR is unavailable — hooks must never crash.
  */
 const fs = require('fs');
-const { writeFileAtomic } = require('./lib/atomic-write.js');
+const { writeFileAtomic } = require('../engine/lib/atomic-write.js');
 const path = require('path');
 
-const { dataDir } = require('./lib/data-dir.js');
+const { dataDir } = require('../engine/lib/data-dir.js');
 const DATA_DIR = dataDir();
 const RUNTIME_DIR = path.join(DATA_DIR, '.runtime');
 const HOOK_ERRORS_PATH = path.join(RUNTIME_DIR, 'hook-errors.jsonl');

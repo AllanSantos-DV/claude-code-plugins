@@ -30,12 +30,12 @@ function pluginRoot() {
 }
 
 function dataDir() {
-  return require('./lib/data-dir.js').dataDir();
+  return require('../engine/lib/data-dir.js').dataDir();
 }
 
 /** kb.skillPromotion, shipped ⊕ user override — the reader brain-promote and the dashboard use (BACKLOG Q44/Q48). */
 function loadCfg() {
-  return require('./lib/brain-config.js').getSkillPromotion();
+  return require('../engine/lib/brain-config.js').getSkillPromotion();
 }
 
 function shouldRun(stampPath, cooldownMs) {

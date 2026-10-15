@@ -16,9 +16,10 @@ const fs = require('fs');
 const _textUtils = require('./lib/text-utils.js');
 const path = require('path');
 
-const { dataDir } = require('./lib/data-dir.js');
+// opts.dataDir on init (a host passing its own), else the resolved data dir.
+const storeDir = require('./lib/data-dir.js').dirResolver();
 const { writeFileAtomic } = require('./lib/atomic-write.js');
-const STORE_DIR = dataDir();
+let _storeDir = null;
 
 let _project = 'default';
 let _indexPath = null;
@@ -26,15 +27,17 @@ let _index = null;
 let _initialized = false;
 
 function getIndexPath() {
-  const dir = path.join(STORE_DIR, 'brain', _project);
+  const dir = path.join(_storeDir || storeDir(), 'brain', _project);
   if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
   return path.join(dir, 'index.json');
 }
 
 async function init(opts = {}) {
   const newProject = opts.project || 'default';
-  if (_initialized && _project === newProject) return;
+  const newDir = storeDir(opts);
+  if (_initialized && _project === newProject && _storeDir === newDir) return;
   _project = newProject;
+  _storeDir = newDir;
   _index = null;
   _indexPath = getIndexPath();
 

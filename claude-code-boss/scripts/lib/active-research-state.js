@@ -16,8 +16,8 @@
 const fs = require('fs');
 const path = require('path');
 
-const { dataDir } = require('./data-dir.js');
-const { writeJsonAtomic } = require('./atomic-write.js');
+const { dataDir } = require('../../engine/lib/data-dir.js');
+const { writeJsonAtomic } = require('../../engine/lib/atomic-write.js');
 
 const DATA_DIR = dataDir();
 const STATE = path.join(DATA_DIR, '.runtime', 'active-research-state.json');

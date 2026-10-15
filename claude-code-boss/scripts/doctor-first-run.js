@@ -37,7 +37,7 @@ function buildKey() {
 }
 
 function markerPath(key, dir) {
-  return path.join(dir || require('./lib/data-dir.js').dataDir(), '.runtime', `doctor-first-run-${key}.done`);
+  return path.join(dir || require('../engine/lib/data-dir.js').dataDir(), '.runtime', `doctor-first-run-${key}.done`);
 }
 
 /** Claim this build's first run. True for exactly one caller (exclusive create). */

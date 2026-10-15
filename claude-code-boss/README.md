@@ -185,8 +185,9 @@ prazo interno de `timeout − 1 s`.
 | PostToolUse (Bash, via dispatcher) | `decision-detect.js` | Detecta commit/PR com cara de decisão arquitetural e stash pending para o Stop promover |
 | PostToolUse (Edit\|Write\|NotebookEdit) | `mcp_tool` → `hook_file_edit_detect` (`file-edit-detect.js`) | Journala arquivos editados no turno (alimenta `verify-nudge` e `self-review`) |
 | PostToolUse (Edit\|Write\|MultiEdit\|NotebookEdit) | `mcp_tool` → `hook_policy_glob_inject` (`policy-glob-inject.js`) | Injeta advisory de política glob (per-file) quando o arquivo editado casa um padrão de política ativa |
+| PostToolUse (Skill) | `mcp_tool` → `hook_skill_metric` (`skill-metric.js`) | Métrica de uso de skill chamada pelo modelo (ferramenta Skill, a maior parte dos usos) |
 | UserPromptExpansion | `dashboard-command.js` (command, matcher `dashboard`) | **`/dashboard` sem LLM**: garante o dashboard no ar (sonda HTTP da porta publicada), abre o navegador e **bloqueia** a expansão mostrando a URL — o prompt nunca chega ao modelo; falha também bloqueia, com a causa |
-| UserPromptExpansion | `mcp_tool` → `hook_skill_metric` (`skill-metric.js`) | Métrica de uso de skill (matcher `.*`) |
+| UserPromptExpansion | `mcp_tool` → `hook_skill_metric` (`skill-metric.js`) | Métrica de uso de skill digitada (`/skill`, matcher `.*`) |
 | **PostToolUseFailure** | **`mcp_tool` → `hook_posttoolusefailure_dispatcher` (`posttoolusefailure-dispatcher.js`)** | **Entry único** — roda `curation-detect.js` (já filtra `tool_name==='Bash'` internamente) + `failure-detect.js` in-process |
 | PostToolUseFailure (via dispatcher) | `failure-detect.js` | Journala a falha (alimenta `failure-retro`). O `error-guard` não depende mais dele: decide pelo transcript da própria sessão (`lib/session-failures.js`) |
 | **Stop** | **`mcp_tool` → `hook_stop_dispatcher` (`stop-dispatcher.js`)** | **Entry único** — roda in-process no daemon, em ordem, todos os detectores abaixo e funde os blocks num só `{decision:'block', reason}` |
@@ -224,8 +225,10 @@ prazo interno de `timeout − 1 s`.
 >   `refine-research`, `failure-retro`, `research-followup`, `auto-continue`.
 >   `session-summary` (1×/sessão) e o retrieval continuam.
 > - **`dev`** — tudo ligado (curadoria escala até 3×), para quem estende o plugin.
-> - **`free`** — passa tudo: o Stop-dispatcher faz short-circuit e **nada bloqueia**;
->   só o retrieval de contexto no prompt (read-only) segue ativo.
+> - **`free`** — passa tudo: todos os detectores do Stop ficam desligados (sem passe-sombra)
+>   e os guards também — curadoria, error-guard, escape de shell, PowerShell, formato de
+>   arquivo, injeção de políticas e pesquisa ativa. **Nada bloqueia nem reescreve**; só o
+>   retrieval de contexto no prompt (read-only) segue ativo.
 >
 > **Troca update-safe:** o perfil é lido do config shipped **mesclado** com
 > `DATA_DIR/hooks/user-config.json` (nunca versionado), então trocar não edita arquivo

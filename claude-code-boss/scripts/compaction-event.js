@@ -25,7 +25,7 @@
  */
 const fs = require('fs');
 const path = require('path');
-const metrics = require('./lib/metrics.js');
+const metrics = require('../engine/lib/metrics.js');
 
 const RECORDED = new Set(['gate', 'run', 'resume', 'settled', 'error']);
 const TAIL_BYTES = 512 * 1024;
@@ -111,7 +111,7 @@ function ttlVerdictFor(hostKey, rows) {
 }
 
 function storedCacheTurns() {
-  const store = require('./lib/metrics-store.js');
+  const store = require('../engine/lib/metrics-store.js');
   if (!store.isReady()) return [];
   return store.getEventLog({ eventName: 'cache.turn', limit: TTL_LOOKBACK });
 }

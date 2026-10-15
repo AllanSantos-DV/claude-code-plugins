@@ -38,12 +38,12 @@ async function run(event) {
     if (!cfg.enabled || !cfg.warm) return null;
 
     // The graph lives on the mcp-memory daemon — nothing to warm on the local backend.
-    const brainCfg = require('./lib/brain-config.js').load();
+    const brainCfg = require('../engine/lib/brain-config.js').load();
     if (((brainCfg.backend && brainCfg.backend.type) || 'local') !== 'mcp-memory') return null;
 
     const cwd = (event && typeof event.cwd === 'string' && event.cwd) ? event.cwd : process.cwd();
     const projectRoot = path.resolve(cwd);
-    const dataDir = require('./lib/data-dir.js').dataDir();
+    const dataDir = require('../engine/lib/data-dir.js').dataDir();
     const core = require('./lib/graph-guard-core.js');
 
     // Per-project cooldown: don't re-hash the repo on every open within the window.

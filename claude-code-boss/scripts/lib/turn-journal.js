@@ -24,7 +24,7 @@
 const fs = require('fs');
 const path = require('path');
 
-const { sanitizeSessionId } = require('./session-id.js');
+const { sanitizeSessionId } = require('../../engine/lib/session-id.js');
 const { createJournal } = require('./session-journal.js');
 
 const journal = createJournal({ prefix: 'curation-turn', label: 'turn-journal' });

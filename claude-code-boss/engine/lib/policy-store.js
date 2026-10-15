@@ -563,10 +563,18 @@ function list(dataDir, opts) {
   return listVisible(dataDir, opts || {});
 }
 
+/** True when any policy is NOT always-apply (glob, or a glob shadow assertion), in any scope or
+ *  project. An unreadable registry answers true: the tools stay visible rather than vanish. */
+function hasConditionalPolicies(dataDir) {
+  const { records, corrupt } = loadResult(dataDir);
+  if (corrupt) return true;
+  return Object.values(records).some((r) => r && r.mode != null && r.mode !== 'always');
+}
+
 module.exports = {
   storePath, loadResult, save, mutate,
   activate, deactivate,
-  list, listAlways, listVisible, listGlobMatching, listShadowMatching,
+  list, listAlways, listVisible, listGlobMatching, listShadowMatching, hasConditionalPolicies,
   activeFor, activeAlways, activeGlob, activeShadow, isShadowAssertion,
   canonicalizeGlobs, toRelPath,
   MAX_POLICY_CHARS, DEFAULT_MAX_POLICIES, DEFAULT_MAX_CHARS,

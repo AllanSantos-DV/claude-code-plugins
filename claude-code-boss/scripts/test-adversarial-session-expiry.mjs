@@ -5,7 +5,7 @@
 import http from 'http';
 import { URL } from 'url';
 
-const McpClient = await import('./mcp-client.js');
+const McpClient = await import('../engine/mcp-client.js');
 
 /** Start a fake daemon with configurable behaviors */
 function startFakeDaemon(opts = {}) {

@@ -30,8 +30,8 @@ const { getShellsConfigPath } = require('./curation-paths.js');
 const { runPreToolUseCli, preToolUseDecision } = require('./lib/hook-io.js');
 const { findProjectRoot, loadShellsConfig, matchCuratedShell, _pathMatches, _tokenize } = require('./shells-config.js');
 const { planRedirect, planShaping } = require('./lib/curation-redirect.js');
-const { canonicalSig } = require('./lib/command-signature.js');
-const metrics = require('./lib/metrics.js');
+const { canonicalSig } = require('../engine/lib/command-signature.js');
+const metrics = require('../engine/lib/metrics.js');
 
 const hooksConfig = require('./lib/hooks-config.js');
 
@@ -112,25 +112,38 @@ const PASS = {};
  * Writes the moved payloads to the plugin's runtime dir (swept after a day).
  * @returns {null | {command:string|null, ctx:string|null, deny:object|null}}
  */
+// The inline-scripts sweep (readdir + stat of each file) ran on EVERY rewrite on the
+// daemon's fast lane: 18–24 ms with 399 files. Files live 24 h, so once per 10 min is plenty.
+const INLINE_SWEEP_EVERY_MS = 10 * 60e3;
+const _inlineSwept = new Map(); // dir -> last sweep ms
+
+function sweepInlineScripts(dir, now = Date.now()) {
+  if (now - (_inlineSwept.get(dir) || 0) < INLINE_SWEEP_EVERY_MS) return false;
+  const fs = require('fs');
+  const path = require('path');
+  fs.mkdirSync(dir, { recursive: true });
+  for (const n of fs.readdirSync(dir)) {
+    const f = path.join(dir, n);
+    try { if (now - fs.statSync(f).mtimeMs > 24 * 3600e3) fs.rmSync(f, { force: true }); } catch (err) { void err; }
+  }
+  _inlineSwept.set(dir, now);
+  return true;
+}
+
 function escapeFix(event) {
   try {
     const cfg = hooksConfig.getShellEscapeGuard();
     if (!cfg.enabled || !cfg.platforms.includes(process.platform)) return null;
     const fs = require('fs');
     const path = require('path');
-    const dir = path.join(require('./lib/data-dir.js').dataDir(), '.runtime', 'inline-scripts');
-    const plan = require('./lib/shell-escape.js').planEscapeFix(event.tool_input.command, {
+    const dir = path.join(require('../engine/lib/data-dir.js').dataDir(), '.runtime', 'inline-scripts');
+    const plan = require('../engine/lib/shell-escape.js').planEscapeFix(event.tool_input.command, {
       dir: dir.replace(/\\/g, '/'), inlineMaxChars: cfg.inlineMaxChars, mode: cfg.mode,
     });
     if (!plan) return null;
     const mctx = { sessionId: event.session_id, cwd: event.cwd };
     if (plan.command) {
-      fs.mkdirSync(dir, { recursive: true });
-      const now = Date.now();
-      for (const n of fs.readdirSync(dir)) {
-        const f = path.join(dir, n);
-        try { if (now - fs.statSync(f).mtimeMs > 24 * 3600e3) fs.rmSync(f, { force: true }); } catch (err) { void err; }
-      }
+      if (!sweepInlineScripts(dir)) fs.mkdirSync(dir, { recursive: true });
       for (const f of plan.files) fs.writeFileSync(path.join(dir, f.name), f.content, 'utf8');
       metrics.fire('shell-escape.rewritten', { kinds: plan.kinds }, mctx);
     }
@@ -159,7 +172,7 @@ function powershellFix(event, command) {
   try {
     const cfg = hooksConfig.getPowershellGuard();
     if (!cfg.enabled || !cfg.platforms.includes(process.platform)) return null;
-    const compat = require('./lib/powershell-compat.js');
+    const compat = require('../engine/lib/powershell-compat.js');
     const mctx = { sessionId: event.session_id, cwd: event.cwd };
     const fixed = cfg.advisory ? null : compat.fixBashCommand(command);
     const warn = compat.renderWarning(compat.lintBash(fixed ? fixed.command : command));
@@ -196,6 +209,7 @@ function allFixes(event) {
  * @returns {Promise<object>}
  */
 async function run(event) {
+  if (hooksConfig.getCurationGuard().enabled === false) return PASS;
   const fix = event && event.tool_name === 'Bash' && event.tool_input?.command ? allFixes(event) : null;
   if (!fix) return cascade(event);
   if (fix.deny) return fix.deny;
@@ -293,7 +307,7 @@ async function cascade(event) {
         const core = require('./lib/graph-guard-core.js');
         const broad = core.matchBroadBashSearch(command);
         if (broad) {
-          const brainCfg = require('./lib/brain-config.js').load();
+          const brainCfg = require('../engine/lib/brain-config.js').load();
           if (((brainCfg.backend && brainCfg.backend.type) || 'local') === 'mcp-memory') {
             const cwd = event.cwd || process.cwd();
             const sid = event.session_id || 'default';
@@ -303,13 +317,13 @@ async function cascade(event) {
               pattern: broad.pattern,
               projectRoot: require('path').resolve(cwd),
               sid,
-              dataDir: require('./lib/data-dir.js').dataDir(),
+              dataDir: require('../engine/lib/data-dir.js').dataDir(),
               cfg: ggCfg,
               probe: core.makeGraphStateProbe({ cwd, timeoutMs: ggCfg.probeTimeoutMs }),
             });
             if (res.action === 'deny') {
               try {
-                require('./lib/metrics.js').fire('graph-guard.fired', { kind: 'bash', tool: broad.tool }, { sessionId: sid, cwd });
+                require('../engine/lib/metrics.js').fire('graph-guard.fired', { kind: 'bash', tool: broad.tool }, { sessionId: sid, cwd });
               } catch (e) { void e; /* metrics are best-effort */ }
               return decision('deny', { additionalContext: res.reason, permissionDecisionReason: res.reason });
             }
@@ -354,4 +368,4 @@ if (require.main === module) {
   runPreToolUseCli(run, 'curation-guard', { defaultDecision: PASS });
 }
 
-module.exports = { run, decision, isWhitelisted, hasPipe, pipesCuratedScript, pipeFilterOf };
+module.exports = { run, decision, isWhitelisted, hasPipe, pipesCuratedScript, pipeFilterOf, sweepInlineScripts };

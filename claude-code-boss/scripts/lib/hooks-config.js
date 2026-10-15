@@ -24,9 +24,9 @@
  * so a plugin auto-update never reverts the user's choice.
  */
 const fs = require('fs');
-const { writeFileAtomic } = require('./atomic-write.js');
+const { writeFileAtomic } = require('../../engine/lib/atomic-write.js');
 const path = require('path');
-const { isPlainObject, deepMerge, filesStamp, loadLayered } = require('./config-merge.js');
+const { isPlainObject, deepMerge, filesStamp, loadLayered } = require('../../engine/lib/config-merge.js');
 
 const PLUGIN_ROOT = process.env.CLAUDE_PLUGIN_ROOT || path.resolve(__dirname, '..', '..');
 const CONFIG_PATH = path.join(PLUGIN_ROOT, 'config', 'hooks-config.json');
@@ -35,14 +35,14 @@ const CONFIG_PATH = path.join(PLUGIN_ROOT, 'config', 'hooks-config.json');
 // CLAUDE_PLUGIN_DATA + _resetCache(). GLOBAL (not data-dir-scoped) so switching
 // the data folder never orphans the user's profile choice.
 function userConfigPath() {
-  const { globalDir } = require('./data-dir.js');
+  const { globalDir } = require('../../engine/lib/data-dir.js');
   return path.join(globalDir(), 'hooks', 'user-config.json');
 }
 
 // Pre-Phase-1.5 location of the override (under the resolved active data dir).
 // Retained only so load() can backfill it up to the global path exactly once.
 function legacyUserConfigPath() {
-  const { dataDir } = require('./data-dir.js');
+  const { dataDir } = require('../../engine/lib/data-dir.js');
   return path.join(dataDir(), 'hooks', 'user-config.json');
 }
 
@@ -76,10 +76,19 @@ const PROFILE_PRESETS = {
     // UserPromptSubmit context injection (invisible to the user) and the #1
     // learning trigger. `standard` must stay quiet WITHOUT killing auto-learning.
   },
-  // free = passthrough: the Stop dispatcher short-circuits entirely (retrieval on
-  // UserPromptSubmit stays — pure value, no block). These flags mirror "all off"
-  // as defense-in-depth if the short-circuit is ever bypassed.
+  // free = passthrough: every Stop detector is gated off (retrieval on UserPromptSubmit
+  // stays — pure value, no block). The guards below used to read the raw file and kept
+  // denying/rewriting in free although the README promises "nothing blocks": they are
+  // profile-resolved now and off here.
   free: {
+    curationGuard:    { enabled: false },
+    errorGuard:       { enabled: false },
+    shellEscapeGuard: { enabled: false },
+    powershellGuard:  { enabled: false },
+    fileFormatGuard:  { enabled: false },
+    policyInject:     { enabled: false },
+    activeResearch:   { enabled: false },
+    decisionPromote:  { enabled: false },
     curationStop:     { enabled: false },
     patternDetect:    { enabled: false },
     correctionDetect: { enabled: false },
@@ -151,10 +160,9 @@ function getCurationStop() {
   };
 }
 
-// Not profile-controlled — read straight from the raw file.
+// Profile-resolved (free disables it).
 function getCurationGuard() {
-  const cfg = load();
-  return cfg.curationGuard || {};
+  return _resolved().curationGuard || {};
 }
 
 // Profile-resolved (free disables it). Backs the graph-guard: on the mcp-memory
@@ -181,10 +189,10 @@ function getGraphGuard() {
   };
 }
 
-// Not profile-controlled — read straight from the raw file (like getCurationGuard).
-// Backs the deterministic error-guard (DENY-on-recurring-Bash-failure). Defaults ON.
+// Profile-resolved (free disables it). Backs the deterministic error-guard
+// (DENY-on-recurring-Bash-failure). Defaults ON.
 function getErrorGuard() {
-  const eg = load().errorGuard || {};
+  const eg = _resolved().errorGuard || {};
   return {
     enabled: eg.enabled !== false,
     // Failures counted within the CURRENT session only (lib/session-failures.js) —
@@ -193,12 +201,12 @@ function getErrorGuard() {
   };
 }
 
-// Not profile-controlled. PowerShell 5.1×7 guard (lib/powershell-compat.js): exact
+// Profile-resolved (free disables it). PowerShell 5.1×7 guard (lib/powershell-compat.js): exact
 // `$`/backtick escaping in `powershell -Command "…"` through Bash plus syntax warnings
 // (Bash matcher in curation-guard, PowerShell-tool matcher in powershell-guard).
 // advisory: warn only, never rewrite. platforms: where PowerShell is the Windows one.
 function getPowershellGuard() {
-  const pg = load().powershellGuard || {};
+  const pg = _resolved().powershellGuard || {};
   return {
     enabled: pg.enabled !== false,
     advisory: pg.advisory === true,
@@ -209,17 +217,16 @@ function getPowershellGuard() {
 // Write replaces a file with LF/no-BOM text: PreToolUse records the original EOL/BOM,
 // PostToolUse restores them (file-format-guard.js).
 function getFileFormatGuard() {
-  return { enabled: (load().fileFormatGuard || {}).enabled !== false };
+  return { enabled: (_resolved().fileFormatGuard || {}).enabled !== false };
 }
 
-// Not profile-controlled — read straight from the raw file (like getErrorGuard).
-// Backs the shell-escape fix in curation-guard (lib/shell-escape.js): the Bash tool
+// Profile-resolved (free disables it). Backs the shell-escape fix in curation-guard (lib/shell-escape.js): the Bash tool
 // on Windows halves runs of backslashes and breaks quoted heredocs before bash sees
 // the command. mode: 'rewrite' (move the payload to a file, default) | 'warn' (only
 // tell the agent). block: what rewrite can't fix safely is DENIED instead of warned
 // (default OFF — the owner decides). platforms: where the bug exists.
 function getShellEscapeGuard() {
-  const se = load().shellEscapeGuard || {};
+  const se = _resolved().shellEscapeGuard || {};
   return {
     enabled: se.enabled !== false,
     mode: se.mode === 'warn' ? 'warn' : 'rewrite',
@@ -229,12 +236,11 @@ function getShellEscapeGuard() {
   };
 }
 
-// Not profile-controlled — read straight from the raw file (like getErrorGuard).
-// Backs the deterministic always-apply POLICY injection (SessionStart +
+// Profile-resolved (free disables it). Backs the deterministic always-apply POLICY injection (SessionStart +
 // SubagentStart). Defaults ON; budgets bound how much standing-policy text may be
 // injected per session/subagent start.
 function getPolicyInject() {
-  const pi = load().policyInject || {};
+  const pi = _resolved().policyInject || {};
   return {
     enabled: pi.enabled !== false,
     maxPolicies: Number.isInteger(pi.maxPolicies) && pi.maxPolicies > 0 ? pi.maxPolicies : 10,
@@ -282,6 +288,20 @@ function getPatternDetect() {
 function getCorrectionDetect() {
   const cd = _resolved().correctionDetect || {};
   return { enabled: cd.enabled !== false };
+}
+
+// Profile-resolved. The decision-promote Stop nudge (decision-detect stages commits/PRs).
+// A stricter trigger was replayed on 30 days of real commits and every variant dropped
+// decision captures in proportion to the nudges it cut (yield stayed ~38 %), so the
+// trigger is unchanged; the profile (and the user override) is the switch.
+function getDecisionPromote() {
+  const dp = _resolved().decisionPromote || {};
+  return { enabled: dp.enabled !== false };
+}
+
+/** Profile-resolved activeResearch block (free disables it); active-research-detect applies its defaults. */
+function getActiveResearch() {
+  return _resolved().activeResearch || {};
 }
 
 function getDecisionScan() {
@@ -593,6 +613,8 @@ module.exports = {
   resolveProfileConfig,
   getCurationStop,
   getCurationGuard,
+  getDecisionPromote,
+  getActiveResearch,
   getGraphGuard,
   getErrorGuard,
   getShellEscapeGuard,

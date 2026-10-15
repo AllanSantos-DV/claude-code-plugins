@@ -29,7 +29,7 @@ const { spawnSync } = require('child_process');
 
 /** Every spawn here is hidden (no console window flashing on Windows); also the default `run` seam of the functions below. */
 function hiddenSpawnSync(cmd, args, opts) { return spawnSync(cmd, args, { ...opts, windowsHide: true }); }
-const { writeFileAtomic } = require('./atomic-write.js');
+const { writeFileAtomic } = require('../../engine/lib/atomic-write.js');
 const { reasonText } = require('./doctor-reason.js');
 
 // The English sentence (`why`, for logs and the CLI) and the code + numbers the dashboard/notice translate (doctor-reason.js).
@@ -240,7 +240,7 @@ async function probeHttpTools(server, { env = process.env, timeoutMs = 8000, fet
   const c = server.config || {};
   if (!c.url) return { ok: false, needsAuth: false, error: 'no url' };
   // A plugin's server config refers to its own root/data dir (${CLAUDE_PLUGIN_ROOT}), which only the plugin's process has set.
-  env = { ...env, CLAUDE_PLUGIN_ROOT: server.pluginRoot || env.CLAUDE_PLUGIN_ROOT || '', CLAUDE_PLUGIN_DATA: env.CLAUDE_PLUGIN_DATA || require('./data-dir.js').dataDir() };
+  env = { ...env, CLAUDE_PLUGIN_ROOT: server.pluginRoot || env.CLAUDE_PLUGIN_ROOT || '', CLAUDE_PLUGIN_DATA: env.CLAUDE_PLUGIN_DATA || require('../../engine/lib/data-dir.js').dataDir() };
   const headers = { 'content-type': 'application/json', accept: 'application/json, text/event-stream' };
   for (const [k, v] of Object.entries(c.headers || {})) headers[k.toLowerCase()] = expandEnv(v, env);
   if (c.headersHelper) {

@@ -30,21 +30,28 @@ const fs = require('fs');
 const path = require('path');
 const { loadSqlite } = require('./sqlite-compat');
 
-const { dataDir } = require('./data-dir.js');
-const STORE_DIR = dataDir();
+// opts.dataDir on init / isolated reads / listProjects (a host passing its own), else the resolved data dir.
+const storeDir = require('./data-dir.js').dirResolver();
 
 const VALID_EVENT_NAME = /^[a-z][a-z0-9._-]{1,63}$/;
 
 let _db = null;
 let _floor = 0; // carried-over floor of the open db (floorFor)
 let _project = null;
+let _dir = null; // data dir of the open db
+// Open connections by project, least recently used first. The daemon serves several
+// sessions at once: with one connection, every interleaved hook paid close + open +
+// pragmas + CREATE IF NOT EXISTS + migration check (5,35 ms vs 0,10 ms per insert).
+const MAX_OPEN = 8;
+const _open = new Map(); // `${dir}|${project}` -> { db, insert, dir, project }
+let _insert = null;
 
-function metricsDir(project) {
-  return path.join(STORE_DIR, 'metrics', project);
+function metricsDir(project, dir = _dir || storeDir()) {
+  return path.join(dir, 'metrics', project);
 }
 
-function dbPath(project) {
-  return path.join(metricsDir(project), 'metrics.db');
+function dbPath(project, dir) {
+  return path.join(metricsDir(project, dir), 'metrics.db');
 }
 
 function createTables(db) {
@@ -69,11 +76,11 @@ function createTables(db) {
  * table. Marked by a sentinel file so it runs at most once per project — a
  * clean cutover, not an ongoing dual-read.
  */
-function migrateLegacyIfNeeded(project, db) {
-  const marker = path.join(metricsDir(project), '.migrated-from-brain-db');
+function migrateLegacyIfNeeded(project, db, dir) {
+  const marker = path.join(metricsDir(project, dir), '.migrated-from-brain-db');
   if (fs.existsSync(marker)) return;
   try {
-    const legacyPath = path.join(STORE_DIR, 'brain', project, 'brain.db');
+    const legacyPath = path.join(dir, 'brain', project, 'brain.db');
     if (fs.existsSync(legacyPath)) {
       const Database = loadSqlite();
       if (Database) {
@@ -108,38 +115,70 @@ function migrateLegacyIfNeeded(project, db) {
   }
 }
 
-/** Open (or reuse) the metrics DB for `project`. Never throws; false = unavailable. */
-function init({ project = 'default' } = {}) {
-  if (_db && _project === project) return true;
-  if (_db) close();
+/** Open (or reuse) the metrics DB for `project` (under `dataDir`, default the resolved one). Never throws; false = unavailable. */
+function init({ project = 'default', dataDir } = {}) {
+  const dir = storeDir({ dataDir });
+  if (_db && _project === project && _dir === dir) return true;
+  const key = dir + '|' + project;
+  const cached = _open.get(key);
+  if (cached) {
+    _open.delete(key);
+    _open.set(key, cached); // most recently used
+    _db = cached.db;
+    _insert = cached.insert;
+    _project = project;
+    _dir = dir;
+    _floor = floorFor(project, dir);
+    return true;
+  }
   const Database = loadSqlite();
   if (!Database) return false;
+  let db = null;
   try {
-    fs.mkdirSync(metricsDir(project), { recursive: true });
-    _db = new Database(dbPath(project));
-    _db.pragma('journal_mode = WAL');
-    _db.pragma('synchronous = NORMAL');
-    _db.pragma('busy_timeout = 5000');
-    createTables(_db);
+    fs.mkdirSync(metricsDir(project, dir), { recursive: true });
+    db = new Database(dbPath(project, dir));
+    db.pragma('journal_mode = WAL');
+    db.pragma('synchronous = NORMAL');
+    db.pragma('busy_timeout = 5000');
+    createTables(db);
+    migrateLegacyIfNeeded(project, db, dir);
+    const insert = db.prepare(
+      `INSERT INTO metrics_event (ts, event_name, payload, session_id, project) VALUES (?, ?, ?, ?, ?)`
+    );
+    while (_open.size >= MAX_OPEN) {
+      const [oldest, entry] = _open.entries().next().value;
+      _open.delete(oldest);
+      try { entry.db.close(); } catch (err) { console.error(`[metrics-store] close failed (${oldest}): ${err.message}`); }
+    }
+    _open.set(key, { db, insert });
+    _db = db;
+    _insert = insert;
     _project = project;
-    _floor = floorFor(project);
-    migrateLegacyIfNeeded(project, _db);
+    _dir = dir;
+    _floor = floorFor(project, dir);
     return true;
   } catch (err) {
     console.error(`[metrics-store] init failed (${project}): ${err.message}`);
+    if (db) { try { db.close(); } catch (e) { void e; } }
     _db = null;
+    _insert = null;
     _project = null;
+    _dir = null;
     return false;
   }
 }
 
 function isReady() { return !!_db; }
 
+/** Close every open connection (callers use it to release the DB files). */
 function close() {
-  if (_db) { try { _db.close(); } catch { /* noop */ } }
+  for (const { db } of _open.values()) { try { db.close(); } catch { /* noop */ } }
+  _open.clear();
   _db = null;
+  _insert = null;
   _floor = 0;
   _project = null;
+  _dir = null;
 }
 
 function safeParseJson(s) {
@@ -151,9 +190,7 @@ function safeParseJson(s) {
 function recordMetric(eventName, payload, sessionId) {
   if (!_db || !eventName || !VALID_EVENT_NAME.test(eventName)) return 0;
   try {
-    const info = _db.prepare(
-      `INSERT INTO metrics_event (ts, event_name, payload, session_id, project) VALUES (?, ?, ?, ?, ?)`
-    ).run(
+    const info = _insert.run(
       Date.now(), eventName, payload ? JSON.stringify(payload) : null, sessionId || null, _project || null,
     );
     return Number(info.lastInsertRowid) || 0;
@@ -191,16 +228,17 @@ function getEventLog({ eventName = null, limit = 50, sinceTs = null } = {}) {
  * different project is the active one for this hook run). Read-only; []
  * if the DB file or SQLite backend is unavailable.
  */
-function getEventLogIsolated(project, { eventName = null, limit = 50, sinceTs = null } = {}) {
+function getEventLogIsolated(project, { eventName = null, limit = 50, sinceTs = null, dataDir } = {}) {
   const Database = loadSqlite();
   if (!Database) return [];
-  const p = dbPath(project);
+  const dir = storeDir({ dataDir });
+  const p = dbPath(project, dir);
   if (!fs.existsSync(p)) return [];
   const cap = windowCap(limit, sinceTs);
   let db;
   try { db = new Database(p); } catch (e) { console.error('[metrics-store] isolated open failed:', p, e.message); return []; }
   try {
-    const lo = lowerBound(sinceTs, floorFor(project));
+    const lo = lowerBound(sinceTs, floorFor(project, dir));
     const rows = eventName
       ? db.prepare(`SELECT id, ts, event_name, payload, session_id, project
                       FROM metrics_event WHERE event_name = ? AND ts >= ? ORDER BY ts DESC LIMIT ?`).all(eventName, lo, cap)
@@ -226,7 +264,7 @@ function getEventLogIsolated(project, { eventName = null, limit = 50, sinceTs = 
  * tallies are exact regardless of volume. `json_extract` requires SQLite's JSON1
  * (bundled in node:sqlite) — if it's ever unavailable it throws, which we log and
  * turn into `[]` (honest empty, never a crash).
- * @param {{eventName:string, sinceTs:number}} opts
+ * @param {{eventName:string, sinceTs:number, dataDir?:string}} opts
  * @returns {Array<{activationId:(string|null), outcome:(string|null), count:number}>}
  */
 function getEvaluationCounts({ eventName, sinceTs = 0 } = {}) {
@@ -256,11 +294,11 @@ function getEvaluationCounts({ eventName, sinceTs = 0 } = {}) {
  * @param {{eventName:string, sinceTs:number}} opts
  * @returns {Array<{activationId:(string|null), outcome:(string|null), count:number}>}
  */
-function getEvaluationCountsIsolated(project, { eventName, sinceTs = 0 } = {}) {
+function getEvaluationCountsIsolated(project, { eventName, sinceTs = 0, dataDir } = {}) {
   if (!eventName) return [];
   const Database = loadSqlite();
   if (!Database) return [];
-  const p = dbPath(project);
+  const p = dbPath(project, storeDir({ dataDir }));
   if (!fs.existsSync(p)) return [];
   let db;
   try { db = new Database(p, { readonly: true }); }
@@ -321,11 +359,12 @@ function getMetricsSummary(rangeDays = 7) {
 const USAGE_ERA_EVENTS = ['curation.used', 'curation.redirected', 'curation.piped', 'curation.uncovered',
   'curation.skipped', 'curation.pending', 'curation.bypass', 'curation.shaped'];
 
-function getCurationUsageIsolated(project, sinceTs = 0) {
+function getCurationUsageIsolated(project, sinceTs = 0, { dataDir } = {}) {
   const Database = loadSqlite();
   const empty = { historyFromTs: null, usedIds: [] };
   if (!Database) return empty;
-  const p = dbPath(project);
+  const dir = storeDir({ dataDir });
+  const p = dbPath(project, dir);
   if (!fs.existsSync(p)) return empty;
   let db;
   try { db = new Database(p); } catch (e) { console.error('[metrics-store] usage open failed:', p, e.message); return empty; }
@@ -334,7 +373,7 @@ function getCurationUsageIsolated(project, sinceTs = 0) {
     // (3.0). NOT any curation.* event: curation.flagged dates back to 2.x, which made a
     // 2.x→3.0 install pass the history check on day one and list in-use scripts as
     // "never ran" (pre-release audit: 23 of 42 on a real project).
-    const lo = lowerBound(0, floorFor(project)); // the carried-over history belongs to the project-id key now
+    const lo = lowerBound(0, floorFor(project, dir)); // the carried-over history belongs to the project-id key now
     const first = db.prepare(`SELECT MIN(ts) AS t FROM metrics_event WHERE ts >= ? AND event_name IN (${USAGE_ERA_EVENTS.map(() => '?').join(',')})`).get(lo, ...USAGE_ERA_EVENTS);
     const rows = db.prepare(`SELECT DISTINCT COALESCE(json_extract(payload,'$.scriptId'), json_extract(payload,'$.shellId')) AS id
                                FROM metrics_event
@@ -361,6 +400,65 @@ function cleanupMetrics(keepDays = 30) {
   }
 }
 
+// Retention of high-volume NOISE rows (P7, 2026-10-15). These events only ever feed counts
+// (curation.skipped: by class in the curation panel) or nothing at all (shell-escape.*: no
+// reader), yet they grew +590/day per project with no retention. Raw rows older than
+// NOISE_KEEP_DAYS become ONE `metrics.daily` row per (UTC day, event) holding the count, so
+// every panel total stays the same; nothing else is touched.
+const NOISE_EVENTS = ['curation.skipped', 'shell-escape.rewritten', 'shell-escape.warned', 'shell-escape.denied'];
+const NOISE_KEEP_DAYS = 14;
+const DAY_MS = 86400_000;
+
+/**
+ * Summarize then delete the noise rows of the OPEN project older than `keepDays` (whole UTC
+ * days only, so a day is summarized exactly once). One transaction: the summaries and the
+ * delete land together or not at all.
+ * @returns {{summarized:number, deleted:number}}
+ */
+function compactNoise({ keepDays = NOISE_KEEP_DAYS, now = Date.now() } = {}) {
+  const out = { summarized: 0, deleted: 0 };
+  if (!_db) return out;
+  const cutoff = Math.floor((now - keepDays * DAY_MS) / DAY_MS) * DAY_MS;
+  const marks = NOISE_EVENTS.map(() => '?').join(',');
+  try {
+    const rows = _db.prepare(`SELECT ts, event_name, payload FROM metrics_event WHERE ts < ? AND event_name IN (${marks})`).all(cutoff, ...NOISE_EVENTS);
+    if (!rows.length) return out;
+    const days = new Map();
+    for (const r of rows) {
+      const day = Math.floor(r.ts / DAY_MS) * DAY_MS;
+      const key = `${day}|${r.event_name}`;
+      let d = days.get(key);
+      if (!d) { d = { day, event: r.event_name, count: 0, byClass: {} }; days.set(key, d); }
+      d.count++;
+      if (r.event_name === 'curation.skipped') {
+        const p = safeParseJson(r.payload) || {};
+        const cls = p.class === 'inline' ? 'inline' : 'exploration';
+        d.byClass[cls] = (d.byClass[cls] || 0) + 1;
+      }
+    }
+    const insert = _db.prepare(`INSERT INTO metrics_event (ts, event_name, payload, session_id, project) VALUES (?, 'metrics.daily', ?, NULL, ?)`);
+    const del = _db.prepare(`DELETE FROM metrics_event WHERE ts < ? AND event_name IN (${marks})`);
+    // BEGIN/COMMIT by hand: node:sqlite (sqlite-compat) has no transaction() helper.
+    _db.exec('BEGIN');
+    try {
+      for (const d of days.values()) {
+        const payload = { day: new Date(d.day).toISOString().slice(0, 10), event: d.event, count: d.count, ...(Object.keys(d.byClass).length ? { byClass: d.byClass } : {}) };
+        insert.run(d.day, JSON.stringify(payload), _project || null);
+        out.summarized++;
+      }
+      out.deleted = Number(del.run(cutoff, ...NOISE_EVENTS).changes) || 0;
+      _db.exec('COMMIT');
+    } catch (err) {
+      _db.exec('ROLLBACK');
+      throw err;
+    }
+    return out;
+  } catch (err) {
+    console.error(`[metrics-store] compactNoise failed (${_project}): ${err.message}`);
+    return { summarized: 0, deleted: 0 };
+  }
+}
+
 /**
  * Row cap of an event read. A TIME-WINDOW read (`sinceTs`) is a total, not a "latest N" peek: the
  * old fixed cap of 500 silently cut the dashboard's 30-day curation summary (it asked for 2000) and
@@ -372,8 +470,8 @@ function windowCap(limit, sinceTs) {
 }
 
 /** Project names that have a metrics DB on disk (for cross-project aggregation). */
-function listProjects() {
-  const base = path.join(STORE_DIR, 'metrics');
+function listProjects({ dataDir } = {}) {
+  const base = path.join(storeDir({ dataDir }), 'metrics');
   if (!fs.existsSync(base)) return [];
   return fs.readdirSync(base).filter(p => fs.existsSync(path.join(base, p, 'metrics.db')));
 }
@@ -386,9 +484,9 @@ function listProjects() {
  * same-named repo without an id, sessions still on the previous build) — pre-release audit 3.2.1.
  * @returns {number} 0 when the db was never carried over
  */
-function floorFor(project) {
+function floorFor(project, dir) {
   try {
-    const m = JSON.parse(fs.readFileSync(path.join(metricsDir(project), 'adopted.json'), 'utf8'));
+    const m = JSON.parse(fs.readFileSync(path.join(metricsDir(project, dir), 'adopted.json'), 'utf8'));
     return Number.isFinite(Number(m.at)) ? Number(m.at) : 0;
   } catch (err) {
     if (err.code !== 'ENOENT') console.error(`[metrics-store] adopted.json of ${project} unreadable — no floor: ${err.message}`);
@@ -407,5 +505,9 @@ module.exports = {
   getEvaluationCounts, getEvaluationCountsIsolated,
   getMetricsSummary, cleanupMetrics,
   listProjects, _dbPath: dbPath,
+  compactNoise,
+  NOISE_EVENTS,
+  NOISE_KEEP_DAYS,
   _getDbForTests: () => _db,
+  _openCountForTests: () => _open.size,
 };

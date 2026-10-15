@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-const { readDaemonUrl } = require('./lib/mcp-bootstrap/registry.js');
+const { readDaemonUrl } = require('../scripts/lib/mcp-bootstrap/registry.js');
 const path = require('path');
 const os = require('os');
 const https = require('https');
@@ -7,30 +7,24 @@ const http = require('http');
 const { URL } = require('url');
 const EventEmitter = require('events');
 
-const { dataDir } = require('./lib/data-dir.js');
-const DATA_DIR = dataDir();
+/** The rejection for a call cancelled through its AbortSignal (no retry, not a transport failure). */
+function abortError(method, signal) {
+  const why = signal && signal.reason && signal.reason.message ? `: ${signal.reason.message}` : '';
+  return Object.assign(new Error(`MCP request "${method}" aborted${why}`), { code: 'ABORTED', name: 'AbortError' });
+}
 
 class McpClient extends EventEmitter {
   #reconnecting = false;
 
   constructor(opts = {}) {
     super();
-    this.jarPath = opts.jarPath || path.join(DATA_DIR, 'mcp-memory-server.jar');
-    this.workspacePath = opts.workspacePath || DATA_DIR;
-    this.javaArgs = opts.javaArgs || ['-Xmx512m'];
-    this.downloadUrl = opts.downloadUrl || '';
-    this.expectedSha256 = opts.expectedSha256 || '';
     this.requestTimeout = opts.timeout || 60000;
     this._requestId = 0;
-    this._pending = new Map();
-    this._buffer = '';
-    this._process = null;
     this._initialized = false;
-    this._startTime = 0;
 
-    // ── HTTP (StreamableHTTP /mcp) transport — talk to an already-running daemon ──
-    // transport: 'stdio' (default, spawns the JAR) | 'http' (connects to a daemon).
-    this.transport = 'http'; // the only transport (native-java ADR-023: one HTTP daemon per user)
+    // StreamableHTTP /mcp against the ONE per-user daemon (native-java ADR-023). The stdio
+    // transport (a private JAR process per client) is gone.
+    this.transport = 'http';
     // Explicit daemon base URL (e.g. http://127.0.0.1:61756). Empty in http mode
     // → auto-discover via the daemon registry (~/.mcp-memory/run/daemon.json).
     this.serverUrl = opts.serverUrl || '';
@@ -39,7 +33,7 @@ class McpClient extends EventEmitter {
     this.projectId = opts.projectId || '';
     this.runDir = opts.runDir || process.env.MCP_RUN_DIR
       || path.join(os.homedir(), '.mcp-memory', 'run');
-    this._protocolVersion = this.transport === 'http' ? '2025-06-18' : '2024-11-05';
+    this._protocolVersion = '2025-06-18';
     this._sessionId = '';
     this._resolvedUrl = '';
     // Tool names advertised by the daemon's tools/list at handshake. Populated in
@@ -72,7 +66,7 @@ class McpClient extends EventEmitter {
       // The brain daemon answers MCP tools inside a session: waiting here for the server to boot
       // outlasted the tool's timeout, so the first call after a crash just timed out (BACKLOG Q59).
       // Start the launcher detached and answer NOW with a clear, retryable error.
-      const kicked = (this._kickLauncher || require('./lib/mcp-bootstrap/launcher.js').kickLauncher)();
+      const kicked = (this._kickLauncher || require('../scripts/lib/mcp-bootstrap/launcher.js').kickLauncher)();
       const err = new Error(kicked
         ? 'the memory server is not running — its launcher was started in the background; retry in a few seconds'
         : 'the memory server is not running and its launcher was not found (~/.mcp-memory/bin) — run backend_setup');
@@ -80,7 +74,7 @@ class McpClient extends EventEmitter {
       throw err;
     }
     console.error('[MCP] memory server not running — asking its launcher to start it...');
-    const r = await require('./lib/mcp-bootstrap/launcher.js').runLauncher({ timeoutMs: 60000 });
+    const r = await require('../scripts/lib/mcp-bootstrap/launcher.js').runLauncher({ timeoutMs: 60000 });
     if (!r.ok) console.error(`[MCP] the launcher could not start the memory server: ${r.error}`);
     // _connectHttp does the final health check and fails loud.
   }
@@ -159,9 +153,12 @@ class McpClient extends EventEmitter {
     });
   }
 
-  /** POST one JSON-RPC message to <url>/mcp. Resolves the unwrapped result (or void for notifications). */
-  _httpSend(method, params, isNotification, timeoutMs = this.requestTimeout) {
+  /** POST one JSON-RPC message to <url>/mcp. Resolves the unwrapped result (or void for notifications).
+   *  `signal` (AbortSignal) cancels the request for real: the socket is destroyed, so a caller's
+   *  deadline does not leave the call running in the background until the 60 s client timeout. */
+  _httpSend(method, params, isNotification, timeoutMs = this.requestTimeout, signal = undefined) {
     return new Promise((resolve, reject) => {
+      if (signal && signal.aborted) return reject(abortError(method, signal));
       let u;
       try { u = new URL(this._resolvedUrl + '/mcp'); }
       catch (err) { return reject(new Error(`MCP bad URL: ${err.message}`)); }
@@ -176,7 +173,7 @@ class McpClient extends EventEmitter {
 
       const lib = u.protocol === 'https:' ? https : http;
       const req = lib.request(
-        { hostname: u.hostname, port: u.port, path: u.pathname, method: 'POST', headers, timeout: timeoutMs },
+        { hostname: u.hostname, port: u.port, path: u.pathname, method: 'POST', headers, timeout: timeoutMs, ...(signal ? { signal } : {}) },
         (res) => {
           // The initialize response carries the session id every later call must echo.
           const sid = res.headers['mcp-session-id'];
@@ -208,7 +205,7 @@ class McpClient extends EventEmitter {
         },
       );
       req.on('timeout', () => { req.destroy(new Error(`MCP request "${method}" timed out after ${timeoutMs}ms`)); });
-      req.on('error', reject);
+      req.on('error', (err) => reject(signal && signal.aborted ? abortError(method, signal) : err));
       req.write(data);
       req.end();
     });
@@ -239,6 +236,8 @@ class McpClient extends EventEmitter {
     try {
       return await this._sendRequest('tools/call', { name, arguments: args }, opts);
     } catch (err) {
+      // The caller gave up (its deadline): retrying would only redo the slow call.
+      if (err && err.code === 'ABORTED') throw err;
       // The daemon dropped our HTTP session (idle TTL, ~30min). Reconnect (fresh
       // initialize → new session id) and retry the SAME call exactly ONCE. This
       // keeps long-lived stdio brain-servers (opencode/Claude Code sessions that
@@ -322,37 +321,11 @@ class McpClient extends EventEmitter {
 
   _sendRequest(method, params, opts = {}) {
     const timeoutMs = Number.isFinite(opts.timeoutMs) && opts.timeoutMs > 0 ? opts.timeoutMs : this.requestTimeout;
-    if (this.transport === 'http') return this._httpSend(method, params, false, timeoutMs);
-    return new Promise((resolve, reject) => {
-      const id = ++this._requestId;
-      const msg = JSON.stringify({
-        jsonrpc: '2.0',
-        id,
-        method,
-        params,
-      }) + '\n';
-
-      const timer = setTimeout(() => {
-        this._pending.delete(id);
-        reject(new Error(`MCP request "${method}" timed out after ${timeoutMs}ms`));
-      }, timeoutMs);
-
-      this._pending.set(id, { resolve, reject, timer, method });
-      this._process.stdin.write(msg);
-    });
+    return this._httpSend(method, params, false, timeoutMs, opts.signal);
   }
 
   _sendNotification(method, params) {
-    if (this.transport === 'http') {
-      this._httpSend(method, params, true).catch(err => console.error(`[MCP] notification "${method}": ${err.message}`));
-      return;
-    }
-    const msg = JSON.stringify({
-      jsonrpc: '2.0',
-      method,
-      ...(params ? { params } : {}),
-    }) + '\n';
-    this._process.stdin.write(msg);
+    this._httpSend(method, params, true).catch(err => console.error(`[MCP] notification "${method}": ${err.message}`));
   }
 
   /** Unwrap a JSON-RPC result into {text, raw} when it's MCP text content, else the raw result. */
@@ -364,76 +337,27 @@ class McpClient extends EventEmitter {
     return result || {};
   }
 
-  _processBuffer() {
-    const lines = this._buffer.split('\n');
-    this._buffer = lines.pop() || '';
-    for (const line of lines) {
-      if (!line.trim()) continue;
-      try {
-        const msg = JSON.parse(line);
-        this._handleMessage(msg);
-      } catch (err) { console.error(`[MCP] Buffer parse error: ${err.message}`); }
-    }
-  }
-
-  _handleMessage(msg) {
-    if (msg.id != null && this._pending.has(msg.id)) {
-      const { resolve, reject, timer, method } = this._pending.get(msg.id);
-      clearTimeout(timer);
-      this._pending.delete(msg.id);
-
-      if (msg.error) {
-        reject(new Error(`MCP "${method}" error: ${JSON.stringify(msg.error)}`));
-      } else {
-        resolve(this._unwrapResult(msg.result));
-      }
-    }
-  }
-
   isConnected() {
-    if (this.transport === 'http') return this._initialized;
-    return this._initialized && this._process !== null && !this._process.killed;
+    return this._initialized;
   }
 
   close({ skipRemote = false } = {}) {
-    if (this.transport === 'http') {
-      // Best-effort DELETE /mcp to end the daemon session; never throw on close.
-      if (!skipRemote && this._sessionId && this._resolvedUrl) {
-        try {
-          const u = new URL(this._resolvedUrl + '/mcp');
-          const lib = u.protocol === 'https:' ? https : http;
-          const req = lib.request(
-            { hostname: u.hostname, port: u.port, path: u.pathname, method: 'DELETE', headers: { 'Mcp-Session-Id': this._sessionId }, timeout: 3000 },
-            (res) => res.resume(),
-          );
-          req.on('timeout', () => req.destroy());
-          req.on('error', (err) => console.error(`[MCP] close DELETE: ${err.message}`));
-          req.end();
-        } catch (err) { console.error(`[MCP] close DELETE: ${err.message}`); }
-      }
-      for (const [id, { reject }] of this._pending) {
-        reject(new Error('MCP client closed'));
-        this._pending.delete(id);
-      }
-      this._sessionId = '';
-      this._initialized = false;
-      return;
+    // Best-effort DELETE /mcp to end the daemon session; never throw on close.
+    if (!skipRemote && this._sessionId && this._resolvedUrl) {
+      try {
+        const u = new URL(this._resolvedUrl + '/mcp');
+        const lib = u.protocol === 'https:' ? https : http;
+        const req = lib.request(
+          { hostname: u.hostname, port: u.port, path: u.pathname, method: 'DELETE', headers: { 'Mcp-Session-Id': this._sessionId }, timeout: 3000 },
+          (res) => res.resume(),
+        );
+        req.on('timeout', () => req.destroy());
+        req.on('error', (err) => console.error(`[MCP] close DELETE: ${err.message}`));
+        req.end();
+      } catch (err) { console.error(`[MCP] close DELETE: ${err.message}`); }
     }
-    if (this._process) {
-      const proc = this._process; // capture BEFORE nulling, else the 2s fallback kill sees null and never fires (JVM leak)
-      this._sendNotification('notifications/exit');
-      setTimeout(() => {
-        if (proc && !proc.killed) {
-          proc.kill();
-        }
-      }, 2000);
-      for (const [id, { reject }] of this._pending) {
-        reject(new Error('MCP client closed'));
-        this._pending.delete(id);
-      }
-      this._initialized = false;
-      this._process = null;
-    }
+    this._sessionId = '';
+    this._initialized = false;
   }
 }
 

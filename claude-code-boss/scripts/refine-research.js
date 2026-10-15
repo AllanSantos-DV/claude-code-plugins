@@ -13,7 +13,7 @@
 const sessionCounter = require('./lib/session-counter.js');
 const path = require('path');
 
-const { dataDir } = require('./lib/data-dir.js');
+const { dataDir } = require('../engine/lib/data-dir.js');
 const DATA_DIR = dataDir();
 const STATE = path.join(DATA_DIR, '.runtime', 'refine-research-state.json');
 const EVERY = 4; // remind at most once per 4 stops

@@ -14,8 +14,8 @@
  */
 'use strict';
 
-const { tryResolveProjectId, memoryOptedOut } = require('./lib/project-id.js');
-const { getOnboarding } = require('./lib/brain-config.js');
+const { tryResolveProjectId, memoryOptedOut } = require('../engine/lib/project-id.js');
+const { getOnboarding } = require('../engine/lib/brain-config.js');
 const { buildNotice } = require('./project-identity-advisory.js');
 
 /**

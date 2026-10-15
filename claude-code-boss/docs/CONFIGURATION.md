@@ -33,7 +33,7 @@ config efetiva (lida por ensure/server/dashboard)
 
 | Chave | Tipo | Default | Descrição |
 |-------|------|---------|-----------|
-| `enabled` | bool | `false` | Cost-routing per-turn (**deprecado** — quebra prompt cache) |
+| `enabled` | bool | `false` | **Removido** (era o cost-routing per-turn, que quebrava o prompt cache): ignorado, só avisado no log do router |
 | `sticky.enabled` | bool | `false` | **Sticky Router** — classifica 1x/sessão, fixa modelo. RECOMENDADO |
 | `sticky.ttlMs` | int | `21600000` | TTL do pin em memória (6h) |
 | `fallback.enabled` | bool | `false` | Rede de segurança no 429 (passthrough cache-safe) |
@@ -105,7 +105,6 @@ Cada projeto pode declarar sua própria rota. No `.claude/settings.local.json` d
 
 ```
 sticky.enabled===true        → sticky-tier    (verde)
-enabled===true               → routing        (âmbar, deprecado)
 fallback.enabled===true      → fallback-only  (azul)
 byok.enabled && mode=always  → byok-direct    (roxo)
 byok.enabled && mode=on-limit→ fallback-only
@@ -152,10 +151,12 @@ nenhum                       → off            (cinza)
 | `retrieval.minScoreFast` | `0.50` | Score mínimo cosine (fast) — calibrado p/ multilingual MiniLM |
 | `kb.retrieval.compose.maxQueryChars` | `800` | (`mcp-memory`) Teto do texto do prompt enviado ao recall; o custo de embed+FTS do daemon cresce com o tamanho (4,7k chars → 14 s; 800 → ~1 s). `0` = prompt inteiro |
 | `kb.retrieval.compose.projectArmMinScore` | `0.65` | (`mcp-memory`) Score mínimo dos hits do braço de projeto (`search_memory` filtrado pelo project id), que roda sempre em paralelo ao compose. Abaixo disso é ruído (~0,5–0,63) |
+| `kb.retrieval.compose.timeoutMs` | `8000` | (`mcp-memory`) Prazo de cada braço do recall; no prazo a requisição é cancelada (socket fechado). Cada braço tem disjuntor por taxa de falha: 5 falhas nas últimas 10 pulam as 4 próximas chamadas e deixam 1 sonda |
+| `kb.retrieval.compose.poolWarming` | `false` | (`mcp-memory`) Busca extra no pool home a cada prompt, para o servidor promover docs; só ajuda com a promoção do servidor ligada (`promotion_mode=multi_signal`) |
 | `kb.maxEntriesPerProject` | `10000` | Teto de entradas por projeto |
 | `kb.submission.minBashLines` | `3` | Mínimo de linhas de output Bash p/ submissão |
 | `kb.submission.minOutputChars` | `1500` | Mínimo de chars p/ submissão |
-| `kb.capture.maxBlockAttempts` | `5` | Tentativas de re-block da oferta de captura antes de relentar |
+| `kb.capture.maxBlockAttempts` | `5` | Tentativas de re-block da oferta de captura antes de relentar; ao relentar a oferta fecha, a sessão para de oferecer e os ciclos esperam uma próxima sessão do projeto (adoção 24 h depois do fim da sessão) |
 | `kb.capture.turns` | `3` | Quantos turnos humanos FINAIS do transcript a captura lê a cada Stop (`lib/transcript-turns.js`) — nunca o transcript inteiro |
 | `kb.capture.includeThinking` | `false` | Inclui o thinking do assistente nos ciclos oferecidos para captura (tool call/output nunca entram) |
 | `curation.maxOutputChars` | `1500` | Saída de um comando acima disso conta como volumosa para a curadoria |
@@ -281,6 +282,11 @@ Iniciar: `/dashboard` (slash command) ou `node scripts/dashboard-start.js`.
   de um projeto com `shells.json`, para listar scripts nunca usados (o campo
   "project folder" do painel guarda no navegador). Daemon fora → a latência
   aparece como indisponível, nunca vazia.
+- **Retenção de métricas (janela):** os eventos de alto volume que só alimentam contagem —
+  `curation.skipped` e `shell-escape.*` — ficam brutos por **14 dias**; depois viram uma linha
+  `metrics.daily` por dia e evento com a contagem (e, para `curation.skipped`, a contagem por
+  classe), então os totais do painel não mudam. Roda no SessionStart, no máximo uma vez por dia
+  por projeto (`metrics-store.compactNoise`). Os demais eventos não são apagados.
 - O painel Router configura custom upstream e BYOK por operação. A precedência é
   `dashboard/user-config.json` > variáveis de ambiente > defaults versionados.
 - As rotas locais consumidas pelo Claude Code permanecem Anthropic. Quando
@@ -298,7 +304,7 @@ Escrever config pelo dashboard = gravar `user-config.json` + spawn síncrono do 
 
 1. **Nunca edite o shipped** — updates sobrescrevem
 2. **Credenciais** só em `user-config.json` (permissão 0600, fora do git)
-3. **Sticky > Routing** — per-turn está deprecado (quebra cache)
+3. **Sticky** — o roteamento per-turn foi removido (quebrava o cache)
 4. **Auto-update MCP Memory** — `check_update` → `update` sem retry → confirmação
    exata por `/health.version`. Desative com
    `backend.mcpMemory.autoUpdate.enabled=false` no user-config do Brain. No

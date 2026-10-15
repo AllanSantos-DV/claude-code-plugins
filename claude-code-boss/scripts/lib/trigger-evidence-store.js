@@ -39,10 +39,10 @@
  * purge returns a count — all console.error on failure (per the house store convention).
  */
 const path = require('path');
-const { writeJsonAtomic } = require('./atomic-write.js');
-const { loadList } = require('./json-list-store.js');
-const { sanitizeProjectId } = require('./project-id.js');
-const { redact } = require('./redact.js');
+const { writeJsonAtomic } = require('../../engine/lib/atomic-write.js');
+const { loadList } = require('../../engine/lib/json-list-store.js');
+const { sanitizeProjectId } = require('../../engine/lib/project-id.js');
+const { redact } = require('../../engine/lib/redact.js');
 
 /** Cap of retained evidence per project (newest kept) — bounds file growth. */
 const MAX_EVIDENCE_PER_PROJECT = 500;

@@ -23,27 +23,27 @@ const { onCooldown: cooldownActive, stamp } = require('./lib/cooldown-stamp.js')
 const onCooldown = (p) => cooldownActive(p, COOLDOWN_MS);
 
 function dataDir() {
-  return require('./lib/data-dir.js').dataDir();
+  return require('../engine/lib/data-dir.js').dataDir();
 }
 
 function stampPath() { return path.join(dataDir(), '.runtime', 'tuning-advisory-last.json'); }
 
 /** Read one project's telemetry into the shape tuning-advisor.analyze() expects. */
 async function gather(project) {
-  const metricsStore = require('./lib/metrics-store.js');
+  const metricsStore = require('../engine/lib/metrics-store.js');
   if (!metricsStore.init({ project })) return null;
   const dispatch = metricsStore.getEventLog({ eventName: 'stop.dispatch', limit: 2000 });
   const nudges = metricsStore.getEventLog({ eventName: 'nudge.emitted', limit: 1000 })
     .map(e => ({ eventName: 'nudge.emitted', payload: e.payload, project, ts: e.ts }));
   const caps = metricsStore.getEventLog({ eventName: 'lesson.captured', limit: 1000 })
     .map(e => ({ eventName: 'lesson.captured', payload: e.payload, project, ts: e.ts }));
-  const fired = metricsStore.getEventLog({ eventName: 'retrieve.fired', limit: 2000 }).length;
+  const injected = require('./lib/value-summary.js').injectedCount(metricsStore.getEventLog({ eventName: 'retrieve.injected', limit: 2000 }));
   const cited = metricsStore.getEventLog({ eventName: 'retrieve.cited', limit: 2000 }).length;
   return {
     activeProfile: hooksConfig.getProfile(),
     impact: aggregateProfileImpact(dispatch),
     captureRate: aggregateCaptureRate([...nudges, ...caps]),
-    retrieval: { fired, cited },
+    retrieval: { injected, cited },
   };
 }
 
@@ -51,7 +51,7 @@ async function run(event) {
   const sp = stampPath();
   if (onCooldown(sp)) return null;
 
-  const project = require('./lib/metrics-project.js').sessionMetricsKey(event && event.cwd);
+  const project = require('../engine/lib/metrics-project.js').sessionMetricsKey(event && event.cwd);
   let input = null;
   try { input = await gather(project); }
   catch (err) { console.error(`[tuning-advisory] ${err && err.message ? err.message : err}`); return null; }

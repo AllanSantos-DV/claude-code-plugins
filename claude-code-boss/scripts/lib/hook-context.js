@@ -55,4 +55,9 @@ function hookEnv() {
   return s.view;
 }
 
+// The engine (project-id, metrics) reads the env through host-env and never requires this
+// adapter; loading the adapter plugs the per-call view in. Code that calls runWithHookEnv has
+// required this file, so inside a hook call the engine always sees that call's env.
+require('../../engine/lib/host-env.js').setHostEnv(hookEnv);
+
 module.exports = { runWithHookEnv, hookEnv };

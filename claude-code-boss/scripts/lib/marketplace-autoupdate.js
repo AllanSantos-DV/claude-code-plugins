@@ -44,7 +44,7 @@ function ensureAutoUpdate({ pluginRoot, env = process.env, markerDir, write } = 
   if (require('./update-notice.js').autoUpdateDisabled(env)) return { status: 'disabled' };
   const mkt = marketplaceOf(pluginRoot);
   if (!mkt) return { status: 'not-marketplace' };
-  const marker = path.join(markerDir || require('./data-dir.js').globalDir(), MARKER);
+  const marker = path.join(markerDir || require('../../engine/lib/data-dir.js').globalDir(), MARKER);
   if (fs.existsSync(marker)) return { status: 'already-done', marketplace: mkt };
   const dir = configDir(env);
   const settingsFile = path.join(dir, 'settings.json');
@@ -55,7 +55,7 @@ function ensureAutoUpdate({ pluginRoot, env = process.env, markerDir, write } = 
   if (!known.data[mkt]) return { status: 'error', error: `marketplace "${mkt}" not in known_marketplaces.json` };
   const declared = settings.ok && settings.data.extraKnownMarketplaces && settings.data.extraKnownMarketplaces[mkt];
   const explicit = (declared && typeof declared.autoUpdate === 'boolean') || typeof known.data[mkt].autoUpdate === 'boolean';
-  const save = write || ((file, obj) => require('./atomic-write.js').writeFileAtomic(file, JSON.stringify(obj, null, 2) + '\n'));
+  const save = write || ((file, obj) => require('../../engine/lib/atomic-write.js').writeFileAtomic(file, JSON.stringify(obj, null, 2) + '\n'));
   const mark = (status) => {
     fs.mkdirSync(path.dirname(marker), { recursive: true });
     fs.writeFileSync(marker, JSON.stringify({ marketplace: mkt, status, at: new Date().toISOString(), notified: status !== 'enabled' }));
@@ -71,7 +71,7 @@ function ensureAutoUpdate({ pluginRoot, env = process.env, markerDir, write } = 
 
 /** One-line notice for the user, once, after ensureAutoUpdate enabled it. Null otherwise. */
 function takeAutoUpdateNotice({ markerDir, env = process.env } = {}) {
-  const marker = path.join(markerDir || require('./data-dir.js').globalDir(), MARKER);
+  const marker = path.join(markerDir || require('../../engine/lib/data-dir.js').globalDir(), MARKER);
   const m = readJson(marker);
   if (!m.ok || m.data.notified || m.data.status !== 'enabled') return null;
   fs.writeFileSync(marker, JSON.stringify({ ...m.data, notified: true }));

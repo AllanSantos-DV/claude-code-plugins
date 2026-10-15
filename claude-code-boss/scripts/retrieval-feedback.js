@@ -15,11 +15,9 @@
  */
 'use strict';
 
-const path = require('path');
-
 const { runStopDetectorCli } = require('./lib/hook-io.js');
 const retrievalJournal = require('./lib/retrieval-journal.js');
-const { extractKeywords } = require('./lib/text-utils.js');
+const { extractKeywords } = require('../engine/lib/text-utils.js');
 const { readTailLines } = require('./lib/transcript-tail.js');
 
 // ── Pure helpers (testable) ───────────────────────────────────────────────
@@ -149,6 +147,19 @@ function readLastUserText(transcriptPath, lookback = 30) {
 }
 
 /**
+ * The (id, title) pairs of a journal entry that really entered the prompt: `injectedIds` (what survived the config's type
+ * filter) when the recall recorded it, else everything it returned (entries written by older builds and by other writers).
+ */
+function injectedPairs(ent) {
+  const ids = ent.returnedIds || [];
+  const titles = ent.returnedTitles || [];
+  const pairs = ids.map((id, i) => [id, titles[i] || '']);
+  if (!Array.isArray(ent.injectedIds)) return pairs;
+  const kept = new Set(ent.injectedIds);
+  return pairs.filter(([id]) => kept.has(id));
+}
+
+/**
  * From a journal of retrievals + an agent reply, decide which entry IDs to
  * bump as cited. Dedupes IDs across retrievals (per-turn cooldown).
  */
@@ -156,17 +167,15 @@ function findCitations(journalEntries, replyText) {
   const seen = new Set();
   const out = [];
   for (const ent of journalEntries || []) {
-    const titles = ent.returnedTitles || [];
-    const ids = ent.returnedIds || [];
-    for (let i = 0; i < ids.length; i++) {
-      const id = ids[i];
+    const pairs = injectedPairs(ent);
+    for (const [id, title] of pairs) {
       if (!id || seen.has(id)) continue;
-      const m = citationMatch(titles[i] || '', replyText);
+      const m = citationMatch(title, replyText);
       if (m.cited) {
         seen.add(id);
         // `project` = the KB scope the entry was RETRIEVED from (journal), so the
         // citation is recorded where the entry actually lives.
-        out.push({ id, title: titles[i] || '', matchedTokens: m.matchedTokens, project: ent.project || null });
+        out.push({ id, title, matchedTokens: m.matchedTokens, project: ent.project || null });
       }
     }
   }
@@ -186,18 +195,18 @@ async function run(event) {
   const ev = event || {};
   const sid = ev.session_id || ev.sessionId || 'default';
   const transcriptPath = ev.transcript_path || ev.transcriptPath || '';
-  // Metrics are a local per-folder store (basename, like every other metrics writer).
-  const project = ev.cwd ? path.basename(ev.cwd) : 'default';
-
   // Always sweep stale journal entries (>1h) regardless of outcome.
   retrievalJournal.sweepOld(60 * 60 * 1000);
 
   const entries = retrievalJournal.readEntries(sid);
   if (!entries.length) return {};
 
-  // Distinct KB entries injected this turn — the precision denominator (F3 #7).
+  // Distinct KB entries that really entered the prompt this turn — the precision denominator (F3 #7).
   const injectedIds = new Set();
-  for (const e of entries) for (const id of (e.returnedIds || [])) if (id) injectedIds.add(id);
+  for (const e of entries) for (const [id] of injectedPairs(e)) if (id) injectedIds.add(id);
+  const returnedCount = new Set(entries.flatMap((e) => e.returnedIds || [])).size;
+  // The metrics project is the session's own key (by project id), never the folder name: the two split one project's events across two databases.
+  const mctx = { sessionId: sid, cwd: ev.cwd };
 
   const replyText = readLastAssistantText(transcriptPath);
   // Only record precision signals on turns we can actually score (assistant reply
@@ -205,14 +214,15 @@ async function run(event) {
   if (replyText) {
     const cited = findCitations(entries, replyText);
     try {
-      const store = require('./brain-store.js');
-      const metrics = require('./lib/metrics.js');
-      if (injectedIds.size) metrics.fire('retrieve.injected', { count: injectedIds.size, chars: injectedChars(entries) }, { project, sessionId: sid });
+      const store = require('../engine/brain-store.js');
+      const metrics = require('../engine/lib/metrics.js');
+      if (injectedIds.size && injectedChars(entries) > 0) metrics.fire('retrieve.injected', { count: injectedIds.size, chars: injectedChars(entries) }, mctx);
+      else if (returnedCount) metrics.fire('retrieve.empty', { returned: returnedCount, reason: 'filtered' }, mctx);
       // KB citations go to the scope each entry was retrieved from. It used to be
       // basename(cwd): the UPDATE then hit a shard without the entry and silently
       // changed 0 rows, so citations of real lessons were never counted. No scope
       // (folder without a project id = memory off) → nothing recorded.
-      const fallback = require('./lib/project-id.js').tryResolveProjectId({ cwd: ev.cwd });
+      const fallback = require('../engine/lib/project-id.js').tryResolveProjectId({ cwd: ev.cwd });
       const byScope = new Map();
       for (const c of cited) {
         const scope = c.project || fallback;
@@ -220,11 +230,20 @@ async function run(event) {
         if (!byScope.has(scope)) byScope.set(scope, []);
         byScope.get(scope).push(c.id);
       }
+      // On mcp-memory the entries live on the server: the citation goes there as a "helpful"
+      // feedback signal; store.init would only create an empty local db per scope.
+      const backend = require('../engine/brain-backend.js');
+      const remote = backend.peekMode() === 'mcp-memory';
       for (const [scope, ids] of byScope) {
+        if (remote) {
+          await backend.init({ project: scope, skipEmbedder: true });
+          for (const id of ids) await backend.signalHelpful(id);
+          continue;
+        }
         await store.init({ project: scope });
         for (const id of ids) store.recordCitation(id);
       }
-      for (const c of cited) metrics.fire('retrieve.cited', { entryId: c.id }, { project, sessionId: sid });
+      for (const c of cited) metrics.fire('retrieve.cited', { entryId: c.id }, mctx);
     } catch (err) {
       console.error(`[retrieval-feedback] recordCitation failed: ${err.message}`);
     }
@@ -243,6 +262,7 @@ module.exports = {
   titleTokens,
   citationMatch,
   findCitations,
+  injectedPairs,
   injectedChars,
   readLastAssistantText,
   extractAssistantText,

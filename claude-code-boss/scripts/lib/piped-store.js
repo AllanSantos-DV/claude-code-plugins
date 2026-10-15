@@ -13,7 +13,7 @@
  */
 const fs = require('fs');
 const path = require('path');
-const { writeJsonAtomic } = require('./atomic-write.js');
+const { writeJsonAtomic } = require('../../engine/lib/atomic-write.js');
 
 const MAX_KEYS = 500;
 const ASK_AT = 2;

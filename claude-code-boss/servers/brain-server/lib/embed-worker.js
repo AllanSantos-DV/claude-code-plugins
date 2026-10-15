@@ -15,7 +15,7 @@ import path from 'node:path';
 import { createRequire } from 'node:module';
 
 const require = createRequire(import.meta.url);
-const embedder = require(path.join(workerData.pluginRoot, 'scripts', 'brain-embedder.js'));
+const embedder = require(path.join(workerData.pluginRoot, 'engine', 'brain-embedder.js'));
 
 parentPort.on('message', async ({ id, op, arg }) => {
   try {

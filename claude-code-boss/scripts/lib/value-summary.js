@@ -20,6 +20,17 @@ const CHARS_PER_TOKEN = 4;
 
 function _num(v) { return Number.isFinite(v) ? v : 0; }
 
+/** Entries one `retrieve.injected` payload put in the prompt; a recall whose entries were all filtered out injected none (older builds recorded those with chars 0). */
+function injectedIn(payload) {
+  const p = payload || {};
+  return p.chars === 0 ? 0 : _num(p.count);
+}
+
+/** Entries injected across `retrieve.injected` rows — the denominator of the citation precision. */
+function injectedCount(rows) {
+  return (rows || []).reduce((n, r) => n + injectedIn(r && r.payload), 0);
+}
+
 /** ISO week-ish bucket key: YYYY-Www is overkill; use the UTC date of the week's Monday. */
 function weekKey(ts) {
   const d = new Date(_num(ts));
@@ -73,7 +84,7 @@ function summarize(rows, opts = {}) {
         break;
       }
       case 'retrieve.injected': {
-        out.retrievalPrecision.injected += _num(p.count);
+        out.retrievalPrecision.injected += injectedIn(p);
         break;
       }
       default: break;
@@ -110,4 +121,4 @@ function countLessonsSince(rows, { sinceTs = 0, project = null } = {}) {
   return n;
 }
 
-module.exports = { summarize, countLessonsSince, weekKey, CHARS_PER_TOKEN };
+module.exports = { summarize, countLessonsSince, weekKey, injectedCount, CHARS_PER_TOKEN };

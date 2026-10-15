@@ -89,6 +89,22 @@ test('only a real fixture ChildProcess is stopped; a forged lock cannot authoriz
   }
 });
 
+// The gate went red now and then AFTER "1665 passed": the final rm of the suite root hit EPERM on the
+// root itself and the empty folder was deletable a moment later. A handle that outlives the suite
+// process for a few hundred ms (a grandchild still exiting, the AV scanning __PSScriptPolicyTest_*.ps1)
+// beat the 2 x 25 ms retry. Reproduced here with a grandchild whose cwd is inside the tree for 700 ms
+// (an open file alone does not block it: Windows 11 deletes open files with POSIX semantics).
+test('parent removal waits out a handle that outlives the suite process for a moment (EPERM/ENOTEMPTY on the root)', () => {
+  const file = path.join(suite.root, 'held-handle.cjs');
+  const holder = "const fs=require('node:fs');const fd=fs.openSync(process.argv[1],'r');fs.writeFileSync(process.argv[2],'held');setTimeout(()=>{fs.closeSync(fd);process.exit(0);},700);";
+  fs.writeFileSync(file, "const t=require("+JSON.stringify(helper)+");if(process.env.CCB_TEST_TEMP_ENTRY!==__filename)t.runTestProcess(__filename);const root=process.env.CCB_TEST_TEMP_ROOT;delete process.env.CCB_TEST_TEMP_ENTRY;delete process.env.CCB_TEST_TEMP_ROOT;t.createTestTemp({borrowedRoot:root});const fs=require('node:fs'),path=require('node:path'),cp=require('node:child_process');const sub=path.join(root,'sub');fs.mkdirSync(sub);const held=path.join(sub,'held.txt');fs.writeFileSync(held,'x');const marker=path.join(root,'marker');cp.spawn(process.execPath,['-e',"+JSON.stringify(holder)+",held,marker],{cwd:sub,detached:true,stdio:'ignore',windowsHide:true}).unref();const until=Date.now()+5000;while(!fs.existsSync(marker)&&Date.now()<until)Atomics.wait(new Int32Array(new SharedArrayBuffer(4)),0,0,10);console.log(root);");
+  const r=spawnSync(process.execPath,[file],{encoding:'utf8',env:process.env,windowsHide:true});
+  assert.equal(r.status,0,r.stderr);
+  const root=r.stdout.trim();
+  assert.ok(root.includes('ccb-test-run-'));
+  assert.equal(fs.existsSync(root),false,root);
+});
+
 test('parent removes borrowed tree after a child exits with an open SQLite handle and preserves failure status', () => {
   for (const expected of [0,7]) {
     const file = path.join(suite.root, 'open-db-' + expected + '.cjs');

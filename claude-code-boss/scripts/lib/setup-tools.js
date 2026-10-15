@@ -68,16 +68,17 @@ const DEFINITIONS = [
 
 function createSetupTools({ pluginRoot, requestRestart = () => {}, deps = {} } = {}) {
   const lib = (m) => require(path.join(pluginRoot, 'scripts', 'lib', m));
+  const eng = (m) => require(path.join(pluginRoot, 'engine', 'lib', m));
   const wizard = deps.wizard || lib('mcp-wizard.js');
-  const loadConfig = deps.loadConfig || (() => lib('brain-config.js').load());
-  const dataDir = deps.dataDir || (() => lib('data-dir.js').dataDir());
+  const loadConfig = deps.loadConfig || (() => eng('brain-config.js').load());
+  const dataDir = deps.dataDir || (() => eng('data-dir.js').dataDir());
   const health = deps.health || (async (url) => {
     const r = await lib('http-health.js').probeHealth(url, { timeoutMs: 3000 });
     if (r.status !== 200) return null;
     try { return JSON.parse(r.body); } catch (err) { void err; return {}; }
   });
   const platform = deps.platform || process.platform;
-  const pid = deps.projectId || lib('project-id.js');
+  const pid = deps.projectId || eng('project-id.js');
   const launcher = deps.launcher || lib('mcp-bootstrap/launcher.js');
   // Java matters only to install the server launcher when the server's bundled runtime is absent.
   const javaNeeded = () => !require('fs').existsSync(launcher.launcherPath()) && !launcher.bundledJava();
@@ -107,7 +108,7 @@ function createSetupTools({ pluginRoot, requestRestart = () => {}, deps = {} } =
 
   async function remoteProjects() {
     if (deps.remoteProjects) return deps.remoteProjects();
-    const McpClient = require(path.join(pluginRoot, 'scripts', 'mcp-client.js'));
+    const McpClient = require(path.join(pluginRoot, 'engine', 'mcp-client.js'));
     const mcp = ((loadConfig() || {}).backend || {}).mcpMemory || {};
     const client = new McpClient({ transport: 'http', serverUrl: mcp.serverUrl || wizard.discoverDaemonUrl() || '', runDir: mcp.runDir || '', projectId: 'default', timeout: 15000 });
     try {
@@ -239,7 +240,7 @@ function createSetupTools({ pluginRoot, requestRestart = () => {}, deps = {} } =
         }
         const root = pid.findProjectRoot({ cwd }) || cwd;
         let file;
-        try { file = lib('project-config.js').writeDeclaredProjectId(root, id); } catch (err) { return fail(err.message); }
+        try { file = eng('project-config.js').writeDeclaredProjectId(root, id); } catch (err) { return fail(err.message); }
         const now = pid.tryResolveProjectId({ cwd });
         if (now !== id) return fail(`Wrote ${file} but the folder resolves to ${JSON.stringify(now)}, not "${id}" — check for a parent .memory/project.json.`);
         return text(`Memory is ON for this folder as project "${id}" (${exists ? 'linked to the existing project' : 'new project'}). Written: ${file}`);

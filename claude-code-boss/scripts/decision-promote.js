@@ -13,13 +13,13 @@
  * re-nudge if decision-detect somehow re-stages the same key.
  */
 'use strict';
-const { readJsonSafe, writeJsonSafe } = require('./lib/json-file.js');
+const { readJsonSafe, writeJsonSafe } = require('../engine/lib/json-file.js');
 const path = require('path');
 
 const { runStopDetectorCli } = require('./lib/hook-io.js');
-const metrics = require('./lib/metrics.js');
+const metrics = require('../engine/lib/metrics.js');
 
-const { dataDir } = require('./lib/data-dir.js');
+const { dataDir } = require('../engine/lib/data-dir.js');
 const DATA_DIR = dataDir();
 const PENDING = path.join(DATA_DIR, '.runtime', 'decision-pending.json');
 const PROMOTED = path.join(DATA_DIR, '.runtime', 'decision-promoted-sha.json');

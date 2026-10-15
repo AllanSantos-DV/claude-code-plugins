@@ -15,9 +15,9 @@
 'use strict';
 const fs = require('fs');
 const path = require('path');
-const { getCuration } = require('./lib/brain-config.js');
-const { dataDir } = require('./lib/data-dir.js');
-const metrics = require('./lib/metrics.js');
+const { getCuration } = require('../engine/lib/brain-config.js');
+const { dataDir } = require('../engine/lib/data-dir.js');
+const metrics = require('../engine/lib/metrics.js');
 
 const KEEP_MS = 24 * 60 * 60 * 1000;
 

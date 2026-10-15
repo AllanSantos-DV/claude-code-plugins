@@ -64,7 +64,7 @@ let DATA_DIR = argValue('--plugin-data')
 // dataDir() itself uses on its env branch — one rule, one place).
 try {
   const require = createRequire(import.meta.url);
-  const { publishAndFollow } = require('../../scripts/lib/data-dir.js');
+  const { publishAndFollow } = require('../../engine/lib/data-dir.js');
   DATA_DIR = publishAndFollow(DATA_DIR);
 } catch (err) {
   console.error(`[brain-server] could not publish active-data-dir pointer: ${err.message}`);

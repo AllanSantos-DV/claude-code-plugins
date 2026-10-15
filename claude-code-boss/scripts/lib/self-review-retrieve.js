@@ -19,7 +19,7 @@ const path = require('path');
 const http = require('http');
 
 function dataDir() {
-  return require('./data-dir.js').dataDir();
+  return require('../../engine/lib/data-dir.js').dataDir();
 }
 
 // ── Pure helpers ─────────────────────────────────────────────────────────────
@@ -189,7 +189,7 @@ async function retrieveViaDaemon(query, opts = {}) {
         jsonrpc: '2.0', id: 2, method: 'tools/call',
         params: {
           name: 'brain_search',
-          arguments: { query, project: opts.project, topK: (opts.topK || 2) + 4, minScore: opts.minScore, scope: 'both' },
+          arguments: { query, project: opts.project, ...(opts.cwd ? { cwd: opts.cwd } : {}), topK: (opts.topK || 2) + 4, minScore: opts.minScore, scope: 'both' },
         },
       },
     });
@@ -224,8 +224,8 @@ async function retrieveViaIndex(keywords, opts = {}) {
   const project = opts.project || 'default';
   const topK = opts.topK || 2;
   try {
-    const index = opts._index || require('../brain-index.js');
-    const store = opts._store || require('../brain-store.js');
+    const index = opts._index || require('../../engine/brain-index.js');
+    const store = opts._store || require('../../engine/brain-store.js');
     await index.init({ project });
     await store.init({ project, skipEmbedder: true });
     const hits = await index.lookup(keywords, { project, topK: topK + 6 });
@@ -254,7 +254,7 @@ async function retrieve(q, opts = {}) {
   const minScore = Number.isFinite(opts.minScore) ? opts.minScore : 0.2;
   const types = opts.types || ['lesson', 'failure'];
 
-  let entries = await retrieveViaDaemon(query, { dataDir: opts.dataDir, project: opts.project, topK, minScore, timeoutMs: opts.timeoutMs });
+  let entries = await retrieveViaDaemon(query, { dataDir: opts.dataDir, project: opts.project, cwd: opts.cwd, topK, minScore, timeoutMs: opts.timeoutMs });
   let source = 'daemon';
   if (entries === null) {
     entries = await retrieveViaIndex(keywords || [], { project: opts.project, topK, _store: opts._store, _index: opts._index });

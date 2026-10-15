@@ -249,9 +249,9 @@ export function createBrainServer({ pluginRoot, mode = 'http', kbWorker, kbLock,
   async function getKB(project) {
     if (_testHooks && typeof _testHooks.getKB === 'function') return _testHooks.getKB(project);
     const clients = kbWorker ? kbWorker.clientsFor(project) : null;
-    const store = clients ? clients.storeClient : require(path.join(PLUGIN_ROOT, 'scripts', 'brain-store.js'));
-    const index = clients ? clients.indexClient : require(path.join(PLUGIN_ROOT, 'scripts', 'brain-index.js'));
-    const graph = clients ? clients.graphClient : require(path.join(PLUGIN_ROOT, 'scripts', 'brain-graph.js'));
+    const store = clients ? clients.storeClient : require(path.join(PLUGIN_ROOT, 'engine', 'brain-store.js'));
+    const index = clients ? clients.indexClient : require(path.join(PLUGIN_ROOT, 'engine', 'brain-index.js'));
+    const graph = clients ? clients.graphClient : require(path.join(PLUGIN_ROOT, 'engine', 'brain-graph.js'));
     await store.init({ project });
     await index.init({ project });
     await graph.init({ project });
@@ -268,12 +268,17 @@ export function createBrainServer({ pluginRoot, mode = 'http', kbWorker, kbLock,
   // methods return Promises — callers already fire-and-forget this, so awaiting
   // inside is enough to keep `if (init(...)) recordMetric(...)` correct instead of
   // treating a pending Promise as always-truthy.
+  // Where a capture came from: the Stop hook's review offer (windowId) or a direct call
+  // (nudged or spontaneous — the tool cannot tell). Without it the capture funnel could
+  // not separate offers from everything else (2.392 lesson.captured, none attributable).
+  const captureSource = (a) => (a && a.windowId ? { windowId: String(a.windowId), source: 'capture-dispatch' } : { source: 'direct' });
+
   async function recordLessonMetric(project, payload) {
     try {
-      const metricsStore = kbWorker ? kbWorker.clientsFor(project).metricsClient : require(path.join(PLUGIN_ROOT, 'scripts', 'lib', 'metrics-store.js'));
+      const metricsStore = kbWorker ? kbWorker.clientsFor(project).metricsClient : require(path.join(PLUGIN_ROOT, 'engine', 'lib', 'metrics-store.js'));
       // The metrics key the readers use (owner__repo), not the raw id: written under `owner/repo`
       // it landed in a nested dir the session summary never read.
-      const metricsKey = require(path.join(PLUGIN_ROOT, 'scripts', 'lib', 'metrics-project.js')).metricsKeyForId(project);
+      const metricsKey = require(path.join(PLUGIN_ROOT, 'engine', 'lib', 'metrics-project.js')).metricsKeyForId(project);
       if (await metricsStore.init({ project: metricsKey })) await metricsStore.recordMetric('lesson.captured', payload, null);
     } catch (err) {
       console.error(`[BRAIN-SERVER] recordLessonMetric failed: ${err.message}`);
@@ -318,15 +323,15 @@ export function createBrainServer({ pluginRoot, mode = 'http', kbWorker, kbLock,
    */
   async function findRemoteDuplicate(backend, { type, projectId, title, summary }) {
     const DEDUP = 0.9;
-    const { buildEmbedText } = require(path.join(PLUGIN_ROOT, 'scripts', 'lib', 'embed-text.js'));
+    const { buildEmbedText } = require(path.join(PLUGIN_ROOT, 'engine', 'lib', 'embed-text.js'));
     const text = buildEmbedText({ title, summary });
     try {
       const hits = await backend.search(text, { topK: 3, type, projectIds: [projectId] });
       if (!hits || !hits.length) return null;
-      const embedder = (_testHooks && _testHooks.embedder) || require(path.join(PLUGIN_ROOT, 'scripts', 'brain-embedder.js'));
+      const embedder = (_testHooks && _testHooks.embedder) || require(path.join(PLUGIN_ROOT, 'engine', 'brain-embedder.js'));
       await embedder.init();
       if (!embedder.getStatus().ready) return null;
-      const { cosineSimilarity } = require(path.join(PLUGIN_ROOT, 'scripts', 'brain-store.js'));
+      const { cosineSimilarity } = require(path.join(PLUGIN_ROOT, 'engine', 'brain-store.js'));
       const v = await embedder.embed(text);
       let best = null;
       for (const h of hits) {
@@ -376,12 +381,9 @@ export function createBrainServer({ pluginRoot, mode = 'http', kbWorker, kbLock,
         }
         case 'capture_lesson': {
           const type = a.type || 'lesson';
-          if (type === 'skill') { // same contract as the local path: out of range → nothing stored
-            const brainConfig = require(path.join(PLUGIN_ROOT, 'scripts', 'lib', 'brain-config.js'));
-            const { validateSkillFields } = require(path.join(PLUGIN_ROOT, 'scripts', 'lib', 'skill-capture.js'));
-            const check = validateSkillFields(a, brainConfig.getSkillCapture());
-            if (!check.ok) return { isError: true, content: [{ type: 'text', text: check.message }] };
-          }
+          // type "skill" (validated skill fields staged for review) never got its promotion phase
+          // and had 0 captures in 74 days; removed. Skills come from recurring lessons (brain-promote).
+          if (type === 'skill') return { isError: true, content: [{ type: 'text', text: 'capture_lesson: type "skill" is no longer accepted — capture it as a lesson or pattern; recurring lessons are promoted to skill drafts by brain-promote.' }] };
           const w = writeScope(type);
           if (w.rejected) return { isError: true, content: [{ type: 'text', text: `capture_lesson rejected: scope=user but ${w.rejected}. Strip the secret or use scope=project.` }] };
           const f = w.fields;
@@ -394,13 +396,13 @@ export function createBrainServer({ pluginRoot, mode = 'http', kbWorker, kbLock,
             const recurrence = (dup.recurrence || 1) + 1;
             // baseMetadata: add_document REPLACES metadata on upsert — keep the document's other keys.
             await backend.save({ id: dup.id, baseMetadata: dup.metadata, title: dup.title, summary: f.summary, content: { detail: f.detail || f.summary }, type, tags: dup.tags && dup.tags.length ? dup.tags : (Array.isArray(a.tags) ? a.tags : []), confidence: Math.max(dup.confidence || 0.5, confidence), scope: dup.scope || w.effective, projectId: w.projectId, recurrence });
-            await recordLessonMetric(project, { type, decision: 'merge', scope: w.effective, recurrence });
+            await recordLessonMetric(project, { type, decision: 'merge', scope: w.effective, recurrence, ...captureSource(a) });
             recordCaptureAck(a.windowId, 'captured');
             return asText({ decision: 'merge', id: dup.id, recurrence, title: dup.title, type, project: w.projectId, scope: w.effective, backend: 'mcp-memory' });
           }
           const id = await backend.save({ title: f.title, summary: f.summary, content: { detail: f.detail || f.summary }, type, tags: Array.isArray(a.tags) ? a.tags : [], confidence, scope: w.effective, projectId: w.projectId });
           // Metrics are per-machine, not part of the KB — recorded locally.
-          await recordLessonMetric(project, { type, decision: 'admit', scope: w.effective });
+          await recordLessonMetric(project, { type, decision: 'admit', scope: w.effective, ...captureSource(a) });
           recordCaptureAck(a.windowId, 'captured');
           return asText({ decision: 'admit', id, type, project: w.projectId, scope: w.effective, backend: 'mcp-memory' });
         }
@@ -420,8 +422,8 @@ export function createBrainServer({ pluginRoot, mode = 'http', kbWorker, kbLock,
     }
   }
 
-  const scopeSanitizer = require(path.join(PLUGIN_ROOT, 'scripts', 'lib', 'scope-sanitizer.js'));
-  const scopeSearch = require(path.join(PLUGIN_ROOT, 'scripts', 'lib', 'scope-search.js'));
+  const scopeSanitizer = require(path.join(PLUGIN_ROOT, 'engine', 'lib', 'scope-sanitizer.js'));
+  const scopeSearch = require(path.join(PLUGIN_ROOT, 'engine', 'lib', 'scope-search.js'));
   const { USER_SENTINEL, inferDefaultScope, prepareForUserScope } = scopeSanitizer;
   const { searchTwoPass } = scopeSearch;
 
@@ -464,7 +466,7 @@ export function createBrainServer({ pluginRoot, mode = 'http', kbWorker, kbLock,
     },
   };
 
-  const _textUtils = require(path.join(PLUGIN_ROOT, 'scripts', 'lib', 'text-utils.js'));
+  const _textUtils = require(path.join(PLUGIN_ROOT, 'engine', 'lib', 'text-utils.js'));
   function extractKeywords(text) {
     return _textUtils.extractKeywords(text, { minLen: 4, maxTokens: 1000, allowPath: true });
   }
@@ -482,7 +484,7 @@ export function createBrainServer({ pluginRoot, mode = 'http', kbWorker, kbLock,
   // in http mode would silently misattribute every caller that omits an
   // explicit `project` to whichever session's hook happened to (re)spawn the
   // daemon, for the daemon's entire lifetime.
-  const projectId = require(path.join(PLUGIN_ROOT, 'scripts', 'lib', 'project-id.js'));
+  const projectId = require(path.join(PLUGIN_ROOT, 'engine', 'lib', 'project-id.js'));
   function resolveProject(args) {
     const a = args || {};
     if (a.project) {
@@ -693,7 +695,7 @@ export function createBrainServer({ pluginRoot, mode = 'http', kbWorker, kbLock,
   function graphConfigResolver(opts) {
     let mcp = {};
     try {
-      const cfg = require(path.join(PLUGIN_ROOT, 'scripts', 'lib', 'brain-config.js')).load();
+      const cfg = require(path.join(PLUGIN_ROOT, 'engine', 'lib', 'brain-config.js')).load();
       mcp = (cfg && cfg.backend && cfg.backend.mcpMemory) || {};
     } catch (err) { void err; /* config unreadable → default run-dir discovery (fail-open) */ }
     return graphDaemon.makeResolver({ serverUrl: mcp.serverUrl || '', runDir: mcp.runDir || '' })(opts);
@@ -765,7 +767,7 @@ export function createBrainServer({ pluginRoot, mode = 'http', kbWorker, kbLock,
     {
       name: 'capture_lesson',
       description: 'Capture a CURATED lesson in-loop (the agent post-mortem pattern). Call this when the user corrects you, or when a reusable pattern emerges — YOU write the clean summary + correction + generalized lesson (you have full context; do not make the KB re-read transcripts). WRITE IN ENGLISH — the KB is English-canonical so entries stay retrievable regardless of the user\'s prompt language. Runs admission control inline: a near-duplicate is MERGED (bumping recurrence, which drives skill promotion) instead of duplicated.',
-      inputSchema: { type: 'object', properties: { title: { type: 'string', description: 'Short lesson title in English (max 80 chars)' }, summary: { type: 'string', description: 'One-line in English: what went wrong / the pattern, and what to do instead' }, detail: { type: 'string', description: 'Full lesson in English: what happened + the correction + the generalized rule. Keep the valuable specifics.' }, type: { type: 'string', enum: ['lesson', 'pattern', 'decision', 'research', 'skill'], description: 'lesson (correction), pattern (reusable workflow), decision (architectural choice + rationale — plugin Stop hooks nudge this type), research (external findings worth reusing — plugin Stop hooks nudge this type too), or skill (this is ALREADY a generalizable, reusable instruction worth a global Agent Skill — requires description/useFor/doNotUseFor; validated and staged directly for review, no separate promotion step). Default: lesson' }, description: { type: 'string', description: 'ONLY for type:"skill". The Skill frontmatter description — what Claude reads to decide whether to load this skill. 40-280 chars. Phrase it as a trigger condition (when this applies), not a summary of what happened. Rejected (nothing stored) if out of range — not truncated for you.' }, useFor: { type: 'string', description: 'ONLY for type:"skill". Non-empty, max 400 chars: concrete situations where this skill SHOULD be used.' }, doNotUseFor: { type: 'string', description: 'ONLY for type:"skill". Non-empty, max 400 chars: situations where this skill should NOT be used (the boundary that keeps it from firing on the wrong task).' }, tags: { type: 'array', items: { type: 'string' }, description: '3-8 CANONICAL English concept tags, lowercase, hyphenated (e.g. "error-handling", "token-efficiency", "cross-lingual"). These are the language-neutral retrieval anchor — choose the terms a future query (in any language) would map to.' }, confidence: { type: 'number', description: '0.0-1.0 (default 0.85)' }, windowId: { type: 'string', description: 'When the plugin offered a review block, pass its windowId to close (ack) that capture window as captured.' }, cwd: { type: 'string', description: 'Your working directory. When set, the folder\'s project id (.memory/project.json / git remote) WINS over `project`; a folder with NO project id is REFUSED (memory is off there). Pass it whenever you know it.' }, project: { type: 'string', description: 'Project name (default: auto-detect from CWD; REQUIRED in HTTP mode)' }, scope: { type: 'string', enum: ['auto', 'project', 'user'], description: 'Where to store. "auto" (default) infers from type+tags (decision/code → project; reference/research/user-tag hints like workflow/preferences/agent-behavior → user). "user" routes to global __user__ DB and sanitizes user paths/emails/project name. Entries with detected secrets are rejected if scope=user.' } }, required: ['title', 'summary'] },
+      inputSchema: { type: 'object', properties: { title: { type: 'string', description: 'Short lesson title in English (max 80 chars)' }, summary: { type: 'string', description: 'One-line in English: what went wrong / the pattern, and what to do instead' }, detail: { type: 'string', description: 'Full lesson in English: what happened + the correction + the generalized rule. Keep the valuable specifics.' }, type: { type: 'string', enum: ['lesson', 'pattern', 'decision', 'research'], description: 'lesson (correction), pattern (reusable workflow), decision (architectural choice + rationale — plugin Stop hooks nudge this type), or research (external findings worth reusing — plugin Stop hooks nudge this type too). Lessons that keep recurring are promoted to skill drafts for review. Default: lesson' }, tags: { type: 'array', items: { type: 'string' }, description: '3-8 CANONICAL English concept tags, lowercase, hyphenated (e.g. "error-handling", "token-efficiency", "cross-lingual"). These are the language-neutral retrieval anchor — choose the terms a future query (in any language) would map to.' }, confidence: { type: 'number', description: '0.0-1.0 (default 0.85)' }, windowId: { type: 'string', description: 'When the plugin offered a review block, pass its windowId to close (ack) that capture window as captured.' }, cwd: { type: 'string', description: 'Your working directory. When set, the folder\'s project id (.memory/project.json / git remote) WINS over `project`; a folder with NO project id is REFUSED (memory is off there). Pass it whenever you know it.' }, project: { type: 'string', description: 'Project name (default: auto-detect from CWD; REQUIRED in HTTP mode)' }, scope: { type: 'string', enum: ['auto', 'project', 'user'], description: 'Where to store. "auto" (default) infers from type+tags (decision/code → project; reference/research/user-tag hints like workflow/preferences/agent-behavior → user). "user" routes to global __user__ DB and sanitizes user paths/emails/project name. Entries with detected secrets are rejected if scope=user.' } }, required: ['title', 'summary'] },
     },
     {
       name: 'capture_ack',
@@ -905,14 +907,14 @@ export function createBrainServer({ pluginRoot, mode = 'http', kbWorker, kbLock,
     if (graphTools.names.has(name)) {
       const graphMode = (_testHooks && typeof _testHooks.peekMode === 'function')
         ? _testHooks.peekMode()
-        : require(path.join(PLUGIN_ROOT, 'scripts', 'brain-backend.js')).peekMode();
+        : require(path.join(PLUGIN_ROOT, 'engine', 'brain-backend.js')).peekMode();
       if (graphMode !== 'mcp-memory') {
         return { content: [{ type: 'text', text: `🕸️ As tools de grafo exigem o backend "mcp-memory" (o grafo vive no memory server). O backend atual é "${graphMode}". O agente pode ativar o servidor de memória para o usuário: chame backend_status e, com o OK do usuário, backend_setup (ou /dashboard → Brain → backend: mcp-memory).` }] };
       }
       return graphTools.handle(name, args);
     }
     if (!forceLocal && REMOTE_KB_TOOLS.has(name)) {
-      const backend = require(path.join(PLUGIN_ROOT, 'scripts', 'brain-backend.js'));
+      const backend = require(path.join(PLUGIN_ROOT, 'engine', 'brain-backend.js'));
       if (backend.peekMode() === 'mcp-memory') {
         return handleRemoteKbTool(backend, name, args);
       }
@@ -956,7 +958,7 @@ export function createBrainServer({ pluginRoot, mode = 'http', kbWorker, kbLock,
           const currentProject = resolveKbProject(args);
           let vector = null;
           try {
-            const embedder = require(path.join(PLUGIN_ROOT, 'scripts', 'brain-embedder.js'));
+            const embedder = require(path.join(PLUGIN_ROOT, 'engine', 'brain-embedder.js'));
             await embedder.init();
             if (embedder.getStatus().ready) vector = await embedder.embed(query);
           } catch { /* embedding optional */ }
@@ -1013,8 +1015,8 @@ export function createBrainServer({ pluginRoot, mode = 'http', kbWorker, kbLock,
           const entry = { title: safeTitle, summary: safeSummary, detail: safeDetail || safeSummary, content: { detail: safeDetail || safeSummary, files: [] }, type, tags: Array.isArray(tags) ? tags : [], project: storageProject, scope: effectiveScope, confidence, sourceUrl: sourceUrl || '', created: new Date().toISOString() };
           let vector = null;
           try {
-            const embedder = require(path.join(PLUGIN_ROOT, 'scripts', 'brain-embedder.js'));
-            const { buildEmbedText } = require(path.join(PLUGIN_ROOT, 'scripts', 'lib', 'embed-text.js'));
+            const embedder = require(path.join(PLUGIN_ROOT, 'engine', 'brain-embedder.js'));
+            const { buildEmbedText } = require(path.join(PLUGIN_ROOT, 'engine', 'lib', 'embed-text.js'));
             await embedder.init();
             if (embedder.getStatus().ready) vector = await embedder.embed(buildEmbedText({ title: safeTitle, summary: safeSummary }));
           } catch { /* embedding optional */ }
@@ -1031,18 +1033,9 @@ export function createBrainServer({ pluginRoot, mode = 'http', kbWorker, kbLock,
       case 'capture_lesson': {
         try {
           const { title, summary, detail, type = 'lesson', tags = [], confidence = 0.85, scope = 'auto' } = args;
-          let skillFields = null;
-          if (type === 'skill') {
-            const brainConfig = require(path.join(PLUGIN_ROOT, 'scripts', 'lib', 'brain-config.js'));
-            const { validateSkillFields } = require(path.join(PLUGIN_ROOT, 'scripts', 'lib', 'skill-capture.js'));
-            const check = validateSkillFields(args, brainConfig.getSkillCapture());
-            if (!check.ok) return { isError: true, content: [{ type: 'text', text: check.message }] };
-            // Fase 1 (schema + validação mecânica): os campos validados vão junto
-            // em content.skill (merge E admit, abaixo) para as fases seguintes
-            // (overlap + escrita direta do SKILL.md) consumirem — nada é perdido,
-            // mas o fluxo de armazenamento continua o mesmo dos outros 4 tipos.
-            skillFields = { description: check.description, useFor: check.useFor, doNotUseFor: check.doNotUseFor };
-          }
+          // type "skill" (validated skill fields staged for review) never got its promotion phase
+          // and had 0 captures in 74 days; removed. Skills come from recurring lessons (brain-promote).
+          if (type === 'skill') return { isError: true, content: [{ type: 'text', text: 'capture_lesson: type "skill" is no longer accepted — capture it as a lesson or pattern; recurring lessons are promoted to skill drafts by brain-promote.' }] };
           const currentProject = resolveKbProject(args);
           const effectiveScope = (scope === 'project' || scope === 'user') ? scope : inferDefaultScope(type, tags);
           let safeTitle = title, safeSummary = summary, safeDetail = detail;
@@ -1053,11 +1046,11 @@ export function createBrainServer({ pluginRoot, mode = 'http', kbWorker, kbLock,
           }
           const storageProject = effectiveScope === 'user' ? USER_SENTINEL : currentProject;
           const { store: kbStore, index: kbIndex, graph: kbGraph } = await getKB(storageProject);
-          const { buildEmbedText } = require(path.join(PLUGIN_ROOT, 'scripts', 'lib', 'embed-text.js'));
+          const { buildEmbedText } = require(path.join(PLUGIN_ROOT, 'engine', 'lib', 'embed-text.js'));
           const text = buildEmbedText({ title: safeTitle, summary: safeSummary });
           let vector = null;
           try {
-            const embedder = (_testHooks && _testHooks.embedder) || require(path.join(PLUGIN_ROOT, 'scripts', 'brain-embedder.js'));
+            const embedder = (_testHooks && _testHooks.embedder) || require(path.join(PLUGIN_ROOT, 'engine', 'brain-embedder.js'));
             await embedder.init();
             if (embedder.getStatus().ready) vector = await embedder.embed(text);
           } catch { /* embedding optional */ }
@@ -1067,9 +1060,9 @@ export function createBrainServer({ pluginRoot, mode = 'http', kbWorker, kbLock,
             // distinct record — merging it would just bump the lesson's recurrence and lose it.
             const hits = await kbStore.search(vector, { topK: 1, minScore: DEDUP, rerank: false, type });
             if (hits.length > 0) {
-              const merged = await kbStore.merge(hits[0].id, { summary: safeSummary, content: { detail: safeDetail || safeSummary, ...(skillFields ? { skill: skillFields } : {}) }, confidence });
+              const merged = await kbStore.merge(hits[0].id, { summary: safeSummary, content: { detail: safeDetail || safeSummary }, confidence });
               if (merged) {
-                await recordLessonMetric(storageProject, { type, decision: 'merge', scope: effectiveScope, recurrence: merged.recurrence });
+                await recordLessonMetric(storageProject, { type, decision: 'merge', scope: effectiveScope, recurrence: merged.recurrence, ...captureSource(args) });
                 recordCaptureAck(args.windowId, 'captured');
                 if (storageProject !== currentProject) await getKB(currentProject);
                 return { content: [{ type: 'text', text: JSON.stringify({ decision: 'merge', id: hits[0].id, recurrence: merged.recurrence, title: hits[0].title, project: storageProject, scope: effectiveScope }, null, 2) }] };
@@ -1080,11 +1073,11 @@ export function createBrainServer({ pluginRoot, mode = 'http', kbWorker, kbLock,
               // path so the lesson is actually stored before we ack.
             }
           }
-          const entry = { type, project: storageProject, scope: effectiveScope, session_id: '', title: String(safeTitle).slice(0, 80), summary: String(safeSummary).slice(0, 500), content: { detail: safeDetail || safeSummary, files: [], ...(skillFields ? { skill: skillFields } : {}) }, tags: [...new Set((Array.isArray(tags) ? tags : []).map(t => String(t).toLowerCase().trim().replace(/\s+/g, '-')).filter(Boolean))].slice(0, 8), confidence };
+          const entry = { type, project: storageProject, scope: effectiveScope, session_id: '', title: String(safeTitle).slice(0, 80), summary: String(safeSummary).slice(0, 500), content: { detail: safeDetail || safeSummary, files: [] }, tags: [...new Set((Array.isArray(tags) ? tags : []).map(t => String(t).toLowerCase().trim().replace(/\s+/g, '-')).filter(Boolean))].slice(0, 8), confidence };
           await kbStore.save(entry, vector);
           await kbIndex.index(entry);
           await kbGraph.registerNode(entry);
-          await recordLessonMetric(storageProject, { type, decision: 'admit', scope: effectiveScope });
+          await recordLessonMetric(storageProject, { type, decision: 'admit', scope: effectiveScope, ...captureSource(args) });
           recordCaptureAck(args.windowId, 'captured');
           if (storageProject !== currentProject) await getKB(currentProject);
           return { content: [{ type: 'text', text: JSON.stringify({ decision: 'admit', id: entry.id, type, project: storageProject, scope: effectiveScope }, null, 2) }] };
@@ -1133,6 +1126,13 @@ export function createBrainServer({ pluginRoot, mode = 'http', kbWorker, kbLock,
       }
 
       case 'brain_retrieve_context': {
+        // The UserPromptSubmit recall is the slowest thing a prompt waits on (p50 5.6 s
+        // measured) and was the one call missing from /health's hookLatency.
+        const t0 = Date.now();
+        const timed = (outcome) => {
+          try { require(path.join(PLUGIN_ROOT, 'scripts', 'lib', 'hook-tools.js')).recordLatency('brain_retrieve_context', Date.now() - t0, outcome); }
+          catch (err) { console.error(`[brain_retrieve_context] latency: ${err.message}`); }
+        };
         try {
           const { prompt, session_id } = args || {};
           // A background agent's result (<task-notification>) is not a user prompt:
@@ -1148,7 +1148,7 @@ export function createBrainServer({ pluginRoot, mode = 'http', kbWorker, kbLock,
           // `project` no longer re-scopes the recall of an id-less folder.
           if (args && args.cwd && !focusId) return { content: [{ type: 'text', text: '' }] };
           const project = resolveProject(args);
-          const retrieveCore = require(path.join(PLUGIN_ROOT, 'scripts', 'lib', 'retrieve-core.js'));
+          const retrieveCore = require(path.join(PLUGIN_ROOT, 'engine', 'lib', 'retrieve-core.js'));
           // Same rationale as getKB()/recordLessonMetric() above: the LOCAL (non
           // mcp-memory) search path inside retrieve() runs synchronous better-sqlite3
           // work — route it through kbWorker in 'http' mode so brain_retrieve_context
@@ -1165,16 +1165,18 @@ export function createBrainServer({ pluginRoot, mode = 'http', kbWorker, kbLock,
               const journal = require(path.join(PLUGIN_ROOT, 'scripts', 'lib', 'retrieval-journal.js'));
               const sid = session_id || 'default';
               // injectedChars = what really entered the prompt (post-filter, formatted) — the cost of this recall.
-              journal.appendEntry(sid, { retrievalId: journal.newRetrievalId(), ts: Date.now(), sid, tool: 'UserPromptSubmit', project, returnedIds: entries.map(e => e.id), returnedTitles: entries.map(e => e.title), injectedChars: text ? text.length : 0 });
+              journal.appendEntry(sid, { retrievalId: journal.newRetrievalId(), ts: Date.now(), sid, tool: 'UserPromptSubmit', project, returnedIds: entries.map(e => e.id), returnedTitles: entries.map(e => e.title), injectedIds: injectable.map(e => e.id), injectedChars: text ? text.length : 0 });
             } catch (err) { console.error(`[brain_retrieve_context] journal: ${err.message}`); }
           }
           const payload = text ? JSON.stringify({ hookSpecificOutput: { hookEventName: 'UserPromptSubmit', additionalContext: text } }) : '';
+          timed('ok');
           return { content: [{ type: 'text', text: payload }] };
         } catch (err) {
+          timed('degraded');
           console.error(`[brain_retrieve_context] ${err.message}`);
           // Fail-open hides the failure from the turn — make it visible to brain-health
           // and the dashboard (the daemon's stderr is kept nowhere).
-          try { require(path.join(PLUGIN_ROOT, 'scripts', 'lib', 'recall-health.js')).record('retrieve-error', err.message); }
+          try { require(path.join(PLUGIN_ROOT, 'engine', 'lib', 'recall-health.js')).record('retrieve-error', err.message); }
           catch (e) { console.error(`[brain_retrieve_context] recall-health: ${e.message}`); }
           return { content: [{ type: 'text', text: '' }] }; // fail-open: never break the prompt
         }
@@ -1188,7 +1190,7 @@ export function createBrainServer({ pluginRoot, mode = 'http', kbWorker, kbLock,
           if (aliases.length === 0 && sigs.length === 0) {
             return { isError: true, content: [{ type: 'text', text: 'curation_mark_oneoff: sigs[] or aliases[] required — pass the `sig` values from the Stop-hook reason verbatim (preferred), or raw command forms, e.g. ["npm test","npm run test"].' }] };
           }
-          const cmdSig = require(path.join(PLUGIN_ROOT, 'scripts', 'lib', 'command-signature.js'));
+          const cmdSig = require(path.join(PLUGIN_ROOT, 'engine', 'lib', 'command-signature.js'));
           // Only raw ALIASES are refused as too broad. A verbatim `sig` of 1 token
           // (`pytest`) is marked by exact match (oneoff-store isCeilingExempt) — it
           // can't silence `pytest x`, and refusing it left the flagged sig with no
@@ -1202,7 +1204,7 @@ export function createBrainServer({ pluginRoot, mode = 'http', kbWorker, kbLock,
           if (tooBroad.length) {
             return { isError: true, content: [{ type: 'text', text: `curation_mark_oneoff: alias/sig too broad: ${tooBroad.join(', ')}. A 1-token form (e.g. "git") would silence unrelated subcommands — name the subcommand (e.g. "git log").` }] };
           }
-          const cfg =require(path.join(PLUGIN_ROOT, 'scripts', 'lib', 'brain-config.js')).getCuration();
+          const cfg =require(path.join(PLUGIN_ROOT, 'engine', 'lib', 'brain-config.js')).getCuration();
           const projectKey = oneoff.resolveProjectKey(callerCwd(a));
           const res = oneoff.mark(process.env.CLAUDE_PLUGIN_DATA, projectKey, { aliases, sigs, sessionId: a.session_id || null, maxRecurrence: cfg.oneHitMaxRecurrence, windowDays: cfg.oneHitWindowDays });
           if (res.decision === 'rejected') {
@@ -1242,12 +1244,10 @@ export function createBrainServer({ pluginRoot, mode = 'http', kbWorker, kbLock,
           const root = findProjectRoot(a.cwd);
           if (!root) return { isError: true, content: [{ type: 'text', text: `curation_prune_unused: no project root (shells config) found from ${a.cwd}` }] };
           const days = Math.max(1, Math.min(365, Number(a.days) || 30));
-          // Usage metrics are keyed by the SESSION root (lib/metrics.js), which differs from
-          // the shells.json root when that lives in a subfolder of the session's project.
-          const sessRoot = sessionRoots[0] || (mode !== 'http' ? process.env.CLAUDE_PROJECT_DIR : '');
-          const rel = sessRoot ? path.relative(path.resolve(sessRoot), path.resolve(root)) : '..';
-          const project = rel && (rel.startsWith('..') || path.isAbsolute(rel)) ? path.basename(path.resolve(root)) : path.basename(path.resolve(sessRoot));
-          const res = a.apply ? prune.pruneShells({ root, ids: a.ids, days, project }) : prune.pruneCandidates({ root, days, project });
+          // No `project`: shells-prune resolves the metrics key of `root` itself (the project id,
+          // where lib/metrics.js writes). A folder name read the frozen legacy db (history stops
+          // at the id adoption) and sessionRoots[0] is the daemon's FIRST session, not this one.
+          const res = a.apply ? prune.pruneShells({ root, ids: a.ids, days }) : prune.pruneCandidates({ root, days });
           if (!res.ok) return { isError: true, content: [{ type: 'text', text: `curation_prune_unused: ${res.error}` }] };
           return { content: [{ type: 'text', text: JSON.stringify({ root, ...res }, null, 2) }] };
         } catch (err) {
@@ -1274,8 +1274,8 @@ export function createBrainServer({ pluginRoot, mode = 'http', kbWorker, kbLock,
             return { content: [{ type: 'text', text: JSON.stringify({ activated: false, reason: 'assert-requires-globs', message: msg }, null, 2) }] };
           }
           const scope = hasGlobs ? 'project' : (a.scope === 'user' ? 'user' : 'project');
-          const policyStore = require(path.join(PLUGIN_ROOT, 'scripts', 'lib', 'policy-store.js'));
-          const { dataDir } = require(path.join(PLUGIN_ROOT, 'scripts', 'lib', 'data-dir.js'));
+          const policyStore = require(path.join(PLUGIN_ROOT, 'engine', 'lib', 'policy-store.js'));
+          const { dataDir } = require(path.join(PLUGIN_ROOT, 'engine', 'lib', 'data-dir.js'));
           // user-scope policies are project-independent; only resolve a project id
           // for project-scope activations (all glob policies are project-scoped).
           const pid = scope === 'user' ? '' : resolveProject(a);
@@ -1337,8 +1337,8 @@ export function createBrainServer({ pluginRoot, mode = 'http', kbWorker, kbLock,
       case 'policy_list': {
         try {
           const a = args || {};
-          const policyStore = require(path.join(PLUGIN_ROOT, 'scripts', 'lib', 'policy-store.js'));
-          const { dataDir } = require(path.join(PLUGIN_ROOT, 'scripts', 'lib', 'data-dir.js'));
+          const policyStore = require(path.join(PLUGIN_ROOT, 'engine', 'lib', 'policy-store.js'));
+          const { dataDir } = require(path.join(PLUGIN_ROOT, 'engine', 'lib', 'data-dir.js'));
           const pid = resolveProject(a);
           const active = policyStore.listVisible(dataDir(), { projectId: pid });
           const policies = active.map(r => ({
@@ -1367,8 +1367,8 @@ export function createBrainServer({ pluginRoot, mode = 'http', kbWorker, kbLock,
           if (!id.trim()) {
             return { isError: true, content: [{ type: 'text', text: 'policy_deactivate: id is required (from policy_activate / policy_list).' }] };
           }
-          const policyStore = require(path.join(PLUGIN_ROOT, 'scripts', 'lib', 'policy-store.js'));
-          const { dataDir } = require(path.join(PLUGIN_ROOT, 'scripts', 'lib', 'data-dir.js'));
+          const policyStore = require(path.join(PLUGIN_ROOT, 'engine', 'lib', 'policy-store.js'));
+          const { dataDir } = require(path.join(PLUGIN_ROOT, 'engine', 'lib', 'data-dir.js'));
           const res = policyStore.deactivate(dataDir(), id);
           return { content: [{ type: 'text', text: JSON.stringify(res, null, 2) }] };
         } catch (err) {
@@ -1383,13 +1383,13 @@ export function createBrainServer({ pluginRoot, mode = 'http', kbWorker, kbLock,
           // the read/write agree on the metrics db regardless of marker/env/basename.
           const cwd = callerCwd(a);
           const pid = resolveProject(a);
-          const policyStore = require(path.join(PLUGIN_ROOT, 'scripts', 'lib', 'policy-store.js'));
-          const { dataDir } = require(path.join(PLUGIN_ROOT, 'scripts', 'lib', 'data-dir.js'));
+          const policyStore = require(path.join(PLUGIN_ROOT, 'engine', 'lib', 'policy-store.js'));
+          const { dataDir } = require(path.join(PLUGIN_ROOT, 'engine', 'lib', 'data-dir.js'));
           // Same rationale as recordLessonMetric above: getEvaluationCountsIsolated is
           // synchronous SQLite (better-sqlite3) — routed through kbWorker in 'http' mode
           // so this report can't freeze /health for other sessions on the daemon.
-          const metricsStore = kbWorker ? kbWorker.clientsFor(pid).metricsClient : require(path.join(PLUGIN_ROOT, 'scripts', 'lib', 'metrics-store.js'));
-          const { metricsProjectKey } = require(path.join(PLUGIN_ROOT, 'scripts', 'lib', 'metrics-project.js'));
+          const metricsStore = kbWorker ? kbWorker.clientsFor(pid).metricsClient : require(path.join(PLUGIN_ROOT, 'engine', 'lib', 'metrics-store.js'));
+          const { metricsProjectKey } = require(path.join(PLUGIN_ROOT, 'engine', 'lib', 'metrics-project.js'));
 
           const rangeDays = (typeof a.rangeDays === 'number' && a.rangeDays > 0) ? a.rangeDays : 7;
           const sinceTs = Date.now() - rangeDays * 86400000;
@@ -1456,8 +1456,8 @@ export function createBrainServer({ pluginRoot, mode = 'http', kbWorker, kbLock,
         try {
           const a = args || {};
           const pid = resolveProject(a);
-          const { dataDir } = require(path.join(PLUGIN_ROOT, 'scripts', 'lib', 'data-dir.js'));
-          const policyStore = require(path.join(PLUGIN_ROOT, 'scripts', 'lib', 'policy-store.js'));
+          const { dataDir } = require(path.join(PLUGIN_ROOT, 'engine', 'lib', 'data-dir.js'));
+          const policyStore = require(path.join(PLUGIN_ROOT, 'engine', 'lib', 'policy-store.js'));
           const adjStore = require(path.join(PLUGIN_ROOT, 'scripts', 'lib', 'adjudication-store.js'));
           const { planSelfUpdate } = require(path.join(PLUGIN_ROOT, 'scripts', 'lib', 'self-update-plan.js'));
 
@@ -1501,8 +1501,8 @@ export function createBrainServer({ pluginRoot, mode = 'http', kbWorker, kbLock,
           if (!expectedSourceHash) return adjErr('policy_apply_candidate: expectedSourceHash is required — the EXACT current sourceHash from policy_self_update_report (a CAS guard); nothing was applied.');
           const pid = resolveProject(a);
 
-          const { dataDir } = require(path.join(PLUGIN_ROOT, 'scripts', 'lib', 'data-dir.js'));
-          const policyStore = require(path.join(PLUGIN_ROOT, 'scripts', 'lib', 'policy-store.js'));
+          const { dataDir } = require(path.join(PLUGIN_ROOT, 'engine', 'lib', 'data-dir.js'));
+          const policyStore = require(path.join(PLUGIN_ROOT, 'engine', 'lib', 'policy-store.js'));
           const adjStore = require(path.join(PLUGIN_ROOT, 'scripts', 'lib', 'adjudication-store.js'));
           const ledger = require(path.join(PLUGIN_ROOT, 'scripts', 'lib', 'revision-ledger.js'));
           const { planSelfUpdate } = require(path.join(PLUGIN_ROOT, 'scripts', 'lib', 'self-update-plan.js'));
@@ -1588,11 +1588,11 @@ export function createBrainServer({ pluginRoot, mode = 'http', kbWorker, kbLock,
           const cwd = callerCwd(a);
           const pid = resolveProject(a);
 
-          const policyStore = require(path.join(PLUGIN_ROOT, 'scripts', 'lib', 'policy-store.js'));
-          const { dataDir } = require(path.join(PLUGIN_ROOT, 'scripts', 'lib', 'data-dir.js'));
-          const { anyGlobMatches } = require(path.join(PLUGIN_ROOT, 'scripts', 'lib', 'glob-match.js'));
-          const { redact } = require(path.join(PLUGIN_ROOT, 'scripts', 'lib', 'redact.js'));
-          const { writeFileAtomic } = require(path.join(PLUGIN_ROOT, 'scripts', 'lib', 'atomic-write.js'));
+          const policyStore = require(path.join(PLUGIN_ROOT, 'engine', 'lib', 'policy-store.js'));
+          const { dataDir } = require(path.join(PLUGIN_ROOT, 'engine', 'lib', 'data-dir.js'));
+          const { anyGlobMatches } = require(path.join(PLUGIN_ROOT, 'engine', 'lib', 'glob-match.js'));
+          const { redact } = require(path.join(PLUGIN_ROOT, 'engine', 'lib', 'redact.js'));
+          const { writeFileAtomic } = require(path.join(PLUGIN_ROOT, 'engine', 'lib', 'atomic-write.js'));
           const adjStore = require(path.join(PLUGIN_ROOT, 'scripts', 'lib', 'adjudication-store.js'));
 
           const visible = policyStore.listVisible(dataDir(), { projectId: pid });
@@ -1783,8 +1783,8 @@ export function createBrainServer({ pluginRoot, mode = 'http', kbWorker, kbLock,
           if (!/^[0-9a-f]{6,64}$/i.test(manifestHash)) return adjErr('policy_adjudication_record: manifestHash is missing or malformed (expect the hex hash from policy_adjudication_prepare).');
           const pid = resolveProject(a);
 
-          const { dataDir } = require(path.join(PLUGIN_ROOT, 'scripts', 'lib', 'data-dir.js'));
-          const policyStore = require(path.join(PLUGIN_ROOT, 'scripts', 'lib', 'policy-store.js'));
+          const { dataDir } = require(path.join(PLUGIN_ROOT, 'engine', 'lib', 'data-dir.js'));
+          const policyStore = require(path.join(PLUGIN_ROOT, 'engine', 'lib', 'policy-store.js'));
           const adjStore = require(path.join(PLUGIN_ROOT, 'scripts', 'lib', 'adjudication-store.js'));
 
           const bundlePath = path.join(adjStore.adjudicationDir(dataDir(), pid), `bundle-${manifestHash}.json`);
@@ -1900,7 +1900,7 @@ export function createBrainServer({ pluginRoot, mode = 'http', kbWorker, kbLock,
           const a = args || {};
           const pid = resolveProject(a);
           const policyId = typeof a.policyId === 'string' && a.policyId.trim() ? a.policyId.trim() : undefined;
-          const { dataDir } = require(path.join(PLUGIN_ROOT, 'scripts', 'lib', 'data-dir.js'));
+          const { dataDir } = require(path.join(PLUGIN_ROOT, 'engine', 'lib', 'data-dir.js'));
           const adjStore = require(path.join(PLUGIN_ROOT, 'scripts', 'lib', 'adjudication-store.js'));
           const dispositions = adjStore.listDispositions(dataDir(), pid, { policyId });
           return adjJson({
@@ -1920,7 +1920,7 @@ export function createBrainServer({ pluginRoot, mode = 'http', kbWorker, kbLock,
         try {
           const a = args || {};
           const pid = resolveProject(a);
-          const { dataDir } = require(path.join(PLUGIN_ROOT, 'scripts', 'lib', 'data-dir.js'));
+          const { dataDir } = require(path.join(PLUGIN_ROOT, 'engine', 'lib', 'data-dir.js'));
           const adjStore = require(path.join(PLUGIN_ROOT, 'scripts', 'lib', 'adjudication-store.js'));
           // Project-wide orphan sweep: bundles are keyed by manifestHash (not by
           // activationId/ts), so a policyId/age filter wouldn't map cleanly — the honest
@@ -1943,8 +1943,8 @@ export function createBrainServer({ pluginRoot, mode = 'http', kbWorker, kbLock,
           const a = args || {};
           const pid = resolveProject(a);
           const policyId = typeof a.policyId === 'string' && a.policyId.trim() ? a.policyId.trim() : undefined;
-          const { dataDir } = require(path.join(PLUGIN_ROOT, 'scripts', 'lib', 'data-dir.js'));
-          const policyStore = require(path.join(PLUGIN_ROOT, 'scripts', 'lib', 'policy-store.js'));
+          const { dataDir } = require(path.join(PLUGIN_ROOT, 'engine', 'lib', 'data-dir.js'));
+          const policyStore = require(path.join(PLUGIN_ROOT, 'engine', 'lib', 'policy-store.js'));
           const triggerStore = require(path.join(PLUGIN_ROOT, 'scripts', 'lib', 'trigger-evidence-store.js'));
 
           const opts = {};
@@ -2015,7 +2015,18 @@ export function createBrainServer({ pluginRoot, mode = 'http', kbWorker, kbLock,
   // the model's to call: listing them cost context in every session and invited misuse.
   // Verified in real Claude Code 2.1.283 (2026-10-02): with them unlisted, PostToolUse
   // side effects ran and a blocking PreToolUse guard (error-guard) still denied.
-  server.setRequestHandler(ListToolsRequestSchema, async () => ({ tools: TOOLS.filter((t) => !t.name.startsWith('hook_')).map((t) => ({ ...t, annotations: toolHints(t.name) })) }));
+  // The glob/shadow policy tooling (shadow report, adjudication, self-update) only means
+  // something once a glob or shadow policy exists; the registry measured had only
+  // always-apply policies. Unlisted until then (still callable by name, like hook_*).
+  const CONDITIONAL_POLICY_TOOLS = new Set(['policy_shadow_report', 'policy_adjudication_prepare', 'policy_adjudication_record', 'policy_adjudication_report', 'policy_adjudication_purge', 'policy_trigger_evidence_purge', 'policy_self_update_report', 'policy_apply_candidate']);
+  const listed = (t) => {
+    if (t.name.startsWith('hook_')) return false;
+    if (!CONDITIONAL_POLICY_TOOLS.has(t.name)) return true;
+    try {
+      return require(path.join(PLUGIN_ROOT, 'engine', 'lib', 'policy-store.js')).hasConditionalPolicies(require(path.join(PLUGIN_ROOT, 'engine', 'lib', 'data-dir.js')).dataDir());
+    } catch (err) { console.error(`[brain-server] policy registry unreadable (${err.message}) — listing the policy tools`); return true; }
+  };
+  server.setRequestHandler(ListToolsRequestSchema, async () => ({ tools: TOOLS.filter(listed).map((t) => ({ ...t, annotations: toolHints(t.name) })) }));
   server.setRequestHandler(CallToolRequestSchema, async (request) => {
     const { name, arguments: args } = request.params;
     return KB_TOOLS.has(name) ? dispatchKbTool(name, args, () => handleTool(name, args)) : handleTool(name, args);

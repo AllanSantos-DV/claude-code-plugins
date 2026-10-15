@@ -11,7 +11,7 @@
 'use strict';
 
 const hooksConfig = require('./lib/hooks-config.js');
-const metrics = require('./lib/metrics.js');
+const metrics = require('../engine/lib/metrics.js');
 const { readStdin, emitEmpty, emitJson, preToolUseDecision } = require('./lib/hook-io.js');
 
 /**
@@ -24,7 +24,7 @@ function run(event) {
   if (!cfg.enabled || !cfg.platforms.includes(process.platform)) return {};
   const command = event.tool_input && event.tool_input.command;
   if (typeof command !== 'string' || !command) return {};
-  const compat = require('./lib/powershell-compat.js');
+  const compat = require('../engine/lib/powershell-compat.js');
   const edition = compat.toolEdition();
   const mctx = { sessionId: event.session_id, cwd: event.cwd };
   const fixed = edition === '5.1' && !cfg.advisory ? compat.fixChains51(command) : null;

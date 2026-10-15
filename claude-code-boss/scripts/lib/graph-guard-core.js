@@ -22,7 +22,7 @@
 const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
-const { writeJsonAtomic } = require('./atomic-write.js');
+const { writeJsonAtomic } = require('../../engine/lib/atomic-write.js');
 
 // ── Broadness heuristics (pure) ──────────────────────────────────────────────
 
@@ -200,7 +200,7 @@ function writeReadyCache(file, state, nodes = 0, nowMs = Date.now()) {
 }
 
 function stampPath(dataDir, sid) {
-  const safe = String(sid).replace(/[^a-zA-Z0-9_-]/g, '_').slice(0, 64) || 'default';
+  const safe = require('../../engine/lib/session-id.js').sanitizeSessionId(sid);
   return path.join(dataDir, '.runtime', `graph-guard-${safe}.json`);
 }
 
@@ -313,7 +313,7 @@ async function decideBroadSearch({ kind, raw, pattern, projectRoot, sid, dataDir
  */
 function makeGraphStateProbe({ cwd, timeoutMs }) {
   return async () => {
-    const brainCfg = require('./brain-config.js').load();
+    const brainCfg = require('../../engine/lib/brain-config.js').load();
     const mcp = (brainCfg.backend && brainCfg.backend.mcpMemory) || {};
     const daemon = require('./graph/daemon.js');
     const client = require('./graph/client.js');
@@ -362,7 +362,7 @@ function stampWarm(file, nowMs = Date.now()) {
 function makeGraphIngestDispatch({ cwd, timeoutMs }) {
   return async () => {
     try {
-      const brainCfg = require('./brain-config.js').load();
+      const brainCfg = require('../../engine/lib/brain-config.js').load();
       const mcp = (brainCfg.backend && brainCfg.backend.mcpMemory) || {};
       const daemon = require('./graph/daemon.js');
       const client = require('./graph/client.js');

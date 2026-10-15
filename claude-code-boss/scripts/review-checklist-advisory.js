@@ -22,7 +22,7 @@ const { onCooldown: cooldownActive, stamp } = require('./lib/cooldown-stamp.js')
 const onCooldown = (p) => cooldownActive(p, COOLDOWN_MS);
 
 function dataDir() {
-  return require('./lib/data-dir.js').dataDir();
+  return require('../engine/lib/data-dir.js').dataDir();
 }
 
 function stampPath(cwd) {

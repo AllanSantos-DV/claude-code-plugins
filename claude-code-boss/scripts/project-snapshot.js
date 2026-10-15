@@ -15,7 +15,7 @@
 'use strict';
 
 const fs = require('fs');
-const { writeFileAtomic } = require('./lib/atomic-write.js');
+const { writeFileAtomic } = require('../engine/lib/atomic-write.js');
 const path = require('path');
 const { spawn } = require('child_process');
 
@@ -39,7 +39,7 @@ function loadConfig() {
 }
 
 function dataDir() {
-  return require('./lib/data-dir.js').dataDir();
+  return require('../engine/lib/data-dir.js').dataDir();
 }
 
 function cachePath(cwd) {

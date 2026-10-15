@@ -20,8 +20,8 @@
 'use strict';
 
 const { runTextCli } = require('./lib/hook-io.js');
-const { tryResolveProjectId, memoryOptedOut } = require('./lib/project-id.js');
-const { getOnboarding, load: loadBrainConfig } = require('./lib/brain-config.js');
+const { tryResolveProjectId, memoryOptedOut } = require('../engine/lib/project-id.js');
+const { getOnboarding, load: loadBrainConfig } = require('../engine/lib/brain-config.js');
 
 /**
  * PURE-ish — does this folder lack a project id (strict ladder)? `resolve` is a test

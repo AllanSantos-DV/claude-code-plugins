@@ -12,7 +12,7 @@
  * CLI contract: writes one JSON line to stdout and exits 0.
  */
 const fs = require('fs');
-const { pidAlive } = require('./lib/process-lock.js');
+const { pidAlive } = require('../engine/lib/process-lock.js');
 const path = require('path');
 const http = require('http');
 const { spawn } = require('child_process');
@@ -21,7 +21,7 @@ const PLUGIN_ROOT = process.env.CLAUDE_PLUGIN_ROOT || path.resolve(__dirname, '.
 const DASHBOARD_SCRIPT = path.join(PLUGIN_ROOT, 'scripts', 'dashboard.js');
 
 function runtimeDir() {
-  const { dataDir, validEnvDir } = require('./lib/data-dir.js');
+  const { dataDir, validEnvDir } = require('../engine/lib/data-dir.js');
   return path.join(validEnvDir(process.env.CLAUDE_PLUGIN_DATA) || dataDir(), '.runtime');
 }
 

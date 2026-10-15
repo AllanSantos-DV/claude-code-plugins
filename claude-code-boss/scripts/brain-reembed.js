@@ -36,8 +36,8 @@ if (!Database) {
   console.error('No SQLite backend available — need Node >= 22.13 (built-in node:sqlite) or a compiled better-sqlite3. Nothing to re-embed.');
   process.exit(1);
 }
-const embedder = require(path.join(PLUGIN_ROOT, 'scripts', 'brain-embedder.js'));
-const { buildEmbedText } = require(path.join(PLUGIN_ROOT, 'scripts', 'lib', 'embed-text.js'));
+const embedder = require(path.join(PLUGIN_ROOT, 'engine', 'brain-embedder.js'));
+const { buildEmbedText } = require(path.join(PLUGIN_ROOT, 'engine', 'lib', 'embed-text.js'));
 
 function vectorToBlob(vec) {
   const buf = Buffer.alloc(vec.length * 4);

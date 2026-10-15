@@ -27,6 +27,11 @@ const TEST_TEMP = tempHelpers.createTestTemp({ borrowedRoot });
 
 const SCRIPTS = __dirname;
 const ROOT = path.resolve(SCRIPTS, '..');
+const ENGINE = path.join(ROOT, 'engine');
+// A source file by its scripts/-relative path, or the same path under engine/ once it moved there.
+const srcPath = (rel) => (fs.existsSync(path.join(SCRIPTS, rel)) ? path.join(SCRIPTS, rel) : path.join(ENGINE, rel));
+// require() specifier (regex source) of a shared lib module from scripts/, scripts/lib/ or engine/: ./x.js, ./lib/x.js or ../(..)/engine/lib/x.js.
+const LIB_REQ = (name) => `(?:\\./|\\./lib/|(?:\\.\\./)+engine/lib/)${name.replace(/\./g, '\\.')}`;
 
 // Network egress guard: a unit test must never leave the machine. Tests used to
 // reach api.anthropic.com with a fake key (router e2e), fall through to the real
@@ -256,7 +261,7 @@ test('curation-classifier: successBudgetFor rejects invalid declarations', () =>
 });
 
 // ─── text-utils ──────────────────────────────────────────────────────────────
-const { extractKeywords, STOP_WORDS } = require('./lib/text-utils.js');
+const { extractKeywords, STOP_WORDS } = require('../engine/lib/text-utils.js');
 
 test('text-utils: basic tokenization + lowercase', () => {
   const kw = extractKeywords('Brain RETRIEVE keyword');
@@ -301,7 +306,7 @@ test('text-utils: maxTokens cap', () => {
 });
 
 // ─── session-id ──────────────────────────────────────────────────────────────
-const { sanitizeSessionId } = require('./lib/session-id.js');
+const { sanitizeSessionId } = require('../engine/lib/session-id.js');
 
 test('session-id: null → default', () => {
   assertEq(sanitizeSessionId(null), 'default');
@@ -329,6 +334,22 @@ test('session-id: non-string coerced', () => {
 
 // ─── hooks-config ────────────────────────────────────────────────────────────
 const hooksConfig = require('./lib/hooks-config.js');
+
+// Runs `fn` with the `dev` profile (every Stop detector on) in the suite's temp HOME, then puts the user config back.
+function withDevProfile(fn) {
+  const p = hooksConfig.userConfigPath();
+  const bak = fs.existsSync(p) ? fs.readFileSync(p, 'utf8') : null;
+  fs.mkdirSync(path.dirname(p), { recursive: true });
+  fs.writeFileSync(p, JSON.stringify({ profile: 'dev' }));
+  hooksConfig._resetCache();
+  const done = () => { if (bak == null) fs.rmSync(p, { force: true }); else fs.writeFileSync(p, bak); hooksConfig._resetCache(); };
+  try {
+    const r = fn();
+    if (r && typeof r.then === 'function') return r.finally(done);
+    done();
+    return r;
+  } catch (err) { done(); throw err; }
+}
 
 test('hooks-config: getCurationStop defaults', () => {
   const cs = hooksConfig.getCurationStop();
@@ -641,14 +662,14 @@ test('brain-backend: keyword path applies minScore threshold', async () => {
   const savedData = process.env.CLAUDE_PLUGIN_DATA;
 
   // brain-store reads CLAUDE_PLUGIN_DATA at module load — reset cache + env.
-  delete require.cache[require.resolve('./brain-store.js')];
-  delete require.cache[require.resolve('./brain-index.js')];
-  delete require.cache[require.resolve('./brain-graph.js')];
-  delete require.cache[require.resolve('./brain-embedder.js')];
-  delete require.cache[require.resolve('./brain-backend.js')];
+  delete require.cache[require.resolve('../engine/brain-store.js')];
+  delete require.cache[require.resolve('../engine/brain-index.js')];
+  delete require.cache[require.resolve('../engine/brain-graph.js')];
+  delete require.cache[require.resolve('../engine/brain-embedder.js')];
+  delete require.cache[require.resolve('../engine/brain-backend.js')];
   process.env.CLAUDE_PLUGIN_DATA = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-bb-'));
 
-  const backend = require('./brain-backend.js');
+  const backend = require('../engine/brain-backend.js');
   try {
     // This scenario asserts keyword scores; loading/copying an ONNX model is unrelated.
     await backend.init({ mode: 'local', project: projectKey, skipEmbedder: true });
@@ -697,11 +718,11 @@ test('brain-backend: keyword path applies minScore threshold', async () => {
     // diretório isolado deste cenário fazia os testes seguintes resolverem escopo
     // pelo Temp em vez do fixture global com .memory/project.json.
     try { await backend.close(); } catch (err) { void err; }
-    delete require.cache[require.resolve('./brain-store.js')];
-    delete require.cache[require.resolve('./brain-index.js')];
-    delete require.cache[require.resolve('./brain-graph.js')];
-    delete require.cache[require.resolve('./brain-embedder.js')];
-    delete require.cache[require.resolve('./brain-backend.js')];
+    delete require.cache[require.resolve('../engine/brain-store.js')];
+    delete require.cache[require.resolve('../engine/brain-index.js')];
+    delete require.cache[require.resolve('../engine/brain-graph.js')];
+    delete require.cache[require.resolve('../engine/brain-embedder.js')];
+    delete require.cache[require.resolve('../engine/brain-backend.js')];
     if (savedData === undefined) delete process.env.CLAUDE_PLUGIN_DATA;
     else process.env.CLAUDE_PLUGIN_DATA = savedData;
   }
@@ -713,7 +734,7 @@ test('brain-backend: keyword path applies minScore threshold', async () => {
 function runBrainScenario(script) {
   const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-brain-'));
   const env = { ...process.env, CLAUDE_PLUGIN_DATA: tmp, CLAUDE_PLUGIN_ROOT: ROOT };
-  const body = `const backend=require(${JSON.stringify(path.join(SCRIPTS, 'brain-backend.js'))});`
+  const body = `const backend=require(${JSON.stringify(path.join(ENGINE, 'brain-backend.js'))});`
     + `const assert=(c,m)=>{if(!c){console.error('FAIL: '+m);process.exit(1)}};`
     + `(async()=>{try{${script};process.exit(0)}catch(e){console.error(e&&e.stack||e);process.exit(1)}})();`;
   try {
@@ -858,7 +879,7 @@ test('brain-server/index.js: DATA_DIR follows the pointer verdict, not just publ
   const prevHome = process.env[homeVar];
   process.env[homeVar] = home;
   try {
-    const dd = require('./lib/data-dir.js');
+    const dd = require('../engine/lib/data-dir.js');
     dd.writeActivePointer(live); // pointer already names the heavier live folder
     assertEq(dd.readActivePointer(), live);
 
@@ -946,7 +967,7 @@ function startFakeDaemon(opts = {}) {
 }
 
 test('mcp-client http: handshake captures session + stamps projectId + echoes session id', async () => {
-  const McpClient = require('./mcp-client.js');
+  const McpClient = require('../engine/mcp-client.js');
   const daemon = await startFakeDaemon();
   try {
     const c = new McpClient({ transport: 'http', serverUrl: daemon.url, projectId: 'P1', timeout: 4000 });
@@ -968,7 +989,7 @@ test('mcp-client http: handshake captures session + stamps projectId + echoes se
 });
 
 test('mcp-client http: SESSION_EXPIRED (400 -32600) triggers reconnect + single retry', async () => {
-  const McpClient = require('./mcp-client.js');
+  const McpClient = require('../engine/mcp-client.js');
   const daemon = await startFakeDaemon({ expireFirstCall: true, reconnectInit: true });
   try {
     const c = new McpClient({ transport: 'http', serverUrl: daemon.url, projectId: 'P1', timeout: 4000 });
@@ -990,7 +1011,7 @@ test('mcp-client http: SESSION_EXPIRED (400 -32600) triggers reconnect + single 
 });
 
 test('mcp-client health: HTTP 200 continua vivo mesmo com body não-JSON', async () => {
-  const McpClient = require('./mcp-client.js');
+  const McpClient = require('../engine/mcp-client.js');
   const server = http.createServer((req, res) => {
     res.writeHead(200, { 'content-type': 'text/plain' });
     res.end('alive');
@@ -1008,7 +1029,7 @@ test('mcp-client health: HTTP 200 continua vivo mesmo com body não-JSON', async
 });
 
 test('mcp-client: hasToolAvailable() reflects tools/list (fail-loud guard for compose_recall)', () => {
-  const McpClient = require('./mcp-client.js');
+  const McpClient = require('../engine/mcp-client.js');
   const c = new McpClient({ transport: 'http', serverUrl: 'http://127.0.0.1:1', projectId: 'P' });
   // Before handshake it must be SAFE (no throw) and report nothing available.
   assertEq(typeof c.hasToolAvailable, 'function');
@@ -1023,7 +1044,7 @@ test('mcp-client: hasToolAvailable() reflects tools/list (fail-loud guard for co
 });
 
 test('mcp-client: callToolOnce nunca reconecta/reexecuta uma operação mutável', async () => {
-  const McpClient = require('./mcp-client.js');
+  const McpClient = require('../engine/mcp-client.js');
   const c = new McpClient({ transport: 'http', serverUrl: 'http://127.0.0.1:1' });
   c._initialized = true;
   let sends = 0, reconnects = 0;
@@ -1042,7 +1063,7 @@ test('mcp-client: callToolOnce nunca reconecta/reexecuta uma operação mutável
 });
 
 test('mcp-client: per-call timeoutMs reaches the transport; our own timeout is never re-sent (the server may still be running it); a refused connection retries once', async () => {
-  const McpClient = require('./mcp-client.js');
+  const McpClient = require('../engine/mcp-client.js');
   const c = new McpClient({ transport: 'http', serverUrl: 'http://127.0.0.1:1' });
   c._initialized = true;
   let sends = 0, reconnects = 0, seenOpts = null;
@@ -1501,7 +1522,7 @@ test('mcp-auto-update: health 503 ou versão com prefixo v não geram falso resu
 });
 
 test('process-lock: ownership impede concorrência e release alheio', () => {
-  const lock = require('./lib/process-lock.js');
+  const lock = require('../engine/lib/process-lock.js');
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-update-lock-'));
   const file = path.join(dir, 'update.lock');
   try {
@@ -1518,7 +1539,7 @@ test('process-lock: ownership impede concorrência e release alheio', () => {
 });
 
 test('process-lock: reclaim sidecar serializa a recuperação de lock stale', () => {
-  const lock = require('./lib/process-lock.js');
+  const lock = require('../engine/lib/process-lock.js');
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-update-reclaim-'));
   const file = path.join(dir, 'update.lock');
   try {
@@ -1553,8 +1574,8 @@ test('mcp-auto-update: erro de I/O no lock é advisory, não contenção silenci
 
 test('mcp-auto-update E2E: registry troca porta/versão e SessionStarts concorrentes chamam update uma vez', async () => {
   const updater = require('./lib/mcp-memory-auto-update.js');
-  const locks = require('./lib/process-lock.js');
-  const McpClient = require('./mcp-client.js');
+  const locks = require('../engine/lib/process-lock.js');
+  const McpClient = require('../engine/mcp-client.js');
   const runDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-update-run-'));
   const statePath = path.join(runDir, 'state.json');
   const lockPath = path.join(runDir, 'update.lock');
@@ -1644,7 +1665,7 @@ test('brain-daemon-ensure: falha de auto-update vira advisory sem desfazer daemo
 });
 
 test('brain-backend: needsReinit() re-scopes on explicit project change (cross-project leak guard)', () => {
-  const { needsReinit } = require('./brain-backend.js').__testHooks;
+  const { needsReinit } = require('../engine/brain-backend.js').__testHooks;
   assertEq(typeof needsReinit, 'function');
   // Not initialized → never reinit.
   assertEq(needsReinit({ initialized: false, mode: 'mcp-memory', project: 'A' }, 'B'), false);
@@ -1660,8 +1681,8 @@ test('brain-backend: needsReinit() re-scopes on explicit project change (cross-p
 
 test('brain-backend mcp: init() re-handshakes on project change (BLOCKING-B leak fix)', async () => {
   const daemon = await startFakeDaemon();
-  delete require.cache[require.resolve('./brain-backend.js')];
-  const backend = require('./brain-backend.js');
+  delete require.cache[require.resolve('../engine/brain-backend.js')];
+  const backend = require('../engine/brain-backend.js');
   backend.__testHooks._injectConfig({ backend: { type: 'mcp-memory', mcpMemory: { transport: 'http', serverUrl: daemon.url } } });
   try {
     await backend.init({ project: 'projA' });
@@ -1676,15 +1697,15 @@ test('brain-backend mcp: init() re-handshakes on project change (BLOCKING-B leak
     assertEq(daemon.seen.initProjectId, null);
     await backend.close();
   } finally {
-    delete require.cache[require.resolve('./brain-backend.js')];
+    delete require.cache[require.resolve('../engine/brain-backend.js')];
     await daemon.close();
   }
 });
 
 test('brain-backend saveMcp: entry.projectId → metadata.project_id (scope=user lands in __user__); absent → omitted (handshake project)', async () => {
   const daemon = await startFakeDaemon({ toolResult: () => ({ content: [{ type: 'text', text: 'Document added with ID: x1' }] }) });
-  delete require.cache[require.resolve('./brain-backend.js')];
-  const backend = require('./brain-backend.js');
+  delete require.cache[require.resolve('../engine/brain-backend.js')];
+  const backend = require('../engine/brain-backend.js');
   backend.__testHooks._injectConfig({ backend: { type: 'mcp-memory', mcpMemory: { transport: 'http', serverUrl: daemon.url } } });
   try {
     await backend.init({ project: 'projA' });
@@ -1694,15 +1715,15 @@ test('brain-backend saveMcp: entry.projectId → metadata.project_id (scope=user
     assertEq(daemon.seen.callArgs.arguments.metadata.project_id, undefined, 'no projectId → server stamps the handshake project');
     await backend.close();
   } finally {
-    delete require.cache[require.resolve('./brain-backend.js')];
+    delete require.cache[require.resolve('../engine/brain-backend.js')];
     await daemon.close();
   }
 });
 
 test('brain-backend searchMcp (F2): opts.projectIds → metadata.project_id LIST; coexists with type; omitted otherwise', async () => {
   const daemon = await startFakeDaemon({ toolResult: () => ({ content: [{ type: 'text', text: JSON.stringify({ results: [] }) }] }) });
-  delete require.cache[require.resolve('./brain-backend.js')];
-  const backend = require('./brain-backend.js');
+  delete require.cache[require.resolve('../engine/brain-backend.js')];
+  const backend = require('../engine/brain-backend.js');
   backend.__testHooks._injectConfig({ backend: { type: 'mcp-memory', mcpMemory: { transport: 'http', serverUrl: daemon.url } } });
   try {
     await backend.init({ project: 'projA' });
@@ -1728,7 +1749,7 @@ test('brain-backend searchMcp (F2): opts.projectIds → metadata.project_id LIST
     assertEq(p.arguments.metadata.type, 'lesson', 'type still carried when projectIds empty');
     await backend.close();
   } finally {
-    delete require.cache[require.resolve('./brain-backend.js')];
+    delete require.cache[require.resolve('../engine/brain-backend.js')];
     await daemon.close();
   }
 });
@@ -1825,8 +1846,8 @@ test('brain-migrate: onProgress por entrada migrada com contagem cumulativa', as
 
 test('brain-migrate defaultWriteEntry: handshake escopa no projeto + add_document documentId=id (idempotente)', async () => {
   const daemon = await startFakeDaemon({ toolResult: (p) => ({ content: [{ type: 'text', text: 'Document added with ID: ' + ((p.arguments && p.arguments.documentId) || 'x') }] }) });
-  delete require.cache[require.resolve('./brain-backend.js')];
-  const backend = require('./brain-backend.js');
+  delete require.cache[require.resolve('../engine/brain-backend.js')];
+  const backend = require('../engine/brain-backend.js');
   backend.__testHooks._injectConfig({ backend: { type: 'mcp-memory', mcpMemory: { transport: 'http', serverUrl: daemon.url } } });
   delete require.cache[require.resolve('./brain-migrate.js')];
   const mig = require('./brain-migrate.js');
@@ -1837,15 +1858,15 @@ test('brain-migrate defaultWriteEntry: handshake escopa no projeto + add_documen
     assertEq(daemon.seen.callArgs.arguments.documentId, 'e1', 'documentId=id → UPSERT idempotente (re-run seguro, sem duplicar)');
     await backend.close();
   } finally {
-    delete require.cache[require.resolve('./brain-backend.js')];
+    delete require.cache[require.resolve('../engine/brain-backend.js')];
     delete require.cache[require.resolve('./brain-migrate.js')];
     await daemon.close();
   }
 });
 
 test('brain-migrate defaultWriteEntry: backend NÃO mcp-memory → ERRO ALTO (nunca grava local escondido)', async () => {
-  delete require.cache[require.resolve('./brain-backend.js')];
-  const backend = require('./brain-backend.js');
+  delete require.cache[require.resolve('../engine/brain-backend.js')];
+  const backend = require('../engine/brain-backend.js');
   backend.__testHooks._injectConfig({ backend: { type: 'local' } });
   delete require.cache[require.resolve('./brain-migrate.js')];
   const mig = require('./brain-migrate.js');
@@ -1856,7 +1877,7 @@ test('brain-migrate defaultWriteEntry: backend NÃO mcp-memory → ERRO ALTO (nu
     threw = true;
     assert(/mcp-memory/.test(e.message), 'o erro nomeia o requisito mcp-memory (alvo do daemon)');
   }
-  delete require.cache[require.resolve('./brain-backend.js')];
+  delete require.cache[require.resolve('../engine/brain-backend.js')];
   delete require.cache[require.resolve('./brain-migrate.js')];
   assertEq(threw, true, 'migração NUNCA grava no store local em silêncio — falha alto (fail-loud)');
 });
@@ -1996,7 +2017,7 @@ test('migration-job: migrate que joga → status error com a causa (nunca engole
 });
 
 test('brain-backend compose: parseComposeEnvelope splits facts(text)/capabilities(pointers), excludes invalidated, derives title (DH4)', () => {
-  const { parseComposeEnvelope } = require('./brain-backend.js').__testHooks;
+  const { parseComposeEnvelope } = require('../engine/brain-backend.js').__testHooks;
   const envelope = { text: JSON.stringify({
     query: 'q',
     blocks: [
@@ -2028,8 +2049,8 @@ test('brain-backend compose: parseComposeEnvelope splits facts(text)/capabilitie
 
 test('brain-backend mcp: ingestConversation ships raw transcript to ingest_conversation (consumerId/session/raw)', async () => {
   const daemon = await startFakeDaemon();
-  delete require.cache[require.resolve('./brain-backend.js')];
-  const backend = require('./brain-backend.js');
+  delete require.cache[require.resolve('../engine/brain-backend.js')];
+  const backend = require('../engine/brain-backend.js');
   backend.__testHooks._injectConfig({ backend: { type: 'mcp-memory', mcpMemory: { transport: 'http', serverUrl: daemon.url } } });
   try {
     await backend.init({ project: 'projX' });
@@ -2040,7 +2061,7 @@ test('brain-backend mcp: ingestConversation ships raw transcript to ingest_conve
     assertEq(daemon.seen.callArgs.arguments.raw, 'raw-jsonl-here');
     await backend.close();
   } finally {
-    delete require.cache[require.resolve('./brain-backend.js')];
+    delete require.cache[require.resolve('../engine/brain-backend.js')];
     await daemon.close();
   }
 });
@@ -2049,8 +2070,8 @@ test('brain-backend mcp: saveMcp REJECTS on a tool-level isError (no fabricated 
   const daemon = await startFakeDaemon({ toolResult: (p) => p.name === 'add_document'
     ? { isError: true, content: [{ type: 'text', text: 'add_document failed: disk full' }] }
     : { content: [{ type: 'text', text: 'OK:' + (p && p.name) }] } });
-  delete require.cache[require.resolve('./brain-backend.js')];
-  const backend = require('./brain-backend.js');
+  delete require.cache[require.resolve('../engine/brain-backend.js')];
+  const backend = require('../engine/brain-backend.js');
   backend.__testHooks._injectConfig({ backend: { type: 'mcp-memory', mcpMemory: { transport: 'http', serverUrl: daemon.url } } });
   try {
     await backend.init({ project: 'projErr' });
@@ -2067,14 +2088,14 @@ test('brain-backend mcp: saveMcp REJECTS on a tool-level isError (no fabricated 
     assert(threw, 'a failed remote add_document MUST reject (not fabricate a uuid and resolve)');
     await backend.close();
   } finally {
-    delete require.cache[require.resolve('./brain-backend.js')];
+    delete require.cache[require.resolve('../engine/brain-backend.js')];
     await daemon.close();
   }
 });
 test('brain-backend mcp: warmPool fires home-federated search_memory (includeHome:true) for graduation signal', async () => {
   const daemon = await startFakeDaemon();
-  delete require.cache[require.resolve('./brain-backend.js')];
-  const backend = require('./brain-backend.js');
+  delete require.cache[require.resolve('../engine/brain-backend.js')];
+  const backend = require('../engine/brain-backend.js');
   backend.__testHooks._injectConfig({ backend: { type: 'mcp-memory', mcpMemory: { transport: 'http', serverUrl: daemon.url } } });
   try {
     await backend.init({ project: 'projW' });
@@ -2085,24 +2106,24 @@ test('brain-backend mcp: warmPool fires home-federated search_memory (includeHom
     assertEq(daemon.seen.callArgs.arguments.topK, 7);
     await backend.close();
   } finally {
-    delete require.cache[require.resolve('./brain-backend.js')];
+    delete require.cache[require.resolve('../engine/brain-backend.js')];
     await daemon.close();
   }
 });
 
 test('brain-backend: warmPool off the mcp-memory backend → no-op (compose/pool are server capabilities)', async () => {
-  delete require.cache[require.resolve('./brain-backend.js')];
-  const backend = require('./brain-backend.js');
+  delete require.cache[require.resolve('../engine/brain-backend.js')];
+  const backend = require('../engine/brain-backend.js');
   try {
     // No init → _mode is not 'mcp-memory' → warmPool must short-circuit without any MCP/store call.
     assertEq(await backend.warmPool('x'), []);
   } finally {
-    delete require.cache[require.resolve('./brain-backend.js')];
+    delete require.cache[require.resolve('../engine/brain-backend.js')];
   }
 });
 
 test('brain-backend __testHooks: MCP-tool mappings match the real daemon contract', () => {
-  const h = require('./brain-backend.js').__testHooks;
+  const h = require('../engine/brain-backend.js').__testHooks;
   // add_document returns plain text "Document added with ID: <uuid>"
   assertEq(h.parseAddedId({ text: 'Document added with ID: de2d91b3-08f4-4129-95e7-27292c75cf8e' }), 'de2d91b3-08f4-4129-95e7-27292c75cf8e');
   assertEq(h.parseAddedId({ text: 'no id here' }), '');
@@ -2684,7 +2705,7 @@ test('O2: transcript-tail.readRange — the one range reader (range, short file,
 // ─── retrieval-feedback (Plan #1) ────────────────────────────────────────────
 const rfeedback = require('./retrieval-feedback.js');
 const rjournal = require('./lib/retrieval-journal.js');
-const brainStore = require('./brain-store.js');
+const brainStore = require('../engine/brain-store.js');
 
 test('retrieval-feedback: titleTokens dedupes + drops short/stopwords', () => {
   const t = rfeedback.titleTokens('The The local install via install-local takes effect');
@@ -2785,10 +2806,10 @@ test('brain-store: citationMultiplier disabled returns 1', () => {
 test('brain-store: recordCitation persists + bumps when SQLite available', async () => {
   // Isolate from other brain-* tests: fresh module + fresh data dir (same
   // pattern as the brain-backend test below, to avoid races on _db / _project).
-  delete require.cache[require.resolve('./brain-store.js')];
+  delete require.cache[require.resolve('../engine/brain-store.js')];
   const prevDataDir = process.env.CLAUDE_PLUGIN_DATA;
   process.env.CLAUDE_PLUGIN_DATA = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-cite-'));
-  const isolatedStore = require('./brain-store.js');
+  const isolatedStore = require('../engine/brain-store.js');
   try {
     await isolatedStore.init({ project: 'ccb-units-citation' });
     if (isolatedStore.getStorageType() !== 'sqlite') {
@@ -2809,7 +2830,7 @@ test('brain-store: recordCitation persists + bumps when SQLite available', async
     assertEq(isolatedStore.recordCitation('does-not-exist'), 0);
   } finally {
     try { await isolatedStore.close(); } catch { /* ignore */ }
-    delete require.cache[require.resolve('./brain-store.js')];
+    delete require.cache[require.resolve('../engine/brain-store.js')];
     process.env.CLAUDE_PLUGIN_DATA = prevDataDir;
   }
 });
@@ -2912,9 +2933,9 @@ test('session-root: the calling session\'s CCB_PROJECT_ID reaches what the daemo
 });
 
 test('O9: metrics scope without ctx.cwd follows the CALLING session root inside a daemon hook call, not process.cwd()', () => {
-  const { _resolveProject } = require('./lib/metrics.js');
+  const { _resolveProject } = require('../engine/lib/metrics.js');
   const { runWithHookEnv } = require('./lib/hook-context.js');
-  const { metricsKeyFor } = require('./lib/metrics-project.js');
+  const { metricsKeyFor } = require('../engine/lib/metrics-project.js');
   const T = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-o9-')); // no git remote: the key is the folder name
   const a = path.join(T, 'proj-a'); const b = path.join(T, 'session-b');
   fs.mkdirSync(path.join(b, 'sub'), { recursive: true }); fs.mkdirSync(a);
@@ -2929,16 +2950,16 @@ test('O9: metrics scope without ctx.cwd follows the CALLING session root inside 
 });
 
 test('metrics key = the project ID (two same-named repos no longer share a metrics.db); the old basename db is carried over once', () => {
-  const mp = require('./lib/metrics-project.js');
+  const mp = require('../engine/lib/metrics-project.js');
   const T = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-mkey-'));
   const mk = (dir, remote) => { fs.mkdirSync(dir, { recursive: true }); require('child_process').execFileSync('git', ['init', '-q'], { cwd: dir, windowsHide: true }); require('child_process').execFileSync('git', ['remote', 'add', 'origin', remote], { cwd: dir, windowsHide: true }); };
   const one = path.join(T, 'a', 'app'); const two = path.join(T, 'b', 'app'); // same folder name
   mk(one, 'https://github.com/org1/app.git'); mk(two, 'https://github.com/org2/app.git');
-  const base = path.join(require('./lib/data-dir.js').dataDir(), 'metrics');
+  const base = path.join(require('../engine/lib/data-dir.js').dataDir(), 'metrics');
   assert(!path.relative(os.tmpdir(), base).startsWith('..'), `the suite's data dir must be a temp dir before this test deletes under it: ${base}`);
   try {
     fs.mkdirSync(path.join(base, 'app'), { recursive: true });
-    const Database = require('./lib/sqlite-compat').loadSqlite();
+    const Database = require('../engine/lib/sqlite-compat').loadSqlite();
     const legacyDb = new Database(path.join(base, 'app', 'metrics.db'));
     legacyDb.exec("PRAGMA journal_mode=WAL; CREATE TABLE t(v TEXT); INSERT INTO t VALUES ('legacy-row')"); // the newest row sits in the WAL
     mp._resetAdopted();
@@ -2949,13 +2970,13 @@ test('metrics key = the project ID (two same-named repos no longer share a metri
     try { assertEq(adopted.prepare('SELECT v FROM t').all().map((r) => r.v), ['legacy-row'], 'history carried over consistently (VACUUM INTO, WAL included, while the legacy db was open)'); } finally { adopted.close(); }
     assertEq(fs.readdirSync(path.join(base, k1)).filter((f) => /\.adopt-/.test(f)), [], 'no snapshot leftovers');
     assert(fs.existsSync(path.join(base, 'app', 'metrics.db')), 'the old db stays (the other same-named repo may still read it)');
-    assertEq(mp.metricsKeyForId(require('./lib/project-id.js').tryResolveProjectId({ cwd: one })), k1, 'the KB id of the folder maps to the same key (lesson.captured lands where the session summary reads)');
+    assertEq(mp.metricsKeyForId(require('../engine/lib/project-id.js').tryResolveProjectId({ cwd: one })), k1, 'the KB id of the folder maps to the same key (lesson.captured lands where the session summary reads)');
     assertEq(mp.metricsKeyForId('__user__'), '__user__');
   } finally { fs.rmSync(T, { recursive: true, force: true }); for (const d of fs.existsSync(base) ? fs.readdirSync(base) : []) if (d === 'app' || /__app$/.test(d)) fs.rmSync(path.join(base, d), { recursive: true, force: true }); }
 });
 
 test('O1: retrieval-feedback records the citation in the KB scope the entry was RETRIEVED from (not basename(cwd))', async () => {
-  const store = require('./brain-store.js');
+  const store = require('../engine/brain-store.js');
   const journal = require('./lib/retrieval-journal.js');
   const scope = `ccb-o1/kb-${Date.now()}`;
   const id = `o1-${Date.now()}`;
@@ -3062,10 +3083,10 @@ test('active-research-state: recordFire bumps count + cooldown applies', () => {
 // ─── metrics (Plan #5 — lib/metrics-store.js, independent of brain-store/KB backend) ──
 
 test('metrics-store: recordMetric inserts + getMetricsSummary aggregates', () => {
-  delete require.cache[require.resolve('./lib/metrics-store.js')];
+  delete require.cache[require.resolve('../engine/lib/metrics-store.js')];
   const prevDataDir = process.env.CLAUDE_PLUGIN_DATA;
   process.env.CLAUDE_PLUGIN_DATA = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-metrics-'));
-  const isolated = require('./lib/metrics-store.js');
+  const isolated = require('../engine/lib/metrics-store.js');
   try {
     if (!isolated.init({ project: 'ccb-units-metrics' })) {
       assertEq(isolated.recordMetric('retrieve.fired', { x: 1 }, 'sid'), 0);
@@ -3082,17 +3103,85 @@ test('metrics-store: recordMetric inserts + getMetricsSummary aggregates', () =>
     assert(Array.isArray(summary.daily) && summary.daily.length >= 1, 'daily rows present');
   } finally {
     isolated.close();
-    delete require.cache[require.resolve('./lib/metrics-store.js')];
+    delete require.cache[require.resolve('../engine/lib/metrics-store.js')];
     process.env.CLAUDE_PLUGIN_DATA = prevDataDir;
+  }
+});
+
+test('metrics-store: hooks de projetos intercalados reusam a conexao de cada projeto (LRU de 8), cada linha cai no banco certo e close() solta todos', () => {
+  delete require.cache[require.resolve('../engine/lib/metrics-store.js')];
+  const prevDataDir = process.env.CLAUDE_PLUGIN_DATA;
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-ms-lru-'));
+  process.env.CLAUDE_PLUGIN_DATA = dir;
+  const store = require('../engine/lib/metrics-store.js');
+  try {
+    if (!store.init({ project: 'lru-a' })) return; // no SQLite backend on this machine
+    const dbA = store._getDbForTests();
+    store.recordMetric('lesson.captured', { n: 1 }, 's');
+    store.init({ project: 'lru-b' }); store.recordMetric('lesson.captured', { n: 2 }, 's');
+    store.init({ project: 'lru-a' });
+    assert(store._getDbForTests() === dbA, 'back to a: same connection, not a reopen');
+    store.recordMetric('lesson.captured', { n: 3 }, 's');
+    assertEq(store.getEventLog({ eventName: 'lesson.captured' }).map((r) => r.payload.n).sort(), [1, 3]);
+    store.init({ project: 'lru-b' });
+    assertEq(store.getEventLog({ eventName: 'lesson.captured' }).map((r) => r.payload.n), [2]);
+    for (let i = 0; i < 10; i++) store.init({ project: 'lru-x' + i });
+    assertEq(store._openCountForTests(), 8, 'at most 8 open connections');
+    store.close();
+    assertEq(store._openCountForTests(), 0);
+    fs.rmSync(path.join(dir, 'metrics'), { recursive: true }); // throws EBUSY on Windows if any db stayed open
+  } finally {
+    store.close();
+    if (prevDataDir === undefined) delete process.env.CLAUDE_PLUGIN_DATA; else process.env.CLAUDE_PLUGIN_DATA = prevDataDir;
+    delete require.cache[require.resolve('../engine/lib/metrics-store.js')];
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('P7 metrics-store.compactNoise: ruido bruto antigo vira 1 linha diaria por (dia, evento) e o total do painel de curadoria NAO muda', () => {
+  delete require.cache[require.resolve('../engine/lib/metrics-store.js')];
+  const prevDataDir = process.env.CLAUDE_PLUGIN_DATA;
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-p7-'));
+  process.env.CLAUDE_PLUGIN_DATA = dir;
+  const store = require('../engine/lib/metrics-store.js');
+  const { summarizeCuration } = require('./lib/curation-metrics.js');
+  try {
+    if (!store.init({ project: 'p7' })) return; // no SQLite backend
+    const db = store._getDbForTests();
+    const ins = db.prepare('INSERT INTO metrics_event (ts, event_name, payload, session_id, project) VALUES (?, ?, ?, ?, ?)');
+    const now = Date.UTC(2026, 9, 15, 12);
+    const day = 86400_000;
+    const old1 = Date.UTC(2026, 7, 1, 10); const old2 = Date.UTC(2026, 7, 1, 18); const old3 = Date.UTC(2026, 7, 2, 9);
+    ins.run(old1, 'curation.skipped', JSON.stringify({ class: 'exploration' }), 's', 'p7');
+    ins.run(old2, 'curation.skipped', JSON.stringify({ class: 'inline' }), 's', 'p7');
+    ins.run(old3, 'curation.skipped', JSON.stringify({ class: 'exploration' }), 's', 'p7');
+    ins.run(old1, 'shell-escape.rewritten', JSON.stringify({ kinds: ['heredoc'] }), 's', 'p7');
+    ins.run(old1, 'curation.pending', JSON.stringify({ sig: 'npm test', chars: 900 }), 's', 'p7'); // feeds the savings baseline: never compacted
+    ins.run(now - 2 * day, 'curation.skipped', JSON.stringify({ class: 'inline' }), 's', 'p7');   // recent: kept raw
+    const rowsOf = () => db.prepare('SELECT ts, event_name AS eventName, payload FROM metrics_event').all().map((r) => ({ ...r, payload: JSON.parse(r.payload) }));
+    const before = summarizeCuration(rowsOf());
+    const r = store.compactNoise({ now });
+    assertEq(r, { summarized: 3, deleted: 4 }, '2 days of curation.skipped + 1 day of shell-escape, 4 raw rows gone');
+    const after = summarizeCuration(rowsOf());
+    assertEq(after.skipped, before.skipped, 'panel totals unchanged');
+    assertEq(after.pending, before.pending, 'pending (savings baseline) untouched');
+    const names = rowsOf().map((x) => x.eventName).sort();
+    assertEq(names, ['curation.pending', 'curation.skipped', 'metrics.daily', 'metrics.daily', 'metrics.daily']);
+    assertEq(store.compactNoise({ now }), { summarized: 0, deleted: 0 }, 'idempotent: nothing left to compact');
+  } finally {
+    store.close();
+    if (prevDataDir === undefined) delete process.env.CLAUDE_PLUGIN_DATA; else process.env.CLAUDE_PLUGIN_DATA = prevDataDir;
+    delete require.cache[require.resolve('../engine/lib/metrics-store.js')];
+    fs.rmSync(dir, { recursive: true, force: true });
   }
 });
 
 test('metrics-memo: um resultado so e reaproveitado enquanto os arquivos do projeto nao mudam (db, -wal, adopted.json); escrita invalida so o projeto escrito', () => {
   const { createMemo, dbSignature, bucketTs } = require('./lib/metrics-memo.js');
-  delete require.cache[require.resolve('./lib/metrics-store.js')];
+  delete require.cache[require.resolve('../engine/lib/metrics-store.js')];
   const prevDataDir = process.env.CLAUDE_PLUGIN_DATA;
   process.env.CLAUDE_PLUGIN_DATA = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-memo-'));
-  const store = require('./lib/metrics-store.js');
+  const store = require('../engine/lib/metrics-store.js');
   try {
     if (!store.init({ project: 'memo-a' })) return; // no SQLite backend on this machine: nothing to read
     store.recordMetric('lesson.captured', { n: 1 }, 's'); store.close();
@@ -3119,7 +3208,7 @@ test('metrics-memo: um resultado so e reaproveitado enquanto os arquivos do proj
     assertEq(bucketTs(3600_000 * 5 + 123, 3600_000), 3600_000 * 5);
   } finally {
     store.close();
-    delete require.cache[require.resolve('./lib/metrics-store.js')];
+    delete require.cache[require.resolve('../engine/lib/metrics-store.js')];
     process.env.CLAUDE_PLUGIN_DATA = prevDataDir;
   }
 });
@@ -3129,7 +3218,7 @@ test('dashboard: os paineis da Home leem pelo memo — repetir a consulta nao re
   const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-memo-dash-'));
   const script = `
     const assert = require('assert');
-    const store = require(process.argv[1] + '/lib/metrics-store.js');
+    const store = require(process.argv[1] + '/../engine/lib/metrics-store.js');
     const dash = require(process.argv[1] + '/dashboard.js');
     const call = async (fn, q) => { let body = null; await fn({}, { writeHead() {}, end: (t) => { body = JSON.parse(t); } }, new URL('http://x/?' + q)); return body; };
     (async () => {
@@ -3163,11 +3252,114 @@ test('dashboard Home: volta a Home mostra o que ja esta renderizado (sem apagar 
   assert(/warmHomeMetrics\(\);/.test(src), 'aquecimento no start');
 });
 
+test('session-journal.sweepStaleJournals: apaga journals velhos de qualquer prefixo/sessao, poupa os recentes e o que nao e journal, respeita o orcamento de tempo', () => {
+  const { sweepStaleJournals } = require('./lib/session-journal.js');
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-sweep-'));
+  try {
+    const NOW = 1_800_000_000_000;
+    const mk = (name) => fs.writeFileSync(path.join(dir, name), '{}');
+    const old = NOW - 2 * 86400000; const fresh = NOW - 3600000;
+    mk(`turn-verify-s1--${old}-000001-abc.json`); mk(`failure-turn-s2--${old}-deadbeef.json`); mk(`retrieval-turn-s3--${old}-1a2b3c4d.json`);
+    mk(`turn-verify-s1--${fresh}-000002-abc.json`);
+    mk('capture-queue-proj--sid.json'); mk('hook-errors.jsonl'); mk(`notes--${old}-x.txt`);
+    assertEq(sweepStaleJournals({ dir, now: () => NOW }), { scanned: 4, removed: 3, failed: 0, truncated: false });
+    assertEq(fs.readdirSync(dir).sort(), [`notes--${old}-x.txt`, 'capture-queue-proj--sid.json', 'hook-errors.jsonl', `turn-verify-s1--${fresh}-000002-abc.json`].sort());
+    for (let i = 0; i < 5; i++) mk(`turn-verify-s9--${old}-00000${i}-aa.json`);
+    let t = 0;
+    const budget = sweepStaleJournals({ dir, now: () => NOW + (t += 400), budgetMs: 1000 });
+    assert(budget.truncated && budget.removed >= 1 && budget.removed < 5, `budget stops the sweep: ${JSON.stringify(budget)}`);
+    assertEq(sweepStaleJournals({ dir: path.join(dir, 'nope'), now: () => NOW }).removed, 0, 'pasta ausente: nada a fazer');
+  } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+});
+
+test('verify-journal: sob o perfil standard (verify-nudge desligado) nada e gravado — ninguem drenaria — e sob dev grava', () => {
+  const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-vj-'));
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-vj-home-'));
+  const script = `
+    const fs = require('fs'); const path = require('path');
+    const root = process.argv[1];
+    const hc = require(root + '/lib/hooks-config.js');
+    const vj = require(root + '/lib/verify-journal.js');
+    const count = () => (fs.existsSync(vj.RUNTIME_DIR) ? fs.readdirSync(vj.RUNTIME_DIR).filter((f) => f.startsWith('turn-verify-')).length : 0);
+    const cfg = path.join(process.env.HOME, '.claude', 'claude-code-boss', 'hooks', 'user-config.json');
+    fs.mkdirSync(path.dirname(cfg), { recursive: true });
+    const out = {};
+    for (const profile of ['standard', 'dev']) {
+      fs.writeFileSync(cfg, JSON.stringify({ profile })); hc._resetCache();
+      const before = count(); vj.appendEdit('sid', '/x'); vj.appendCommand('sid', { sig: 'npm test' });
+      out[profile] = count() - before;
+    }
+    console.log(JSON.stringify(out));
+  `;
+  try {
+    const r = require('child_process').spawnSync(process.execPath, ['-e', script, __dirname], { env: { ...process.env, CLAUDE_PLUGIN_DATA: dataDir, HOME: home, USERPROFILE: home }, encoding: 'utf8', windowsHide: true, timeout: 60000 });
+    assert(r.status === 0, r.stderr);
+    assertEq(JSON.parse(r.stdout.trim().split('\n').pop()), { standard: 0, dev: 2 });
+  } finally { fs.rmSync(dataDir, { recursive: true, force: true }); fs.rmSync(home, { recursive: true, force: true }); }
+});
+
+test('runtime-sweep: o detector do SessionStart esta registrado e varre journals velhos e o estado de sessao com mais de 7 dias', async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-rs-'));
+  try {
+    const rs = require('./runtime-sweep.js');
+    const old = new Date(Date.now() - 8 * 86400000);
+    fs.writeFileSync(path.join(dir, 'session-start-a.json'), '{}'); fs.utimesSync(path.join(dir, 'session-start-a.json'), old, old);
+    fs.writeFileSync(path.join(dir, 'session-start-b.json'), '{}');
+    fs.writeFileSync(path.join(dir, 'other.json'), '{}'); fs.utimesSync(path.join(dir, 'other.json'), old, old);
+    assertEq(rs.sweepSessionState(dir), 1);
+    assertEq(fs.readdirSync(dir).sort(), ['other.json', 'session-start-b.json']);
+  } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+  assert(/name: 'runtime-sweep', mod: runtimeSweep/.test(fs.readFileSync(path.join(__dirname, 'session-start-dispatcher.js'), 'utf8')), 'registrado no SessionStart');
+});
+
+test('retrieval-feedback: so o que entrou no prompt conta (injectedIds), recall todo filtrado vira retrieve.empty, e as metricas usam a chave da sessao (nao basename)', async () => {
+  const rf = require('./retrieval-feedback.js');
+  const ent = { returnedIds: ['a', 'b'], returnedTitles: ['widget parser off by one', 'database migration ordering'], injectedIds: ['b'], injectedChars: 120, project: 'p' };
+  assertEq(rf.injectedPairs(ent), [['b', 'database migration ordering']]);
+  assertEq(rf.injectedPairs({ returnedIds: ['a'], returnedTitles: ['t'] }), [['a', 't']], 'entrada antiga sem injectedIds: tudo que voltou');
+  assertEq(rf.findCitations([ent], 'the widget parser off by one is fixed').length, 0, 'citar o que foi filtrado nao conta');
+  assertEq(rf.findCitations([ent], 'database migration ordering matters').map((c) => c.id), ['b']);
+  const vs = require('./lib/value-summary.js');
+  assertEq(vs.injectedCount([{ payload: { count: 3, chars: 90 } }, { payload: { count: 5, chars: 0 } }, { payload: { count: 2 } }, null]), 5, 'chars 0 = nada entrou; sem chars (antigo) conta');
+  const src = fs.readFileSync(path.join(__dirname, 'retrieval-feedback.js'), 'utf8');
+  assert(!/path\.basename\(ev\.cwd\)/.test(src) && /const mctx = \{ sessionId: sid, cwd: ev\.cwd \}/.test(src) && /retrieve\.empty/.test(src), 'sem basename; chave resolvida pela sessao; recall vazio medido');
+  assert(!/retrieve\.fired/.test(fs.readFileSync(path.join(__dirname, 'dashboard.js'), 'utf8')) && !/retrieve\.fired/.test(fs.readFileSync(path.join(__dirname, 'tuning-advisory.js'), 'utf8')), 'nenhum leitor de evento que ninguem grava');
+});
+
+test('P12 retrieval-feedback: no mcp-memory a citacao vai ao SERVIDOR (signal_memory_feedback helpful), sem criar banco local vazio por escopo', async () => {
+  const rf = require('./retrieval-feedback.js');
+  const backend = require('../engine/brain-backend.js');
+  const store = require('../engine/brain-store.js');
+  const journal = require('./lib/retrieval-journal.js');
+  const sid = 'p12-' + Date.now();
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-p12-'));
+  const tp = path.join(dir, 't.jsonl');
+  fs.writeFileSync(tp, JSON.stringify({ type: 'assistant', message: { role: 'assistant', content: [{ type: 'text', text: 'Following the database migration ordering lesson, I ran them in sequence.' }] } }) + '\n');
+  const orig = { peek: backend.peekMode, init: backend.init, sig: backend.signalHelpful, sinit: store.init, rc: store.recordCitation };
+  const calls = { signal: [], storeInit: 0 };
+  backend.peekMode = () => 'mcp-memory';
+  backend.init = async () => {};
+  backend.signalHelpful = async (id) => { calls.signal.push(id); return true; };
+  store.init = async () => { calls.storeInit++; };
+  store.recordCitation = () => { calls.storeInit++; };
+  try {
+    journal.appendEntry(sid, { retrievalId: 'r1', ts: Date.now(), sid, tool: 'UserPromptSubmit', project: 'own/p12', returnedIds: ['doc-1'], returnedTitles: ['database migration ordering'], injectedIds: ['doc-1'], injectedChars: 80 });
+    await rf.run({ hook_event_name: 'Stop', session_id: sid, transcript_path: tp, cwd: dir });
+    assertEq(calls.signal, ['doc-1'], 'cited doc signalled to the server');
+    assertEq(calls.storeInit, 0, 'no local store touched on mcp-memory');
+  } finally {
+    Object.assign(backend, { peekMode: orig.peek, init: orig.init, signalHelpful: orig.sig });
+    Object.assign(store, { init: orig.sinit, recordCitation: orig.rc });
+    journal.clearEntries(sid);
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 test('metrics-store: recordMetric rejects invalid event names', () => {
-  delete require.cache[require.resolve('./lib/metrics-store.js')];
+  delete require.cache[require.resolve('../engine/lib/metrics-store.js')];
   const prevDataDir = process.env.CLAUDE_PLUGIN_DATA;
   process.env.CLAUDE_PLUGIN_DATA = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-metrics-bad-'));
-  const isolated = require('./lib/metrics-store.js');
+  const isolated = require('../engine/lib/metrics-store.js');
   try {
     if (!isolated.init({ project: 'ccb-units-metrics-bad' })) return;
     assertEq(isolated.recordMetric('', {}, 'sid'), 0);
@@ -3177,16 +3369,16 @@ test('metrics-store: recordMetric rejects invalid event names', () => {
     assert(isolated.recordMetric('valid.name_ok-1', {}, 'sid') > 0, 'valid name accepted');
   } finally {
     isolated.close();
-    delete require.cache[require.resolve('./lib/metrics-store.js')];
+    delete require.cache[require.resolve('../engine/lib/metrics-store.js')];
     process.env.CLAUDE_PLUGIN_DATA = prevDataDir;
   }
 });
 
 test('metrics-store: getEventLogIsolated reads another project\'s DB without touching the singleton', () => {
-  delete require.cache[require.resolve('./lib/metrics-store.js')];
+  delete require.cache[require.resolve('../engine/lib/metrics-store.js')];
   const prevDataDir = process.env.CLAUDE_PLUGIN_DATA;
   process.env.CLAUDE_PLUGIN_DATA = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-metrics-iso-'));
-  const isolated = require('./lib/metrics-store.js');
+  const isolated = require('../engine/lib/metrics-store.js');
   try {
     // Write a metric into '__user__' project's own DB.
     if (!isolated.init({ project: '__user__' })) return;
@@ -3210,16 +3402,16 @@ test('metrics-store: getEventLogIsolated reads another project\'s DB without tou
     assertEq(rows[0].payload.type, 'research');
   } finally {
     isolated.close();
-    delete require.cache[require.resolve('./lib/metrics-store.js')];
+    delete require.cache[require.resolve('../engine/lib/metrics-store.js')];
     process.env.CLAUDE_PLUGIN_DATA = prevDataDir;
   }
 });
 
 test('metrics-store: getEventLog filters + caps to 500', () => {
-  delete require.cache[require.resolve('./lib/metrics-store.js')];
+  delete require.cache[require.resolve('../engine/lib/metrics-store.js')];
   const prevDataDir = process.env.CLAUDE_PLUGIN_DATA;
   process.env.CLAUDE_PLUGIN_DATA = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-metrics-log-'));
-  const isolated = require('./lib/metrics-store.js');
+  const isolated = require('../engine/lib/metrics-store.js');
   try {
     if (!isolated.init({ project: 'ccb-units-metrics-log' })) return;
     for (let i = 0; i < 5; i++) isolated.recordMetric('retrieve.fired', { i }, 'sid');
@@ -3232,16 +3424,16 @@ test('metrics-store: getEventLog filters + caps to 500', () => {
     assert(capped.length <= 500, `cap applied, got ${capped.length}`);
   } finally {
     isolated.close();
-    delete require.cache[require.resolve('./lib/metrics-store.js')];
+    delete require.cache[require.resolve('../engine/lib/metrics-store.js')];
     process.env.CLAUDE_PLUGIN_DATA = prevDataDir;
   }
 });
 
 test('metrics-store: cleanupMetrics deletes rows older than cutoff', () => {
-  delete require.cache[require.resolve('./lib/metrics-store.js')];
+  delete require.cache[require.resolve('../engine/lib/metrics-store.js')];
   const prevDataDir = process.env.CLAUDE_PLUGIN_DATA;
   process.env.CLAUDE_PLUGIN_DATA = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-metrics-cleanup-'));
-  const isolated = require('./lib/metrics-store.js');
+  const isolated = require('../engine/lib/metrics-store.js');
   try {
     if (!isolated.init({ project: 'ccb-units-metrics-cleanup' })) return;
     // Insert 3 fresh rows, then manually backdate two of them to >40d ago.
@@ -3256,7 +3448,7 @@ test('metrics-store: cleanupMetrics deletes rows older than cutoff', () => {
     assertEq(remaining.length, 1);
   } finally {
     isolated.close();
-    delete require.cache[require.resolve('./lib/metrics-store.js')];
+    delete require.cache[require.resolve('../engine/lib/metrics-store.js')];
     process.env.CLAUDE_PLUGIN_DATA = prevDataDir;
   }
 });
@@ -3264,7 +3456,7 @@ test('metrics-store: cleanupMetrics deletes rows older than cutoff', () => {
 // ─── Plan #7 — scope sanitizer + two-pass retrieval helpers ─────────────────
 
 test('scope: inferDefaultScope routes by type then by tag hints', () => {
-  const { inferDefaultScope } = require('./lib/scope-sanitizer.js');
+  const { inferDefaultScope } = require('../engine/lib/scope-sanitizer.js');
   assertEq(inferDefaultScope('decision', []), 'project');
   assertEq(inferDefaultScope('code', []), 'project');
   assertEq(inferDefaultScope('reference', []), 'user');
@@ -3305,7 +3497,7 @@ test('mcp-server: capture_lesson schema enum covers every type hooks nudge for',
 });
 
 test('scope: sanitizeForUserScope strips paths, emails, project name', () => {
-  const { sanitizeForUserScope } = require('./lib/scope-sanitizer.js');
+  const { sanitizeForUserScope } = require('../engine/lib/scope-sanitizer.js');
   const out = sanitizeForUserScope(
     'In C:\\Users\\allan\\Desktop\\Projetos\\claude-code, also /home/joe/repo and /Users/anna/work; ping me at user@example.com — see claude-code thing',
     'claude-code'
@@ -3321,7 +3513,7 @@ test('scope: sanitizeForUserScope strips paths, emails, project name', () => {
 });
 
 test('scope: sanitizeForUserScope is safe with empty/null and no project', () => {
-  const { sanitizeForUserScope } = require('./lib/scope-sanitizer.js');
+  const { sanitizeForUserScope } = require('../engine/lib/scope-sanitizer.js');
   assertEq(sanitizeForUserScope('', 'anything'), '');
   assertEq(sanitizeForUserScope(null, 'anything'), '');
   // No project arg → don't try to escape, just clean paths/emails
@@ -3331,7 +3523,7 @@ test('scope: sanitizeForUserScope is safe with empty/null and no project', () =>
 });
 
 test('scope: detectSecrets catches well-known prefixes, ignores benign text', () => {
-  const { detectSecrets } = require('./lib/scope-sanitizer.js');
+  const { detectSecrets } = require('../engine/lib/scope-sanitizer.js');
   // Positive cases
   if (!detectSecrets('here is sk-' + 'A'.repeat(40) + ' token')) throw new Error('sk- not detected');
   if (!detectSecrets('sk-ant-api03-' + 'AbCd12-_'.repeat(6) + 'ZZ')) throw new Error('modern Anthropic key not detected');
@@ -3347,7 +3539,7 @@ test('scope: detectSecrets catches well-known prefixes, ignores benign text', ()
 });
 
 test('scope: prepareForUserScope sanitizes safe fields and rejects secrets', () => {
-  const { prepareForUserScope } = require('./lib/scope-sanitizer.js');
+  const { prepareForUserScope } = require('../engine/lib/scope-sanitizer.js');
   const ok = prepareForUserScope(
     { title: 'note about myproj', summary: 'see /home/alice/x', detail: 'ping foo@bar.io' },
     'myproj'
@@ -3372,7 +3564,7 @@ test('scope: prepareForUserScope sanitizes safe fields and rejects secrets', () 
 });
 
 test('scope: splitTopK splits topK by 60/40 ratio with sensible floors', () => {
-  const { splitTopK } = require('./lib/scope-search.js');
+  const { splitTopK } = require('../engine/lib/scope-search.js');
   let s = splitTopK(5);
   assertEq(s.projectK, 3);
   assertEq(s.userK, 2);
@@ -3389,7 +3581,7 @@ test('scope: splitTopK splits topK by 60/40 ratio with sensible floors', () => {
 });
 
 test('scope: mergeResults dedups by id (project wins) and sorts by score', () => {
-  const { mergeResults } = require('./lib/scope-search.js');
+  const { mergeResults } = require('../engine/lib/scope-search.js');
   const project = [
     { id: 'a', score: 0.9, title: 'project-A' },
     { id: 'b', score: 0.5, title: 'project-B' },
@@ -3419,8 +3611,8 @@ test('scope: brain-store persists scope column and survives migration', async ()
   const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'brain-scope-'));
   const prevDataDir = process.env.CLAUDE_PLUGIN_DATA;
   process.env.CLAUDE_PLUGIN_DATA = tmp;
-  delete require.cache[require.resolve('./brain-store.js')];
-  const isolated = require('./brain-store.js');
+  delete require.cache[require.resolve('../engine/brain-store.js')];
+  const isolated = require('../engine/brain-store.js');
   try {
     await isolated.init({ project: 'p1', skipEmbedder: true });
     const e1 = { type: 'note', title: 'project-default', summary: 's', tags: [], scope: 'project' };
@@ -3438,7 +3630,7 @@ test('scope: brain-store persists scope column and survives migration', async ()
     assertEq(got3.scope, 'project');
   } finally {
     try { await isolated.close(); } catch { /* ignore */ }
-    delete require.cache[require.resolve('./brain-store.js')];
+    delete require.cache[require.resolve('../engine/brain-store.js')];
     process.env.CLAUDE_PLUGIN_DATA = prevDataDir;
   }
 });
@@ -3471,8 +3663,8 @@ test('skill-promote-trigger.shouldRun: garbage stamp → true', () => {
 });
 
 test('skill-promote-trigger.loadCfg (Q48): kb.skillPromotion from the layered config — the user can switch the scan off', () => {
-  const bc = require('./lib/brain-config.js');
-  const file = path.join(require('./lib/data-dir.js').globalDir(), 'user-config.json');
+  const bc = require('../engine/lib/brain-config.js');
+  const file = path.join(require('../engine/lib/data-dir.js').globalDir(), 'user-config.json');
   assert(file.startsWith(process.env.USERPROFILE), `the suite's temp HOME, never the real one (${file})`);
   const prev = fs.existsSync(file) ? fs.readFileSync(file, 'utf8') : null;
   try {
@@ -3667,7 +3859,7 @@ test('research-followup.decideNudge: newer trigger after stamp → nudge again',
 // one was admitted in the same turn. Fixed by also reading __user__ via
 // getEventLogIsolated (no singleton mutation) and merging both streams.
 test('research-followup.run: capture_lesson({type:research}) in __user__ scope suppresses the nudge', async () => {
-  delete require.cache[require.resolve('./lib/metrics-store.js')];
+  delete require.cache[require.resolve('../engine/lib/metrics-store.js')];
   const prevDataDir = process.env.CLAUDE_PLUGIN_DATA;
   const prevHome = process.env.HOME;
   const prevProfile = process.env.USERPROFILE;
@@ -3682,7 +3874,7 @@ test('research-followup.run: capture_lesson({type:research}) in __user__ scope s
   fs.mkdirSync(path.dirname(gp), { recursive: true });
   fs.writeFileSync(gp, JSON.stringify({ profile: 'dev' }));
   hooksConfig._resetCache();
-  const isolatedStore = require('./lib/metrics-store.js');
+  const isolatedStore = require('../engine/lib/metrics-store.js');
   delete require.cache[require.resolve('./research-followup-detect.js')];
   const rf = require('./research-followup-detect.js');
   try {
@@ -3706,7 +3898,7 @@ test('research-followup.run: capture_lesson({type:research}) in __user__ scope s
 
     isolatedStore.close();
   } finally {
-    delete require.cache[require.resolve('./lib/metrics-store.js')];
+    delete require.cache[require.resolve('../engine/lib/metrics-store.js')];
     delete require.cache[require.resolve('./research-followup-detect.js')];
     process.env.CLAUDE_PLUGIN_DATA = prevDataDir;
     if (prevHome === undefined) delete process.env.HOME; else process.env.HOME = prevHome;
@@ -3716,7 +3908,7 @@ test('research-followup.run: capture_lesson({type:research}) in __user__ scope s
 });
 
 test('research-followup.run: no capture at all still nudges (regression guard)', async () => {
-  delete require.cache[require.resolve('./lib/metrics-store.js')];
+  delete require.cache[require.resolve('../engine/lib/metrics-store.js')];
   const prevDataDir = process.env.CLAUDE_PLUGIN_DATA;
   const prevHome = process.env.HOME;
   const prevProfile = process.env.USERPROFILE;
@@ -3730,7 +3922,7 @@ test('research-followup.run: no capture at all still nudges (regression guard)',
   fs.mkdirSync(path.dirname(gp), { recursive: true });
   fs.writeFileSync(gp, JSON.stringify({ profile: 'dev' }));
   hooksConfig._resetCache();
-  const isolatedStore = require('./lib/metrics-store.js');
+  const isolatedStore = require('../engine/lib/metrics-store.js');
   delete require.cache[require.resolve('./research-followup-detect.js')];
   const rf = require('./research-followup-detect.js');
   try {
@@ -3743,7 +3935,7 @@ test('research-followup.run: no capture at all still nudges (regression guard)',
 
     isolatedStore.close();
   } finally {
-    delete require.cache[require.resolve('./lib/metrics-store.js')];
+    delete require.cache[require.resolve('../engine/lib/metrics-store.js')];
     delete require.cache[require.resolve('./research-followup-detect.js')];
     process.env.CLAUDE_PLUGIN_DATA = prevDataDir;
     if (prevHome === undefined) delete process.env.HOME; else process.env.HOME = prevHome;
@@ -3897,7 +4089,7 @@ test('skill-success-detect: skips entries without skillName', () => {
 });
 
 // ─── retrieve-core (pure parts; no model load) ───────────────────────────────
-const retrieveCore = require('./lib/retrieve-core.js');
+const retrieveCore = require('../engine/lib/retrieve-core.js');
 
 test('retrieve-core: formatContext empty → ""', () => {
   assertEq(retrieveCore.formatContext([]), '');
@@ -3950,7 +4142,7 @@ test('retrieve-core.pickInjectable: home-spine filter + dedup + topK + char budg
 });
 
 test('brain_retrieve_context: a handler failure is recorded in recall-health (fail-open, but not silent)', async () => {
-  const rh = require('./lib/recall-health.js');
+  const rh = require('../engine/lib/recall-health.js');
   const pkPath = require.resolve('./lib/prompt-kind.js');
   const saved = require.cache[pkPath];
   require.cache[pkPath] = { id: pkPath, filename: pkPath, loaded: true, exports: { isSyntheticPrompt: () => { throw new Error('boom-retrieve-u715'); } } };
@@ -4000,8 +4192,8 @@ test('G12 embed-worker: inference runs off the main thread (event loop stays fre
   const { createEmbedWorker } = await import(require('url').pathToFileURL(path.join(ROOT, 'servers', 'brain-server', 'lib', 'embed-worker-client.js')).href);
   const { monitorEventLoopDelay } = require('perf_hooks');
   const fakeRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-embedw-'));
-  fs.mkdirSync(path.join(fakeRoot, 'scripts'));
-  fs.writeFileSync(path.join(fakeRoot, 'scripts', 'brain-embedder.js'), [
+  fs.mkdirSync(path.join(fakeRoot, 'engine'));
+  fs.writeFileSync(path.join(fakeRoot, 'engine', 'brain-embedder.js'), [
     "let ready = false;",
     "const busy = (ms) => { const end = Date.now() + ms; while (Date.now() < end) { /* synchronous work, like tokenization */ } };",
     "module.exports = {",
@@ -4029,7 +4221,7 @@ test('G12 embed-worker: inference runs off the main thread (event loop stays fre
 });
 
 test('G12 brain-embedder.setDelegate: every consumer is routed to the delegate; setDelegate(null) restores the local embedder', async () => {
-  const emb = require('./brain-embedder.js');
+  const emb = require('../engine/brain-embedder.js');
   const calls = [];
   emb.setDelegate({
     init: async () => { calls.push('init'); return true; },
@@ -4051,7 +4243,7 @@ test('G12 brain-embedder.setDelegate: every consumer is routed to the delegate; 
 });
 
 test('embedder-guard: a native abort of the load test forces "none" for that key only; a JS error or a timeout forces nothing; a pass lifts it', async () => {
-  const g = require('./lib/embedder-guard.js');
+  const g = require('../engine/lib/embedder-guard.js');
   const data = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-eguard-'));
   try {
     const ff = g.recordOutcome(data, { model: 'M' }, { ok: false, status: 0xC0000409, lastLine: 'loading model' });
@@ -4070,7 +4262,7 @@ test('embedder-guard: a native abort of the load test forces "none" for that key
 });
 
 test('embedder-guard.ensureGuard: tests the local model once per key, before the daemon loads it; other providers and a missing model skip', async () => {
-  const g = require('./lib/embedder-guard.js');
+  const g = require('../engine/lib/embedder-guard.js');
   const data = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-eguard-'));
   const cacheDir = path.join(data, 'models');
   try {
@@ -4093,12 +4285,12 @@ test('embedder-guard.ensureGuard: tests the local model once per key, before the
 });
 
 test('brain-embedder: provider "none" (set, or forced by the load test) is ready, embeds to null (keyword fallback) and the status says why', async () => {
-  const g = require('./lib/embedder-guard.js');
-  const embPath = require.resolve('./brain-embedder.js');
+  const g = require('../engine/lib/embedder-guard.js');
+  const embPath = require.resolve('../engine/brain-embedder.js');
   const saved = require.cache[embPath];
   delete require.cache[embPath];
-  const emb = require('./brain-embedder.js'); // fresh module state, no delegate
-  const data = require('./lib/data-dir.js').dataDir();
+  const emb = require('../engine/brain-embedder.js'); // fresh module state, no delegate
+  const data = require('../engine/lib/data-dir.js').dataDir();
   assert(data.startsWith(os.tmpdir()) || data.startsWith(process.env.USERPROFILE), `the suite's temp data dir, never the real one (${data})`);
   try {
     const model = emb.getModel();
@@ -4134,7 +4326,7 @@ test('embed-worker-client guard: the worker (and the model) is not loaded until 
 });
 
 test('doctor: the load test runs on the daemon\'s Node and records its outcome; checkEmbedderGuard names a keyword-only override and how to lift it', () => {
-  const g = require('./lib/embedder-guard.js');
+  const g = require('../engine/lib/embedder-guard.js');
   const data = crashDir(null);
   const seen = [];
   const run = (status, stdout = '') => (exe) => { seen.push(exe); return { status, stdout, stderr: 'loading model' }; };
@@ -4223,7 +4415,7 @@ test('curation home: the in-repo .vscode curation MOVES to the user folder (keye
     cp._resetConfigCache(); sc._resetCache();
 
     const home = cp.curationHome(proj);
-    assert(!path.relative(require('./lib/data-dir.js').globalDir(), home).startsWith('..') && /curation[\\/]local[\\/]/.test(home), `home under the user folder: ${home}`);
+    assert(!path.relative(require('../engine/lib/data-dir.js').globalDir(), home).startsWith('..') && /curation[\\/]local[\\/]/.test(home), `home under the user folder: ${home}`);
     const { shells, whitelist } = sc.loadShellsConfig(proj);
     const H = home.replace(/\\/g, '/');
     assertEq(shells.map((s) => [s.id, s.script]), [['tests', `${H}/scripts/tests.mjs`], ['self', `${H}/scripts/self.mjs`], ['own', `${proj.replace(/\\/g, '/')}/tools/own.sh`]]);
@@ -4382,10 +4574,10 @@ test('curation home: under CCB_TEST_SANDBOX a project OUTSIDE the temp dir is ne
 });
 
 test('metrics totals: a time-window read is not cut at 500 rows; history COPIED into a project-id key counts once, rows written later to the legacy db still count, a failed copy hides nothing', () => {
-  const ms = require('./lib/metrics-store.js');
-  const mp = require('./lib/metrics-project.js');
+  const ms = require('../engine/lib/metrics-store.js');
+  const mp = require('../engine/lib/metrics-project.js');
   const cp = require('child_process');
-  const base = path.join(require('./lib/data-dir.js').dataDir(), 'metrics');
+  const base = path.join(require('../engine/lib/data-dir.js').dataDir(), 'metrics');
   assert(!path.relative(os.tmpdir(), base).startsWith('..'), `the suite's data dir must be a temp dir: ${base}`);
   const legacy = `wl-legacy-${process.pid}`;
   const work = path.join(os.tmpdir(), `ccb-wl-${process.pid}`);
@@ -4406,7 +4598,7 @@ test('metrics totals: a time-window read is not cut at 500 rows; history COPIED 
 
     // 1. A build before the marker copied it (copy exists, no marker) → backfilled BY CONTENT.
     const repo = mkRepo(legacy, 'wl-owner');
-    const key = mp.metricsKeyForId(require('./lib/project-id.js').tryResolveProjectId({ cwd: repo }));
+    const key = mp.metricsKeyForId(require('../engine/lib/project-id.js').tryResolveProjectId({ cwd: repo }));
     fs.mkdirSync(path.join(base, key), { recursive: true });
     fs.copyFileSync(path.join(base, legacy, 'metrics.db'), path.join(base, key, 'metrics.db'));
     assertEq(shaped(legacy) + shaped(key), 1240, 'before the marker the copied history counts twice');
@@ -4423,7 +4615,7 @@ test('metrics totals: a time-window read is not cut at 500 rows; history COPIED 
     const legacy2 = `${legacy}b`;
     ms.init({ project: legacy2 }); ms.recordMetric('curation.shaped', {}, 's'); ms.close();
     const repo2 = mkRepo(legacy2, 'wl-owner');
-    const key2 = mp.metricsKeyForId(require('./lib/project-id.js').tryResolveProjectId({ cwd: repo2 }));
+    const key2 = mp.metricsKeyForId(require('../engine/lib/project-id.js').tryResolveProjectId({ cwd: repo2 }));
     ms.init({ project: key2 }); ms.recordMetric('other.event', {}, 's'); ms.close();
     mp._resetAdopted();
     mp.metricsKeyFor(repo2);
@@ -4471,7 +4663,7 @@ test('raw-report: the redirect tells the script where to report its raw size; Po
   assertEq(fs.existsSync(stale), false, 'reports nobody read are swept after a day');
 
   // End to end: guard rewrite (redirect carries the report id) → script appends → detect records rawChars + the same id.
-  const metrics = require('./lib/metrics.js');
+  const metrics = require('../engine/lib/metrics.js');
   const proj = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-rr-proj-'));
   fs.writeFileSync(path.join(proj, 'package.json'), '{}');
   const home = require('./curation-paths.js').curationHome(proj);
@@ -4578,7 +4770,7 @@ test('C2b planShaping: single exploration command without Token Guard is wrapped
 });
 
 test('C1 curation-families: exploration / inline / task classes (compound = task if any segment is a task)', () => {
-  const { classifyCommand } = require('./lib/curation-families.js');
+  const { classifyCommand } = require('../engine/lib/curation-families.js');
   const cases = {
     'git log --oneline -6': 'exploration', 'git status --short | head': 'exploration', 'git -C repo diff a.js': 'exploration',
     'sed -n 1,40p a.js': 'exploration', 'cat big.json': 'exploration', 'ls': 'exploration', 'grep -rn foo .': 'exploration',
@@ -4590,7 +4782,7 @@ test('C1 curation-families: exploration / inline / task classes (compound = task
 });
 
 test('C1 curation-families: Token Guard detected from a PostToolUse hook in user or project settings (cached by mtime)', () => {
-  const fam = require('./lib/curation-families.js');
+  const fam = require('../engine/lib/curation-families.js');
   const home = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-tg-home-'));
   const proj = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-tg-proj-'));
   try {
@@ -4834,6 +5026,43 @@ test('variant → alias: a recurring noisy uncovered VARIANT of a curated script
   }
 });
 
+test('curation-stop: bloqueio, desistencia e liberacao viram eventos (curation.stop.blocked/relented/released) — antes so stderr', async () => {
+  const detect = require('./curation-detect.js');
+  const stop = require('./curation-stop.js');
+  const journal = require('./lib/turn-journal.js');
+  const m = require('../engine/lib/metrics.js');
+  const proj = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-cstop-ev-'));
+  fs.writeFileSync(path.join(proj, 'package.json'), '{}');
+  const sid = 'cstop-ev-' + Date.now();
+  const noisy = Array.from({ length: 300 }, (_, i) => `line ${i}`).join('\n');
+  const ev = (command) => ({ hook_event_name: 'PostToolUse', tool_name: 'Bash', tool_input: { command }, tool_response: { stdout: noisy, stderr: '' }, session_id: sid, cwd: proj });
+  const fired = [];
+  const orig = m.fire;
+  try {
+    await detect.run(ev('npm run evcheck')); await detect.run(ev('npm run evcheck')); // 2nd noisy task run is journaled
+    m.fire = (name, payload) => { if (name.startsWith('curation.stop.')) fired.push([name, payload]); };
+    const max = require('./lib/hooks-config.js').getCurationStop().maxAttempts;
+    const r1 = await stop.run({ hook_event_name: 'Stop', session_id: sid, cwd: proj });
+    assert(r1.block, 'first Stop blocks');
+    for (let i = 2; i <= max; i++) assert((await stop.run({ hook_event_name: 'Stop', session_id: sid, cwd: proj, stop_hook_active: true })).block, `no progress, attempt ${i}: blocks again`);
+    const r2 = await stop.run({ hook_event_name: 'Stop', session_id: sid, cwd: proj, stop_hook_active: true });
+    assert(!r2.block, 'no progress at the attempt cap: relents');
+    await detect.run(ev('npm run evcheck')); // recurs → journaled again
+    const r3 = await stop.run({ hook_event_name: 'Stop', session_id: sid, cwd: proj });
+    assert(r3.block, 'blocks again on the next turn');
+    await detect.run(ev('npm run other-work-entirely')); await detect.run(ev('npm run other-work-entirely'));
+    await stop.run({ hook_event_name: 'Stop', session_id: sid, cwd: proj, stop_hook_active: true });
+    const blockedRun = Array.from({ length: max }, () => 'curation.stop.blocked');
+    assertEq(fired.map((x) => x[0]), [...blockedRun, 'curation.stop.relented', 'curation.stop.blocked', 'curation.stop.released']);
+    assertEq([fired[0][1].attempt, fired[max][1].attempts], [1, max]);
+    assertEq(fired[max + 2][1].why, 'new non-overlapping work');
+  } finally {
+    m.fire = orig;
+    journal.clearEntries(sid);
+    fs.rmSync(proj, { recursive: true, force: true });
+  }
+});
+
 test('/dashboard without LLM: the expansion hook answers only /dashboard, blocks with the URL, and fails loud', async () => {
   const dc = require('./dashboard-command.js');
   let opened = null;
@@ -5063,7 +5292,7 @@ test('limit-calibration: rate_limit blocks + transcript spend → units per 1% (
 });
 
 test('C4 curation-guard: a pipe on the curated script is ALLOWED and measured (curation.piped) — not for another segment\'s pipe, not for reading the file', async () => {
-  const metrics = require('./lib/metrics.js');
+  const metrics = require('../engine/lib/metrics.js');
   const guard = require('./curation-guard.js');
   const proj = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-piped-'));
   fs.mkdirSync(path.join(proj, '.vscode', 'scripts'), { recursive: true });
@@ -5087,7 +5316,7 @@ test('C4 curation-guard: a pipe on the curated script is ALLOWED and measured (c
 });
 
 test('recall-health.isDegraded: classifies degraded vs ok reasons', () => {
-  const rh = require('./lib/recall-health.js');
+  const rh = require('../engine/lib/recall-health.js');
   assert(rh.isDegraded('no-compose') && rh.isDegraded('remote-error') && rh.isDegraded('timeout'), 'degraded reasons');
   assert(!rh.isDegraded('no-match') && !rh.isDegraded(undefined) && !rh.isDegraded(''), 'ok reasons');
 });
@@ -5100,7 +5329,7 @@ test('recall-health.isDegraded: classifies degraded vs ok reasons', () => {
 // a proxima degradacao REAL passa batida. Corrigir o sinal, nunca silencia-lo.
 
 test('recall-health.summarize: mede a taxa DENTRO da janela, nao a vitalicia', () => {
-  const rh = require('./lib/recall-health.js');
+  const rh = require('../engine/lib/recall-health.js');
   // 200 falhas antigas + 50 sucessos recentes: a janela recente esta LIMPA.
   const recent = [];
   for (let i = 0; i < 50; i++) recent.push({ ok: true, ts: 1000 + i });
@@ -5112,7 +5341,7 @@ test('recall-health.summarize: mede a taxa DENTRO da janela, nao a vitalicia', (
 });
 
 test('recall-health.summarize: degradacao EM CURSO continua gritando alto', () => {
-  const rh = require('./lib/recall-health.js');
+  const rh = require('../engine/lib/recall-health.js');
   const recent = [];
   for (let i = 0; i < 20; i++) recent.push({ ok: false, reason: 'remote-error', ts: 1000 + i });
   const s = rh.summarize({ ok: 0, degraded: 20, byReason: {}, recent });
@@ -5121,7 +5350,7 @@ test('recall-health.summarize: degradacao EM CURSO continua gritando alto', () =
 });
 
 test('recall-health.record: a janela tem TETO (nao cresce sem limite no disco)', () => {
-  const rh = require('./lib/recall-health.js');
+  const rh = require('../engine/lib/recall-health.js');
   let h = { ok: 0, degraded: 0, byReason: {}, recent: [] };
   for (let i = 0; i < rh.WINDOW_SIZE + 40; i++) h = rh.applyOutcome(h, i % 2 ? 'remote-error' : undefined, 1000 + i);
   assertEq(h.recent.length, rh.WINDOW_SIZE, 'a janela satura no teto');
@@ -5130,7 +5359,7 @@ test('recall-health.record: a janela tem TETO (nao cresce sem limite no disco)',
 });
 
 test('recall-health: latency of each recall is kept in the window and summarized as p50/p95 (ok recalls only)', () => {
-  const rh = require('./lib/recall-health.js');
+  const rh = require('../engine/lib/recall-health.js');
   let s;
   [100, 200, 300, 400, 5000].forEach((ms, i) => { s = rh.applyOutcome(s, undefined, 1000 + i, undefined, ms); });
   s = rh.applyOutcome(s, 'timeout', 2000, undefined, 8000);
@@ -5143,7 +5372,7 @@ test('recall-health: latency of each recall is kept in the window and summarized
 });
 
 test('recall-health.applyOutcome: estado legado (sem `recent`) migra sem perder o historico', () => {
-  const rh = require('./lib/recall-health.js');
+  const rh = require('../engine/lib/recall-health.js');
   // Arquivo gravado por uma versao anterior: so tem os totais vitalicios.
   const h = rh.applyOutcome({ ok: 673, degraded: 205, byReason: { 'remote-error': 205 } }, undefined, 5000);
   assertEq(h.ok, 674, 'nao zera o que ja existia');
@@ -5153,12 +5382,12 @@ test('recall-health.applyOutcome: estado legado (sem `recent`) migra sem perder 
 });
 
 test('brain-config.getRecallCompose: sane defaults', () => {
-  const c = require('./lib/brain-config.js').getRecallCompose();
+  const c = require('../engine/lib/brain-config.js').getRecallCompose();
   assertEq(c.includeHomeSpine, true);
   assert(c.maxInjectChars > 0, 'maxInjectChars default');
   assert(c.timeoutMs > 0, 'timeoutMs default');
   assertEq(c.overlay, null);
-  assertEq(c.poolWarming, true);
+  assertEq(c.poolWarming, false, 'off by default: its signal only matters with the server promotion flags on');
   assertEq(c.maxQueryChars, 800, 'maxQueryChars default (2.29.1)');
   assertEq(c.projectArmMinScore, 0.65, 'projectArmMinScore default (2.29.1)');
 });
@@ -5209,7 +5438,7 @@ test('retrieve-core mergeFactsSpine (2.29.1): dedup inside the arm; an arm dup o
 });
 
 test('brain-config.getRecallCompose: maxQueryChars / projectArmMinScore overrides (0 disables the cap; negative → default)', () => {
-  const bc = require('./lib/brain-config.js');
+  const bc = require('../engine/lib/brain-config.js');
   const c = withUserConfig({ kb: { retrieval: { compose: { maxQueryChars: 0, projectArmMinScore: 0.5 } } } }, () => bc.getRecallCompose());
   assertEq([c.maxQueryChars, c.projectArmMinScore], [0, 0.5]);
   const d = withUserConfig({ kb: { retrieval: { compose: { maxQueryChars: -1 } } } }, () => bc.getRecallCompose());
@@ -5225,6 +5454,104 @@ function fakeComposeBackend({ facts, onSearch, onCompose, hasCompose = true }) {
     search: onSearch,
   };
 }
+
+// ─── recall P4: deadline com cancelamento real, breaker por taxa de falha, metrica por braco ──
+// recall-health real (janela de 50): p50 5,6 s, 26 % estouraram 8 s, os ultimos 13 seguidos; o
+// prazo nao cancelava a requisicao (seguia ate 60 s) e o breaker de 15 s nunca abria com o braco
+// do projeto respondendo.
+test('mcp-client: AbortSignal cancela a requisicao HTTP de verdade (o servidor ve o socket fechar) e callTool NAO repete a chamada abortada', async () => {
+  const McpClient = require('../engine/mcp-client.js');
+  const http = require('http');
+  let requests = 0; let closed = 0;
+  const srv = http.createServer((req, res) => { requests++; req.on('close', () => { if (!res.writableEnded) closed++; }); });
+  await new Promise((r) => srv.listen(0, '127.0.0.1', r));
+  try {
+    const c = new McpClient({ timeout: 60000 });
+    c._resolvedUrl = `http://127.0.0.1:${srv.address().port}`;
+    c._initialized = true;
+    const ac = new AbortController();
+    setTimeout(() => ac.abort(new Error('compose timed out after 50ms')), 50);
+    const t0 = Date.now();
+    let err = null;
+    try { await c.callTool('compose_recall', { query: 'x' }, { signal: ac.signal }); } catch (e) { err = e; }
+    assert(err && err.code === 'ABORTED' && /timed out/.test(err.message), `aborted with the deadline reason: ${err && err.message}`);
+    assert(Date.now() - t0 < 2000, 'gave up at the deadline, not at the 60 s client timeout');
+    await new Promise((r) => setTimeout(r, 50));
+    assertEq(requests, 1, 'no retry of an aborted call');
+    assertEq(closed, 1, 'the server saw the connection closed (the request does not keep running)');
+  } finally { srv.close(); }
+});
+
+test('retrieve-core.withDeadline: no prazo aborta o signal e rejeita com timeout', async () => {
+  const { withDeadline } = retrieveCore.__testHooks;
+  let seen = null;
+  let err = null;
+  try { await withDeadline((signal) => { seen = signal; return new Promise(() => {}); }, 30, 'compose'); } catch (e) { err = e; }
+  assert(err && /compose timed out after 30ms/.test(err.message), String(err));
+  assertEq(seen.aborted, true, 'the signal handed to the call is aborted');
+  assertEq(await withDeadline(async (signal) => (signal ? 'with-signal' : 'none'), 1000, 'x'), 'with-signal');
+});
+
+test('retrieve-core.createArmBreaker: abre com 5 falhas nas ultimas 10, pula 4 chamadas, deixa 1 sonda; a sonda que responde fecha', () => {
+  const b = retrieveCore.__testHooks.createArmBreaker();
+  for (let i = 0; i < 4; i++) { assert(b.allow()); b.result(false); }
+  assertEq(b.state().open, false, '4 failures: still closed');
+  assert(b.allow()); b.result(false);
+  assertEq(b.state().open, true, '5th failure opens');
+  assertEq([b.allow(), b.allow(), b.allow(), b.allow()], [false, false, false, false], 'skips 4 calls');
+  assertEq(b.allow(), true, 'then one probe');
+  b.result(false);
+  assertEq(b.allow(), false, 'failed probe: skips again');
+  for (let i = 0; i < 3; i++) b.allow();
+  assertEq(b.allow(), true); b.result(true);
+  assertEq(b.state(), { open: false, skipLeft: 0, failures: 0, calls: 0 }, 'answered probe closes and clears');
+  const sparse = retrieveCore.__testHooks.createArmBreaker();
+  for (let i = 0; i < 10; i++) { sparse.allow(); sparse.result(i % 3 !== 0); } // 4 failures in 10 (40 %)
+  assertEq(sparse.state().open, false, 'below the rate it stays closed');
+});
+
+test('retrieve-core retrieveRemote: compose que estoura sempre e PULADO pelo breaker do braco (o braco do projeto segue), cancelado no prazo, e a latencia por braco vai ao recall-health', async () => {
+  retrieveCore.__testHooks.resetCircuit();
+  const breakers = { compose: retrieveCore.__testHooks.createArmBreaker(), project: retrieveCore.__testHooks.createArmBreaker() };
+  let composeCalls = 0; let aborted = 0;
+  const fake = fakeComposeBackend({
+    facts: [],
+    onCompose: (_q, opts) => { composeCalls++; return new Promise((_, rej) => opts.signal.addEventListener('abort', () => { aborted++; rej(opts.signal.reason); })); },
+    onSearch: async () => [{ id: 'p1', title: 'proj hit', score: 0.9 }],
+  });
+  const records = [];
+  const health = { record: (reason, _d, ms, arms) => records.push({ reason, arms }) };
+  const t0 = Date.now();
+  for (let i = 0; i < 7; i++) {
+    // getRecallCompose() is read synchronously, before retrieveRemote's first await.
+    await withUserConfig({ kb: { retrieval: { compose: { timeoutMs: 30 } } } }, () => retrieveCore.__testHooks.retrieveRemote('a real prompt here', { project: 'projB', ancestorIds: [], topK: 5, keywords: ['x'] }, { backend: fake, recallHealth: health, armBreakers: breakers }));
+  }
+  assert(Date.now() - t0 < 3000, 'every compose gave up at the 30 ms deadline');
+  assertEq(composeCalls, 5, 'after 5 timeouts the compose arm is skipped (no 8 s wait on the next prompts)');
+  assertEq(aborted, 5, 'every timed-out compose was cancelled through its signal');
+  assertEq(records.map((r) => r.reason), ['timeout', 'timeout', 'timeout', 'timeout', 'timeout', 'compose-skipped', 'compose-skipped']);
+  assert(records[0].arms.compose.reason === 'timeout' && Number.isFinite(records[0].arms.compose.ms), JSON.stringify(records[0].arms));
+  assert(Number.isFinite(records[6].arms.project.ms) && !records[6].arms.project.reason, 'the project arm kept answering, timed');
+  assertEq(records[6].arms.compose, undefined, 'a skipped arm has no timing');
+  assert(require('../engine/lib/recall-health.js').isDegraded('compose-skipped'), 'a skipped compose is a visible degradation');
+});
+
+test('brain-health: o aviso de recall degradado diz QUAL braco falha e o p50 do que respondeu', () => {
+  const bh = require('./brain-health.js');
+  const txt = bh.buildRecallDegradedText({ windowDegraded: 16, windowTotal: 50, degradedRate: 0.32, lastDegraded: { reason: 'timeout' },
+    arms: { compose: { runs: 50, failed: 16, p50: 5629, p95: 7400 }, project: { runs: 50, failed: 0, p50: 410, p95: 900 } } });
+  assert(/Per arm: compose 16\/50 failed, p50 5\.6 s; project arm 0\/50 failed, p50 0\.4 s/.test(txt), txt);
+});
+
+test('recall-health.summarize: p50/p95 e falhas POR BRACO', () => {
+  const rh = require('../engine/lib/recall-health.js');
+  let st = {};
+  st = rh.applyOutcome(st, undefined, 1, null, 900, { compose: { ms: 800 }, project: { ms: 300 } });
+  st = rh.applyOutcome(st, 'timeout', 2, null, 8000, { compose: { ms: 8000, reason: 'timeout' }, project: { ms: 400 } });
+  const sum = rh.summarize(st);
+  assertEq(sum.arms.compose, { runs: 2, failed: 1, p50: 800, p95: 800 });
+  assertEq(sum.arms.project, { runs: 2, failed: 0, p50: 400, p95: 400 });
+});
 
 test('retrieve-core retrieveRemote (2.29.1): project arm ALWAYS fires (focus+ancestors+__user__, no home) with the capped query; merged project-first', async () => {
   let seenOpts = null;
@@ -5286,10 +5613,10 @@ test('retrieve-core retrieveRemote (2.29.1): compose FAILS → arm hits still in
 });
 
 test('retrieve-core retrieveRemote (2.29.1): arm timeout DEGRADES to compose-only (no throw) + CCB_ANCESTOR_TIMEOUT_MS env-tunable', async () => {
-  delete require.cache[require.resolve('./lib/retrieve-core.js')];
+  delete require.cache[require.resolve('../engine/lib/retrieve-core.js')];
   const prev = process.env.CCB_ANCESTOR_TIMEOUT_MS;
   process.env.CCB_ANCESTOR_TIMEOUT_MS = '10';
-  const rc = require('./lib/retrieve-core.js');
+  const rc = require('../engine/lib/retrieve-core.js');
   try {
     assertEq(rc.ANCESTOR_TIMEOUT_MS, 10, 'ANCESTOR_TIMEOUT_MS honors CCB_ANCESTOR_TIMEOUT_MS');
     const reasons = [];
@@ -5304,11 +5631,11 @@ test('retrieve-core retrieveRemote (2.29.1): arm timeout DEGRADES to compose-onl
     assertEq(out.entries.map((e) => e.id), ['d1'], 'compose-only survives the arm timeout (turn never fails)');
     assertEq(out.reason, undefined, 'facts injected → no turn reason; the arm degradation lives in recall-health');
     assertEq(reasons, ['project-arm-timeout'], 'records the project-arm-timeout health reason (once)');
-    assert(require('./lib/recall-health.js').isDegraded('project-arm-timeout'), 'project-arm-timeout counts as degraded');
+    assert(require('../engine/lib/recall-health.js').isDegraded('project-arm-timeout'), 'project-arm-timeout counts as degraded');
   } finally {
     if (prev === undefined) delete process.env.CCB_ANCESTOR_TIMEOUT_MS; else process.env.CCB_ANCESTOR_TIMEOUT_MS = prev;
-    delete require.cache[require.resolve('./lib/retrieve-core.js')];
-    require('./lib/retrieve-core.js'); // restore a warm cache at the default timeout
+    delete require.cache[require.resolve('../engine/lib/retrieve-core.js')];
+    require('../engine/lib/retrieve-core.js'); // restore a warm cache at the default timeout
   }
 });
 
@@ -5342,7 +5669,7 @@ test('retrieve-core retrieveRemote (2.29.1): arm error → project-arm-error; co
   }));
   assertEq(b.reasons, ['remote-error'], 'a failed compose outranks a failed arm');
   retrieveCore.__testHooks.resetCircuit(); // b opened retrieve-core's breaker (daemon "down")
-  assert(require('./lib/recall-health.js').isDegraded('project-arm-error'), 'project-arm-error counts as degraded');
+  assert(require('../engine/lib/recall-health.js').isDegraded('project-arm-error'), 'project-arm-error counts as degraded');
 });
 
 test('retrieve-core retrieveRemote (2.29.1): arm timeout defaults to compose.timeoutMs (no CCB_ANCESTOR_TIMEOUT_MS)', async () => {
@@ -5367,8 +5694,8 @@ test('retrieve-core retrieveRemote (2.29.1): arm timeout defaults to compose.tim
 // client's own 60s request timeout again.
 
 test('brain-backend circuit breaker: reportMcpFailure opens on transport errors; reportMcpSuccess closes it', () => {
-  delete require.cache[require.resolve('./brain-backend.js')];
-  const backend = require('./brain-backend.js');
+  delete require.cache[require.resolve('../engine/brain-backend.js')];
+  const backend = require('../engine/brain-backend.js');
   assertEq(backend.circuitOpen(), false, 'starts closed');
   backend.reportMcpFailure(new Error('MCP request "search_memory" timed out after 8000ms'));
   assertEq(backend.circuitOpen(), true, 'a timeout message opens the circuit');
@@ -5379,8 +5706,8 @@ test('brain-backend circuit breaker: reportMcpFailure opens on transport errors;
 });
 
 test('brain-backend circuit breaker: a non-transport error does NOT open the circuit', () => {
-  delete require.cache[require.resolve('./brain-backend.js')];
-  const backend = require('./brain-backend.js');
+  delete require.cache[require.resolve('../engine/brain-backend.js')];
+  const backend = require('../engine/brain-backend.js');
   backend.reportMcpFailure(new Error('validation failed: title is required'));
   assertEq(backend.circuitOpen(), false,
     'a business-logic error from a healthy daemon must not degrade unrelated calls');
@@ -5388,8 +5715,8 @@ test('brain-backend circuit breaker: a non-transport error does NOT open the cir
 
 test('brain-backend mcp: while the circuit is open, search/save/etc. fail fast WITHOUT reaching the daemon', async () => {
   const daemon = await startFakeDaemon({ toolResult: () => ({ content: [{ type: 'text', text: JSON.stringify({ results: [] }) }] }) });
-  delete require.cache[require.resolve('./brain-backend.js')];
-  const backend = require('./brain-backend.js');
+  delete require.cache[require.resolve('../engine/brain-backend.js')];
+  const backend = require('../engine/brain-backend.js');
   backend.__testHooks._injectConfig({ backend: { type: 'mcp-memory', mcpMemory: { transport: 'http', serverUrl: daemon.url } } });
   try {
     await backend.init({ project: 'projCircuit' });
@@ -5400,17 +5727,17 @@ test('brain-backend mcp: while the circuit is open, search/save/etc. fail fast W
     assertEq(daemon.seen.callCount, 0, 'no tools/call reached the daemon while the circuit was open');
     await backend.close();
   } finally {
-    delete require.cache[require.resolve('./brain-backend.js')];
+    delete require.cache[require.resolve('../engine/brain-backend.js')];
     await daemon.close();
   }
 });
 
 test('brain-backend mcp: circuit closes after cooldown, so calls reach the daemon again', async () => {
   const daemon = await startFakeDaemon({ toolResult: () => ({ content: [{ type: 'text', text: JSON.stringify({ results: [] }) }] }) });
-  delete require.cache[require.resolve('./brain-backend.js')];
+  delete require.cache[require.resolve('../engine/brain-backend.js')];
   const prev = process.env.CCB_MCP_MEMORY_CIRCUIT_MS;
   process.env.CCB_MCP_MEMORY_CIRCUIT_MS = '10';
-  const backend = require('./brain-backend.js');
+  const backend = require('../engine/brain-backend.js');
   backend.__testHooks._injectConfig({ backend: { type: 'mcp-memory', mcpMemory: { transport: 'http', serverUrl: daemon.url } } });
   try {
     await backend.init({ project: 'projCooldown' });
@@ -5424,15 +5751,15 @@ test('brain-backend mcp: circuit closes after cooldown, so calls reach the daemo
     await backend.close();
   } finally {
     if (prev === undefined) delete process.env.CCB_MCP_MEMORY_CIRCUIT_MS; else process.env.CCB_MCP_MEMORY_CIRCUIT_MS = prev;
-    delete require.cache[require.resolve('./brain-backend.js')];
+    delete require.cache[require.resolve('../engine/brain-backend.js')];
     await daemon.close();
   }
 });
 
 test('brain-backend mcp: a REAL transport failure (daemon closed mid-session) opens the circuit', async () => {
   const daemon = await startFakeDaemon();
-  delete require.cache[require.resolve('./brain-backend.js')];
-  const backend = require('./brain-backend.js');
+  delete require.cache[require.resolve('../engine/brain-backend.js')];
+  const backend = require('../engine/brain-backend.js');
   backend.__testHooks._injectConfig({ backend: { type: 'mcp-memory', mcpMemory: { transport: 'http', serverUrl: daemon.url, timeout: 800 } } });
   try {
     await backend.init({ project: 'projDeath' });
@@ -5442,19 +5769,19 @@ test('brain-backend mcp: a REAL transport failure (daemon closed mid-session) op
     assert(threw, 'the call itself must fail once the daemon is gone');
     assertEq(backend.circuitOpen(), true, 'a genuine connection failure (not just a simulated one) trips the breaker');
   } finally {
-    delete require.cache[require.resolve('./brain-backend.js')];
+    delete require.cache[require.resolve('../engine/brain-backend.js')];
   }
 });
 
 test('brain-backend mcp: a failed ingestion upload does NOT open the shared breaker (recall keeps working)', async () => {
   const daemon = await startFakeDaemon({ toolResult: () => ({ content: [{ type: 'text', text: JSON.stringify({ results: [] }) }] }) });
-  delete require.cache[require.resolve('./brain-backend.js')];
-  const backend = require('./brain-backend.js');
+  delete require.cache[require.resolve('../engine/brain-backend.js')];
+  const backend = require('../engine/brain-backend.js');
   backend.__testHooks._injectConfig({ backend: { type: 'mcp-memory', mcpMemory: { transport: 'http', serverUrl: daemon.url } } });
   try {
     await backend.init({ project: 'projIngestTrip' });
-    const realCall = require('./mcp-client.js').prototype.callTool;
-    require('./mcp-client.js').prototype.callTool = async function (name, ...rest) {
+    const realCall = require('../engine/mcp-client.js').prototype.callTool;
+    require('../engine/mcp-client.js').prototype.callTool = async function (name, ...rest) {
       if (name === 'ingest_conversation') throw new Error('MCP request "tools/call" timed out after 15000ms');
       return realCall.call(this, name, ...rest);
     };
@@ -5466,11 +5793,11 @@ test('brain-backend mcp: a failed ingestion upload does NOT open the shared brea
       const hits = await backend.search('q');
       assert(Array.isArray(hits), 'recall still reaches the daemon');
     } finally {
-      require('./mcp-client.js').prototype.callTool = realCall;
+      require('../engine/mcp-client.js').prototype.callTool = realCall;
     }
     await backend.close();
   } finally {
-    delete require.cache[require.resolve('./brain-backend.js')];
+    delete require.cache[require.resolve('../engine/brain-backend.js')];
     await daemon.close();
   }
 });
@@ -5598,7 +5925,7 @@ test('hooks.json + settings.json: no hook or allow rule can pre-approve an MCP t
 });
 
 // ─── brain-config: contextExcludeTypes + DATA_DIR user-override deep-merge ────
-const brainConfig = require('./lib/brain-config.js');
+const brainConfig = require('../engine/lib/brain-config.js');
 
 // Run `fn` with a temp per-user override at the GLOBAL path (globalDir()/
 // user-config.json — the new canonical location load() reads). Isolates a fresh
@@ -5648,56 +5975,23 @@ test('brain-config.getContextExcludeTypes: non-array → []', () => {
   });
 });
 
-test('brain-config.getSkillCapture: shipped defaults (40/280/400/400)', () => {
-  withUserConfig(undefined, () => {
-    assertEq(brainConfig.getSkillCapture(), { descriptionMin: 40, descriptionMax: 280, useForMax: 400, doNotUseForMax: 400 });
-  });
-});
 
-test('brain-config.getSkillCapture: user override tunes limits without touching siblings', () => {
-  withUserConfig({ kb: { skillCapture: { descriptionMax: 200 } } }, () => {
-    const s = brainConfig.getSkillCapture();
-    assertEq(s.descriptionMax, 200, 'override wins');
-    assertEq(s.descriptionMin, 40, 'untouched sibling keeps the shipped default');
-  });
-});
-
-// ─── skill-capture.validateSkillFields: pure mechanical validation (type:"skill") ──
-const skillCapture = require('./lib/skill-capture.js');
-
-test('skill-capture.validateSkillFields: accepts a well-formed skill (trims fields)', () => {
-  const r = skillCapture.validateSkillFields({
-    description: '  ' + 'x'.repeat(50) + '  ', useFor: '  applies here  ', doNotUseFor: '  does not apply there  ',
-  });
-  assert(r.ok, 'well-formed fields must be accepted');
-  assertEq(r.description, 'x'.repeat(50));
-  assertEq(r.useFor, 'applies here');
-  assertEq(r.doNotUseFor, 'does not apply there');
-});
-
-test('skill-capture.validateSkillFields: rejects missing/short/long description', () => {
-  assertEq(skillCapture.validateSkillFields({}).reason, 'description-missing');
-  assertEq(skillCapture.validateSkillFields({ description: 'short' }).reason, 'description-too-short');
-  assertEq(skillCapture.validateSkillFields({ description: 'x'.repeat(281) }).reason, 'description-too-long');
-});
-
-test('skill-capture.validateSkillFields: rejects missing/too-long useFor and doNotUseFor', () => {
-  const desc = 'x'.repeat(50);
-  assertEq(skillCapture.validateSkillFields({ description: desc }).reason, 'use-for-missing');
-  assertEq(skillCapture.validateSkillFields({ description: desc, useFor: 'x'.repeat(401) }).reason, 'use-for-too-long');
-  assertEq(skillCapture.validateSkillFields({ description: desc, useFor: 'ok' }).reason, 'do-not-use-for-missing');
-  assertEq(skillCapture.validateSkillFields({ description: desc, useFor: 'ok', doNotUseFor: 'x'.repeat(401) }).reason, 'do-not-use-for-too-long');
-});
-
-test('skill-capture.validateSkillFields: custom limits override the module defaults', () => {
-  const shortDesc = 'x'.repeat(10); // below the default min (40)
-  assertEq(skillCapture.validateSkillFields({ description: shortDesc }).reason, 'description-too-short',
-    'default limits (no override) reject a 10-char description');
-  const accepted = skillCapture.validateSkillFields(
-    { description: shortDesc, useFor: 'ok', doNotUseFor: 'ok' },
-    { descriptionMin: 5 },
-  );
-  assert(accepted.ok, 'a lowered descriptionMin (config override) accepts what the default would reject as too short');
+test('P9 brain-promote export: o rascunho sai da fila de revisao para a pasta pedida e o scan nunca mais o recria (antes o descarte voltava no proximo scan)', () => {
+  const data = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-p9-'));
+  const dest = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-p9-dest-'));
+  try {
+    const slug = 'some-recurring-lesson';
+    fs.mkdirSync(path.join(data, 'skills-pending', slug), { recursive: true });
+    fs.writeFileSync(path.join(data, 'skills-pending', slug, 'SKILL.md'), '---\ndescription: "x"\n---\n# Draft\n');
+    const r = require('child_process').spawnSync(process.execPath, [path.join(__dirname, 'brain-promote.js'), 'export', slug, dest], { encoding: 'utf8', windowsHide: true, env: { ...process.env, CLAUDE_PLUGIN_DATA: data } });
+    assertEq(r.status, 0, r.stderr);
+    assert(fs.existsSync(path.join(dest, slug, 'SKILL.md')), 'copied to the export folder');
+    assertEq(fs.existsSync(path.join(data, 'skills-pending', slug)), false, 'gone from the review queue');
+    assertEq(JSON.parse(fs.readFileSync(path.join(data, 'skills-pending', '.handled.json'), 'utf8')), [slug], 'recorded as handled');
+    const src = fs.readFileSync(path.join(__dirname, 'brain-promote.js'), 'utf8');
+    assert(/if \(handled\.has\(slug\)\) continue;/.test(src), 'scan skips handled slugs');
+    assert(/markHandled\(slug\)/.test(fs.readFileSync(path.join(__dirname, 'dashboard.js'), 'utf8')), 'the dashboard discard marks it too');
+  } finally { fs.rmSync(data, { recursive: true, force: true }); fs.rmSync(dest, { recursive: true, force: true }); }
 });
 
 test('brain-config user-override: deep-merge keeps shipped retrieval fields', () => {
@@ -5815,7 +6109,7 @@ test("brain-config: _v never leaks into load()'s merged config", () => {
 });
 
 // ─── GAP2: brain-backend activates the backend from shipped ⊕ per-user override
-const brainBackend = require('./brain-backend.js');
+const brainBackend = require('../engine/brain-backend.js');
 
 test('brain-backend.peekMode: no override → local (shipped factory default)', () => {
   withUserConfig(undefined, () => {
@@ -6055,7 +6349,7 @@ test('conversation-ingest.run: folder with no stable project scope → said once
 });
 
 // ─── project-id: client-side identity resolver (STRICT: declared → legacy → git-remote → throw) ─
-const projectId = require('./lib/project-id.js');
+const projectId = require('../engine/lib/project-id.js');
 
 // Fake fs where `present` is a set of absolute marker paths → contents.
 function fakeFs(present) {
@@ -6121,7 +6415,7 @@ test('project-id: no cwd and no env → THROWS (strict: no default fallback)', (
 function pidTmpDir(pfx) { return fs.mkdtempSync(path.join(os.tmpdir(), pfx || 'ccb-pid-')); }
 
 test('project-id parity: 9 golden vectors (declared preserved + git-remote normalized)', () => {
-  const pc = require('./lib/project-config.js');
+  const pc = require('../engine/lib/project-config.js');
   const GOLDEN = JSON.parse(fs.readFileSync(path.join(SCRIPTS, '__fixtures__', 'projectid-golden-vectors.json'), 'utf-8'));
   assertEq(GOLDEN.declared_preserved.length + GOLDEN.remote_normalized.length, 9, 'fixture has all 9 vectors');
   for (const v of GOLDEN.declared_preserved) {
@@ -6206,7 +6500,7 @@ test('project identity notice: repeats on every prompt, explains the refusal mar
 });
 
 test('project-id: climb cap (8 levels) and the memory-off refusal marker (nags stop; nearest marker wins)', () => {
-  const projectId = require(path.join(ROOT, 'scripts', 'lib', 'project-id.js'));
+  const projectId = require(path.join(ROOT, 'engine', 'lib', 'project-id.js'));
   const base = pidTmpDir('ccb-climb-');
   try {
     const env = { HOME: path.dirname(base), USERPROFILE: path.dirname(base) };
@@ -6226,7 +6520,7 @@ test('project-id: climb cap (8 levels) and the memory-off refusal marker (nags s
 });
 
 test('project-id defaultGit: memoized per (cwd,args); an expired entry is served stale and refreshed async (daemon event loop is not re-blocked)', async () => {
-  const pid = require(path.join(ROOT, 'scripts', 'lib', 'project-id.js'));
+  const pid = require(path.join(ROOT, 'engine', 'lib', 'project-id.js'));
   pid._gitCache.clear();
   const first = pid._defaultGit(['rev-parse', '--show-toplevel'], ROOT);
   assert(first && pid._gitCache.size === 1, 'first call runs git and stores the answer');
@@ -6510,7 +6804,7 @@ test('S1 dashboard: runBrainPromote uses execFileSync (no shell); callers pass a
 
 test('S5 sink: brain-promote scan() sanitizes --project (sibling traversal sink closed)', () => {
   const src = fs.readFileSync(path.join(SCRIPTS, 'brain-promote.js'), 'utf-8');
-  assert(/require\('\.\/lib\/project-id\.js'\)/.test(src), 'brain-promote must import project-id');
+  assert(new RegExp(`require\\('${LIB_REQ('project-id.js')}'\\)`).test(src), 'brain-promote must import project-id');
   assert(/sanitizeProjectId\(arg\('project'/.test(src), 'scan() must run --project through sanitizeProjectId before store.init');
 });
 
@@ -6556,7 +6850,7 @@ test('curation-session pendingSkillsSummary: counts staged drafts, null when emp
 });
 
 test('S4 brain-embedder: embedOllama uses execFileSync (no shell)', () => {
-  const src = fs.readFileSync(path.join(SCRIPTS, 'brain-embedder.js'), 'utf-8');
+  const src = fs.readFileSync(path.join(ENGINE, 'brain-embedder.js'), 'utf-8');
   const fn = src.match(/function embedOllama[\s\S]*?\n\}/);
   assert(fn, 'embedOllama not found');
   assert(/execFileSync\('ollama',\s*\['run', model\]/.test(fn[0]), 'must use execFileSync with argv');
@@ -6628,7 +6922,7 @@ test('S-minor model-router-ensure: env-var name validated before the PowerShell 
 
 test('R1 dashboard brain HTTP handlers sanitize project (traversal class closed on the exposed surface)', () => {
   const src = fs.readFileSync(path.join(ROOT, 'scripts', 'dashboard.js'), 'utf-8');
-  assert(/require\('\.\/lib\/project-id\.js'\)/.test(src), 'dashboard must import sanitizeProjectId');
+  assert(new RegExp(`require\\('${LIB_REQ('project-id.js')}'\\)`).test(src), 'dashboard must import sanitizeProjectId');
   assert(!/=\s*url\.searchParams\.get\('project'\)\s*\|\|\s*'';/.test(src), 'no raw project query read may reach store.init');
   // Logical sanitizer: nested owner/repo KBs (listed since 653) must open too; it
   // still refuses .., backslash, drive colon and empty segments (unit-tested).
@@ -6677,7 +6971,7 @@ test('retrieve-core.filterInjectableEntries: excludes lesson, keeps others (case
 });
 
 // ─── command-signature ────────────────────────────────────────────────────────
-const cmdSig = require(path.join(SCRIPTS, 'lib', 'command-signature.js'));
+const cmdSig = require(path.join(ENGINE, 'lib', 'command-signature.js'));
 
 test('command-signature: strips cd prefix + flags', () => {
   assertEq(cmdSig.canonicalSig('cd /proj && git --no-pager log -5'), 'git log');
@@ -6861,6 +7155,40 @@ test('command-signature: `VAR=$(cat <<EOF)` never signs as a bare heredoc digest
   assertEq(cmdSig.canonicalSig(s), s, 'idempotent');
 });
 
+test('curation-guard.sweepInlineScripts: varre no maximo 1x a cada 10 min por pasta (era readdir+stat de ~400 arquivos em TODA reescrita, na fast lane)', () => {
+  const cg = require('./curation-guard.js');
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-inline-sweep-'));
+  try {
+    const old = (Date.now() - 2 * 86400e3) / 1000;
+    const mk = (n) => { const p = path.join(dir, n); fs.writeFileSync(p, 'x'); fs.utimesSync(p, old, old); return p; };
+    const a = mk('a.sh');
+    const t0 = Date.now();
+    assertEq(cg.sweepInlineScripts(dir, t0), true);
+    assertEq(fs.existsSync(a), false, 'stale file removed');
+    const b2 = mk('b.sh');
+    assertEq(cg.sweepInlineScripts(dir, t0 + 60e3), false, 'within 10 min: no scan');
+    assertEq(fs.existsSync(b2), true);
+    assertEq(cg.sweepInlineScripts(dir, t0 + 11 * 60e3), true, 'after 10 min: scans again');
+    assertEq(fs.existsSync(b2), false);
+  } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+});
+
+test('log-rotate.appendRotating: o arquivo nunca passa do teto; gira para .1/.2 e descarta o mais velho (router.log chegou a 12,8 MB)', () => {
+  const { appendRotating } = require('../engine/lib/log-rotate.js');
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-logrot-'));
+  try {
+    const f = path.join(dir, 'sub', 'router.log');
+    for (let i = 0; i < 100; i++) appendRotating(f, `line ${String(i).padStart(3, '0')} ${'x'.repeat(40)}`, { maxBytes: 500, keep: 2 });
+    assert(fs.statSync(f).size <= 500, 'current file under the cap');
+    assert(fs.existsSync(f + '.1') && fs.existsSync(f + '.2') && !fs.existsSync(f + '.3'), 'keeps exactly 2 rotated files');
+    assert(fs.readFileSync(f, 'utf8').trimEnd().endsWith(`line 099 ${'x'.repeat(40)}`), 'newest line in the current file');
+  } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+  for (const rel of ['servers/model-router/index.js', 'scripts/model-router-ensure.js']) {
+    const src = fs.readFileSync(path.join(ROOT, rel), 'utf8');
+    assert(/appendRotating\(/.test(src) && !/appendFileSync\(LOG_FILE/.test(src), `${rel} writes router.log through the rotating appender`);
+  }
+});
+
 // ─── oneoff-store ─────────────────────────────────────────────────────────────
 const oneoff = require(path.join(SCRIPTS, 'lib', 'oneoff-store.js'));
 const freshDataDir = () => fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-oneoff-'));
@@ -6896,6 +7224,40 @@ test('oneoff-store: load drops orphaned assignment-only keys', () => {
   assert(!('NODE_ENV=test' in store.entries), 'bare assignment key must be dropped');
   assert('npm test' in store.entries, 'real signature must survive');
 });
+test('oneoff-store: load reaproveita o store ja lido enquanto o arquivo nao muda (re-assinar ~3k chaves custava ~39 ms por Bash) e rele quando outro processo grava', () => {
+  const dataDir = freshDataDir();
+  const f = path.join(dataDir, 'curation-oneoff', 'proj.json');
+  fs.mkdirSync(path.dirname(f), { recursive: true });
+  fs.writeFileSync(f, JSON.stringify({ entries: { 'npm test': { sig: 'npm test', seen: [1], sessions: [] } } }));
+  const a = oneoff.load(dataDir, 'proj');
+  assert(oneoff.load(dataDir, 'proj') === a, 'same file stamp: no re-parse');
+  oneoff.touch(dataDir, 'proj', 'npm test', { sessionId: 's', create: false });
+  assert(oneoff.load(dataDir, 'proj') === a, 'our own save keeps the cached store current');
+  assertEq(JSON.parse(fs.readFileSync(f, 'utf8')).entries['npm test'].seen.length, 2, 'and the file has the write');
+  fs.writeFileSync(f, JSON.stringify({ entries: { 'npm run build': { sig: 'npm run build', seen: [1, 2, 3] } } }));
+  const b = oneoff.load(dataDir, 'proj');
+  assert(b !== a && 'npm run build' in b.entries && !('npm test' in b.entries), 'external write → fresh read');
+});
+
+test('curation-detect: saida volumosa de EXPLORACAO nao cria entrada no store de one-off (nunca vira script; so inchava o store)', async () => {
+  const detect = require('./curation-detect.js');
+  const journal = require('./lib/turn-journal.js');
+  const proj = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-oo-explore-'));
+  fs.writeFileSync(path.join(proj, 'package.json'), '{}');
+  const sid = 'oo-explore-' + Date.now();
+  const noisy = Array.from({ length: 300 }, (_, i) => `line ${i}`).join('\n');
+  const ev = (command) => ({ hook_event_name: 'PostToolUse', tool_name: 'Bash', tool_input: { command }, tool_response: { stdout: noisy, stderr: '' }, session_id: sid, cwd: proj });
+  const dd = require('../engine/lib/data-dir.js').dataDir();
+  const pk = oneoff.resolveProjectKey(proj);
+  try {
+    await detect.run(ev('git log --stat'));
+    const store = oneoff.load(dd, pk);
+    assertEq(Object.keys(store.entries).filter((k) => k.startsWith('git log')), [], 'exploration: no entry');
+    await detect.run(ev('npm run rawcheck2'));
+    assert(Object.keys(oneoff.load(dd, pk).entries).some((k) => k.startsWith('npm run')), 'a task still gets its entry (its 2nd noisy run asks for a script)');
+  } finally { journal.clearEntries(sid); fs.rmSync(proj, { recursive: true, force: true }); }
+});
+
 test('oneoff-store: touch creates + counts masked recurrence (D1)', () => {
   const dd = freshDataDir(); const pk = 'p'; const t0 = 1_700_000_000_000;
   let r = oneoff.touch(dd, pk, 'git log', { sessionId: 's1', now: t0, create: true });
@@ -7111,7 +7473,7 @@ test('oneoff-store: only a PROGRAM-NAME 1-token sig is ceiling-exempt', () => {
 // (error-store removed — O11: error-guard reads the session transcript; see lib/session-failures.js tests)
 
 // ─── policy-store (deterministic always-apply POLICY injection registry) ─────
-const polstore = require(path.join(SCRIPTS, 'lib', 'policy-store.js'));
+const polstore = require(path.join(ENGINE, 'lib', 'policy-store.js'));
 const freshPolDataDir = () => fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-polstore-'));
 
 test('policy-store: activate stores a REDACTED, capped record and list returns it for the project', () => {
@@ -7194,7 +7556,7 @@ test('policy-store: re-activating the same entryId UPSERTS (no duplicate)', () =
 });
 
 // ─── glob-match (ReDoS-safe SEGMENT matcher for glob-scoped policies, micro-3) ─
-const globm = require(path.join(SCRIPTS, 'lib', 'glob-match.js'));
+const globm = require(path.join(ENGINE, 'lib', 'glob-match.js'));
 
 test('glob-match: basename fallback — *.ts matches app.ts AND src/app.ts', () => {
   assertEq([globm.matchGlob('*.ts', 'app.ts'), globm.matchGlob('*.ts', 'src/app.ts')], [true, true]);
@@ -7379,7 +7741,7 @@ test('policy-store: toRelPath — inside-project normalizes; outside/other-drive
 
 // ─── policy shadow-assertion + shipped bug fixes (Phase 3 micro-A) ───────────
 const shadowHook = require(path.join(SCRIPTS, 'policy-enforce-shadow.js'));
-const { metricsProjectKey } = require(path.join(SCRIPTS, 'lib', 'metrics-project.js'));
+const { metricsProjectKey } = require(path.join(ENGINE, 'lib', 'metrics-project.js'));
 const SHADOW_CWD = process.platform === 'win32' ? 'C:\\proj' : '/proj';
 const shadowAssert = (extra) => ({ kind: 'forbid-added-literal', literal: 'console.log', ...(extra || {}) });
 
@@ -7557,7 +7919,7 @@ test('metrics-project: metricsProjectKey is stable + path-safe (no separators) f
 });
 
 test('metrics-store: getEvaluationCounts aggregates EXACT per-(activationId,outcome) counts past 500 (no log cap)', () => {
-  const ms = require(path.join(SCRIPTS, 'lib', 'metrics-store.js'));
+  const ms = require(path.join(ENGINE, 'lib', 'metrics-store.js'));
   const project = 'evalcounts-' + Date.now();
   assert(ms.init({ project }), 'metrics db init');
   try {
@@ -8704,6 +9066,12 @@ test('plugin-updater.performUpdate: registry records the SEMVER version (what Cl
   assertEq(keep, path.basename(r.installPath), 'stale-process cleanup keeps the dir actually installed');
 });
 
+test('plugin-updater.performUpdate: o registro installed_plugins.json e gravado de forma ATOMICA (nunca truncado se o processo cair no meio)', () => {
+  const src = fs.readFileSync(path.join(SCRIPTS, 'lib', 'plugin-updater.js'), 'utf8');
+  assert(/writeFileAtomic\(registryPath,/.test(src), 'registry goes through writeFileAtomic');
+  assert(!/fs\.writeFileSync\(registryPath/.test(src), 'no plain writeFileSync on the registry');
+});
+
 test('plugin-updater.freshCacheDir: first free name, never an existing dir', () => {
   const taken = new Set([path.join('B', 'x'), ]);
   assertEq(pu.freshCacheDir('B', 'y', (p) => taken.has(p)), path.join('B', 'y'));
@@ -8806,7 +9174,7 @@ test('dashboard-static.resolveStaticPath: serves inside the root, rejects traver
 });
 
 test('C1 brain-backend.saveLocal: embeds buildEmbedText (title+summary), single write', () => {
-  const src = fs.readFileSync(path.join(SCRIPTS, 'brain-backend.js'), 'utf-8');
+  const src = fs.readFileSync(path.join(ENGINE, 'brain-backend.js'), 'utf-8');
   const fn = src.match(/async function saveLocal[\s\S]*?\n\}/);
   assert(fn, 'saveLocal not found');
   assert(/buildEmbedText\(entry\)/.test(fn[0]), 'must embed buildEmbedText(entry), not title+summary+detail');
@@ -8816,21 +9184,24 @@ test('C1 brain-backend.saveLocal: embeds buildEmbedText (title+summary), single 
   assert(/try \{[\s\S]*?_embedder\.embed/.test(fn[0]) && /catch/.test(fn[0]), 'a failing embed must not lose the entry (embed in try/catch, still save)');
 });
 
-test('C2 mcp-client.close: captures the process ref before nulling (JVM kill fires)', () => {
-  const src = fs.readFileSync(path.join(SCRIPTS, 'mcp-client.js'), 'utf-8');
-  assert(/const proc = this\._process;/.test(src), 'must capture proc before nulling');
-  assert(/if \(proc && !proc\.killed\)/.test(src) && /proc\.kill\(\)/.test(src), 'the timeout must kill the captured proc, not this._process (which is null by then)');
+test('mcp-client: so o transporte HTTP (o ramo stdio, que rodava um JAR por cliente, foi removido — inalcancavel desde ADR-023)', () => {
+  const src = fs.readFileSync(path.join(ENGINE, 'mcp-client.js'), 'utf-8');
+  assert(!/this\._process|_processBuffer|_handleMessage|stdin\.write|jarPath|javaArgs/.test(src), 'no stdio/JAR code left');
+  const McpClient = require('../engine/mcp-client.js');
+  const c = new McpClient({ jarPath: 'ignored.jar', serverUrl: 'http://127.0.0.1:1' });
+  assertEq([c.transport, c.serverUrl, c.isConnected()], ['http', 'http://127.0.0.1:1', false]);
+  c.close(); // no session: nothing to DELETE, never throws
 });
 
 test('C5 brain-store.close: resets _useSqlite/_useJson (no stale-true null-deref)', () => {
-  const src = fs.readFileSync(path.join(SCRIPTS, 'brain-store.js'), 'utf-8');
+  const src = fs.readFileSync(path.join(ENGINE, 'brain-store.js'), 'utf-8');
   const fn = src.match(/async function close\(\)[\s\S]*?\n\}/);
   assert(fn, 'close() not found');
   assert(/_useSqlite = false/.test(fn[0]) && /_useJson = false/.test(fn[0]), 'close() must reset both backend flags');
 });
 
 test('C6 brain-store.searchByKeywords: uses the keywords table, not a null-vector search', () => {
-  const src = fs.readFileSync(path.join(SCRIPTS, 'brain-store.js'), 'utf-8');
+  const src = fs.readFileSync(path.join(ENGINE, 'brain-store.js'), 'utf-8');
   const fn = src.match(/async function searchByKeywords\(keywords[\s\S]*?\n\}/);
   assert(fn, 'searchByKeywords not found');
   assert(!/return searchSqlite\(null/.test(fn[0]), 'must not fall into the vector-less searchSqlite(null) that ignores keywords');
@@ -8862,7 +9233,7 @@ test('S4 failure-journal.sweepOld: deletes old files, keeps recent + sibling jou
 });
 
 test('S4 retrieve-core: pool-warming is fire-and-forget (no await blocking recall)', () => {
-  const src = fs.readFileSync(path.join(SCRIPTS, 'lib', 'retrieve-core.js'), 'utf-8');
+  const src = fs.readFileSync(path.join(ENGINE, 'lib', 'retrieve-core.js'), 'utf-8');
   assert(!/await warmP/.test(src), 'must not await the discarded pool-warming call on the hot path');
   assert(/fire-and-forget/.test(src), 'the fire-and-forget intent should be documented');
 });
@@ -8887,6 +9258,21 @@ test('S4 dashboard.countEntriesInDb: caches by db+wal mtime (WAL-safe) + cache d
 
 // ─── model-router-ensure: opt-in merge (shipped ⊕ DATA_DIR user-config) ──────
 const routerEnsure = require('./model-router-ensure.js');
+
+test('model-router-ensure.cleanupGlobalEnv: com o selo, nenhum spawn de PowerShell (eram ~450 ms em todo SessionStart); sem selo, uma passada limpa grava o selo', () => {
+  const d = fs.mkdtempSync(path.join(os.tmpdir(), 'mre-seal-'));
+  try {
+    const seal = path.join(d, 'legacy-env-clean.json');
+    fs.writeFileSync(seal, '{}');
+    const t0 = Date.now();
+    assertEq(routerEnsure.cleanupGlobalEnv(seal), 'sealed');
+    assert(Date.now() - t0 < 50, 'sealed path spawns nothing');
+    fs.rmSync(seal);
+    const first = routerEnsure.cleanupGlobalEnv(seal);
+    assert(first === 'cleaned' || first === 'dirty', first);
+    if (first === 'cleaned') assertEq(fs.existsSync(seal), true, 'clean pass seals');
+  } finally { fs.rmSync(d, { recursive: true, force: true }); }
+});
 // ─── cost-tuning: 1 h cache + auto-compact window in settings.json env (ownership-safe) ──
 const costTuning = require('./lib/cost-tuning.js');
 const CT_WANT = { CLAUDE_CODE_PROMPT_CACHE_TTL: '1h', CLAUDE_CODE_AUTO_COMPACT_WINDOW: '153000' };
@@ -9003,7 +9389,7 @@ test('cost-tuning: shipped default ON (1h + Tool Search, NO fixed compaction win
 test('cost-tuning: applyCostTuning writes the temp HOME settings.json, keeps foreign keys, restores on disable', () => {
   const hc = require('./lib/hooks-config.js');
   const settings = path.join(os.homedir(), '.claude', 'settings.json');
-  const stateFile = path.join(require('./lib/data-dir.js').globalDir(), 'cost-tuning-state.json');
+  const stateFile = path.join(require('../engine/lib/data-dir.js').globalDir(), 'cost-tuning-state.json');
   assert(settings.startsWith(process.env.USERPROFILE) && stateFile.startsWith(process.env.USERPROFILE), 'temp HOME only');
   const ucfg = hc.userConfigPath();
   const keep = [settings, stateFile, ucfg].map((f) => [f, fs.existsSync(f) ? fs.readFileSync(f, 'utf8') : null]);
@@ -9385,10 +9771,11 @@ test('resolveMode: off quando enabled!==true E fallback.enabled!==true', () => {
   assertEq(resolveMode({ enabled: false }), 'off'); // sem bloco fallback
 });
 
-test('resolveMode: routing quando enabled===true (independe do fallback)', () => {
-  assertEq(resolveMode({ enabled: true }), 'routing');
-  assertEq(resolveMode({ enabled: true, fallback: { enabled: true } }), 'routing');
-  assertEq(resolveMode({ enabled: true, fallback: { enabled: false } }), 'routing');
+test('resolveMode (P11): enabled===true (per-turn routing, removido) e IGNORADO — o modo vem dos outros interruptores', () => {
+  assertEq(resolveMode({ enabled: true }), 'off');
+  assertEq(resolveMode({ enabled: true, fallback: { enabled: true } }), 'fallback-only');
+  assertEq(resolveMode({ enabled: true, fallback: { enabled: false } }), 'off');
+  assertEq(MODE_META.routing, undefined, 'no routing mode left');
 });
 
 test('resolveMode: fallback-only quando enabled:false + fallback.enabled:true', () => {
@@ -9401,8 +9788,8 @@ test('resolveMode: sticky-tier quando sticky.enabled===true (vence enabled e fal
   assertEq(resolveMode({ sticky: { enabled: true }, fallback: { enabled: true } }), 'sticky-tier');
 });
 
-test('resolveMode: precedência sticky > enabled > fallback > off', () => {
-  assertEq(resolveMode({ sticky: { enabled: false }, enabled: true }), 'routing');
+test('resolveMode: precedência sticky > fallback > off', () => {
+  assertEq(resolveMode({ sticky: { enabled: false }, enabled: true }), 'off');
   assertEq(resolveMode({ sticky: { enabled: false }, enabled: false, fallback: { enabled: true } }), 'fallback-only');
   assertEq(resolveMode({ sticky: { enabled: false }, enabled: false, fallback: { enabled: false } }), 'off');
   assertEq(resolveMode({ sticky: {} }), 'off'); // bloco sticky sem enabled
@@ -9436,8 +9823,7 @@ test('modeMeta: mapeia cada modo para cor/deprecado corretos', () => {
   assertEq(modeMeta('fallback-only').deprecated, false);
   assertEq(modeMeta('sticky-tier').color, 'green');
   assertEq(modeMeta('sticky-tier').deprecated, false);
-  assertEq(modeMeta('routing').color, 'amber');
-  assertEq(modeMeta('routing').deprecated, true);      // per-turn é deprecado
+  assertEq(modeMeta('routing'), MODE_META.off, 'the removed per-turn mode falls back to off');
 });
 
 test('dashboard i18n: every key the page uses has an EN and a PT translation (a missing one renders as the raw key)', () => {
@@ -9462,7 +9848,7 @@ test('dashboard i18n: every key the page uses has an EN and a PT translation (a 
 });
 
 test('modeMeta: cada modo tem uma chave i18n mode.*', () => {
-  for (const mode of ['off', 'fallback-only', 'sticky-tier', 'routing']) {
+  for (const mode of ['off', 'fallback-only', 'sticky-tier', 'byok-direct']) {
     assert(/^mode\./.test(modeMeta(mode).i18n), `i18n key p/ ${mode}`);
   }
 });
@@ -9475,7 +9861,7 @@ test('modeMeta: modo desconhecido/ausente cai em off (fail-safe)', () => {
 
 test('resolveMode→modeMeta: cadeia config→modo→apresentação coerente', () => {
   assertEq(modeMeta(resolveMode({ sticky: { enabled: true } })).color, 'green');
-  assertEq(modeMeta(resolveMode({ enabled: true })).color, 'amber');
+  assertEq(modeMeta(resolveMode({ enabled: true })).color, 'grey');
   assertEq(modeMeta(resolveMode({ fallback: { enabled: true } })).color, 'blue');
   assertEq(modeMeta(resolveMode({})).color, 'grey');
 });
@@ -9580,6 +9966,52 @@ test('release-guard.pushArrival: data pela CHEGADA do bump na main (push), nao p
 test('release-guard: o workflow passa o token p/ datar pela atividade da main', () => {
   const wf = fs.readFileSync(path.resolve(ROOT, '..', '.github', 'workflows', 'release-guard.yml'), 'utf8');
   assert(/GITHUB_TOKEN:\s*\$\{\{\s*github\.token\s*\}\}/.test(wf), 'sem o token o guard volta a datar pelo commit (drift falso no push do release)');
+});
+
+// ─── pages-guard: a apresentação não carrega changelog (regra do Allan, 2026-10-15) ──
+// A página de vitrine é mostrada a pessoas; o histórico de versões vai para uma
+// página própria linkada no rodapé. A do boss tinha virado um muro de "Na 3.1.1,
+// … Na 3.2.0, …" dentro de uma seção de funcionalidade.
+const PG_PATH = path.resolve(ROOT, '..', '.github', 'scripts', 'pages-guard.mjs');
+const loadPagesGuard = () => import(require('url').pathToFileURL(PG_PATH).href);
+const pgPage = (body, footer = '<footer><a href="changelog.html">Changelog</a> · MIT · v3.9.0</footer>') =>
+  `<html><head><title>x 1.2.3</title><style>.a{}</style></head><body><header><span class="brand">boss <small>v3.9.0</small></span><a href="#top" class="ver">v3.9.0</a></header>${body}${footer}<script>var v="1.0.0"</script></body></html>`;
+
+test('pages-guard: importar o modulo NAO executa o CLI', async () => {
+  const pg = await loadPagesGuard();
+  assertEq(typeof pg.presentationViolations, 'function');
+});
+
+test('pages-guard.presentationViolations: apresentacao limpa (versao so na marca/rodape, link do changelog no rodape) passa', async () => {
+  const { presentationViolations } = await loadPagesGuard();
+  assertEq(presentationViolations(pgPage('<section><h2>Menos repetição.</h2><p>Node.js 22.13+ no PATH.</p></section>')), []);
+});
+
+test('pages-guard.presentationViolations: notas de versao na apresentacao falham', async () => {
+  const { presentationViolations } = await loadPagesGuard();
+  const v = presentationViolations(pgPage('<section><span class="soon">Novo na 3.1.0</span><p class="more">Na 3.2.0, os scripts curados…</p></section>'));
+  assert(v.some((m) => /3\.1\.0/.test(m)), `numero de versao apontado: ${JSON.stringify(v)}`);
+  assert(v.some((m) => /novo na 3/i.test(m)), `frase de changelog apontada: ${JSON.stringify(v)}`);
+});
+
+test('pages-guard.presentationViolations: secao de versoes ou palavra changelog no corpo falham', async () => {
+  const { presentationViolations } = await loadPagesGuard();
+  assert(presentationViolations(pgPage('<section id="versoes"><h2>Histórico</h2></section>')).length > 0, 'id versoes');
+  assert(presentationViolations(pgPage('<section><h2>Changelog</h2></section>')).length > 0, 'titulo Changelog fora de link');
+});
+
+test('pages-guard.presentationViolations: sem link para uma pagina de changelog falha', async () => {
+  const { presentationViolations } = await loadPagesGuard();
+  const v = presentationViolations(pgPage('<section><h2>Oi</h2></section>', '<footer>MIT</footer>'));
+  assert(v.some((m) => /sem link/.test(m)), JSON.stringify(v));
+});
+
+test('pages-guard: as paginas reais do repo cumprem a regra das camadas', async () => {
+  const { presentationViolations } = await loadPagesGuard();
+  for (const name of ['claude-code-boss', 'rf-reviewer']) {
+    const html = fs.readFileSync(path.resolve(ROOT, '..', 'pages', name, 'index.html'), 'utf8');
+    assertEq(presentationViolations(html), [], name);
+  }
 });
 
 
@@ -9789,8 +10221,8 @@ test('FASE-F store round-trip: save→get→update fields→save→delete (opera
   process.env.CLAUDE_PLUGIN_DATA = tmp;
   let store;
   try {
-    delete require.cache[require.resolve('./brain-store.js')];
-    store = require('./brain-store.js');
+    delete require.cache[require.resolve('../engine/brain-store.js')];
+    store = require('../engine/brain-store.js');
     await store.init({ project: 'fasef-proj' });
     const entry = {
       id: 'ff-0001', type: 'lesson', project: 'fasef-proj',
@@ -9825,7 +10257,7 @@ test('FASE-F store round-trip: save→get→update fields→save→delete (opera
     if (store) await store.close();
     if (savedEnv === undefined) delete process.env.CLAUDE_PLUGIN_DATA;
     else process.env.CLAUDE_PLUGIN_DATA = savedEnv;
-    delete require.cache[require.resolve('./brain-store.js')];
+    delete require.cache[require.resolve('../engine/brain-store.js')];
     try { fs.rmSync(tmp, { recursive: true, force: true }); } catch (_) { void _; }
   }
 });
@@ -9856,7 +10288,7 @@ test('FASE-G mcp-wizard: reset limpa estado persistido; getState devolve idle (r
     delete require.cache[require.resolve('./lib/mcp-wizard.js')];
     const wizard = require('./lib/mcp-wizard.js');
     const stPath = wizard.wizardStateFile();
-    assert(stPath.startsWith(path.dirname(require('./lib/data-dir.js').globalDir())), 'estado do wizard vive no global dir (não no repo)');
+    assert(stPath.startsWith(path.dirname(require('../engine/lib/data-dir.js').globalDir())), 'estado do wizard vive no global dir (não no repo)');
     const first = wizard.reset();
     assertEq(first.status, 'idle', 'reset → status idle');
     assertEq(first.step, 0, 'reset → step 0');
@@ -10126,7 +10558,7 @@ test('mergeUserConfig (server): {fallback:{enabled:true}} preserva cooldown/trig
 
 test('server.resolveMode === lib impl (mesma regra nos dois processos)', () => {
   assertEq(routerServer.resolveMode({ enabled: false, fallback: { enabled: true } }), 'fallback-only');
-  assertEq(routerServer.resolveMode({ enabled: true }), 'routing');
+  assertEq(routerServer.resolveMode({ enabled: true }), 'off');
   assertEq(routerServer.resolveMode({ sticky: { enabled: true }, enabled: true }), 'sticky-tier');
   assertEq(routerServer.resolveMode({}), 'off');
 });
@@ -14881,7 +15313,7 @@ test('resolveMode: custom upstream sozinho liga o proxy em passthrough', () => {
   const rm = require('./lib/router-mode.js');
   assertEq(rm.resolveMode({ upstream: { enabled: true } }), 'fallback-only');
   assertEq(rm.resolveMode({ upstream: { enabled: false } }), 'off');
-  assertEq(rm.resolveMode({ enabled: true, upstream: { enabled: true } }), 'routing');
+  assertEq(rm.resolveMode({ enabled: true, upstream: { enabled: true } }), 'fallback-only');
 });
 
 test('modeMeta: byok-direct tem rotulo e cor proprios (nao cai no fail-safe off)', () => {
@@ -15360,7 +15792,7 @@ test('decideStickyModel: classify falha (null) + modelo desconhecido → passthr
 });
 
 // ─── verify-journal: roundtrip (D2) ──────────────────────────────────────────
-test('verify-journal: append edit+cmd, read chronological, clear (D2)', () => {
+test('verify-journal: append edit+cmd, read chronological, clear (D2)', () => withDevProfile(() => {
   const saved = process.env.CLAUDE_PLUGIN_DATA;
   process.env.CLAUDE_PLUGIN_DATA = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-vj-'));
   // Re-require with the fresh DATA_DIR baked into module scope.
@@ -15382,7 +15814,7 @@ test('verify-journal: append edit+cmd, read chronological, clear (D2)', () => {
     process.env.CLAUDE_PLUGIN_DATA = saved;
     delete require.cache[require.resolve('./lib/verify-journal.js')];
   }
-});
+}));
 
 // ─── verify-nudge: test detection + evaluate (D2) ─────────────────────────────
 const verifyNudge = require('./verify-nudge.js');
@@ -15570,6 +16002,25 @@ test('self-review-retrieve.retrieveViaDaemon: REAL daemon — sessions do not ac
   }
 });
 
+test('http-daemon: rejeicao sem tratamento NAO derruba o daemon de todas as sessoes; fica contada no /health e o handler sai no shutdown', async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-unhandled-'));
+  const { startHttpDaemon } = await import(require('url').pathToFileURL(path.join(ROOT, 'servers', 'brain-server', 'lib', 'http-daemon.js')).href);
+  const before = process.listenerCount('unhandledRejection');
+  const d = await startHttpDaemon({ pluginRoot: ROOT, dataDir: dir, port: 0 });
+  try {
+    assertEq(process.listenerCount('unhandledRejection'), before + 1, 'handler installed');
+    Promise.reject(new Error('stray-rejection-probe'));
+    await new Promise((r) => setTimeout(r, 50));
+    const port = d.httpServer.address().port;
+    const h = await new Promise((resolve, reject) => {
+      require('http').get({ host: '127.0.0.1', port, path: '/health' }, (res) => { let b = ''; res.on('data', (c) => { b += c; }); res.on('end', () => resolve(JSON.parse(b))); }).on('error', reject);
+    });
+    assertEq(h.unhandledRejections.count, 1);
+    assertEq(h.unhandledRejections.last.message, 'stray-rejection-probe');
+  } finally { await d.shutdown(); fs.rmSync(dir, { recursive: true, force: true }); }
+  assertEq(process.listenerCount('unhandledRejection'), before, 'handler removed on shutdown');
+});
+
 test('http-daemon: hook_* tools are NOT in tools/list (model never sees them) but stay callable by name for mcp_tool hooks', async () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-hidehooks-'));
   const { startHttpDaemon } = await import(require('url').pathToFileURL(path.join(ROOT, 'servers', 'brain-server', 'lib', 'http-daemon.js')).href);
@@ -15602,7 +16053,20 @@ test('http-daemon: hook_* tools are NOT in tools/list (model never sees them) bu
       assert(hints[n] && typeof hints[n].readOnlyHint === 'boolean' && typeof hints[n].destructiveHint === 'boolean', `${n} must declare both hints: ${JSON.stringify(hints[n])}`);
       assert(!(hints[n].readOnlyHint && hints[n].destructiveHint), `${n}: read-only cannot be destructive`);
     }
-    assertEq([...classified].filter((n) => !names.includes(n)), [], 'no stale names in the classification');
+    // P10: the glob/shadow policy tools are unlisted while no such policy exists (this data dir has none).
+    const CONDITIONAL = ['policy_shadow_report', 'policy_adjudication_prepare', 'policy_adjudication_record', 'policy_adjudication_report', 'policy_adjudication_purge', 'policy_trigger_evidence_purge', 'policy_self_update_report', 'policy_apply_candidate'];
+    assertEq([...classified].filter((n) => !names.includes(n)).sort(), [...CONDITIONAL].sort(), 'only the conditional policy tools are missing: no stale names in the classification');
+    // A glob policy in the registry brings them back on the next tools/list.
+    const reg = path.join(process.env.CLAUDE_PLUGIN_DATA, 'policies', 'registry.json');
+    const prevReg = fs.existsSync(reg) ? fs.readFileSync(reg) : null;
+    fs.mkdirSync(path.dirname(reg), { recursive: true });
+    fs.writeFileSync(reg, JSON.stringify({ records: { g1: { id: 'g1', mode: 'glob', scope: 'project', projectId: 'p', text: 't', globs: ['**/*.js'] } } }));
+    try {
+      const againTools = (await post({ jsonrpc: '2.0', id: 9, method: 'tools/list', params: {} }, sid)).json.result.tools;
+      const again = againTools.map((t) => t.name);
+      for (const n of CONDITIONAL) assert(again.includes(n), `${n} listed once a glob policy exists`);
+      for (const t of againTools) hints[t.name] = t.annotations;
+    } finally { if (prevReg) fs.writeFileSync(reg, prevReg); else fs.rmSync(reg, { force: true }); }
     for (const n of ['brain_count', 'policy_list', 'graph_search', 'project_list']) assertEq(hints[n].readOnlyHint, true, `${n} only reads`);
     // store.get() bumps access_count (ranking + prune utility) → these are NOT read-only.
     for (const n of ['brain_search', 'brain_related', 'brain_retrieve_context', 'backend_setup_status', 'graph_analyze']) assertEq(hints[n].readOnlyHint, false, `${n} writes something`);
@@ -15692,13 +16156,13 @@ test('brain-status: reports the folder\'s real project id (not the folder name /
     assertEq(status(named).project, 'loja-online', 'declared id, not the folder name "pasta-qualquer"');
     assert(/memory is off/.test(status(plain).project), 'no id → says memory is off, not "default"');
     process.env.HOME = home; process.env.USERPROFILE = home; delete process.env.CCB_PROJECT_ID;
-    require('./lib/brain-config.js')._resetCache();
+    require('../engine/lib/brain-config.js')._resetCache();
     await require('./brain-status.js').run({ cwd: named });
     assertEq(process.env.CCB_PROJECT_ID, undefined, 'run() left the process env alone (first resolver rung)');
   } finally {
     process.env.HOME = saved.HOME; process.env.USERPROFILE = saved.USERPROFILE;
     if (saved.CCB === undefined) delete process.env.CCB_PROJECT_ID; else process.env.CCB_PROJECT_ID = saved.CCB;
-    require('./lib/brain-config.js')._resetCache();
+    require('../engine/lib/brain-config.js')._resetCache();
     fs.rmSync(base, { recursive: true, force: true });
   }
 });
@@ -15735,6 +16199,27 @@ test('mcp-launcher (native-java ADR-023 contract): one JSON line → url; exit 1
   } finally { fs.rmSync(home, { recursive: true, force: true }); }
 });
 
+test('brain-daemon-ensure: deps faltando = setup em background e NADA de spawn do daemon (ele morria na importacao: ERR_MODULE_NOT_FOUND, 2026-10-14)', async () => {
+  const ens = require('./brain-daemon-ensure.js');
+  let spawned = 0;
+  const out = await ens.run({ hook_event_name: 'UserPromptSubmit' }, {
+    root: ROOT, data: os.tmpdir(), runSetupInBackground: () => true,
+    ensureDaemon: async () => { spawned++; return { status: 'started' }; },
+  });
+  assertEq(spawned, 0, 'daemon not spawned while its deps are being installed');
+  assert(/Installing the plugin dependencies/.test(out) && /plugin-setup\.log/.test(out), `visible notice with the log path: ${out}`);
+  const ok = await ens.run({ hook_event_name: 'UserPromptSubmit' }, {
+    root: ROOT, data: os.tmpdir(), runSetupInBackground: () => false,
+    ensureDaemon: async () => { spawned++; return { status: 'current' }; },
+  });
+  assertEq([spawned, ok], [1, null], 'deps present → ensure runs, silent');
+});
+
+test('brain-daemon-ensure.runSetupInBackground: a saida do setup vai para plugin-setup.log no data dir (antes: stdio ignore, o log do npm sumia)', () => {
+  const src = fs.readFileSync(path.join(__dirname, 'brain-daemon-ensure.js'), 'utf8');
+  assert(/plugin-setup\.log/.test(src) && /stdio: \['ignore', log, log\]/.test(src), 'setup stdout/stderr appended to a log file');
+});
+
 test('SessionStart runs the server launcher (contract step 1) on a local mcp-memory backend only — not for a user-given server, not on the local backend', async () => {
   const ens = require('./brain-daemon-ensure.js');
   const run = async (cfg) => {
@@ -15753,7 +16238,7 @@ test('SessionStart runs the server launcher (contract step 1) on a local mcp-mem
 
 test('SessionStart with the memory server UP spawns NOTHING (headless `claude -p` runs fired the launcher every few seconds, each one flashing a window)', async () => {
   const ens = require('./brain-daemon-ensure.js');
-  const McpClient = require('./mcp-client.js');
+  const McpClient = require('../engine/mcp-client.js');
   let kicked = 0;
   class Up extends McpClient { _discoverDaemonUrl() { return 'http://127.0.0.1:1'; } _httpHealth() { return Promise.resolve(true); } }
   class Down extends McpClient { _discoverDaemonUrl() { return 'http://127.0.0.1:1'; } _httpHealth() { return Promise.resolve(false); } }
@@ -15877,6 +16362,131 @@ test('mcp-bootstrap: MANIFEST.json is current (edit a shared file → run "node 
   } finally { fs.rmSync(base, { recursive: true, force: true }); }
 });
 
+// ─── Motor compartilhado (engine core): fronteira, manifesto e o ponto de configuracao do host ──
+test('engine: ENGINE-MANIFEST.json esta atual e o fechamento de require de cada arquivo listado fica DENTRO da lista, sem adaptador do Claude Code; CLAUDE_* so nos dois seams', async () => {
+  const sync = require('./lib/mcp-bootstrap/sync.js');
+  const manifestFile = path.join(ROOT, 'ENGINE-MANIFEST.json');
+  const here = await sync.checkListed({ manifest: manifestFile });
+  assert(here.ok, `engine manifest is stale (edit a listed file → node scripts/lib/mcp-bootstrap/sync.js stamp --manifest ENGINE-MANIFEST.json): ${here.problems.join(' | ')}`);
+  const m = JSON.parse(fs.readFileSync(manifestFile, 'utf8'));
+  const listed = new Set(Object.keys(m.files));
+  const seams = new Set(m.seams);
+  const FORBIDDEN = /(^|\/)(hook-io|hook-context|hook-tools|hook-prefix|hook-owner|session-root|crash-evidence)\.js$/;
+  const reqRe = /require\(\s*['"]([^'"]+)['"]\s*\)/g;
+  const problems = [];
+  for (const rel of listed) {
+    const src = fs.readFileSync(path.join(ROOT, rel), 'utf8');
+    if (/process\.env\.CLAUDE_[A-Z_]+/.test(src) && !seams.has(rel)) problems.push(`${rel} reads process.env.CLAUDE_*`);
+    for (const mm of src.matchAll(reqRe)) {
+      if (!mm[1].startsWith('.')) continue;
+      let target = path.posix.normalize(path.posix.join(path.posix.dirname(rel), mm[1]));
+      if (!/\.(c|m)?js$/.test(target)) target += '.js';
+      if (FORBIDDEN.test(target)) problems.push(`${rel} requires the adapter ${target}`);
+      else if (fs.existsSync(path.join(ROOT, target)) && !listed.has(target)) problems.push(`${rel} requires ${target}, which is not in the engine manifest`);
+    }
+  }
+  assertEq(problems, []);
+  // The folder IS the boundary: every listed file but the separately vendored mcp-bootstrap lives in engine/, and nothing unlisted does.
+  const outside = [...listed].filter((rel) => !rel.startsWith('engine/') && !rel.startsWith('scripts/lib/mcp-bootstrap/'));
+  assertEq(outside, [], 'listed files outside engine/');
+  const onDisk = fs.readdirSync(path.join(ROOT, 'engine'), { recursive: true }).map((f) => 'engine/' + String(f).split(path.sep).join('/')).filter((f) => /\.(c|m)?js$/.test(f));
+  assertEq(onDisk.filter((f) => !listed.has(f)), [], 'files in engine/ missing from the manifest');
+});
+
+test('engine: dataDir por parametro — metrics-store, brain-store, recall-health e scope-search gravam/leem no dir passado pela chamada, sem setDataDir', async () => {
+  const a = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-host-a-'));
+  const b = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-host-b-'));
+  const ms = require('../engine/lib/metrics-store.js');
+  const store = require('../engine/brain-store.js');
+  try {
+    assert(ms.init({ project: 'p', dataDir: a }), 'metrics db under A');
+    assert(ms.recordMetric('engine.probe', { n: 1 }, 's') > 0);
+    assert(fs.existsSync(path.join(a, 'metrics', 'p', 'metrics.db')));
+    assert(ms.init({ project: 'p', dataDir: b }), 'same project, other dir → other db');
+    assertEq(ms.getEventLog().length, 0, 'B starts empty');
+    assertEq(ms.getEventLogIsolated('p', { dataDir: a }).length, 1, 'isolated read of A');
+    assertEq(ms.listProjects({ dataDir: b }), ['p']);
+    ms.close();
+
+    await store.init({ project: 'p', dataDir: a });
+    assert(fs.existsSync(path.join(a, 'brain', 'p')), 'brain project dir under A');
+    await store.close();
+
+    const rh = require('../engine/lib/recall-health.js');
+    rh.record('timeout', 'probe', 10, null, { dataDir: a });
+    assert(fs.existsSync(path.join(a, '.runtime', 'recall-health.json')));
+    assertEq(rh.getStatus({ dataDir: a }).windowDegraded, 1);
+    assertEq(rh.getStatus({ dataDir: b }).windowTotal, 0);
+
+    const ss = require('../engine/lib/scope-search.js');
+    assertEq(ss.userDbExists({ dataDir: a }), false);
+    fs.mkdirSync(path.join(a, 'brain', '__user__'), { recursive: true });
+    fs.writeFileSync(path.join(a, 'brain', '__user__', 'brain.db'), '');
+    assertEq(ss.userDbExists({ dataDir: a }), true);
+  } finally {
+    ms.close(); await store.close();
+    fs.rmSync(a, { recursive: true, force: true }); fs.rmSync(b, { recursive: true, force: true });
+  }
+});
+
+test('engine: host-env — project-id/metrics leem o env da chamada sem exigir o hook-context; o adaptador se registra; ctx.projectRoot vence o env', () => {
+  const he = require('../engine/lib/host-env.js');
+  const src = (f) => fs.readFileSync(path.join(ROOT, 'engine', 'lib', f), 'utf8');
+  for (const f of ['project-id.js', 'metrics.js', 'metrics-project.js']) assert(!/hook-context/.test(src(f).replace(/^\s*(\/\/|\*).*$/gm, '')), `${f} requires hook-context`);
+  const hc = require('./lib/hook-context.js');
+  const repo = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-hostenv-'));
+  try {
+    hc.runWithHookEnv({ CLAUDE_PROJECT_DIR: repo }, () => assertEq(he.hostEnv().CLAUDE_PROJECT_DIR, repo, 'the adapter view reaches the engine'));
+    const metrics = require('../engine/lib/metrics.js');
+    const mp = require('../engine/lib/metrics-project.js');
+    hc.runWithHookEnv({ CLAUDE_PROJECT_DIR: os.tmpdir() }, () => assertEq(metrics._resolveProject({ projectRoot: repo }), mp.metricsKeyFor(repo), 'ctx.projectRoot wins over the session env'));
+    const saved = he.hostEnv;
+    he.setHostEnv(null);
+    try { assert(he.hostEnv() === process.env, 'no provider → process.env'); } finally { he.setHostEnv(hc.hookEnv); }
+    void saved;
+  } finally { fs.rmSync(repo, { recursive: true, force: true }); }
+});
+
+test('engine: data-dir.setDataDir — um host que nao e o Claude Code passa o proprio data dir e nenhuma resolucao do CC roda', () => {
+  const dd = require('../engine/lib/data-dir.js');
+  const host = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-host-'));
+  try {
+    dd.setDataDir(host);
+    assertEq(dd.dataDir(), path.resolve(host));
+    const prev = process.env.CLAUDE_PLUGIN_DATA;
+    process.env.CLAUDE_PLUGIN_DATA = path.join(os.tmpdir(), 'ignored-cc-data');
+    try { assertEq(dd.dataDir(), path.resolve(host), 'the host value wins over CLAUDE_PLUGIN_DATA'); } finally { if (prev === undefined) delete process.env.CLAUDE_PLUGIN_DATA; else process.env.CLAUDE_PLUGIN_DATA = prev; }
+  } finally { dd.setDataDir(null); fs.rmSync(host, { recursive: true, force: true }); }
+  assert(dd.dataDir() !== path.resolve(host), 'null goes back to the Claude Code resolution');
+});
+
+test('engine: sync.js --manifest (vendorizacao generalizada) — copia nova em dia; arquivo editado, ausente ou atras do upstream e apontado; CRLF nao conta', async () => {
+  const sync = require('./lib/mcp-bootstrap/sync.js');
+  const base = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-engsync-'));
+  try {
+    const up = path.join(base, 'up'); const copy = path.join(base, 'copy');
+    for (const d of [up, copy]) { fs.mkdirSync(path.join(d, 'a', 'b'), { recursive: true }); fs.writeFileSync(path.join(d, 'a', 'b', 'x.js'), 'x\n'); fs.writeFileSync(path.join(d, 'y.js'), 'y\n'); }
+    const man = (d) => { const p = path.join(d, 'M.json'); fs.writeFileSync(p, JSON.stringify({ root: '.', files: { 'a/b/x.js': '', 'y.js': '' } })); return p; };
+    sync.stampListed(man(up)); fs.copyFileSync(path.join(up, 'M.json'), path.join(copy, 'M.json'));
+    assert((await sync.checkListed({ manifest: path.join(copy, 'M.json'), upstream: path.join(up, 'M.json') })).ok, 'fresh copy in sync');
+    fs.writeFileSync(path.join(copy, 'y.js'), 'y\r\n');
+    assert((await sync.checkListed({ manifest: path.join(copy, 'M.json') })).ok, 'CRLF is not a change');
+    fs.writeFileSync(path.join(copy, 'a', 'b', 'x.js'), 'patched\n');
+    let r = await sync.checkListed({ manifest: path.join(copy, 'M.json') });
+    assert(!r.ok && /a\/b\/x\.js/.test(r.problems[0]), JSON.stringify(r));
+    fs.rmSync(path.join(copy, 'y.js'));
+    r = await sync.checkListed({ manifest: path.join(copy, 'M.json') });
+    assert(!r.ok && /y\.js/.test(r.problems[0]), 'missing file reported');
+    fs.writeFileSync(path.join(up, 'y.js'), 'y2\n'); sync.stampListed(path.join(up, 'M.json'));
+    fs.writeFileSync(path.join(copy, 'y.js'), 'y\n'); fs.writeFileSync(path.join(copy, 'a', 'b', 'x.js'), 'x\n');
+    r = await sync.checkListed({ manifest: path.join(copy, 'M.json'), upstream: path.join(up, 'M.json') });
+    assert(!r.ok && /differs from upstream/.test(r.problems[0]) && /y\.js/.test(r.problems[0]), JSON.stringify(r));
+    const cli = (args) => require('child_process').spawnSync(process.execPath, [path.join(SCRIPTS, 'lib', 'mcp-bootstrap', 'sync.js'), ...args], { encoding: 'utf8', windowsHide: true });
+    assertEq(cli(['check', '--manifest', path.join(ROOT, 'ENGINE-MANIFEST.json')]).status, 0);
+    assertEq(cli(['check', '--manifest']).status, 2, 'missing manifest value is a usage error');
+  } finally { fs.rmSync(base, { recursive: true, force: true }); }
+});
+
 test('mcp-bootstrap.ensureLocalDaemon: live launcher → reused, nothing installed; no launcher → Java → download → --install-launcher → start; no Java → fail loud', async () => {
   const { ensureLocalDaemon } = require('./lib/mcp-bootstrap/install.js');
   const mk = ({ missingFirst, jar }) => {
@@ -15927,7 +16537,7 @@ test('mcp-bootstrap.ensureLocalDaemon: live launcher → reused, nothing install
 test('mcp-client: a daemon that is down is brought back by the LAUNCHER (never java -jar); a user-given serverUrl is never started; "stdio" config is served over HTTP', async () => {
   const launcherPath = require.resolve('./lib/mcp-bootstrap/launcher.js');
   const realL = require(launcherPath);
-  const McpClient = require('./mcp-client.js');
+  const McpClient = require('../engine/mcp-client.js');
   let calls = 0;
   try {
     require.cache[launcherPath].exports = { ...realL, runLauncher: async () => { calls++; return { ok: false, error: '[FATAL] test' }; } };
@@ -15938,7 +16548,7 @@ test('mcp-client: a daemon that is down is brought back by the LAUNCHER (never j
     const remote = new McpClient({ transport: 'http', serverUrl: 'http://127.0.0.1:1' });
     await remote._ensureDaemon();
     assertEq(calls, 1, 'a user-given server is not ours to start');
-    const src = fs.readFileSync(path.join(SCRIPTS, 'mcp-client.js'), 'utf8');
+    const src = fs.readFileSync(path.join(ENGINE, 'mcp-client.js'), 'utf8');
     assert(!/require\('child_process'\)/.test(src) && !/--transport/.test(src) && !/'-jar'/.test(src), 'no jar spawn left in mcp-client.js');
   } finally { require.cache[launcherPath].exports = realL; }
 });
@@ -16007,7 +16617,7 @@ test('mcp-headers (headersHelper): prints the daemon token of the plugin data di
     const order = [];
     const h = await headers({ argvDataDir: dir, ensure: async (d) => { order.push(d); return null; } });
     // The data dir the hooks resolve from the same CLAUDE_PLUGIN_DATA (dataDir() may follow a heavier live folder).
-    const resolved = require('./lib/data-dir.js').dataDir();
+    const resolved = require('../engine/lib/data-dir.js').dataDir();
     assertEq(order, [resolved], 'the daemon is ensured (for that data dir) before answering');
     const { tokenFile } = await import(require('url').pathToFileURL(path.join(ROOT, 'servers', 'brain-server', 'lib', 'daemon-common.js')).href);
     const tok = fs.readFileSync(tokenFile(resolved), 'utf8').trim();
@@ -16159,11 +16769,13 @@ test('self-review.buildAdvisory: [SELF-REVIEW] header + recurrence + type', () =
   assert(!a.includes('recurrence 1'), 'recurrence<=1 omitted');
 });
 
-test('self-review.run: edits + retrieved lesson → block, journals, dedups next turn', async () => {
+test('self-review.run: edits + retrieved lesson → block, journals, dedups next turn', () => withDevProfile(async () => {
   // Uses the top-level journal singletons (bound to the units temp data dir) with
   // a UNIQUE sid + a STUB retrieve (DI) → no cache/env swapping, no store race.
   const sid = 'srsession-' + Date.now();
   const cwd = path.join(os.tmpdir(), 'srproj');
+  fs.mkdirSync(path.join(cwd, '.memory'), { recursive: true });
+  fs.writeFileSync(path.join(cwd, '.memory', 'project.json'), JSON.stringify({ metadata: { defaults: { project_id: 'owner/srproj' } } }));
   const dir = process.env.CLAUDE_PLUGIN_DATA; // where the top-level journals live
   const stubRetrieve = async () => ({ entries: [{ id: 'lesX', title: 'widget parser off-by-one', type: 'lesson', recurrence: 2, score: 0.8 }], source: 'index' });
   const noopMetrics = { fire: () => {} }; // don't touch the shared brain-store singleton in-process
@@ -16181,6 +16793,63 @@ test('self-review.run: edits + retrieved lesson → block, journals, dedups next
   verifyJournalTop.appendEdit(sid, 'scripts/lib/widget-parser.js');
   const second = await selfReview.run({ hook_event_name: 'Stop', session_id: sid, cwd }, { retrieve: stubRetrieve, dataDir: dir, metrics: noopMetrics, cfg: srCfg });
   assertEq(Object.keys(second).length, 0);
+}));
+
+test('self-review.run: busca a memoria pelo ID do projeto da pasta (nao pelo nome) e manda o cwd; pasta sem id = memoria off, nem busca', () => withDevProfile(async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'sr-id-'));
+  const named = path.join(root, 'claude-code'); // folder name != project id
+  const bare = path.join(root, 'no-id');
+  try {
+    fs.mkdirSync(path.join(named, '.memory'), { recursive: true });
+    fs.mkdirSync(bare, { recursive: true });
+    fs.writeFileSync(path.join(named, '.memory', 'project.json'), JSON.stringify({ metadata: { defaults: { project_id: 'AllanSantos-DV/claude-code-plugins' } } }));
+    const seen = [];
+    const stub = async (_q, opts) => { seen.push(opts); return { entries: [], source: 'none' }; };
+    const deps = { retrieve: stub, dataDir: process.env.CLAUDE_PLUGIN_DATA, metrics: { fire: () => {} }, cfg: { enabled: true, topK: 2, minScore: 0.2, types: ['lesson'] } };
+    const sidA = 'sr-id-a-' + Date.now();
+    verifyJournalTop.appendEdit(sidA, 'scripts/lib/widget-parser.js');
+    await selfReview.run({ hook_event_name: 'Stop', session_id: sidA, cwd: named }, deps);
+    assertEq(seen.length, 1, 'retrieve called once');
+    assertEq(seen[0].project, 'AllanSantos-DV/claude-code-plugins', 'project id, not basename "claude-code" (PROJECT_MISMATCH no daemon)');
+    assertEq(seen[0].cwd, named, 'cwd travels so the daemon resolves the id itself');
+    const sidB = 'sr-id-b-' + Date.now();
+    verifyJournalTop.appendEdit(sidB, 'scripts/lib/widget-parser.js');
+    assertEq(await selfReview.run({ hook_event_name: 'Stop', session_id: sidB, cwd: bare }, deps), {});
+    assertEq(seen.length, 1, 'no id → no retrieve at all');
+  } finally { fs.rmSync(root, { recursive: true, force: true }); }
+}));
+
+test('self-review-retrieve.retrieveViaDaemon: manda o cwd no brain_search quando recebe', () => {
+  const src = fs.readFileSync(path.join(__dirname, 'lib', 'self-review-retrieve.js'), 'utf8');
+  assert(/opts\.cwd \? \{ cwd: opts\.cwd \}/.test(src), 'brain_search args carry cwd');
+});
+
+// ─── skill-metric: a ferramenta Skill (PostToolUse) também conta ─────────────
+// Sonda nos transcritos de 7 d: 645 chamadas da ferramenta Skill, tool_input {skill[,args]},
+// e o PostToolUse dispara para ela (hook_success "PostToolUse:Skill"); o skill.invoked só
+// via UserPromptExpansion via 2 delas.
+test('skill-metric.run: chamada da ferramenta Skill grava skill.invoked com o nome de tool_input.skill', async () => {
+  const sm = require('./skill-metric.js');
+  const m = require('../engine/lib/metrics.js');
+  const orig = m.fire; const got = [];
+  m.fire = (name, payload) => { got.push({ name, payload }); };
+  try {
+    await sm.run({ hook_event_name: 'PostToolUse', tool_name: 'Skill', tool_input: { skill: 'claude-code-boss:dashboard', args: 'x' }, session_id: 's' });
+    await sm.run({ hook_event_name: 'UserPromptExpansion', command: '/release now', session_id: 's' });
+    await sm.run({ hook_event_name: 'PostToolUse', tool_name: 'Skill', tool_input: {}, session_id: 's' });
+  } finally { m.fire = orig; }
+  assertEq(got, [
+    { name: 'skill.invoked', payload: { skillName: 'claude-code-boss:dashboard', via: 'tool' } },
+    { name: 'skill.invoked', payload: { skillName: 'release', via: 'typed' } },
+  ]);
+});
+
+test('hooks.json: PostToolUse matcher Skill -> hook_skill_metric com tool_name e tool_input', () => {
+  const hj = JSON.parse(fs.readFileSync(path.join(ROOT, 'hooks', 'hooks.json'), 'utf8')).hooks;
+  const g = (hj.PostToolUse || []).find((x) => x.matcher === 'Skill');
+  assert(g, 'grupo PostToolUse:Skill');
+  const h = g.hooks.find((x) => x.tool === 'hook_skill_metric');
+  assert(h && h.input.tool_name === '${tool_name}' && h.input.tool_input === '${tool_input}', 'hook_skill_metric recebe tool_name/tool_input');
 });
 
 // ─── U2 value-summary (aggregation) + session-summary detector ───────────────
@@ -16367,7 +17036,7 @@ test('data-dir: a VALID env dir yields to the heavier live folder named by the p
   const prevData = process.env.CLAUDE_PLUGIN_DATA;
   process.env[homeVar] = home;
   try {
-    const dd = require('./lib/data-dir.js');
+    const dd = require('../engine/lib/data-dir.js');
     dd.writeActivePointer(live);                    // the live folder publishes itself
     assertEq(dd.readActivePointer(), live);
 
@@ -16398,8 +17067,13 @@ test('doctor.checkModel: present → ok, absent → warn', () => {
   assertEq(doctor.checkModel({ modelPresent: false }).status, 'warn');
 });
 
-test('doctor.checkDaemon: no lock → ok, unhealthy lock → warn, healthy → ok', () => {
-  assertEq(doctor.checkDaemon({ daemon: { lockPresent: false } }).status, 'ok');
+test('doctor.checkDaemon: no lock → warn (todo hook mcp_tool depende dele), deps faltando → warn, unhealthy lock → warn, healthy → ok', () => {
+  const absent = doctor.checkDaemon({ daemon: { lockPresent: false } });
+  assertEq(absent.status, 'warn', 'daemon ausente nao e "ok": os hooks e a memoria das sessoes dependem dele');
+  assert(absent.fix.length > 0, 'diz o que fazer');
+  const noDeps = doctor.checkDaemon({ daemon: { lockPresent: false, deps: { ok: false, detail: 'brain-server deps não resolvem: @modelcontextprotocol/sdk' } } });
+  assert(noDeps.status === 'warn' && /@modelcontextprotocol\/sdk/.test(noDeps.detail) && /plugin-setup/.test(noDeps.fix), JSON.stringify(noDeps));
+  assertEq(doctor.checkDaemon({ daemon: { lockPresent: true, healthy: true, tokenReadable: true, port: 5, deps: { ok: true } } }).status, 'ok');
   assertEq(doctor.checkDaemon({ daemon: { lockPresent: true, healthy: true, tokenReadable: true, port: 5 } }).status, 'ok');
   assertEq(doctor.checkDaemon({ daemon: { lockPresent: true, healthy: false } }).status, 'warn');
   assertEq(doctor.checkDaemon({ daemon: { lockPresent: true, healthy: true, tokenReadable: false } }).status, 'warn');
@@ -16414,9 +17088,8 @@ test('doctor.checkHooksEvents: evento OFICIAL nao pode virar falso positivo (rep
   assertEq(doctor.checkHooksEvents({ hooksEvents: ['SessionStart', 'Stop', 'PreToolUse'] }).status, 'ok');
   assertEq(doctor.checkHooksEvents({ hooksEvents: ['SubagentStart', 'SubagentStop'] }).status, 'ok');
   // A lista tem que cobrir o ciclo de vida documentado, nao um subconjunto de 9.
-  // (UserPromptExpansion/PostToolUseFailure sao oficiais MAS runtime-dependentes →
-  // saem como aviso informativo de proposito; o que nao pode e virar DESCONHECIDO.)
   const oficiais = [
+    'UserPromptExpansion', 'PostToolUseFailure',
     'Setup', 'PermissionRequest', 'PermissionDenied', 'PostToolBatch', 'MessageDisplay',
     'TaskCreated', 'TaskCompleted', 'StopFailure', 'TeammateIdle', 'InstructionsLoaded',
     'ConfigChange', 'CwdChanged', 'FileChanged', 'WorktreeCreate', 'WorktreeRemove',
@@ -16425,11 +17098,14 @@ test('doctor.checkHooksEvents: evento OFICIAL nao pode virar falso positivo (rep
   for (const ev of oficiais) {
     assertEq(doctor.checkHooksEvents({ hooksEvents: [ev] }).status, 'ok', `${ev} e oficial`);
   }
-  for (const ev of ['UserPromptExpansion', 'PostToolUseFailure']) {
-    const r = doctor.checkHooksEvents({ hooksEvents: [ev] });
-    assertEq(r.status, 'warn', `${ev} e runtime-dependente`);
-    assertEq(/fora da lista conhecida/.test(r.detail), false, `${ev} NAO pode ser tratado como desconhecido`);
-  }
+});
+
+test('doctor.checkHooksEvents: os eventos do proprio plugin dao ok, sem o aviso "runtime-dependent" que disparava em TODA execucao', () => {
+  // UserPromptExpansion e PostToolUseFailure estao na lista oficial (code.claude.com/docs/en/hooks,
+  // 2026-10-15) e o Claude Code os dispara; o aviso fixo ensinava a ignorar o doctor.
+  const hooksJson = JSON.parse(fs.readFileSync(path.join(__dirname, '..', 'hooks', 'hooks.json'), 'utf8'));
+  const r = doctor.checkHooksEvents({ hooksEvents: Object.keys(hooksJson.hooks) });
+  assertEq(r.status, 'ok', r.detail);
 });
 
 test('doctor.checkHooksEvents: evento DESCONHECIDO avisa (warn), nunca crava fail', () => {
@@ -16443,10 +17119,6 @@ test('doctor.checkHooksEvents: evento DESCONHECIDO avisa (warn), nunca crava fai
 });
 
 test('doctor: todo aviso/falha diz o que fazer (fix nao vazio), inclusive Hook events', () => {
-  const rt = doctor.checkHooksEvents({ hooksEvents: ['Stop', 'PostToolUseFailure'] });
-  assertEq(rt.status, 'warn');
-  assertEq(/^What to do:/.test(rt.fix), true, 'runtime-dependent diz a acao');
-  assertEq(/safe to ignore/.test(rt.fix), false, 'sem o "ignore" solto de antes');
   const unk = doctor.checkHooksEvents({ hooksEvents: ['BogusEvent'] });
   assertEq(/^What to do:/.test(unk.fix), true);
   const warns = [
@@ -17550,6 +18222,52 @@ test('stop-dispatcher.withNotices: notice-only Stop → {systemMessage}, never d
   assertEq(dispatcher.withNotices(dispatcher.mergeBlocks(r.blocks), r.notices), { systemMessage: 'N' });
 });
 
+test('stop-dispatcher.dispatch: detector pendurado e cortado no prazo por detector (registra timeout) e os seguintes rodam', async () => {
+  const errors = [];
+  const t0 = Date.now();
+  const r = await dispatcher.dispatch({}, {
+    profile: 'dev', shadowRate: 0, detectorTimeoutMs: 50,
+    onError: (name, msg) => errors.push({ name, msg }),
+    detectors: [
+      { name: 'retrieval-feedback', mod: { run: () => new Promise(() => {}) } },
+      { name: 'session-summary', mod: { run: () => ({ notice: 'still ran' }) } },
+    ],
+  });
+  assert(Date.now() - t0 < 2000, 'the hung detector did not hold the Stop');
+  assertEq(r.notices, ['still ran']);
+  const hung = r.detectors.find((d) => d.name === 'retrieval-feedback');
+  assertEq(hung.reason, 'timeout');
+  assert(errors.length === 1 && /timed out after 50ms/.test(errors[0].msg), JSON.stringify(errors));
+});
+
+test('P3: os 8 detectores que nunca rodaram no standard (todos com teste) ficam atras do perfil dev — rodam no dev, nunca no standard, e nenhum quebra num Stop real', async () => {
+  const telem = require('./lib/stop-telemetry.js');
+  const hc = require('./lib/hooks-config.js');
+  const DEV_ONLY = ['pattern-detect', 'decision-scan-response', 'refine-research', 'self-review', 'verify-nudge', 'research-followup-detect', 'failure-retro', 'auto-continue-stop'];
+  // Getters over a given profile's resolved config (the real getters read the configured profile).
+  const gettersFor = (profile) => {
+    const r = hc.resolveProfileConfig({ profile });
+    const on = (k) => () => ({ enabled: !(r[k] && r[k].enabled === false) });
+    return { getPatternDetect: on('patternDetect'), getDecisionScan: on('decisionScan'), getRefineResearch: on('refineResearch'), getSelfReview: on('selfReview'),
+      getVerifyNudge: on('verifyNudge'), getResearchFollowup: on('researchFollowup'), getFailureRetro: on('failureRetro'), getAutoContinue: on('autoContinue') };
+  };
+  for (const name of DEV_ONLY) {
+    assertEq(telem.gateState(name, 'dev', gettersFor('dev')).enabled, true, `${name} runs in dev`);
+    assertEq(telem.gateState(name, 'standard', gettersFor('standard')).enabled, false, `${name} off in standard`);
+  }
+  // Smoke: each detector's run() on a minimal real Stop event answers (no throw) within the per-detector ceiling.
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-p3-'));
+  const tp = path.join(dir, 't.jsonl');
+  fs.writeFileSync(tp, JSON.stringify({ type: 'user', message: { role: 'user', content: 'oi' } }) + '\n');
+  try {
+    const list = dispatcher.DETECTORS.filter((d) => DEV_ONLY.includes(d.name));
+    assertEq(list.map((d) => d.name).sort(), [...DEV_ONLY].sort(), 'all 8 are registered in the Stop dispatcher');
+    const errors = [];
+    await withDevProfile(() => dispatcher.dispatch({ hook_event_name: 'Stop', session_id: 'p3-smoke-' + Date.now(), transcript_path: tp, cwd: dir }, { profile: 'dev', shadowRate: 0, detectors: list, onError: (n, m) => errors.push(`${n}: ${m}`) }));
+    assertEq(errors, [], 'no dev-only detector crashed');
+  } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+});
+
 test('stop-dispatcher.mergeBlocks: no blocks → {}', () => {
   assertEq(dispatcher.mergeBlocks([]), {});
   assertEq(dispatcher.mergeBlocks(null), {});
@@ -17803,7 +18521,7 @@ test('session-start-dispatcher.DETECTORS: 17 detectors, correct order + shape (m
   const d = require('./session-start-dispatcher.js');
   const names = d.DETECTORS.map(x => x.name);
   assertEq(names, [
-    'brain-daemon-ensure', 'memory-rotate', 'session-whitelist', 'brain-health',
+    'brain-daemon-ensure', 'memory-rotate', 'runtime-sweep', 'session-whitelist', 'brain-health',
     'project-snapshot', 'curation-session', 'doctor-advisory', 'doctor-first-run',
     'review-checklist-advisory', 'tuning-advisory', 'value-digest', 'project-identity-advisory',
     'backend-onboarding-advisory', 'marketplace-autoupdate', 'graph-warm', 'powershell-advisory', 'policy-inject',
@@ -17816,6 +18534,19 @@ test('session-start-dispatcher.DETECTORS: 17 detectors, correct order + shape (m
   const sessionCommands = hooks.hooks.SessionStart.flatMap(group => group.hooks || []).map(h => (h.args || []).join(' '));
   assertEq(sessionCommands.filter(cmd => /mcp-memory-auto-update/.test(cmd)).length, 0,
     'auto-update deve permanecer dentro do dispatcher, nunca como hook separado');
+});
+
+test('session-start-dispatcher.dispatch: no SessionStart de COMPACT roda so o que o contexto compactado pode ter perdido + o daemon (era 1,0 s com todos os 18)', async () => {
+  const d = require('./session-start-dispatcher.js');
+  const ran = [];
+  const fakes = d.DETECTORS.map(({ name }) => ({ name, mod: { run: () => { ran.push(name); return null; } }, timeoutMs: 1000 }));
+  await d.dispatch({ hook_event_name: 'SessionStart', source: 'compact' }, { detectors: fakes });
+  assertEq(ran.sort(), [...d.COMPACT_DETECTORS].sort());
+  assert(ran.includes('policy-inject') && ran.includes('brain-daemon-ensure'), 'policies are re-injected and the daemon checked');
+  assert(!ran.includes('doctor-first-run') && !ran.includes('memory-rotate') && !ran.includes('marketplace-autoupdate'), 'maintenance does not rerun on compact');
+  ran.length = 0;
+  await d.dispatch({ hook_event_name: 'SessionStart', source: 'startup' }, { detectors: fakes });
+  assertEq(ran.length, d.DETECTORS.length, 'a real start runs every detector');
 });
 
 test('session-start-dispatcher.dispatch: side-effect-only detectors (non-string return) are excluded from the merged text', async () => {
@@ -17884,10 +18615,32 @@ test('stop-telemetry.gateState: dev enables flagged; free gates everything', () 
   const off = { getRefineResearch: () => ({ enabled: false }) };
   assertEq(telem.gateState('refine-research', 'dev', on).enabled, true);
   assertEq(telem.gateState('refine-research', 'standard', off).enabled, false);
-  const g = telem.gateState('decision-promote', 'free', {});
+  const g = telem.gateState('capture-dispatch', 'free', {});
   assertEq(g.enabled, false);
   assertEq(g.reason, 'free_passthrough');
-  assertEq(telem.gateState('decision-promote', 'dev', {}).enabled, true); // non-gated always on
+  assertEq(telem.gateState('capture-dispatch', 'dev', {}).enabled, true); // non-gated always on
+  // P2: decision-promote is under the profile gate (its getter is the switch).
+  assertEq(telem.gateState('decision-promote', 'standard', { getDecisionPromote: () => ({ enabled: false }) }), { flagged: true, enabled: false, reason: 'profile_match' });
+  assertEq(telem.gateState('decision-promote', 'standard', { getDecisionPromote: () => ({ enabled: true }) }).enabled, true);
+});
+
+test('perfil free DESLIGA os guards de verdade (README promete "nada bloqueia"); dev/standard seguem ligados', () => {
+  const hc = require('./lib/hooks-config.js');
+  const free = hc.resolveProfileConfig({ profile: 'free' });
+  for (const k of ['curationGuard', 'errorGuard', 'shellEscapeGuard', 'powershellGuard', 'fileFormatGuard', 'policyInject', 'activeResearch', 'decisionPromote']) {
+    assertEq(free[k] && free[k].enabled, false, `free: ${k} off`);
+  }
+  const std = hc.resolveProfileConfig({ profile: 'standard' });
+  for (const k of ['curationGuard', 'errorGuard', 'shellEscapeGuard', 'powershellGuard', 'fileFormatGuard', 'policyInject', 'decisionPromote']) {
+    assert(!(std[k] && std[k].enabled === false), `standard: ${k} stays on`);
+  }
+  assertEq(hc.resolveProfileConfig({ profile: 'free', errorGuard: { enabled: true } }).errorGuard.enabled, true, 'an explicit user value still wins over the preset');
+  const src = fs.readFileSync(path.join(SCRIPTS, 'lib', 'hooks-config.js'), 'utf8');
+  for (const g of ['getCurationGuard', 'getErrorGuard', 'getPowershellGuard', 'getFileFormatGuard', 'getShellEscapeGuard', 'getPolicyInject']) {
+    const body = src.slice(src.indexOf(`function ${g}(`), src.indexOf(`function ${g}(`) + 400);
+    assert(/_resolved\(\)/.test(body) && !/\bload\(\)\./.test(body.split('\n}')[0]), `${g} reads the profile-resolved config`);
+  }
+  assert(/getActiveResearch\(\)/.test(fs.readFileSync(path.join(SCRIPTS, 'active-research-detect.js'), 'utf8')), 'active-research reads the resolved block');
 });
 
 test('stop-telemetry.shouldShadow: bounds + deterministic per (runId,name)', () => {
@@ -17949,6 +18702,8 @@ test('stop-dispatcher.dispatch: gated + detect + sampled → shadow would_block,
     run: async () => ({ block: true, reason: 'R' }),
     detect: async () => { detectRan = true; return { block: true, reason: 'WOULD' }; },
   } };
+  const quiet = await dispatcher.dispatch({}, { profile: 'free', runId: 'r', detectors: [fake] });
+  assertEq([detectRan, quiet.detectors[0].would_block], [false, null], 'free: no shadow pass by default (passthrough)');
   const r = await dispatcher.dispatch({}, { profile: 'free', runId: 'r', shadowRate: 1, detectors: [fake] });
   assertEq(detectRan, true);
   assertEq(r.blocks.length, 0);
@@ -18027,7 +18782,7 @@ test('tuning-advisor: standard high would-block → suggest dev; low → info go
 });
 
 test('tuning-advisor: recall precision low → suggest raise minScore', () => {
-  const r = tuningAdvisor.analyze({ retrieval: { fired: 40, cited: 8 } });
+  const r = tuningAdvisor.analyze({ retrieval: { injected: 40, cited: 8 } });
   assert(r.recommendations.some(x => x.id === 'recall-noisy' && x.level === 'suggest'));
 });
 
@@ -18065,7 +18820,7 @@ test('tuning-advisor: warn sorts before suggest', () => {
 // ═══════════════════════════════════════════════════════════════════════════
 
 // ─── lib/data-dir.js — one guarded resolver (kills the ${...} split-brain) ────
-const dataDirLib = require('./lib/data-dir.js');
+const dataDirLib = require('../engine/lib/data-dir.js');
 
 test('data-dir: honors a real CLAUDE_PLUGIN_DATA value AND publishes the active pointer', () => {
   // (a) env wins — and dataDir() PUBLISHES it to the global pointer so env-less
@@ -18819,7 +19574,7 @@ test('dashboard UI: loadRouterConfig trata resposta de erro e trava o save (não
   const load = html.slice(html.indexOf('async function loadRouterConfig()'), html.indexOf('// Espelha scripts/lib/router-mode.js'));
   assert(load.length > 0, 'loadRouterConfig não encontrado');
   assert(/if \(!cfg \|\| cfg\.error \|\| !cfg\.byok\)/.test(load), 'precisa detectar resposta de erro antes de preencher o form');
-  assert(load.indexOf('cfg.error') < load.indexOf("getElementById('router-enable').checked"), 'checagem vem antes de preencher');
+  assert(load.indexOf('cfg.error') < load.indexOf("getElementById('router-accept').checked"), 'checagem vem antes de preencher');
   assert(/_routerConfigLoadError = e\.message/.test(load), 'o catch registra o erro');
   const upd = html.slice(html.indexOf('function updateRouterSaveState()'), html.indexOf('function parseHeaderLinesUI'));
   assert(/btn\.disabled = !!_routerConfigLoadError/.test(upd), 'save travado enquanto a config não carregou');
@@ -19364,7 +20119,7 @@ test('capture-dispatch: _captureConfig honors the GLOBAL brain kb.capture overri
 });
 
 // ─── lib/atomic-write.js — temp+rename so readers never see a partial file ───
-const atomicLib = require('./lib/atomic-write.js');
+const atomicLib = require('../engine/lib/atomic-write.js');
 
 test('atomic-write: writeJsonAtomic roundtrips through a real file', () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-atomic-'));
@@ -19436,10 +20191,10 @@ test('atomic-write: hot state stores route writes through writeJsonAtomic (no ra
       `${rel} must write through lib/session-journal.js only`);
   }
   // lib/json-file.js (saveJson) is itself held to the rule — a store may write through it.
-  assert(/require\(['"]\.\/atomic-write\.js['"]\)/.test(fs.readFileSync(path.join(SCRIPTS, 'lib', 'json-file.js'), 'utf-8')), 'lib/json-file.js must require atomic-write.js');
+  assert(/require\(['"]\.\/atomic-write\.js['"]\)/.test(fs.readFileSync(path.join(ENGINE, 'lib', 'json-file.js'), 'utf-8')), 'lib/json-file.js must require atomic-write.js');
   for (const rel of stores) {
-    const src = fs.readFileSync(path.join(SCRIPTS, rel), 'utf-8');
-    assert(/require\(['"]\.\/(atomic-write|json-file)\.js['"]\)/.test(src),
+    const src = fs.readFileSync(srcPath(rel), 'utf-8');
+    assert(new RegExp(`require\\(['"](?:${LIB_REQ('atomic-write.js')}|${LIB_REQ('json-file.js')})['"]\\)`).test(src),
       `${rel} must write through lib/atomic-write.js (directly or via json-file.js)`);
     // No direct fs.writeFileSync of a state payload left in these stores.
     assert(!/fs\.writeFileSync\(/.test(src),
@@ -19470,6 +20225,7 @@ test('data-dir: NO script keeps a bare unguarded `env || fallback` resolver (EXH
     }
   };
   walk(SCRIPTS);
+  walk(ENGINE);
   assertEq(offenders, [], `unguarded CLAUDE_PLUGIN_DATA resolvers remain: ${offenders.join(', ')}`);
 });
 
@@ -19518,7 +20274,7 @@ test('data-dir: migrated consumers import the shared resolver', () => {
     'lib/cooldown-store.js', 'lib/session-journal.js', // the journals resolve it through session-journal
     'lib/recall-health.js', 'lib/scope-search.js', 'conversation-ingest.js',
     'curation-session.js', 'curation-detect.js', 'decision-detect.js',
-    'brain-index-native.js', 'brain-promote.js', 'dashboard.js',
+    'brain-promote.js', 'dashboard.js',
     // Phase-1 inliners repointed off the bare fallback onto the shared resolver.
     // project-identity-advisory.js dropped in 2.29.1: no cooldown stamp → no data dir.
     'brain-embedder.js', 'doctor-advisory.js',
@@ -19526,9 +20282,55 @@ test('data-dir: migrated consumers import the shared resolver', () => {
     'review-checklist-advisory.js',
   ];
   for (const rel of consumers) {
-    const src = fs.readFileSync(path.join(SCRIPTS, rel), 'utf-8');
-    assert(/require\(['"](\.\/|\.\/lib\/)data-dir\.js['"]\)/.test(src),
+    const src = fs.readFileSync(srcPath(rel), 'utf-8');
+    assert(new RegExp(`require\\(['"]${LIB_REQ('data-dir.js')}['"]\\)`).test(src),
       `${rel} must resolve its data dir via lib/data-dir.js`);
+  }
+});
+
+test('reuso-04: nenhum script de producao deriva projeto de basename(cwd) — a chave e o id do projeto (project-id / metrics-project)', () => {
+  const offenders = [];
+  const walk = (d) => {
+    for (const e of fs.readdirSync(d, { withFileTypes: true })) {
+      const p = path.join(d, e.name);
+      if (e.isDirectory()) { if (!['__fixtures__', 'node_modules'].includes(e.name)) walk(p); continue; }
+      if (!/\.(c|m)?js$/.test(e.name) || /^test-/.test(e.name)) continue;
+      const src = fs.readFileSync(p, 'utf8');
+      if (/path\.basename\((?:ev\.|event\.|input\.)?cwd\)/.test(src)) offenders.push(path.relative(p.startsWith(ENGINE) ? ENGINE : SCRIPTS, p));
+    }
+  };
+  walk(SCRIPTS);
+  walk(ENGINE);
+  // project-id.resolveLocalScopeId is THE documented local-only fallback (never the memory boundary).
+  assertEq(offenders.filter((f) => f.replace(/\\/g, '/') !== 'lib/project-id.js'), []);
+});
+
+test('json-file (reuso-06): readJsonLoud — ausente e null calado, corrompido e null DITO; readJsonSafe tambem passa a dizer; leitores duplicados usam o canonico', () => {
+  const { readJsonLoud, readJsonSafe } = require('../engine/lib/json-file.js');
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-jsonf-'));
+  const errs = []; const orig = console.error; console.error = (m) => errs.push(String(m));
+  try {
+    assertEq(readJsonLoud(path.join(dir, 'none.json'), 'x'), null);
+    assertEq(errs.length, 0, 'missing file is silent');
+    fs.writeFileSync(path.join(dir, 'bad.json'), '{ broken');
+    assertEq(readJsonLoud(path.join(dir, 'bad.json'), 'tagX'), null);
+    assertEq(readJsonSafe(path.join(dir, 'bad.json'), 7), 7);
+    assert(errs.length === 2 && /\[tagX\]/.test(errs[0]) && /fallback/.test(errs[1]), JSON.stringify(errs));
+  } finally { console.error = orig; fs.rmSync(dir, { recursive: true, force: true }); }
+  for (const rel of ['lib/hook-owner.js', 'lib/crash-evidence.js', 'session-summary.js', 'curation-stop.js']) {
+    assert(/readJsonLoud\(/.test(fs.readFileSync(path.join(SCRIPTS, rel), 'utf8')), `${rel} uses readJsonLoud`);
+  }
+  assertEq(require('../engine/lib/session-id.js').sanitizeSessionId(''), 'default', 'reuso-05: empty session id → default');
+  assertEq(require('../engine/lib/session-id.js').sanitizeSessionId('a/b'), 'a_b');
+});
+
+test('atomic-write (reuso-07): as copias de temp+rename sem retry ou com nome FIXO usam atomic-write.js', () => {
+  const files = ['lib/data-dir.js', 'lib/embedder-guard.js', 'lib/crash-evidence.js', 'lib/capture-queue.js', 'model-router-ensure.js'];
+  for (const rel of files) {
+    const src = fs.readFileSync(srcPath(rel), 'utf8');
+    assert(/atomic-write\.js/.test(src), `${rel} uses atomic-write.js`);
+    assert(!/\.tmp-router'|\`\$\{file\}\.tmp\`|\.\$\{process\.pid\}\.tmp\`|_TRANSIENT_RENAME/.test(src), `${rel}: no private temp+rename left`);
+    assert(!/renameSync\(tmp,/.test(src), `${rel}: no hand-rolled rename`);
   }
 });
 
@@ -19536,7 +20338,7 @@ test('atomic-write: broadened shared-snapshot writers route through atomic-write
   // Gate finding (scope): the same torn-write class covered more than the first 8
   // stores. These hook-writable shared-snapshot writers were migrated too.
   const writers = [
-    'auto-continue-stop.js', 'brain-graph.js', 'brain-index.js', 'brain-index-native.js',
+    'auto-continue-stop.js', 'brain-graph.js', 'brain-index.js',
     'brain-health.js', 'session-whitelist.js', 'decision-detect.js', 'decision-promote.js',
     'decision-scan-response.js', 'model-router-ensure.js', 'lib/session-counter.js',
     'self-review.js', 'session-summary.js', 'skill-success-detect.js', 'verify-nudge.js',
@@ -19554,11 +20356,11 @@ test('atomic-write: broadened shared-snapshot writers route through atomic-write
   // Shared writers that are themselves held to the rule (a writer may route through them).
   const routes = ['json-file.js', 'cooldown-stamp.js'];
   for (const r of routes) {
-    assert(/require\(['"]\.\/atomic-write\.js['"]\)/.test(fs.readFileSync(path.join(SCRIPTS, 'lib', r), 'utf-8')), `lib/${r} must import atomic-write.js`);
+    assert(new RegExp(`require\\(['"]${LIB_REQ('atomic-write.js')}['"]\\)`).test(fs.readFileSync(srcPath('lib/' + r), 'utf-8')), `lib/${r} must import atomic-write.js`);
   }
-  const via = new RegExp(`require\\(['"](\\./|\\./lib/)(atomic-write|${routes.map((r) => r.replace(/\.js$/, '')).join('|')})\\.js['"]\\)`);
+  const via = new RegExp(`require\\(['"](\\./|\\./lib/|(?:\\.\\./)+engine/lib/)(atomic-write|${routes.map((r) => r.replace(/\.js$/, '')).join('|')})\\.js['"]\\)`);
   for (const rel of writers) {
-    const src = fs.readFileSync(path.join(SCRIPTS, rel), 'utf-8');
+    const src = fs.readFileSync(srcPath(rel), 'utf-8');
     assert(via.test(src), `${rel} must write through lib/atomic-write.js (directly or via ${routes.join('/')})`);
   }
 });
@@ -19625,7 +20427,7 @@ test('data-dir: dashboard.js resolvers are guarded (no bare `env || fallback` sp
   // never the naive `process.env.CLAUDE_PLUGIN_DATA ||` that accepts a ${...} literal.
   assert(!/process\.env\.CLAUDE_PLUGIN_DATA\s*\|\|/.test(src),
     'dashboard.js must not keep an unguarded `process.env.CLAUDE_PLUGIN_DATA ||` resolver');
-  assert(/require\(['"]\.\/lib\/data-dir\.js['"]\)/.test(src),
+  assert(new RegExp(`require\\(['"]${LIB_REQ('data-dir.js')}['"]\\)`).test(src),
     'dashboard.js must resolve its data dir via lib/data-dir.js');
 });
 
@@ -19708,7 +20510,7 @@ test('turn-budget: shouldFire respects floor, ceilings, session-cap and cooldown
 
 // ─── redact (secret/PII redaction before injection — Phase 1 task 5) ─────────
 test('redact: masks common secrets and PII, preserves auth scheme, spares prose', () => {
-  const { redact } = require('./lib/redact.js');
+  const { redact } = require('../engine/lib/redact.js');
   const jwt = redact('x eyJhbGciOiJI.eyJzdWIiOiI.SflKxwRJSMkey y').text;
   assert(jwt.includes('[JWT]') && !jwt.includes('eyJhbGciOiJI'), 'JWT masked');
   const gh = redact('use ghp_ABCDEFGHIJKLMNOPQRSTUVWX now').text;
@@ -19761,7 +20563,7 @@ test('capture-dispatch: buildInstruction names capture_lesson, types, tags, wind
 test('capture-dispatch: BLOCKS ingestion when scope is UNRESOLVED (no stage, returns {}, fail-loud)', () => {
   const cd = require('./capture-dispatch.js');
   const queue = require('./lib/capture-queue.js');
-  const pid = require('./lib/project-id.js');
+  const pid = require('../engine/lib/project-id.js');
   const sid = 'cap-blocked-' + Date.now();
   const tp = path.join(process.env.CLAUDE_PLUGIN_DATA, `capblk-${sid}.jsonl`);
   fs.writeFileSync(tp, JSON.stringify({ type: 'user', message: { role: 'user', content: 'q' } }) + '\n');
@@ -19865,7 +20667,7 @@ test('G10: capture-queue.ingest queues only the last N turns of a long session; 
 // the whole transcript and expecting one Stop to read all of it.
 function _writeTurnsAsStops(tp, project, sid, lines) {
   const cq = require('./lib/capture-queue.js');
-  const { redact } = require('./lib/redact.js');
+  const { redact } = require('../engine/lib/redact.js');
   fs.writeFileSync(tp, '');
   for (let i = 0; i < lines.length; i += 2) {
     fs.appendFileSync(tp, lines.slice(i, i + 2).join('\n') + '\n');
@@ -19878,7 +20680,7 @@ test('capture-dispatch: run offers from the queue, then acks when capture_lesson
   const queue = require('./lib/capture-queue.js');
   const sid = 'cap-fire-' + Date.now();
   const cwd = process.env.CLAUDE_PLUGIN_DATA;
-  const project = require('./lib/project-id.js').resolveProjectId({ cwd });
+  const project = require('../engine/lib/project-id.js').resolveProjectId({ cwd });
   const tp = path.join(process.env.CLAUDE_PLUGIN_DATA, `cap-${sid}.jsonl`);
   queue.reset(project, sid);
   const lines = [];
@@ -19907,7 +20709,7 @@ test('capture-dispatch: an OPEN offer re-blocks even on stop_hook_active until t
   const queue = require('./lib/capture-queue.js');
   const sid = 'cap-block-' + Date.now();
   const cwd = process.env.CLAUDE_PLUGIN_DATA;
-  const project = require('./lib/project-id.js').resolveProjectId({ cwd });
+  const project = require('../engine/lib/project-id.js').resolveProjectId({ cwd });
   const tp = path.join(cwd, `capbl-${sid}.jsonl`);
   queue.reset(project, sid);
   const lines = [];
@@ -19959,9 +20761,9 @@ test('capture-dispatch: run stays silent below budget and when stop_hook_active'
 
 test('capture-dispatch: emits capture.offered metric on fire', () => {
   const cd = require('./capture-dispatch.js');
-  const metrics = require('./lib/metrics.js');
+  const metrics = require('../engine/lib/metrics.js');
   const cwd = process.env.CLAUDE_PLUGIN_DATA;
-  const project = require('./lib/project-id.js').resolveProjectId({ cwd });
+  const project = require('../engine/lib/project-id.js').resolveProjectId({ cwd });
   const sid = 'cap-metric-' + Date.now();
   const tp = path.join(cwd, `capm-${sid}.jsonl`);
   fs.writeFileSync(tp, '');
@@ -19989,7 +20791,7 @@ test('capture-dispatch: emits capture.offered metric on fire', () => {
 test('capture-dispatch: over-budget window is offered in chunks, never skipping cycles (regression)', () => {
   const cd = require('./capture-dispatch.js');
   const cwd = process.env.CLAUDE_PLUGIN_DATA;
-  const project = require('./lib/project-id.js').resolveProjectId({ cwd });
+  const project = require('../engine/lib/project-id.js').resolveProjectId({ cwd });
   const sid = 'cap-budget-' + Date.now();
   const tp = path.join(cwd, `capb-${sid}.jsonl`);
   fs.writeFileSync(tp, '');
@@ -20033,7 +20835,7 @@ function _capRelentSeed(nCycles, big) {
   const cd = require('./capture-dispatch.js');
   const cq = require('./lib/capture-queue.js');
   const cwd = process.env.CLAUDE_PLUGIN_DATA;
-  const project = require('./lib/project-id.js').resolveProjectId({ cwd });
+  const project = require('../engine/lib/project-id.js').resolveProjectId({ cwd });
   const sid = 'cap-relent-' + Math.random().toString(16).slice(2) + '-' + Date.now();
   const tp = path.join(cwd, `capr-${sid}.jsonl`);
   fs.writeFileSync(tp, '');
@@ -20068,16 +20870,64 @@ test('capture-dispatch (FIX #6): after maxBlockAttempts un-acked blocks it RELEN
   const r2 = t.cd.run(t.evt, deps); assert(r2 && r2.block === true, 'Stop 2: re-block below cap (blockCount 1 < 2)');
   const r3 = t.cd.run(t.evt, deps);
   assert(!(r3 && r3.block), 'Stop 3: at the cap it RELENTS — returns {} so the turn can end');
-  // No-loss invariant: the offer + queued cycles are PRESERVED — only the block yielded.
+  // No-loss invariant: the queued cycles are PRESERVED; the offer closes and this session
+  // stops offering (it used to stay open forever and re-relent on every Stop).
   const st = t.cq.getState(t.project, t.sid);
-  assert(st.offer, 'the offer stays OPEN after relenting (not cleared)');
+  assertEq(st.offer, null, 'the offer is released, not left open forever');
+  assertEq(st.paused, true, 'no new offers in this session');
   assertEq(st.queue.length, 6, 'the un-captured cycles are NEVER dropped by the relent');
-  assert(st.offer.blockCount >= 2, 'the per-offer block counter reached the cap');
-  // A further Stop keeps relenting (no re-nag, still no drop) — the cycle waits for a future session.
-  const r4 = t.cd.run(t.evt, deps);
-  assert(!(r4 && r4.block), 'past the cap it keeps allowing the stop');
-  assertEq(t.cq.getState(t.project, t.sid).queue.length, 6, 'cycle still queued after repeated relents');
+  const relents = [];
+  const m = require('../engine/lib/metrics.js'); const origFire = m.fire;
+  m.fire = (name) => { if (name === 'capture.relented' || name === 'capture.offered') relents.push(name); };
+  try {
+    const r4 = t.cd.run(t.evt, deps);
+    assert(!(r4 && r4.block), 'past the relent it keeps allowing the stop');
+  } finally { m.fire = origFire; }
+  assertEq(relents, [], 'no repeated relent event and no new offer after relenting');
+  assertEq(t.cq.getState(t.project, t.sid).queue.length, 6, 'cycles still queued, waiting for adoption');
   t.cq.reset(t.project, t.sid);
+});
+
+test('capture-queue.adoptOrphans: ciclos de sessoes ENCERRADAS do mesmo projeto entram na fila da sessao viva; o arquivo orfao so some depois que ela salvou; outro projeto e sessao recente ficam', () => {
+  const q = require('./lib/capture-queue.js');
+  const dir = path.join(require('../engine/lib/data-dir.js').dataDir(), '.runtime');
+  fs.mkdirSync(dir, { recursive: true });
+  const P = 'adopt-proj-' + Date.now();
+  const mk = (proj, sid, ids, ageMs, offer) => {
+    const st = { rev: 1, scan: { offset: 0, anchorHash: '' }, seen: ids, seenPrompts: [], queue: ids.map((id) => ({ id, promptId: id, user: 'u ' + id, assistant: 'a ' + id })), offer: offer ? { windowId: 'w', ids, at: 1, attempts: 9, blockCount: 9 } : null, offers: 1, captured: 0, lastOfferTs: 1 };
+    const f = q._file(proj, sid); fs.writeFileSync(f, JSON.stringify(st));
+    const t = (Date.now() - ageMs) / 1000; fs.utimesSync(f, t, t); return f;
+  };
+  const stuck = mk(P, 'old-a', ['c1', 'c2'], 3 * 864e5, true);   // ended 3 days ago with a stuck offer
+  const older = mk(P, 'old-b', ['c3'], 5 * 864e5, false);
+  const fresh = mk(P, 'live-other', ['c9'], 60e3, false);        // another LIVE session: untouched
+  const foreign = mk(P + '-x', 'old-c', ['z1'], 9 * 864e5, false); // other project: untouched
+  try {
+    const r1 = q.adoptOrphans(P, 'me', { force: true });
+    assertEq(r1, { files: 1, cycles: 1 }, 'oldest orphan first, one file per call');
+    assertEq(fs.existsSync(older), false);
+    const r2 = q.adoptOrphans(P, 'me', { force: true });
+    assertEq(r2, { files: 1, cycles: 2 }, 'the stuck offer\'s cycles are adopted too (never lost)');
+    assertEq(q.getState(P, 'me').queue.map((c) => c.id), ['c3', 'c1', 'c2']);
+    assertEq(fs.existsSync(stuck), false);
+    assertEq([fs.existsSync(fresh), fs.existsSync(foreign)], [true, true], 'live session and other project untouched');
+    assertEq(q.adoptOrphans(P, 'me'), { files: 0, cycles: 0 }, 'throttled to once an hour without force');
+  } finally { for (const f of [stuck, older, fresh, foreign, q._file(P, 'me')]) fs.rmSync(f, { force: true }); }
+});
+
+test('capture-queue.adoptOrphans: se salvar a fila da sessao falha, o orfao NAO e apagado (nenhum ciclo perdido)', () => {
+  const q = require('./lib/capture-queue.js');
+  const P = 'adopt-fail-' + Date.now();
+  const f = q._file(P, 'gone');
+  fs.mkdirSync(path.dirname(f), { recursive: true });
+  fs.writeFileSync(f, JSON.stringify({ rev: 1, queue: [{ id: 'k1', promptId: 'k1', user: 'u', assistant: 'a' }], seen: ['k1'] }));
+  const t = (Date.now() - 3 * 864e5) / 1000; fs.utimesSync(f, t, t);
+  const own = q._file(P, 'me');
+  fs.mkdirSync(own); // a DIRECTORY where the queue file goes: every save fails
+  try {
+    assertEq(q.adoptOrphans(P, 'me', { force: true }), { files: 0, cycles: 0 });
+    assertEq(fs.existsSync(f), true, 'orphan kept');
+  } finally { fs.rmSync(f, { force: true }); fs.rmSync(own, { recursive: true, force: true }); }
 });
 
 test('capture-dispatch (FIX #6): an ack drains the offer so a LATER offer starts the block counter fresh', () => {
@@ -20102,7 +20952,7 @@ test('capture-dispatch (FIX #6): an ack drains the offer so a LATER offer starts
 // ─── capture-queue (Phase 1.5a: durable redacted cycle queue) ────────────────
 test('capture-queue: ingest extracts + redacts cycles into a durable queue and advances the scan cursor', () => {
   const q = require('./lib/capture-queue.js');
-  const { redact } = require('./lib/redact.js');
+  const { redact } = require('../engine/lib/redact.js');
   const project = 'cq-ing-' + Date.now();
   const sid = 'cq-' + Date.now();
   const tp = path.join(process.env.CLAUDE_PLUGIN_DATA, `cq-${sid}.jsonl`);
@@ -20125,7 +20975,7 @@ test('capture-queue: ingest extracts + redacts cycles into a durable queue and a
 
 test('capture-queue: re-ingest is idempotent and dedups across a compaction rewrite (content-hash)', () => {
   const q = require('./lib/capture-queue.js');
-  const { redact } = require('./lib/redact.js');
+  const { redact } = require('../engine/lib/redact.js');
   const project = 'cq-comp-' + Date.now();
   const sid = 'cq2-' + Date.now();
   const tp = path.join(process.env.CLAUDE_PLUGIN_DATA, `cq2-${sid}.jsonl`);
@@ -20159,7 +21009,7 @@ function _cqSeed(q, redact, project, sid, tp, n) {
 
 test('capture-queue: offer packs oldest queued cycles under a windowId; ack drains them', () => {
   const q = require('./lib/capture-queue.js');
-  const { redact } = require('./lib/redact.js');
+  const { redact } = require('../engine/lib/redact.js');
   const project = 'cq-off-' + Date.now(); const sid = 'cqo-' + Date.now();
   const tp = path.join(process.env.CLAUDE_PLUGIN_DATA, `cqo-${sid}.jsonl`);
   _cqSeed(q, redact, project, sid, tp, 3);
@@ -20187,7 +21037,7 @@ test('capture-queue: recordAck/readAck/clearAck round-trip by windowId', () => {
 
 test('capture-queue: reconcile drains on an explicit ack marker (no transcript guessing)', () => {
   const q = require('./lib/capture-queue.js');
-  const { redact } = require('./lib/redact.js');
+  const { redact } = require('../engine/lib/redact.js');
   const project = 'cq-ack-' + Date.now(); const sid = 'cqa-' + Date.now();
   const tp = path.join(process.env.CLAUDE_PLUGIN_DATA, `cqa-${sid}.jsonl`);
   _cqSeed(q, redact, project, sid, tp, 3);
@@ -20202,7 +21052,7 @@ test('capture-queue: reconcile drains on an explicit ack marker (no transcript g
 
 test('capture-queue: reconcile re-blocks indefinitely until acked — NEVER parks/deletes (no-loss)', () => {
   const q = require('./lib/capture-queue.js');
-  const { redact } = require('./lib/redact.js');
+  const { redact } = require('../engine/lib/redact.js');
   const project = 'cq-nopark-' + Date.now(); const sid = 'cqp-' + Date.now();
   const tp = path.join(process.env.CLAUDE_PLUGIN_DATA, `cqp-${sid}.jsonl`);
   _cqSeed(q, redact, project, sid, tp, 3);
@@ -20224,7 +21074,7 @@ test('capture-queue: reconcile re-blocks indefinitely until acked — NEVER park
 
 test('capture-queue: reconcile counts captured separately from offers; "none" does not', () => {
   const q = require('./lib/capture-queue.js');
-  const { redact } = require('./lib/redact.js');
+  const { redact } = require('../engine/lib/redact.js');
   const project = 'cq-cap-' + Date.now(); const sid = 'cqc-' + Date.now();
   const tp = path.join(process.env.CLAUDE_PLUGIN_DATA, `cqcap-${sid}.jsonl`);
   q.reset(project, sid);
@@ -20250,7 +21100,7 @@ test('capture-queue: reconcile counts captured separately from offers; "none" do
 
 test('capture-queue: reconcile keeps the ack marker if the drain _save FAILS (no ack loss)', () => {
   const q = require('./lib/capture-queue.js');
-  const { redact } = require('./lib/redact.js');
+  const { redact } = require('../engine/lib/redact.js');
   const project = 'cq-saveguard-' + Date.now(); const sid = 'cqsg-' + Date.now();
   const tp = path.join(process.env.CLAUDE_PLUGIN_DATA, `cqsg-${sid}.jsonl`);
   _cqSeed(q, redact, project, sid, tp, 3);
@@ -20270,7 +21120,7 @@ test('capture-queue: reconcile keeps the ack marker if the drain _save FAILS (no
 
 test('capture-queue: offer windowId is a random nonce — identical content across sessions never collides', () => {
   const q = require('./lib/capture-queue.js');
-  const { redact } = require('./lib/redact.js');
+  const { redact } = require('../engine/lib/redact.js');
   const ts = Date.now();
   const mk = (tag) => {
     const project = 'cq-nonce-' + tag + '-' + ts; const sid = 'cqn-' + tag + '-' + ts;
@@ -20290,7 +21140,7 @@ test('capture-queue: offer windowId is a random nonce — identical content acro
 test('capture bridge: the REAL capture_ack MCP tool writes the marker the queue drains (no fiction)', async () => {
   const url = require('url');
   const q = require('./lib/capture-queue.js');
-  const { redact } = require('./lib/redact.js');
+  const { redact } = require('../engine/lib/redact.js');
   // Import the ESM server FIRST — this is the only real await. Everything that
   // touches the shared process.env.CLAUDE_PLUGIN_DATA runs synchronously AFTER it,
   // so interleaved async tests can't swap the data dir mid-flight.
@@ -20346,6 +21196,25 @@ test('capture_lesson local: a null merge (vanished dedup hit) does NOT phantom-a
   // With the pre-fix bug (ack on a null merge), decision would be 'merge' and nothing saved.
   assertEq(out.decision, 'admit', 'a vanished merge target falls through to admit (stores the lesson), never a phantom merge');
   assertEq(saved.length, 1, 'the lesson was actually persisted before the ack (no silent loss)');
+});
+
+test('capture_lesson: lesson.captured diz a ORIGEM (oferta do Stop com windowId, ou chamada direta) — 2.392 capturas nao eram atribuiveis', async () => {
+  const url = require('url');
+  const R = process.env.CLAUDE_PLUGIN_ROOT;
+  const mod = await import(url.pathToFileURL(path.join(R, 'servers', 'brain-server', 'lib', 'mcp-server.js')).href);
+  const server = mod.createBrainServer({ pluginRoot: R, mode: 'stdio', _testHooks: {
+    getKB: async () => ({ store: { search: async () => [], merge: async () => null, save: async () => {} }, index: { index: async () => {} }, graph: { registerNode: async () => {} } }),
+    embedder: { init: async () => {}, getStatus: () => ({ ready: true }), embed: async () => [0.1, 0.2, 0.3] },
+  } });
+  const project = 'pSrc' + Date.now();
+  const wid = 'w-src-' + Date.now();
+  await server.handleTool('capture_lesson', { title: 'A', summary: 'S1', type: 'lesson', scope: 'project', project, windowId: wid });
+  await server.handleTool('capture_lesson', { title: 'B', summary: 'S2', type: 'lesson', scope: 'project', project });
+  require('./lib/capture-queue.js').clearAck(wid);
+  const key = require('../engine/lib/metrics-project.js').metricsKeyForId(project);
+  const rows = require('../engine/lib/metrics-store.js').getEventLogIsolated(key, { eventName: 'lesson.captured' });
+  const srcs = rows.map((r) => r.payload).sort((x, y) => String(x.source).localeCompare(String(y.source)));
+  assertEq(srcs.map((p) => [p.source, p.windowId || null]), [['capture-dispatch', wid], ['direct', null]]);
 });
 
 test('capture_lesson (Q42): dedup merges only within the SAME type — a decision near-identical to a lesson is admitted, not merged into it', async () => {
@@ -20444,9 +21313,9 @@ test('router panel (Q45): /api/router/status exposes gateway-defer.json and the 
 });
 
 test('embedder (Q47): the choice the dashboard saves (brain-config user override) is the one the embedder loads', () => {
-  const bc = require('./lib/brain-config.js');
-  const emb = require('./brain-embedder.js');
-  const file = path.join(require('./lib/data-dir.js').globalDir(), 'user-config.json');
+  const bc = require('../engine/lib/brain-config.js');
+  const emb = require('../engine/brain-embedder.js');
+  const file = path.join(require('../engine/lib/data-dir.js').globalDir(), 'user-config.json');
   assert(file.startsWith(process.env.USERPROFILE), `the suite's temp HOME, never the real one (${file})`);
   const prev = fs.existsSync(file) ? fs.readFileSync(file, 'utf8') : null;
   try {
@@ -20463,9 +21332,9 @@ test('embedder (Q47): the choice the dashboard saves (brain-config user override
 });
 
 test('brain-store (Q49): kb.rerank and the KB limits honor the user override, and a long-lived process sees a later change', () => {
-  const bc = require('./lib/brain-config.js');
-  const bs = require('./brain-store.js');
-  const file = path.join(require('./lib/data-dir.js').globalDir(), 'user-config.json');
+  const bc = require('../engine/lib/brain-config.js');
+  const bs = require('../engine/brain-store.js');
+  const file = path.join(require('../engine/lib/data-dir.js').globalDir(), 'user-config.json');
   assert(file.startsWith(process.env.USERPROFILE), `the suite's temp HOME, never the real one (${file})`);
   const prev = fs.existsSync(file) ? fs.readFileSync(file, 'utf8') : null;
   const write = (kb) => { const cur = prev ? JSON.parse(prev) : {}; cur.kb = { ...(cur.kb || {}), ...kb }; fs.mkdirSync(path.dirname(file), { recursive: true }); fs.writeFileSync(file, JSON.stringify(cur)); bc._resetCache(); };
@@ -20483,12 +21352,12 @@ test('brain-store (Q49): kb.rerank and the KB limits honor the user override, an
 });
 
 test('brain-health (auditoria 3.1.0): vectors from another embedder dimension are reported with the re-embed command', () => {
-  const bc = require('./lib/brain-config.js');
-  const emb = require('./brain-embedder.js');
+  const bc = require('../engine/lib/brain-config.js');
+  const emb = require('../engine/brain-embedder.js');
   const bh = require('./brain-health.js');
-  const Db = require('./lib/sqlite-compat.js').loadSqlite();
+  const Db = require('../engine/lib/sqlite-compat.js').loadSqlite();
   assert(Db, 'sqlite available in the suite');
-  const file = path.join(require('./lib/data-dir.js').globalDir(), 'user-config.json');
+  const file = path.join(require('../engine/lib/data-dir.js').globalDir(), 'user-config.json');
   const prev = fs.existsSync(file) ? fs.readFileSync(file, 'utf8') : null;
   const data = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-dim-'));
   fs.mkdirSync(path.join(data, 'brain', 'p1'), { recursive: true });
@@ -20511,8 +21380,8 @@ test('brain-health (auditoria 3.1.0): vectors from another embedder dimension ar
 });
 
 test('skill promotion (Q44): the user override of kb.skillPromotion reaches brain-promote and the dashboard (not only the shipped file)', () => {
-  const bc = require('./lib/brain-config.js');
-  const file = path.join(require('./lib/data-dir.js').globalDir(), 'user-config.json');
+  const bc = require('../engine/lib/brain-config.js');
+  const file = path.join(require('../engine/lib/data-dir.js').globalDir(), 'user-config.json');
   assert(file.startsWith(process.env.USERPROFILE), `the suite's temp HOME, never the real one (${file})`);
   const prev = fs.existsSync(file) ? fs.readFileSync(file, 'utf8') : null;
   try {
@@ -20533,7 +21402,7 @@ test('skill promotion (Q44): the user override of kb.skillPromotion reaches brai
 });
 
 test('brain-store.search honors opts.type before topK (the contract the Q42 dedup relies on)', async () => {
-  const bs = require('./brain-store.js');
+  const bs = require('../engine/brain-store.js');
   const project = 'pQ42store-' + Date.now();
   await bs.init({ project });
   const v = [0.3, 0.1, 0.9];
@@ -20632,7 +21501,7 @@ test('KB gate: brain_retrieve_context with a cwd WITHOUT project id → empty ev
 
 test('KB gate: mcp-memory backend (handleRemoteKbTool) — cwd WITHOUT id refused before any daemon contact', _withoutEnvProjectId(async () => {
   const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-noid-remote-'));
-  const backend = require('./brain-backend.js');
+  const backend = require('../engine/brain-backend.js');
   try {
     const url = require('url');
     const R = process.env.CLAUDE_PLUGIN_ROOT;
@@ -20650,7 +21519,7 @@ test('KB gate: mcp-memory backend (handleRemoteKbTool) — cwd WITHOUT id refuse
 }));
 
 test('mcp-client restartMode (Q59): background = kick the launcher and fail FAST with a retryable error; wait = keep blocking (CLIs)', async () => {
-  const McpClient = require('./mcp-client.js');
+  const McpClient = require('../engine/mcp-client.js');
   let kicks = 0;
   const bg = new McpClient({ transport: 'http', serverUrl: '', runDir: fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-q59-')), restartMode: 'background', kickLauncher: () => { kicks++; return true; } });
   bg._discoverDaemonUrl = () => 'http://127.0.0.1:1';
@@ -20681,7 +21550,7 @@ test('dashboard server mode (Q58): status, project list, listing and skills pane
   assert(/serverMode\(\)[\s\S]*serverKbSummary\(\)/.test(body('async function getBrainProjects', 'async function searchBrain')), 'project list from the server');
   assert(/serverMode\(\)[\s\S]*listDocuments\(\{ type, projectId: project \}\)/.test(body('async function listBrainEntries', 'async function moveBrainEntryScope')), 'listing scoped to the project on the server');
   assert(/serverMode\(\)[\s\S]*serverKbSummary\(\)/.test(body('async function getSkillPromotionConfig', 'async function scanSkillCandidates')), 'skills panel offers the server project ids');
-  const b = require('./brain-backend.js');
+  const b = require('../engine/brain-backend.js');
   b._resetConfig(); b.__testHooks._injectConfig({ backend: { type: 'local' } });
   let threw = null;
   try { await b.listProjects(); } catch (err) { threw = err.message; }
@@ -20708,7 +21577,7 @@ test('weekly consolidation stamp (Q57): per project — one project running does
 });
 
 test('user-config recovery (owner request 2026-10-09): an unreadable file NEVER silently switches the backend — last good copy restored, corrupt kept aside, SessionStart notice; no copy → loud', () => {
-  const bc = require('./lib/brain-config.js');
+  const bc = require('../engine/lib/brain-config.js');
   const bh = require('./brain-health.js');
   const file = bc.userConfigPath();
   assert(file.startsWith(process.env.USERPROFILE), `the suite's temp HOME, never the real one (${file})`);
@@ -20795,7 +21664,7 @@ test('mcp-memory capture_lesson (Q53): admission dedup on the server — an equi
   const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-q53-dedup-'));
   fs.mkdirSync(path.join(cwd, '.memory'));
   fs.writeFileSync(path.join(cwd, '.memory', 'project.json'), JSON.stringify({ version: '1', metadata: { defaults: { project_id: 'owner/q53' } } }));
-  const backend = require('./brain-backend.js');
+  const backend = require('../engine/brain-backend.js');
   const orig = { init: backend.init, save: backend.save, search: backend.search, get: backend.get };
   const docs = new Map(); const saves = [];
   backend.init = async () => {};
@@ -20823,7 +21692,7 @@ test('mcp-memory capture_lesson (Q53): admission dedup on the server — an equi
 }));
 
 test('brain-backend (Q53): server entries normalize to the local shape — recurrence from metadata, summary/detail split back from the content blob', () => {
-  const h = require('./brain-backend.js').__testHooks;
+  const h = require('../engine/brain-backend.js').__testHooks;
   const e = h.normalizeEntry({ documentId: 'd1', content: 'Title\n\nthe summary\n\nthe detail\n\nmore detail', metadata: { title: 'Title', type: 'lesson', tags: ['x'], confidence: 0.9, recurrence: 4, project_id: 'o/p', scope: 'project' } });
   assertEq([e.id, e.title, e.summary, e.content.detail, e.recurrence, e.project, e.scope], ['d1', 'Title', 'the summary', 'the detail\n\nmore detail', 4, 'o/p', 'project']);
   assertEq(h.normalizeEntry({ documentId: 'd2', content: 'T\n\nonly summary', metadata: { title: 'T' } }).recurrence, 1, 'no recurrence in metadata → 1');
@@ -20834,7 +21703,7 @@ test('brain-promote scan (Q53): on mcp-memory it reads the SERVER by the strict 
   const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-q53-scan-'));
   fs.mkdirSync(path.join(cwd, '.memory'));
   fs.writeFileSync(path.join(cwd, '.memory', 'project.json'), JSON.stringify({ version: '1', metadata: { defaults: { project_id: 'owner/q53scan' } } }));
-  const backend = require('./brain-backend.js');
+  const backend = require('../engine/brain-backend.js');
   const orig = { peekMode: backend.peekMode, init: backend.init, listDocuments: backend.listDocuments, close: backend.close, get: backend.get };
   const asked = [];
   backend.peekMode = () => 'mcp-memory';
@@ -20870,7 +21739,7 @@ test('mcp-memory backend: scope routes to __user__ like the local path (writes s
   const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-remote-scope-'));
   fs.mkdirSync(path.join(cwd, '.memory'));
   fs.writeFileSync(path.join(cwd, '.memory', 'project.json'), JSON.stringify({ version: '1', metadata: { defaults: { project_id: 'owner/scoped' } } }));
-  const backend = require('./brain-backend.js');
+  const backend = require('../engine/brain-backend.js');
   const orig = { init: backend.init, save: backend.save, search: backend.search };
   const saves = []; const searches = [];
   backend.init = async () => {};
@@ -20894,7 +21763,7 @@ test('mcp-memory backend: scope routes to __user__ like the local path (writes s
       const sec = await tool('capture_lesson', { title: 'L', summary: 'token ghp_abcdefghijklmnopqrstuvwxyz0123456789AB', scope: 'user', cwd });
       assert(sec.isError && /rejected/.test(sec.content[0].text) && saves.length === 2, `secret in user scope refused, nothing saved: ${sec.content[0].text}`);
       const sk = await tool('capture_lesson', { title: 'S', summary: 'S', type: 'skill', description: 'short', useFor: 'x', doNotUseFor: 'y', cwd });
-      assert(sk.isError && saves.length === 2, `skill out of range refused on the remote path too, nothing saved: ${sk.content[0].text}`);
+      assert(sk.isError && /no longer accepted/.test(sk.content[0].text) && saves.length === 2, `type skill refused on the remote path too, nothing saved: ${sk.content[0].text}`);
       for (const [scope, want] of [['user', ['__user__']], ['project', ['owner/scoped']], [undefined, ['owner/scoped', '__user__']]]) {
         await tool('brain_search', { query: 'q', scope, cwd });
         assertEq(searches[searches.length - 1].projectIds, want, `search scope ${scope}`);
@@ -20928,7 +21797,7 @@ test('KB gate (http daemon): the lock slot follows the cwd id, and the daemon\'s
   }
 });
 
-test('capture_lesson type:"skill": out-of-range description is rejected — isError, nothing saved', async () => {
+test('capture_lesson type:"skill" foi removido (0 capturas em 74 dias): recusado com isError, nada gravado', async () => {
   const url = require('url');
   const R = process.env.CLAUDE_PLUGIN_ROOT;
   const saved = [];
@@ -20945,60 +21814,10 @@ test('capture_lesson type:"skill": out-of-range description is rejected — isEr
     title: 'T', summary: 'S', detail: 'D', type: 'skill', scope: 'project', project: 'pSkillReject',
     description: 'too short', useFor: 'x', doNotUseFor: 'y',
   });
-  assert(res.isError, 'a description below the minimum must be rejected');
-  assert(/description/.test(res.content[0].text), 'the rejection message names the field');
-  assertEq(saved.length, 0, 'nothing is persisted on a mechanical rejection');
-});
-
-test('capture_lesson type:"skill": valid fields admit with content.skill populated (source of truth for Fase 2/3)', async () => {
-  const url = require('url');
-  const R = process.env.CLAUDE_PLUGIN_ROOT;
-  const saved = [];
-  const mod = await import(url.pathToFileURL(path.join(R, 'servers', 'brain-server', 'lib', 'mcp-server.js')).href);
-  const server = mod.createBrainServer({ pluginRoot: R, mode: 'stdio', _testHooks: {
-    getKB: async () => ({
-      store: { search: async () => [], merge: async () => null, save: async (e) => { saved.push(e); } },
-      index: { index: async () => {} },
-      graph: { registerNode: async () => {} },
-    }),
-    embedder: { init: async () => {}, getStatus: () => ({ ready: true }), embed: async () => [0.1, 0.2, 0.3] },
-  } });
-  const description = 'Use this when a lesson is already a clear, reusable, generalizable instruction.';
-  const res = await server.handleTool('capture_lesson', {
-    title: 'T', summary: 'S', detail: 'D', type: 'skill', scope: 'project', project: 'pSkillAdmit',
-    description, useFor: 'Concrete situations where this applies.', doNotUseFor: 'Situations where it does not apply.',
-  });
-  assert(!res.isError, 'valid fields must not be rejected');
-  assertEq(saved.length, 1, 'the entry is persisted');
-  assertEq(saved[0].content.skill, { description, useFor: 'Concrete situations where this applies.', doNotUseFor: 'Situations where it does not apply.' },
-    'content.skill carries the validated fields, untouched, for later phases to consume');
-});
-
-test('capture_lesson type:"skill": a dedup MERGE hit also carries content.skill (not dropped)', async () => {
-  const url = require('url');
-  const R = process.env.CLAUDE_PLUGIN_ROOT;
-  let mergePatch = null;
-  const mod = await import(url.pathToFileURL(path.join(R, 'servers', 'brain-server', 'lib', 'mcp-server.js')).href);
-  const server = mod.createBrainServer({ pluginRoot: R, mode: 'stdio', _testHooks: {
-    getKB: async () => ({
-      store: {
-        search: async () => [{ id: 'existing-id', title: 'Existing' }],
-        merge: async (id, patch) => { mergePatch = patch; return { recurrence: 2 }; },
-        save: async () => {},
-      },
-      index: { index: async () => {} },
-      graph: { registerNode: async () => {} },
-    }),
-    embedder: { init: async () => {}, getStatus: () => ({ ready: true }), embed: async () => [0.1, 0.2, 0.3] },
-  } });
-  const description = 'Use this when a lesson is already a clear, reusable, generalizable instruction.';
-  const res = await server.handleTool('capture_lesson', {
-    title: 'T', summary: 'S', detail: 'D', type: 'skill', scope: 'project', project: 'pSkillMerge',
-    description, useFor: 'Applies here.', doNotUseFor: 'Does not apply there.',
-  });
-  assert(!res.isError, 'valid fields on the merge path must not be rejected either');
-  assert(mergePatch && mergePatch.content && mergePatch.content.skill, 'the merge patch must NOT silently drop the skill fields');
-  assertEq(mergePatch.content.skill, { description, useFor: 'Applies here.', doNotUseFor: 'Does not apply there.' });
+  assert(res.isError && /no longer accepted/.test(res.content[0].text), res.content[0].text);
+  assertEq(saved.length, 0, 'nothing is persisted');
+  const src = fs.readFileSync(path.join(R, 'servers', 'brain-server', 'lib', 'mcp-server.js'), 'utf8');
+  assert(!/'skill'\]/.test(src) && !/ONLY for type:"skill"/.test(src), 'the tool schema no longer offers type skill');
 });
 
 test('capture_ack: a forged outcome:"captured" is neutralized to "none" (only capture_lesson can mark captured)', async () => {
@@ -21126,7 +21945,7 @@ test('brain_retrieve_context: routes retrieve-core\'s local search through kbWor
   const mod = await import(url.pathToFileURL(path.join(R, 'servers', 'brain-server', 'lib', 'mcp-server.js')).href);
   // Same require path the handler uses — Node's CJS cache guarantees this is the SAME
   // module object, so patching its `retrieve` export here is observed by the handler.
-  const rc = require(path.join(R, 'scripts', 'lib', 'retrieve-core.js'));
+  const rc = require(path.join(R, 'engine', 'lib', 'retrieve-core.js'));
 
   const originalRetrieve = rc.retrieve;
   let seenDeps = null;
@@ -21206,7 +22025,7 @@ test('U11: a curated script name INSIDE a quoted string is not an invocation; a 
 
 // ─── U1: workSegments — what counts as ONE command vs a compound ───────────────
 test('U1: command-signature.workSegments — cd/echo/assign/heredoc-write are not work; pipes stay inside a segment', () => {
-  const { workSegments } = require('./lib/command-signature.js');
+  const { workSegments } = require('../engine/lib/command-signature.js');
   assertEq(workSegments('cd /x && npm run compile 2>&1 | tail -20'), ['npm run compile 2>&1 | tail -20']);
   assertEq(workSegments('git status --short; echo "=== last ==="; git log --oneline -6').length, 2);
   assertEq(workSegments('FOO=1; cd a && git log -3').length, 1);
@@ -21304,7 +22123,7 @@ test('U2/U10: error-guard denies through the transcript, and its message never s
 
 // ─── U8: a capability pointer with nothing to name it is dropped, not "(unnamed)" ───
 test('U8: splitComposeBlocks drops nameless empty capability pointers; derives a name from the description', () => {
-  const { splitComposeBlocks } = require('./brain-backend.js').__testHooks;
+  const { splitComposeBlocks } = require('../engine/brain-backend.js').__testHooks;
   const { capabilities } = splitComposeBlocks([{ block: 'skill', scope: 'p', items: [
     { id: 'a', name: null, description: '' },
     { id: 'b', description: 'Abre o dashboard do plugin\nsegunda linha' },
@@ -21312,9 +22131,9 @@ test('U8: splitComposeBlocks drops nameless empty capability pointers; derives a
   ] }]);
   assertEq(capabilities.map(c => c.id), ['b', 'c']);
   assertEq(capabilities[0].name, 'Abre o dashboard do plugin');
-  const ctx = require('./lib/retrieve-core.js').formatContext([], capabilities);
+  const ctx = require('../engine/lib/retrieve-core.js').formatContext([], capabilities);
   assert(!/\(unnamed\)/.test(ctx), ctx);
-  assertEq(require('./lib/retrieve-core.js').formatContext([], splitComposeBlocks([{ block: 'skill', items: [{ id: 'x' }] }]).capabilities), '', 'only-empty pointers → no [BRAIN·SKILLS] block at all');
+  assertEq(require('../engine/lib/retrieve-core.js').formatContext([], splitComposeBlocks([{ block: 'skill', items: [{ id: 'x' }] }]).capabilities), '', 'only-empty pointers → no [BRAIN·SKILLS] block at all');
 });
 
 // ─── U6: a background agent's <task-notification> is not a user prompt ─────────────
@@ -21340,7 +22159,7 @@ test('U6: brain_retrieve_context does not run a recall over a task-notification'
   const url = require('url');
   const R = process.env.CLAUDE_PLUGIN_ROOT;
   const mod = await import(url.pathToFileURL(path.join(R, 'servers', 'brain-server', 'lib', 'mcp-server.js')).href);
-  const rc = require(path.join(R, 'scripts', 'lib', 'retrieve-core.js'));
+  const rc = require(path.join(R, 'engine', 'lib', 'retrieve-core.js'));
   const originalRetrieve = rc.retrieve;
   let calls = 0;
   rc.retrieve = async () => { calls++; return { entries: [], capabilities: [] }; };
@@ -21444,8 +22263,8 @@ test('adjudication-store: load returns empty shape on a corrupt registry (never 
 
 test('policy_adjudication_prepare: deterministic sampling capped at 25 (+ honest note)', async () => {
   const server = await _adjImportServer();
-  const policyStore = require('./lib/policy-store.js');
-  const { dataDir } = require('./lib/data-dir.js');
+  const policyStore = require('../engine/lib/policy-store.js');
+  const { dataDir } = require('../engine/lib/data-dir.js');
   const work = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-adjw-'));
   const project = 'adj-det-' + Date.now();
   try {
@@ -21469,8 +22288,8 @@ test('policy_adjudication_prepare: deterministic sampling capped at 25 (+ honest
 
 test('policy_adjudication_prepare: glob-only policy (no literal) samples one occurrence per matching file', async () => {
   const server = await _adjImportServer();
-  const policyStore = require('./lib/policy-store.js');
-  const { dataDir } = require('./lib/data-dir.js');
+  const policyStore = require('../engine/lib/policy-store.js');
+  const { dataDir } = require('../engine/lib/data-dir.js');
   const work = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-adjw-'));
   const project = 'adj-file-' + Date.now();
   try {
@@ -21491,8 +22310,8 @@ test('policy_adjudication_prepare: glob-only policy (no literal) samples one occ
 
 test('policy_adjudication_prepare: refuses an ALWAYS-mode (globless) policy; unknown id errors', async () => {
   const server = await _adjImportServer();
-  const policyStore = require('./lib/policy-store.js');
-  const { dataDir } = require('./lib/data-dir.js');
+  const policyStore = require('../engine/lib/policy-store.js');
+  const { dataDir } = require('../engine/lib/data-dir.js');
   const project = 'adj-always-' + Date.now();
   const act = policyStore.activate(dataDir(), { text: 'always: never let errors pass', scope: 'project', projectId: project });
   assert(act.activated, 'always policy activated');
@@ -21504,9 +22323,9 @@ test('policy_adjudication_prepare: refuses an ALWAYS-mode (globless) policy; unk
 
 test('policy_adjudication_record: honest disposition (kind/disclaimer, no FP-rate field, no snippet persisted)', async () => {
   const server = await _adjImportServer();
-  const policyStore = require('./lib/policy-store.js');
+  const policyStore = require('../engine/lib/policy-store.js');
   const adjStore = require('./lib/adjudication-store.js');
-  const { dataDir } = require('./lib/data-dir.js');
+  const { dataDir } = require('../engine/lib/data-dir.js');
   const work = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-adjw-'));
   const project = 'adj-rec-' + Date.now();
   try {
@@ -21536,8 +22355,8 @@ test('policy_adjudication_record: honest disposition (kind/disclaimer, no FP-rat
 // — finding #7 (bundles never purged): consume-then-delete on record + orphan sweep —
 test('policy_adjudication_record: CONSUMES the bundle (deleted after record); a re-run errors with re-prepare guidance', async () => {
   const server = await _adjImportServer();
-  const policyStore = require('./lib/policy-store.js');
-  const { dataDir } = require('./lib/data-dir.js');
+  const policyStore = require('../engine/lib/policy-store.js');
+  const { dataDir } = require('../engine/lib/data-dir.js');
   const work = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-adjw-'));
   const project = 'adj-consume-' + Date.now();
   try {
@@ -21551,7 +22370,7 @@ test('policy_adjudication_record: CONSUMES the bundle (deleted after record); a 
     assertEq(rr.counts.total, 2, 'record succeeded');
     assert(!fs.existsSync(prep.bundlePath), 'the ephemeral bundle is DELETED once its disposition is recorded (consume-then-delete)');
     // The disposition IS persisted (delete only cleans the read-once bundle, not the record).
-    const { dataDir: dd2 } = require('./lib/data-dir.js');
+    const { dataDir: dd2 } = require('../engine/lib/data-dir.js');
     assert(require('./lib/adjudication-store.js').listDispositions(dd2(), project).length === 1, 'the disposition survives the bundle delete');
     // A re-run cannot find the consumed bundle → clear, actionable error (not a silent success).
     const again = await server.handleTool('policy_adjudication_record', { policyId: act.id, manifestHash: prep.manifestHash, verdictsJson: JSON.stringify(verdicts), project, cwd: work });
@@ -21564,9 +22383,9 @@ test('policy_adjudication_record: CONSUMES the bundle (deleted after record); a 
 
 test('policy_adjudication_record: rejects unknown, duplicate, missing, and bad-label verdicts (nothing persisted)', async () => {
   const server = await _adjImportServer();
-  const policyStore = require('./lib/policy-store.js');
+  const policyStore = require('../engine/lib/policy-store.js');
   const adjStore = require('./lib/adjudication-store.js');
-  const { dataDir } = require('./lib/data-dir.js');
+  const { dataDir } = require('../engine/lib/data-dir.js');
   const work = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-adjw-'));
   const project = 'adj-val-' + Date.now();
   try {
@@ -21592,8 +22411,8 @@ test('policy_adjudication_record: rejects unknown, duplicate, missing, and bad-l
 
 test('policy_adjudication_prepare/record: never mutate the policy (no activate/deactivate; policy byte-identical)', async () => {
   const server = await _adjImportServer();
-  const policyStore = require('./lib/policy-store.js');
-  const { dataDir } = require('./lib/data-dir.js');
+  const policyStore = require('../engine/lib/policy-store.js');
+  const { dataDir } = require('../engine/lib/data-dir.js');
   const work = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-adjw-'));
   const project = 'adj-nomut-' + Date.now();
   try {
@@ -21758,7 +22577,7 @@ test('hooks-config getCaptureTriggerEvidence: DEFAULT OFF; enabled ONLY when ===
 // like 'tev-…' agrees on both sides — this IS the hook-write ↔ prepare-read agreement.
 function _teSeed(project, activationId, n, snippet) {
   const te = require('./lib/trigger-evidence-store.js');
-  const { dataDir } = require('./lib/data-dir.js');
+  const { dataDir } = require('../engine/lib/data-dir.js');
   for (let i = 1; i <= n; i++) {
     te.appendEvidence(dataDir(), project, {
       eventId: 'ev' + String(i).padStart(2, '0'),
@@ -21772,8 +22591,8 @@ function _teSeed(project, activationId, n, snippet) {
 
 test('policy_adjudication_prepare source:triggers — builds bundle from CAPTURED evidence, capped at 25, honest note', async () => {
   const server = await _adjImportServer();
-  const policyStore = require('./lib/policy-store.js');
-  const { dataDir } = require('./lib/data-dir.js');
+  const policyStore = require('../engine/lib/policy-store.js');
+  const { dataDir } = require('../engine/lib/data-dir.js');
   const project = 'tev-prep-' + Date.now();
   const act = policyStore.activate(dataDir(), { text: 'no console.log in prod', scope: 'project', projectId: project, globs: ['**/*.ts'], assert: { kind: 'forbid-added-literal', literal: 'console.log' }, enforcement: 'shadow' });
   assert(act.activated && act.activationId, 'shadow policy activated with an activationId');
@@ -21794,8 +22613,8 @@ test('policy_adjudication_prepare source:triggers — builds bundle from CAPTURE
 
 test('policy_adjudication_prepare source:triggers — no captured evidence → occurrenceCount 0 with guidance', async () => {
   const server = await _adjImportServer();
-  const policyStore = require('./lib/policy-store.js');
-  const { dataDir } = require('./lib/data-dir.js');
+  const policyStore = require('../engine/lib/policy-store.js');
+  const { dataDir } = require('../engine/lib/data-dir.js');
   const project = 'tev-empty-' + Date.now();
   const act = policyStore.activate(dataDir(), { text: 'no console.log', scope: 'project', projectId: project, globs: ['**/*.ts'], assert: { kind: 'forbid-added-literal', literal: 'console.log' }, enforcement: 'shadow' });
   const res = JSON.parse(_adjText(await server.handleTool('policy_adjudication_prepare', { policyId: act.id, source: 'triggers', project })));
@@ -21807,9 +22626,9 @@ test('policy_adjudication_prepare source:triggers — no captured evidence → o
 
 test('policy_adjudication_record source:triggers — JUDGED estimate: trigger kind, judged share, disclaimer, NO measured-FP', async () => {
   const server = await _adjImportServer();
-  const policyStore = require('./lib/policy-store.js');
+  const policyStore = require('../engine/lib/policy-store.js');
   const adjStore = require('./lib/adjudication-store.js');
-  const { dataDir } = require('./lib/data-dir.js');
+  const { dataDir } = require('../engine/lib/data-dir.js');
   const project = 'tev-rec-' + Date.now();
   const act = policyStore.activate(dataDir(), { text: 'no console.log', scope: 'project', projectId: project, globs: ['**/*.ts'], assert: { kind: 'forbid-added-literal', literal: 'console.log' }, enforcement: 'shadow' });
   _teSeed(project, act.activationId, 3, (i) => "console.log('sekret-tok" + i + "')");
@@ -21834,8 +22653,8 @@ test('policy_adjudication_record source:triggers — JUDGED estimate: trigger ki
 
 test('policy_adjudication_record: dispositionKind override forces the triggers kind on a snapshot bundle', async () => {
   const server = await _adjImportServer();
-  const policyStore = require('./lib/policy-store.js');
-  const { dataDir } = require('./lib/data-dir.js');
+  const policyStore = require('../engine/lib/policy-store.js');
+  const { dataDir } = require('../engine/lib/data-dir.js');
   const work = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-adjw-'));
   const project = 'tev-ovr-' + Date.now();
   try {
@@ -21856,9 +22675,9 @@ test('policy_adjudication_record: dispositionKind override forces the triggers k
 
 test('policy_trigger_evidence_purge: removes a policy\'s captured evidence, then all; static: not a KB tool', async () => {
   const server = await _adjImportServer();
-  const policyStore = require('./lib/policy-store.js');
+  const policyStore = require('../engine/lib/policy-store.js');
   const te = require('./lib/trigger-evidence-store.js');
-  const { dataDir } = require('./lib/data-dir.js');
+  const { dataDir } = require('../engine/lib/data-dir.js');
   const project = 'tev-purge-' + Date.now();
   const act1 = policyStore.activate(dataDir(), { text: 'p1', scope: 'project', projectId: project, globs: ['**/*.ts'], assert: { kind: 'forbid-added-literal', literal: 'console.log' }, enforcement: 'shadow' });
   const act2 = policyStore.activate(dataDir(), { text: 'p2', scope: 'project', projectId: project, globs: ['**/*.js'], assert: { kind: 'forbid-added-literal', literal: 'debugger' }, enforcement: 'shadow' });
@@ -21886,8 +22705,8 @@ test('policy_trigger_evidence_purge: removes a policy\'s captured evidence, then
 test('policy_adjudication_purge: removes ORPHAN bundle-*.json only; keeps dispositions.json + other projects; static: not a KB tool', async () => {
   const server = await _adjImportServer();
   const adjStore = require('./lib/adjudication-store.js');
-  const { dataDir } = require('./lib/data-dir.js');
-  const { writeFileAtomic } = require('./lib/atomic-write.js');
+  const { dataDir } = require('../engine/lib/data-dir.js');
+  const { writeFileAtomic } = require('../engine/lib/atomic-write.js');
   const projA = 'adj-purge-a-' + Date.now();
   const projB = 'adj-purge-b-' + Date.now();
   const dirA = adjStore.adjudicationDir(dataDir(), projA);
@@ -22070,9 +22889,9 @@ test('revision-ledger: note is length-capped; never-throws on a corrupt ledger (
 
 test('policy_self_update_report: computes JUDGED advisories for active glob/shadow policies + honest top-level note', async () => {
   const server = await _adjImportServer();
-  const policyStore = require('./lib/policy-store.js');
+  const policyStore = require('../engine/lib/policy-store.js');
   const adjStore = require('./lib/adjudication-store.js');
-  const { dataDir } = require('./lib/data-dir.js');
+  const { dataDir } = require('../engine/lib/data-dir.js');
   const project = 'su-report-' + Date.now();
   // Policy A: too-broad (mostly-legit judged) → demote candidate.
   const a = policyStore.activate(dataDir(), { text: 'no console.log', scope: 'project', projectId: project, globs: ['**/*.ts'], assert: { kind: 'forbid-added-literal', literal: 'console.log' }, enforcement: 'shadow' });
@@ -22097,9 +22916,9 @@ test('policy_self_update_report: computes JUDGED advisories for active glob/shad
 
 test('policy_self_update_report: MUTATES NOTHING (listVisible byte-identical) + static: handler has no activate/deactivate', async () => {
   const server = await _adjImportServer();
-  const policyStore = require('./lib/policy-store.js');
+  const policyStore = require('../engine/lib/policy-store.js');
   const adjStore = require('./lib/adjudication-store.js');
-  const { dataDir } = require('./lib/data-dir.js');
+  const { dataDir } = require('../engine/lib/data-dir.js');
   const project = 'su-report-nomut-' + Date.now();
   const a = policyStore.activate(dataDir(), { text: 'no console.log', scope: 'project', projectId: project, globs: ['**/*.ts'], assert: { kind: 'forbid-added-literal', literal: 'console.log' }, enforcement: 'shadow' });
   adjStore.saveDisposition(dataDir(), project, { policyId: a.id, manifestHash: 'aa', ts: Date.now(), counts: { legit: 6, problem: 2, uncertain: 0, injectionSuspected: 0, total: 8 }, coverage: { sampled: 8, eligible: 20 }, provenance: { source: 'triggers' }, activationId: a.activationId });
@@ -22118,9 +22937,9 @@ test('policy_self_update_report: MUTATES NOTHING (listVisible byte-identical) + 
 
 test('policy_apply_candidate: CAS mismatch REFUSES and changes nothing', async () => {
   const server = await _adjImportServer();
-  const policyStore = require('./lib/policy-store.js');
+  const policyStore = require('../engine/lib/policy-store.js');
   const adjStore = require('./lib/adjudication-store.js');
-  const { dataDir } = require('./lib/data-dir.js');
+  const { dataDir } = require('../engine/lib/data-dir.js');
   const ledger = require('./lib/revision-ledger.js');
   const project = 'su-cas-' + Date.now();
   const a = policyStore.activate(dataDir(), { text: 'no console.log', scope: 'project', projectId: project, globs: ['**/*.ts'], assert: { kind: 'forbid-added-literal', literal: 'console.log' }, enforcement: 'shadow' });
@@ -22135,9 +22954,9 @@ test('policy_apply_candidate: CAS mismatch REFUSES and changes nothing', async (
 
 test('policy_apply_candidate: signal-gate — a well-calibrated policy CANNOT be force-demoted', async () => {
   const server = await _adjImportServer();
-  const policyStore = require('./lib/policy-store.js');
+  const policyStore = require('../engine/lib/policy-store.js');
   const adjStore = require('./lib/adjudication-store.js');
-  const { dataDir } = require('./lib/data-dir.js');
+  const { dataDir } = require('../engine/lib/data-dir.js');
   const project = 'su-gate-' + Date.now();
   const a = policyStore.activate(dataDir(), { text: 'no eval', scope: 'project', projectId: project, globs: ['**/*.ts'], assert: { kind: 'forbid-added-literal', literal: 'eval(' }, enforcement: 'shadow' });
   const pol = policyStore.listVisible(dataDir(), { projectId: project }).find((r) => r.id === a.id);
@@ -22151,10 +22970,10 @@ test('policy_apply_candidate: signal-gate — a well-calibrated policy CANNOT be
 
 test('policy_apply_candidate: valid demote drops assert/enforcement, KEEPS globs/text, writes a ledger entry, mints a new sourceHash', async () => {
   const server = await _adjImportServer();
-  const policyStore = require('./lib/policy-store.js');
+  const policyStore = require('../engine/lib/policy-store.js');
   const adjStore = require('./lib/adjudication-store.js');
   const ledger = require('./lib/revision-ledger.js');
-  const { dataDir } = require('./lib/data-dir.js');
+  const { dataDir } = require('../engine/lib/data-dir.js');
   const project = 'su-apply-' + Date.now();
   const a = policyStore.activate(dataDir(), { text: 'no console.log', scope: 'project', projectId: project, globs: ['**/*.ts'], assert: { kind: 'forbid-added-literal', literal: 'console.log' }, enforcement: 'shadow' });
   const pol0 = policyStore.listVisible(dataDir(), { projectId: project }).find((r) => r.id === a.id);
@@ -22182,8 +23001,8 @@ test('policy_apply_candidate: valid demote drops assert/enforcement, KEEPS globs
 
 test('policy_apply_candidate: refuses an already-plain advisory and an unknown/always policy (nothing to demote)', async () => {
   const server = await _adjImportServer();
-  const policyStore = require('./lib/policy-store.js');
-  const { dataDir } = require('./lib/data-dir.js');
+  const policyStore = require('../engine/lib/policy-store.js');
+  const { dataDir } = require('../engine/lib/data-dir.js');
   const project = 'su-refuse-' + Date.now();
   // Plain glob advisory (no assert) → nothing to demote.
   const g = policyStore.activate(dataDir(), { text: 'plain advisory', scope: 'project', projectId: project, globs: ['**/*.ts'] });
@@ -23055,8 +23874,8 @@ test('graph/dispatch: mcp-memory + unreachable daemon fails open (offline guidan
 
 test('brain-backend mcp: saveMcp pins documentId = entry.id so re-pushes UPSERT (idempotency)', async () => {
   const daemon = await startFakeDaemon();
-  delete require.cache[require.resolve('./brain-backend.js')];
-  const backend = require('./brain-backend.js');
+  delete require.cache[require.resolve('../engine/brain-backend.js')];
+  const backend = require('../engine/brain-backend.js');
   backend.__testHooks._injectConfig({ backend: { type: 'mcp-memory', mcpMemory: { transport: 'http', serverUrl: daemon.url } } });
   try {
     await backend.init({ project: 'projDoc' });
@@ -23066,7 +23885,7 @@ test('brain-backend mcp: saveMcp pins documentId = entry.id so re-pushes UPSERT 
     assertEq(id, 'fixed-42');
     await backend.close();
   } finally {
-    delete require.cache[require.resolve('./brain-backend.js')];
+    delete require.cache[require.resolve('../engine/brain-backend.js')];
     await daemon.close();
   }
 });
@@ -23800,6 +24619,21 @@ test('slow-hook alert: p95 at half the deadline (enough calls) or any expiry →
   assertEq(slowHooks({ unavailable: 'down' }, d).length, 0, 'unavailable → none');
 });
 
+test('slow-hook alert: orcamento ABSOLUTO por evento alem da fracao do prazo (o recall de 8 s no prompt nunca alertava)', () => {
+  const { slowHooks } = require('./lib/hook-latency-alert.js');
+  const d = { brain_retrieve_context: 9000, hook_curation_guard: 7000, hook_stop_dispatcher: 29000 };
+  const ev = { brain_retrieve_context: 'UserPromptSubmit', hook_curation_guard: 'PreToolUse', hook_stop_dispatcher: 'Stop' };
+  const lat = {
+    brain_retrieve_context: { calls: 50, queued: 0, expired: 0, p95Ms: 4000 },  // < half the deadline, > 1.5 s budget
+    hook_curation_guard: { calls: 50, queued: 0, expired: 0, p95Ms: 72 },       // within the 150 ms guard budget
+    hook_stop_dispatcher: { calls: 50, queued: 0, expired: 0, p95Ms: 654 },     // within the Stop budget
+  };
+  const out = slowHooks(lat, d, ev);
+  assertEq(out.map((h) => h.name), ['brain_retrieve_context']);
+  assertEq(out[0].budgetMs, 1500);
+  assertEq(slowHooks(lat, d).length, 0, 'without events: only the old fraction rule');
+});
+
 test('slow-hook alert: once per hook per 6 h per daemon pid; the BRAIN-HEALTH check only judges the daemon serving THIS install', async () => {
   const alert = require('./lib/hook-latency-alert.js');
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-slowhook-'));
@@ -23855,7 +24689,7 @@ test('value digest: the line reports saved tokens, redirects, runs, raw cost and
 
 test('value digest: real metrics → shown once a day per project; silent (and slot kept) without activity', async () => {
   const vd = require('./value-digest.js');
-  const ms = require('./lib/metrics-store.js');
+  const ms = require('../engine/lib/metrics-store.js');
   const { runWithHookEnv } = require('./lib/hook-context.js');
   const base = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-digest-'));
   const active = path.join(base, 'digest-active-' + Date.now()); fs.mkdirSync(active);
@@ -23871,7 +24705,7 @@ test('value digest: real metrics → shown once a day per project; silent (and s
     assertEq(await runWithHookEnv({ CLAUDE_PROJECT_DIR: active }, () => vd.run({}, { now: t0 + 3600_000 })), null, 'same day → silent');
     assert(await runWithHookEnv({ CLAUDE_PROJECT_DIR: active }, () => vd.run({}, { now: t0 + 25 * 3600_000 })), 'next day → shown again');
     assertEq(await runWithHookEnv({ CLAUDE_PROJECT_DIR: idle }, () => vd.run({}, { now: t0 })), null, 'no curation activity → silent');
-    const { dataDir } = require('./lib/data-dir.js');
+    const { dataDir } = require('../engine/lib/data-dir.js');
     assert(!fs.existsSync(path.join(dataDir(), '.runtime', `value-digest-${path.basename(idle)}.json`)), 'an idle project does not burn its daily slot');
   } finally { fs.rmSync(base, { recursive: true, force: true }); }
 });
@@ -23919,7 +24753,7 @@ test('prune never-used: a 2.x-era curation.flagged does NOT count as usage histo
   // Pre-release audit (high): history was MIN(ts) of any curation.* event, and
   // curation.flagged already existed in 2.x — a real project listed 23 of 42 in-use
   // scripts as "never ran" on the day it updated.
-  const ms = require('./lib/metrics-store.js');
+  const ms = require('../engine/lib/metrics-store.js');
   const project = 'ccb-prune-2x-' + Date.now();
   try {
     ms.close(); ms.init({ project });
@@ -23966,7 +24800,7 @@ test('prune never-used: apply removes only current candidates (non-candidates re
 });
 
 test('prune never-used: real metrics usage (exact, no row cap) + the MCP tool lists by default and prunes only with apply', async () => {
-  const ms = require('./lib/metrics-store.js');
+  const ms = require('../engine/lib/metrics-store.js');
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-prune-tool-'));
   const project = path.basename(root);
   try {
@@ -23997,7 +24831,7 @@ test('prune never-used: real metrics usage (exact, no row cap) + the MCP tool li
 });
 
 test('curation_prune_unused: shells.json in a SUBFOLDER of the session reads the session root\'s usage metrics (the key lib/metrics.js writes)', async () => {
-  const ms = require('./lib/metrics-store.js');
+  const ms = require('../engine/lib/metrics-store.js');
   const sess = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-prune-nested-'));
   const app = path.join(sess, 'app');
   try {
@@ -24095,7 +24929,7 @@ test('setup-tools: backend_status/setup guide the agent (Java missing → exact 
 
 test('backup: streamed round trip to another install — WAL-safe SQLite snapshot while a connection is open, a 64 MB remote snapshot, no models/.runtime/tokens/router key; corrupt or unsafe archives refused before touching anything', async () => {
   const { createBackup, extractBackup, applyStaged, writeTarGz } = require('./lib/backup.js');
-  const Database = require('./lib/sqlite-compat.js').loadSqlite();
+  const Database = require('../engine/lib/sqlite-compat.js').loadSqlite();
   const base = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-backup-'));
   let live = null;
   try {
@@ -24187,7 +25021,7 @@ test('backup-remote: the memory-server part follows docs/BACKUP-CONTRACT.md — 
 });
 
 test('dashboard backup e2e: create (background job) + download on install A, streamed upload + restore job on install B through the real dashboard (pre-restore safety copy kept)', async () => {
-  const Database = require('./lib/sqlite-compat.js').loadSqlite();
+  const Database = require('../engine/lib/sqlite-compat.js').loadSqlite();
   const base = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-dashbk-'));
   const kids = [];
   const start = (name) => new Promise((resolve, reject) => {
@@ -24246,18 +25080,18 @@ test('project identity notice: the agent investigates and asks "new or existing 
   const n = buildNotice('C:\\x\\nova-pasta', '');
   for (const re of [/project_list/, /project_set/, /link: true/, /NOVO ou a continuação\/migração/, /README/, /DESLIGADA/, /repete a cada prompt/, /memory-off\.json/]) assert(re.test(n), `notice has ${re}: ${n}`);
   assert(!/owner\/repo/.test(n), 'no owner/repo jargon');
-  const { SCOPE_HELP } = require('./lib/project-id.js');
+  const { SCOPE_HELP } = require('../engine/lib/project-id.js');
   assert(/project_set/.test(SCOPE_HELP) && !/owner\/repo/.test(SCOPE_HELP), SCOPE_HELP);
 });
 
 test('brain-config: a long-lived process sees a save made by ANOTHER process (cache keyed on the user override mtime/size)', () => {
-  const bc = require('./lib/brain-config.js');
+  const bc = require('../engine/lib/brain-config.js');
   const home = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-bc-'));
   const saved = { HOME: process.env.HOME, USERPROFILE: process.env.USERPROFILE };
   try {
     process.env.HOME = home; process.env.USERPROFILE = home;
     bc._resetCache();
-    const f = path.join(require('./lib/data-dir.js').globalDir(), 'user-config.json');
+    const f = path.join(require('../engine/lib/data-dir.js').globalDir(), 'user-config.json');
     assert(f.startsWith(home), `isolated user config: ${f}`);
     fs.mkdirSync(path.dirname(f), { recursive: true });
     fs.writeFileSync(f, JSON.stringify({ backend: { type: 'local' } }));
@@ -24554,7 +25388,7 @@ test('setup-tools: project_set names an id-less folder, refuses a taken name unl
     const linked = await call({ cwd: fresh, name: 'loja-online', link: true });
     assert(!linked.isError && /linked to the existing project/.test(linked.content[0].text), JSON.stringify(linked));
     assertEq(JSON.parse(fs.readFileSync(path.join(fresh, '.memory', 'project.json'), 'utf8')).metadata.defaults.project_id, 'loja-online', 'id written');
-    assertEq(require('./lib/project-id.js').tryResolveProjectId({ cwd: fresh }), 'loja-online', 'the folder now resolves to it');
+    assertEq(require('../engine/lib/project-id.js').tryResolveProjectId({ cwd: fresh }), 'loja-online', 'the folder now resolves to it');
     const again = await call({ cwd: fresh, name: 'outro' });
     assert(again.isError && /already has project id "loja-online"/.test(again.content[0].text), 'a named folder is not renamed');
     const other = mk('site');
@@ -24579,7 +25413,7 @@ test('dashboard Brain tab: project identity save writes .memory/project.json (pr
     process.env.CLAUDE_PLUGIN_DATA = fs.mkdtempSync(path.join(base, 'data-'));
     delete require.cache[require.resolve('./dashboard.js')];
     const dash = require('./dashboard.js');
-    const pid = require('./lib/project-id.js');
+    const pid = require('../engine/lib/project-id.js');
     const call = async (fn, ...a) => { let status = 200; let body = null; await fn(...a, { writeHead: (c) => { status = c; }, end: (t) => { body = JSON.parse(t); } }); return { status, body }; };
     const post = (obj) => call(dash.saveProjectMarker, Readable.from([JSON.stringify(obj)]));
     const get = (folder) => call((res) => dash.getProjectMarker({}, res, new URL(`http://x/?folder=${encodeURIComponent(folder)}`)));
@@ -24706,7 +25540,7 @@ test('plugin setup self-heal: re-runs in background when the brain-server deps a
     assert(fs.existsSync(marker), 'the detached setup actually ran');
     // A second session while one setup holds the lock (live pid): it skips instead of a parallel npm.
     const data = path.join(root, 'data');
-    const { acquireFileLock, releaseFileLock } = require('./lib/process-lock.js');
+    const { acquireFileLock, releaseFileLock } = require('../engine/lib/process-lock.js');
     const lock = acquireFileLock(path.join(data, 'plugin-setup.lock'));
     assert(lock.acquired, 'test holds the setup lock');
     const r = require('child_process').spawnSync(process.execPath, [path.join(SCRIPTS, 'plugin-setup.js')], { encoding: 'utf8', timeout: 30000, env: { ...process.env, CLAUDE_PLUGIN_DATA: data } });
@@ -24752,7 +25586,7 @@ test('session-journal: per-sid files (no "foo"/"foobar" collision), same-ms orde
 
 test('cooldown-stamp: absent → off; stamped → on until ms elapses; settleWithin tells ok/timeout/error apart', async () => {
   const { onCooldown, stamp } = require('./lib/cooldown-stamp.js');
-  const { settleWithin } = require('./lib/settle-within.js');
+  const { settleWithin } = require('../engine/lib/settle-within.js');
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-cool-'));
   try {
     const p = path.join(dir, 'sub', 'x.json');
@@ -24766,7 +25600,7 @@ test('cooldown-stamp: absent → off; stamped → on until ms elapses; settleWit
 });
 
 test('config-merge: deepMerge (objects recurse, arrays/scalars replace, base untouched) + filesStamp tracks edits', () => {
-  const { deepMerge, filesStamp } = require('./lib/config-merge.js');
+  const { deepMerge, filesStamp } = require('../engine/lib/config-merge.js');
   const base = { a: { b: 1, c: [1, 2] }, d: 1 };
   assertEq(deepMerge(base, { a: { c: [9] }, e: 2 }), { a: { b: 1, c: [9] }, d: 1, e: 2 });
   assertEq(base, { a: { b: 1, c: [1, 2] }, d: 1 }, 'base not mutated');
@@ -24814,6 +25648,26 @@ test('dashboard /api/plugin/update: one update at a time (a 2nd click while one 
     assertEq(calls, 2, 'after it finishes a new update may start');
     finish({ ok: true }); await p3;
   } finally { pu.performUpdate = orig; }
+});
+
+test('curation_prune_unused: le o uso pela chave de metricas do PROJETO (id), nao pelo nome da pasta nem pela 1a sessao do daemon', async () => {
+  const sp = require('./lib/shells-prune.js');
+  const repo = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-prune-key-'));
+  fs.mkdirSync(path.join(repo, '.git'));
+  fs.mkdirSync(path.join(repo, '.memory'));
+  fs.writeFileSync(path.join(repo, '.memory', 'project.json'), JSON.stringify({ metadata: { defaults: { project_id: 'own/prune-repo' } } }));
+  const orig = sp.pruneCandidates;
+  let seen = null;
+  sp.pruneCandidates = (a) => { seen = a; return { ok: true, days: a.days, historyFromTs: null, candidates: [] }; };
+  try {
+    const { createBrainServer } = await import(pathToFileURL(path.join(ROOT, 'servers', 'brain-server', 'lib', 'mcp-server.js')).href);
+    const server = createBrainServer({ pluginRoot: ROOT, mode: 'http' });
+    server._setSessionRoots([os.tmpdir()]); // some OTHER session's folder
+    const r = await server.dispatch('curation_prune_unused', { cwd: repo });
+    assert(!r.isError, r.content[0].text);
+    assertEq(seen.project, undefined, 'no folder-name key passed: shells-prune resolves the id key itself');
+    assertEq(sp.metricsProjectFor(seen.root, []), require('../engine/lib/metrics-project.js').metricsKeyFor(repo), 'and that key is the project id key metrics.js writes under');
+  } finally { sp.pruneCandidates = orig; fs.rmSync(repo, { recursive: true, force: true }); }
 });
 
 test('dashboard prune (no session known): metrics key = nearest folder up to the repo top that has a metrics db', () => {
@@ -25171,7 +26025,7 @@ test('kb-worker.js: an unknown mod (not just an unknown method) is also a struct
 test('kb-worker-client: a worker that fails to load (bad pluginRoot) rejects a pending call AND every future call — never hangs', async () => {
   const { createKbWorkerPool } = await import(KB_WORKER_CLIENT_URL);
   const keepAlive = setInterval(() => {}, 50);
-  // kb-worker.js's top-level `require(path.join(pluginRoot, 'scripts', 'brain-store.js'))`
+  // kb-worker.js's top-level `require(path.join(pluginRoot, 'engine', 'brain-store.js'))`
   // throws synchronously during the worker's module evaluation when pluginRoot is bogus —
   // this is the realistic shape of "a typo/module-resolution break in kb-worker.js itself"
   // the review flagged as untested. It must surface as worker.on('error'), not a hang.
@@ -25284,10 +26138,10 @@ test('kb-worker-client: STORE_METHODS/METRICS_METHODS/INDEX_METHODS/GRAPH_METHOD
   const metricsMethods = extractArray('METRICS_METHODS');
   const indexMethods = extractArray('INDEX_METHODS');
   const graphMethods = extractArray('GRAPH_METHODS');
-  const storeExports = publicExportNames(require('./brain-store.js'));
-  const metricsExports = publicExportNames(require('./lib/metrics-store.js'));
-  const indexExports = publicExportNames(require('./brain-index.js'));
-  const graphExports = publicExportNames(require('./brain-graph.js'));
+  const storeExports = publicExportNames(require('../engine/brain-store.js'));
+  const metricsExports = publicExportNames(require('../engine/lib/metrics-store.js'));
+  const indexExports = publicExportNames(require('../engine/brain-index.js'));
+  const graphExports = publicExportNames(require('../engine/brain-graph.js'));
   assertEq(storeMethods, storeExports, 'kb-worker-client.js\'s STORE_METHODS must list EXACTLY brain-store.js\'s public methods — a method added to brain-store.js without a matching STORE_METHODS entry is silently unreachable in http mode (getKB never exposes it), and a stale entry left after a rename/removal breaks with "unknown store.X" only the first time it is called from production');
   assertEq(metricsMethods, metricsExports, 'kb-worker-client.js\'s METRICS_METHODS must list EXACTLY metrics-store.js\'s public methods, for the same reason');
   assertEq(indexMethods, indexExports, 'kb-worker-client.js\'s INDEX_METHODS must list EXACTLY brain-index.js\'s public methods, for the same reason');
@@ -25361,7 +26215,7 @@ test("dispatchKbTool: a two-project call (capture_lesson scope='user', the real 
   const url = require('url');
   const R = process.env.CLAUDE_PLUGIN_ROOT;
   const mod = await import(url.pathToFileURL(path.join(R, 'servers', 'brain-server', 'lib', 'mcp-server.js')).href);
-  const { USER_SENTINEL } = require(path.join(R, 'scripts', 'lib', 'scope-sanitizer.js'));
+  const { USER_SENTINEL } = require(path.join(R, 'engine', 'lib', 'scope-sanitizer.js'));
   const T = 60;
   const log = [];
   // capture_lesson's own embedder call is bypassed (a real/unready embedder's timing
@@ -25728,16 +26582,37 @@ test('seams: withStubbedChildProcess leaves child_process untouched on a bad pat
   assert(cp.spawn === real, 'spawn must not stay stubbed');
 });
 
-test('seams: plugin-updater default spawnSync forces windowsHide after the spread', () =>
-  withStubbedChildProcess({ spawnSync: (cmd, args, opts) => ({ cmd, args, opts }) }, 'lib/plugin-updater.js', (M) => {
-    const r = M._hiddenSpawnSync('npm', ['install'], { cwd: '/x', windowsHide: false });
-    assertEq(r.opts.windowsHide, true);
-    assertEq(r.opts.cwd, '/x', 'caller options are preserved');
-    assertEq([r.cmd, r.args], ['npm', ['install']], 'cmd/args forwarded');
+test('seams: plugin-updater default runner is ASYNC (dashboard keeps answering during npm install) and forces windowsHide after the spread', async () => {
+  const EventEmitter = require('events');
+  let seen = null;
+  const fakeSpawn = (cmd, args, opts) => {
+    seen = { cmd, args, opts };
+    const c = new EventEmitter(); c.stdout = new EventEmitter(); c.stderr = new EventEmitter(); c.kill = () => {};
+    setImmediate(() => { c.stdout.emit('data', 'added 3 packages'); c.emit('close', 0); });
+    return c;
+  };
+  let pending = null;
+  withStubbedChildProcess({ spawn: fakeSpawn }, 'lib/plugin-updater.js', (M) => {
+    pending = M._hiddenRun('npm', ['install'], { cwd: '/x', windowsHide: false, timeout: 1000 });
+    assert(pending && typeof pending.then === 'function', 'returns a promise, does not block');
     let err = null;
-    try { M._hiddenSpawnSync('npm', { cwd: '/y', windowsHide: false }); } catch (e) { err = e; }
+    try { M._hiddenRun('npm', { cwd: '/y', windowsHide: false }); } catch (e) { err = e; }
     assert(err instanceof TypeError && /args must be an array/.test(err.message), 'non-array args must throw TypeError');
-  }));
+  });
+  const r = await pending;
+  assertEq(seen.opts.windowsHide, true);
+  assertEq(seen.opts.cwd, '/x', 'caller options are preserved');
+  assertEq([seen.cmd, seen.args], ['npm', ['install']], 'cmd/args forwarded');
+  assertEq([r.status, r.stdout], [0, 'added 3 packages']);
+});
+
+test('plugin-updater.killStale: so casa modulos da PASTA DE CACHE do plugin, nao um checkout de desenvolvimento chamado claude-code-boss', () => {
+  const like = pu.CACHE_MODULE_LIKE;
+  if (process.platform !== 'win32') { assert(/plugins\\cache/.test(like)); return; }
+  const check = (p) => require('child_process').spawnSync('powershell', ['-NoProfile', '-NonInteractive', '-Command', `'${p}' -like '${like}'`], { encoding: 'utf8', windowsHide: true }).stdout.trim();
+  assertEq(check('C:\\Users\\a\\.claude\\plugins\\cache\\allansantos-plugins\\claude-code-boss\\3.9.0\\node_modules\\better-sqlite3\\build\\Release\\better_sqlite3.node'), 'True');
+  assertEq(check('C:\\Users\\a\\Desktop\\Projetos\\claude-code\\claude-code-boss\\node_modules\\better-sqlite3\\build\\Release\\better_sqlite3.node'), 'False');
+});
 
 // ─── Phase G (ADR-015): hook tools served by the brain daemon ─────────────────
 {
@@ -25896,6 +26771,34 @@ test('seams: plugin-updater default spawnSync forces windowsHide after the sprea
     } finally { await hw.shutdown(); }
   });
 
+  test('G2: REAL hook worker — um hook em segundo plano devolve quanto rodou e quanto esperou na fila (antes: queued, sem duracao nenhuma)', async () => {
+    const done = [];
+    const hw = (await loadHookWorker())({ pluginRoot: ROOT, onBackgroundDone: (name, runMs, lagMs, ok) => done.push({ name, runMs, lagMs, ok }) });
+    try {
+      const fileEdit = PARITY.find(p => p[0] === 'hook_file_edit_detect')[2];
+      hw.enqueue('hook_file_edit_detect', { ...wire(fileEdit), project_dir: proj });
+      await hw.run('hook_stop_dispatcher', { ...wire(PARITY[11][2]), project_dir: proj }); // FIFO: the background job finished before this
+      assertEq(done.length, 1);
+      assert(done[0].name === 'hook_file_edit_detect' && done[0].ok === true && Number.isFinite(done[0].runMs) && done[0].lagMs >= done[0].runMs, JSON.stringify(done));
+    } finally { await hw.shutdown(); }
+  });
+
+  test('hook-tools.recordBackgroundLatency: /health mostra p50/p95 do tempo de execucao e a espera na fila dos hooks em segundo plano', () => {
+    const ht = require('./lib/hook-tools.js');
+    ht._resetLatencyStats();
+    ht.recordLatency('hook_file_edit_detect', 0, 'queued');
+    ht.recordBackgroundLatency('hook_file_edit_detect', 40, 55, true);
+    ht.recordBackgroundLatency('hook_file_edit_detect', 60, 900, false);
+    const st = ht.hookLatencyStats().hook_file_edit_detect;
+    assertEq([st.queued, st.background.done, st.background.failed, st.background.maxMs, st.background.queueLagP95Ms], [1, 2, 1, 60, 900]);
+    ht.recordLatency('brain_retrieve_context', 5600, 'ok');
+    assertEq(ht.hookLatencyStats().brain_retrieve_context.p95Ms, 5600, 'the prompt recall has a latency entry too');
+    ht._resetLatencyStats();
+    const dl = ht.deadlinesFromHooksJson(ROOT);
+    assert(Number.isFinite(dl.brain_retrieve_context), 'deadline known for the recall');
+    assertEq(ht.eventsFromHooksJson(ROOT).brain_retrieve_context, 'UserPromptSubmit');
+  });
+
   test('G2: a crashed hook worker is replaced on the next call (no permanent outage)', async () => {
     const hw = (await loadHookWorker())({ pluginRoot: ROOT });
     try {
@@ -25975,7 +26878,7 @@ test('seams: plugin-updater default spawnSync forces windowsHide after the sprea
   test('G9: an edited curation config is seen by the next daemon hook call (curation-paths cache follows hooks-config)', async () => {
     const hooksCfg = require('./lib/hooks-config.js');
     const cp = require('./curation-paths.js');
-    const { globalDir } = require('./lib/data-dir.js');
+    const { globalDir } = require('../engine/lib/data-dir.js');
     const uc = path.join(globalDir(), 'hooks', 'user-config.json');
     const had = fs.existsSync(uc) ? fs.readFileSync(uc, 'utf8') : null;
     try {
@@ -25994,9 +26897,9 @@ test('seams: plugin-updater default spawnSync forces windowsHide after the sprea
 
   // ── G6: SubagentStart policy-inject through the daemon ──────────────────────
   test('G6: hook_policy_inject == policy-inject.js with an ACTIVE policy (SubagentStart echo)', async () => {
-    const policyStore = require('./lib/policy-store.js');
-    const { resolveLocalScopeId } = require('./lib/project-id.js');
-    const dataDirNow = require('./lib/data-dir.js').dataDir();
+    const policyStore = require('../engine/lib/policy-store.js');
+    const { resolveLocalScopeId } = require('../engine/lib/project-id.js');
+    const dataDirNow = require('../engine/lib/data-dir.js').dataDir();
     const projectId = resolveLocalScopeId({ cwd: proj });
     const r = policyStore.activate(dataDirNow, { entryId: 'g6-parity', text: 'G6 parity: never skip the smoke', projectId });
     assert(r.activated, `policy activated: ${JSON.stringify(r)}`);
@@ -26019,7 +26922,8 @@ test('seams: plugin-updater default spawnSync forces windowsHide after the sprea
     const d = deadlinesFromHooksJson(ROOT);
     const { HOOKS: SPECS_D } = require('./lib/hook-tools.js');
     // module-called tools have no hooks.json entry: they run on the default deadline.
-    assertEq(Object.keys(d).sort(), [...hookTools.names].filter(n => SPECS_D[n].caller !== 'module').sort());
+    // + brain_retrieve_context: not a hook_* tool, but hooks.json calls it on every prompt (TIMED_TOOLS).
+    assertEq(Object.keys(d).sort(), [...[...hookTools.names].filter(n => SPECS_D[n].caller !== 'module'), 'brain_retrieve_context'].sort());
     assertEq(d.hook_stop_dispatcher, 29000);
     assertEq(d.hook_curation_guard, 7000);
     assertEq(d.hook_graph_guard, 4000);
@@ -26126,7 +27030,7 @@ test('seams: plugin-updater default spawnSync forces windowsHide after the sprea
     assertEq(enqueued, 1);
   });
 
-  test('G4: REAL worker — a background write lands before the next awaited hook (FIFO)', async () => {
+  test('G4: REAL worker — a background write lands before the next awaited hook (FIFO)', () => withDevProfile(async () => {
     const verifyJournal = require('./lib/verify-journal.js');
     const hw = (await loadHookWorker())({ pluginRoot: ROOT });
     const sid = `g4-order-${Date.now()}`;
@@ -26137,9 +27041,9 @@ test('seams: plugin-updater default spawnSync forces windowsHide after the sprea
       const entries = verifyJournal.readEntries(sid);
       assert(entries.some(e => e.kind === 'edit' && String(e.path).endsWith('g4-order.js')), `edit journaled before the awaited hook replied: ${JSON.stringify(entries)}`);
     } finally { verifyJournal.clearEntries(sid); await hw.shutdown(); }
-  });
+  }));
 
-  test('O8: REAL worker — background jobs queued in a worker that crashes are re-queued, not silently lost', async () => {
+  test('O8: REAL worker — background jobs queued in a worker that crashes are re-queued, not silently lost', () => withDevProfile(async () => {
     const verifyJournal = require('./lib/verify-journal.js');
     const hw = (await loadHookWorker())({ pluginRoot: ROOT });
     const sid = `o8-${Date.now()}`;
@@ -26157,7 +27061,7 @@ test('seams: plugin-updater default spawnSync forces windowsHide after the sprea
       assert(st.requeued >= 5, `re-queued the un-acked jobs (requeued=${st.requeued})`);
       assertEq(st.background, 0, 'every background job acked in the end');
     } finally { verifyJournal.clearEntries(sid); await hw.shutdown(); }
-  });
+  }));
 
   test('G4: REAL worker — a background hook that degrades is reported on that session\'s next Stop, once', async () => {
     const hw = (await loadHookWorker())({ pluginRoot: ROOT });
@@ -26731,17 +27635,17 @@ test('compaction-event.readNewApiCalls: one entry per API call since the last on
 });
 
 async function withCmpStore(fn) {
-  const mods = ['./lib/metrics-store.js', './lib/metrics.js', './compaction-event.js'];
+  const mods = ['../engine/lib/metrics-store.js', '../engine/lib/metrics.js', './compaction-event.js'];
   for (const m of mods) delete require.cache[require.resolve(m)];
   const prev = process.env.CLAUDE_PLUGIN_DATA;
   process.env.CLAUDE_PLUGIN_DATA = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-cmp-store-'));
   try {
-    const store = require('./lib/metrics-store.js');
+    const store = require('../engine/lib/metrics-store.js');
     if (!store.init({ project: 'ccb-cmp-probe' })) return; // no SQLite backend here: nothing to assert
     store.close();
-    await fn(require('./compaction-event.js'), () => require('./lib/metrics-store.js'));
+    await fn(require('./compaction-event.js'), () => require('../engine/lib/metrics-store.js'));
   } finally {
-    require('./lib/metrics-store.js').close();
+    require('../engine/lib/metrics-store.js').close();
     for (const m of mods) delete require.cache[require.resolve(m)];
     process.env.CLAUDE_PLUGIN_DATA = prev;
   }
@@ -26860,7 +27764,7 @@ test('every shipped skill has a YAML frontmatter that PARSES, with a description
 
 // ─── shell-escape (Windows Bash tool corrupts \\ and quoted heredocs) ─────────
 const SE_DIR = '/tmp/ccb-se';
-const sePlan = (cmd, o = {}) => require('./lib/shell-escape.js').planEscapeFix(cmd, { dir: SE_DIR, ...o });
+const sePlan = (cmd, o = {}) => require('../engine/lib/shell-escape.js').planEscapeFix(cmd, { dir: SE_DIR, ...o });
 const seFile = (plan, i = 0) => plan.files[i].content;
 
 test('shell-escape: quoted heredoc with \\b regex, both quotes and a Windows path → payload moved byte-exact', () => {
@@ -26945,7 +27849,7 @@ test('shell-escape: rewritten command runs and prints exactly what the intended 
   const { spawnSync } = require('child_process');
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-se-'));
   const body = String.raw`const re = /\bfoo\b/; console.log("it's", re.test('a foo b'), 'C:\\Users\\x', "a\\\\b".length);` + '\n';
-  const p = require('./lib/shell-escape.js').planEscapeFix("node <<'EOF'\n" + body + 'EOF', { dir: dir.replace(/\\/g, '/') });
+  const p = require('../engine/lib/shell-escape.js').planEscapeFix("node <<'EOF'\n" + body + 'EOF', { dir: dir.replace(/\\/g, '/') });
   for (const f of p.files) fs.writeFileSync(path.join(dir, f.name), f.content, 'utf8');
   fs.writeFileSync(path.join(dir, 'intended.js'), body, 'utf8');
   const after = spawnSync('bash', ['-c', p.command], { encoding: 'utf8' });
@@ -26990,7 +27894,7 @@ test('hooks-config: shellEscapeGuard defaults (rewrite, block OFF, win32 only)',
 });
 
 // ─── powershell-compat (5.1 × 7 mistakes; bash eating $ in powershell -Command "…") ───
-const psc = require('./lib/powershell-compat.js');
+const psc = require('../engine/lib/powershell-compat.js');
 const PS_BAD = 'powershell -NoProfile -Command "Get-Process | ForEach-Object { $_.Id } | Where-Object { $_ -gt 1 }" 2>&1';
 
 test('powershell-compat: fixBashQuoting escapes $_ in -Command "…" and leaves the rest alone', () => {
@@ -27324,6 +28228,26 @@ test('doctor.checkEmbedderProbe + probeEmbedder: 0xC0000409 and 134 exits are na
   assertEq(doctor.checkEmbedderProbe({}).status, 'ok', 'dashboard path: not run');
 });
 
+test('doctor.checkCrashes: crash ANTES do listen (sem lock, so o report do Node em crash-reports/) tambem avisa', () => {
+  const w = doctor.checkCrashes({ crashes: { file: '/d/brain-crash.log', records: [], reports: [{ file: '/d/crash-reports/report.1.json', mtimeMs: Date.UTC(2026, 9, 14, 22, 47) }] } });
+  assertEq(w.status, 'warn');
+  assert(/1 Node crash report/.test(w.detail) && /report\.1\.json/.test(w.fix), JSON.stringify(w));
+});
+
+test('doctor.gatherCrashes: lista os reports recentes de crash-reports/ e ignora os velhos', () => {
+  const d = fs.mkdtempSync(path.join(os.tmpdir(), 'doc-cr-'));
+  try {
+    const dir = path.join(d, 'crash-reports');
+    fs.mkdirSync(dir);
+    fs.writeFileSync(path.join(dir, 'new.json'), '{}');
+    fs.writeFileSync(path.join(dir, 'old.json'), '{}');
+    const old = (Date.now() - 30 * 86400000) / 1000;
+    fs.utimesSync(path.join(dir, 'old.json'), old, old);
+    const c = doctor.gatherCrashes(d);
+    assertEq(c.reports.map((r) => path.basename(r.file)), ['new.json']);
+  } finally { fs.rmSync(d, { recursive: true, force: true }); }
+});
+
 test('doctor.checkCrashes: recent records → warn with the advice and the evidence file', () => {
   assertEq(doctor.checkCrashes({ crashes: { file: 'x', records: [] } }).status, 'ok');
   const rec = { pid: 7, version: '3.7.0', detectedAt: new Date().toISOString(), windows: { fault: { module: 'MSVCP140.dll', exception: 'c0000409' } } };
@@ -27538,9 +28462,9 @@ test('plugin-setup.warnNodeVersion: Node 25 gets the Node 24 LTS warning, 24 sta
   // SQLite handles must be closed BEFORE removing the suite tree on Windows.
   // Include the initial and current instances: tests deliberately reload modules.
   await brainStore.close();
-  await require('./brain-store.js').close();
-  require('./lib/metrics.js')._resetForTests();
-  require('./lib/metrics-store.js').close();
+  await require('../engine/brain-store.js').close();
+  require('../engine/lib/metrics.js')._resetForTests();
+  require('../engine/lib/metrics-store.js').close();
   const cleaned = TEST_TEMP.cleanup();
   process.exit(failed.length > 0 || cleaned === false ? 1 : 0);
 })().catch(err => { console.error(err); process.exit(1); });

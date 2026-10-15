@@ -167,7 +167,7 @@ async function runHookInline(pluginRoot, name, args) {
     // curation-paths caches its own copy of the `curation` block: without this an
     // edited curation config was never seen until the daemon restarted.
     refreshConfig(path.join(scripts, 'lib', 'hooks-config.js'), [path.join(scripts, 'curation-paths.js')]);
-    refreshConfig(path.join(scripts, 'lib', 'brain-config.js'));
+    refreshConfig(path.join(scripts, '..', 'engine', 'lib', 'brain-config.js'));
     const ev = rebuildEvent(args);
     const mod = require(path.join(scripts, spec.script));
     // `project_dir` arrives "" (Claude Code doesn't interpolate env vars into mcp_tool
@@ -188,6 +188,20 @@ async function runHookInline(pluginRoot, name, args) {
 const DEADLINE_MARGIN_MS = 1000;
 const MIN_DEADLINE_MS = 500;
 const DEFAULT_TIMEOUT_S = 10;
+// Non-hook_* tools that hooks.json calls on a prompt's critical path and that report latency.
+const TIMED_TOOLS = new Set(['brain_retrieve_context']);
+
+/** Which hook event each daemon-served tool runs on, from hooks.json (the absolute latency budget is per event). */
+function eventsFromHooksJson(pluginRoot) {
+  const out = {};
+  const hooks = JSON.parse(require('fs').readFileSync(path.join(pluginRoot, 'hooks', 'hooks.json'), 'utf8')).hooks || {};
+  for (const [event, groups] of Object.entries(hooks)) {
+    for (const g of groups || []) {
+      for (const h of (g && g.hooks) || []) if (h.type === 'mcp_tool' && !out[h.tool]) out[h.tool] = event;
+    }
+  }
+  return out;
+}
 
 /**
  * Per-tool deadline (ms) from the `timeout` each hook declares in hooks.json —
@@ -198,7 +212,7 @@ function deadlinesFromHooksJson(pluginRoot) {
   const hooks = JSON.parse(require('fs').readFileSync(path.join(pluginRoot, 'hooks', 'hooks.json'), 'utf8')).hooks || {};
   for (const group of Object.values(hooks).flat()) {
     for (const h of (group && group.hooks) || []) {
-      if (h.type !== 'mcp_tool' || !HOOKS[h.tool]) continue;
+      if (h.type !== 'mcp_tool' || !(HOOKS[h.tool] || TIMED_TOOLS.has(h.tool))) continue;
       const s = Number(h.timeout) > 0 ? Number(h.timeout) : DEFAULT_TIMEOUT_S;
       out[h.tool] = Math.max(MIN_DEADLINE_MS, s * 1000 - DEADLINE_MARGIN_MS);
     }
@@ -226,13 +240,26 @@ function withDeadline(name, ms, work, onExpire) {
 // a daemon restart resets it. Last LAT_WINDOW durations per hook feed p50/p95.
 const LAT_WINDOW = 200;
 const _latency = new Map();
-function recordLatency(name, ms, outcome) {
+function latencyEntry(name) {
   let s = _latency.get(name);
-  if (!s) { s = { calls: 0, ok: 0, degraded: 0, expired: 0, queued: 0, maxMs: 0, recent: [] }; _latency.set(name, s); }
+  if (!s) { s = { calls: 0, ok: 0, degraded: 0, expired: 0, queued: 0, maxMs: 0, recent: [], bg: null }; _latency.set(name, s); }
+  return s;
+}
+function recordLatency(name, ms, outcome) {
+  const s = latencyEntry(name);
   s.calls++; s[outcome]++;
-  if (outcome === 'queued') return; // async enqueue: no latency the session waits on
+  if (outcome === 'queued') return; // async enqueue: no latency the session waits on; recordBackgroundLatency times the run
   s.maxMs = Math.max(s.maxMs, ms);
   s.recent.push(ms); if (s.recent.length > LAT_WINDOW) s.recent.shift();
+}
+/** A queued (fire-and-forget) hook finished in the worker: how long it ran, and how long since it was queued. */
+function recordBackgroundLatency(name, runMs, lagMs, ok = true) {
+  const s = latencyEntry(name);
+  if (!s.bg) s.bg = { done: 0, failed: 0, maxMs: 0, run: [], lag: [] };
+  s.bg.done++; if (!ok) s.bg.failed++;
+  s.bg.maxMs = Math.max(s.bg.maxMs, runMs);
+  s.bg.run.push(runMs); if (s.bg.run.length > LAT_WINDOW) s.bg.run.shift();
+  s.bg.lag.push(lagMs); if (s.bg.lag.length > LAT_WINDOW) s.bg.lag.shift();
 }
 function hookLatencyStats() {
   const pct = (sorted, p) => (sorted.length ? sorted[Math.min(sorted.length - 1, Math.floor(p * sorted.length))] : 0);
@@ -241,6 +268,12 @@ function hookLatencyStats() {
     const sorted = [...s.recent].sort((a, b) => a - b);
     out[name] = { calls: s.calls, ok: s.ok, degraded: s.degraded, expired: s.expired, queued: s.queued,
       p50Ms: Math.round(pct(sorted, 0.5)), p95Ms: Math.round(pct(sorted, 0.95)), maxMs: Math.round(s.maxMs) };
+    if (s.bg) {
+      const run = [...s.bg.run].sort((a, b) => a - b);
+      const lag = [...s.bg.lag].sort((a, b) => a - b);
+      out[name].background = { done: s.bg.done, failed: s.bg.failed, p50Ms: Math.round(pct(run, 0.5)), p95Ms: Math.round(pct(run, 0.95)),
+        maxMs: Math.round(s.bg.maxMs), queueLagP95Ms: Math.round(pct(lag, 0.95)) };
+    }
   }
   return out;
 }
@@ -301,4 +334,4 @@ function createHookTools({ pluginRoot, hookWorker, deadlines } = {}) {
   return { definitions, names: new Set(Object.keys(HOOKS)), handle };
 }
 
-module.exports = { createHookTools, runHookInline, deadlinesFromHooksJson, rebuildEvent, hookLatencyStats, _resetLatencyStats, HOOKS, FIELDS };
+module.exports = { createHookTools, runHookInline, deadlinesFromHooksJson, eventsFromHooksJson, rebuildEvent, hookLatencyStats, recordLatency, recordBackgroundLatency, _resetLatencyStats, HOOKS, FIELDS };

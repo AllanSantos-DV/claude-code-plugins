@@ -1,5 +1,60 @@
 # Changelog
 
+## [Unreleased]
+
+Check-up do motor (2026-10-15). Cada item tem teste; os números são do dado real desta máquina.
+
+### Fixed
+- **Recall não trava mais o prompt.** O prazo de 8 s cancela a requisição de verdade (o socket fecha; antes ela seguia até 60 s
+  e ainda era repetida uma vez). Cada braço (compose e projeto) tem um disjuntor por taxa de falha: 5 falhas nas últimas 10
+  pulam as próximas 4 chamadas daquele braço e deixam uma sonda passar. O aviso `[BRAIN-HEALTH]` mostra falhas e p50 por braço.
+  Pool-warming passa a ser opt-in (`compose.poolWarming: true`): sem efeito mensurável na latência e o sinal só serve à promoção
+  do servidor, que vem desligada.
+- **Captura de lição: nenhuma oferta fica presa.** Depois do limite de bloqueios, a oferta fecha e a sessão para de oferecer; os
+  ciclos ficam na fila e uma próxima sessão do mesmo projeto os adota (24 h depois do fim da sessão). Havia 2.103 ciclos parados em
+  154 arquivos e 13 ofertas abertas para sempre.
+- **Perfil `free` desliga os guards de verdade** (curadoria, error-guard, escape de shell, PowerShell, formato de arquivo, injeção de
+  políticas, pesquisa ativa) e não roda passe-sombra — antes eles liam a config crua e seguiam negando e reescrevendo.
+- **Telemetria de skills conta a ferramenta Skill** (PostToolUse matcher `Skill`): só o `/skill` digitado era contado (2 de 645
+  chamadas em 7 dias).
+- **self-review busca pelo id do projeto** (o nome da pasta era recusado pelo daemon e o detector nunca achava lição).
+- **Daemon:** com as dependências faltando, instala em segundo plano e não sobe o daemon naquela rodada (ele morria na importação);
+  uma rejeição sem tratamento não derruba mais o daemon de todas as sessões (contada no `/health`).
+- **Doctor:** sem o falso aviso "runtime-dependent" em toda execução; daemon ausente ou dependências do brain-server faltando viram
+  aviso; o relatório de crash do Node de um daemon que morreu antes de ouvir aparece.
+- **Updater:** `npm install` e a extração assíncronos (o dashboard congelava), registro gravado de forma atômica, limpeza de processos
+  só na pasta de cache.
+- **Citação no mcp-memory** vira `signal_memory_feedback` "helpful" no servidor (o boost local não achava a entrada lá).
+- **`curation_prune_unused`** lê o uso pela chave de métricas do projeto (lia o banco antigo pelo nome da pasta).
+- **Chaves de projeto:** as últimas derivações de `basename(cwd)` (probe do brain-health, carimbo da sessão) usam o id do projeto.
+
+### Performance
+- SessionStart: selo da limpeza única do ambiente legado (590 → 140 ms, sem 2 PowerShell por início) e, depois de uma compactação,
+  só os detectores que repõem contexto (1,0 → 0,26 s).
+- Métricas: uma conexão por projeto (LRU de 8) — 5,56 → 0,14 ms por evento com sessões intercaladas.
+- Curadoria: store de one-off lido e podado uma vez por versão do arquivo (38,8 → 9,4 ms por Bash; 3 mil entradas); saída de
+  exploração não cria mais entrada que nunca vira script; varredura de inline-scripts 1 vez a cada 10 min (16–19 ms por reescrita).
+- Stop: prazo de 5 s por detector (um detector pendurado segurava o fim do turno).
+
+### Changed
+- **Removido o roteamento per-turn** (`enabled: true` do router, deprecado): reescrevia o modelo a cada request e quebrava o prompt
+  cache. Uma config antiga é avisada no log. O sticky e o BYOK direto seguem.
+- **Removido o tipo `skill` do `capture_lesson`** (0 capturas em 74 dias; a fase de promoção nunca existiu). Skills vêm de lições
+  recorrentes; `brain-promote export` tira um rascunho da fila e o scan não o recria (o descarte do dashboard também).
+- **`decision-promote` sob o gate de perfil.** O gatilho não mudou: em 30 dias de commits reais, toda regra mais restrita cortava
+  capturas de decisão na mesma proporção dos avisos cortados.
+- **Ferramentas de política glob/shadow ocultas** no MCP enquanto não houver nenhuma política desse tipo (continuam chamáveis).
+- **Retenção de métricas:** `curation.skipped` e `shell-escape.*` com mais de 14 dias viram uma contagem diária; os totais do painel
+  não mudam.
+- Observabilidade: hooks em segundo plano medem tempo de execução e espera na fila; o recall do prompt entra no `/health`; o alerta de
+  hook lento ganha orçamento absoluto por evento; eventos `capture.acked/adopted`, origem do `lesson.captured`,
+  `curation.stop.blocked/released/relented`; `router.log` com rotação (1 MB × 3).
+- **Motor compartilhado:** o núcleo sem dependência do Claude Code mora em `engine/` (KB, embedder, recall, métricas, id de projeto,
+  curadoria, políticas, cliente MCP), listado em `ENGINE-MANIFEST.json`; `sync.js --manifest` generaliza a vendorização. Os stores
+  recebem `dataDir` por chamada e as métricas `projectRoot`; `project-id` e `metrics` leem o env da chamada por `host-env`, onde o
+  adaptador do Claude Code se registra (ver `docs/ENGINE.md`). Saíram o transporte stdio do cliente MCP, scripts órfãos e cópias de escrita atômica,
+  sanitização de session-id e leitura de JSON.
+
 ## [3.9.0] - 2026-10-14
 
 ### Fixed

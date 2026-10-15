@@ -35,8 +35,8 @@ const os     = require('os');
 const { spawn, execSync, execFileSync } = require('child_process');
 const shim   = require('./model-router-shim.js');
 const { resolveMode } = require('./lib/router-mode.js');
-const { writeJsonAtomic } = require('./lib/atomic-write.js');
-const { dataDir, globalDir } = require('./lib/data-dir.js');
+const { writeJsonAtomic, writeFileAtomic } = require('../engine/lib/atomic-write.js');
+const { dataDir, globalDir } = require('../engine/lib/data-dir.js');
 const costTuning = require('./lib/cost-tuning.js');
 const { routerUserConfigPath, backfillRouterUserConfig } = require('./lib/router-config-path.js');
 const { configFingerprint } = require('./lib/router-fingerprint.js');
@@ -104,8 +104,7 @@ const SETTINGS_FILE  = path.join(os.homedir(), '.claude', 'settings.json');
 function ts() { return new Date().toISOString(); }
 function appendLog(msg) {
   try {
-    fs.mkdirSync(path.dirname(LOG_FILE), { recursive: true });
-    fs.appendFileSync(LOG_FILE, `[${ts()}] [ENSURE] ${msg}\n`);
+    require('../engine/lib/log-rotate.js').appendRotating(LOG_FILE, `[${ts()}] [ENSURE] ${msg}`);
   } catch (_) { /* */ }
 }
 function log(msg) { process.stderr.write(`[model-router] ${msg}\n`); appendLog(msg); }
@@ -498,16 +497,23 @@ function clearSystemEnvVar(name) {
 // Remove QUALQUER resíduo global de versões antigas. Variáveis no nível User
 // vazam para outros apps (ex.: GitHub Copilot/hermes) e quebram o launch deles.
 // O roteamento NUNCA deve ser global — só dentro do Claude Code, via wrapper.
-function cleanupGlobalEnv() {
+// Nenhuma versão atual escreve essas variáveis: uma passada limpa basta, e o selo
+// dispensa os 2 spawns de PowerShell (~450 ms medidos; 3,7–5,3 s sob Application
+// Control) em todo SessionStart seguinte.
+const LEGACY_ENV_SEAL = path.join(globalDir(), 'legacy-env-clean.json');
+
+function cleanupGlobalEnv(sealFile = LEGACY_ENV_SEAL) {
+  if (fs.existsSync(sealFile)) return 'sealed';
+  let clean = true;
   const node = getSystemEnvVar('NODE_OPTIONS') || '';
   if (node.includes('model-router-patcher')) {
     log(`Self-heal: limpando NODE_OPTIONS global residual: "${node}"`);
-    clearSystemEnvVar('NODE_OPTIONS');
+    clean = clearSystemEnvVar('NODE_OPTIONS') && clean;
   }
   const base = getSystemEnvVar('ANTHROPIC_BASE_URL') || '';
   if (/127\.0\.0\.1|localhost/.test(base)) {
     log(`Self-heal: limpando ANTHROPIC_BASE_URL global residual: "${base}"`);
-    clearSystemEnvVar('ANTHROPIC_BASE_URL');
+    clean = clearSystemEnvVar('ANTHROPIC_BASE_URL') && clean;
   }
   // Remove o patcher órfão do mecanismo global antigo (inerte sem NODE_OPTIONS,
   // mas removido para higiene total — nada mais o referencia no design wrapper-only).
@@ -520,6 +526,12 @@ function cleanupGlobalEnv() {
   } catch (e) {
     log(`AVISO: não foi possível remover patcher órfão: ${e.message}`);
   }
+  if (!clean) return 'dirty';
+  try {
+    fs.mkdirSync(path.dirname(sealFile), { recursive: true });
+    fs.writeFileSync(sealFile, JSON.stringify({ cleanAt: new Date().toISOString() }) + '\n');
+  } catch (e) { log(`AVISO: selo do ambiente legado não gravado: ${e.message}`); }
+  return 'cleaned';
 }
 
 // ── settings.json (escopo Claude Code) ───────────────────────────────────────
@@ -540,10 +552,10 @@ function readSettings() {
   }
 }
 
+// Unique temp + retried rename (lib/atomic-write.js): the old fixed .tmp-router temp name was shared
+// by every ensure starting at once (one per opening session) and could publish another's half.
 function writeSettings(obj) {
-  const tmp = SETTINGS_FILE + '.tmp-router';
-  fs.writeFileSync(tmp, JSON.stringify(obj, null, 2) + '\n');
-  fs.renameSync(tmp, SETTINGS_FILE);
+  writeFileAtomic(SETTINGS_FILE, JSON.stringify(obj, null, 2) + '\n');
 }
 
 /**
@@ -730,10 +742,7 @@ function clearLegacyUrlFile() {
 // (temp + rename). Chamado só quando o roteador respondeu /health.
 function writeProxyUrlFile(url) {
   try {
-    fs.mkdirSync(path.dirname(PROXY_URL_FILE), { recursive: true });
-    const tmp = PROXY_URL_FILE + '.tmp-router';
-    fs.writeFileSync(tmp, url);
-    fs.renameSync(tmp, PROXY_URL_FILE);
+    writeFileAtomic(PROXY_URL_FILE, url);
   } catch (e) {
     log(`AVISO: não foi possível escrever ${PROXY_URL_FILE}: ${e.message}`);
   }
@@ -1079,4 +1088,4 @@ module.exports = { run, mergeRouterConfig, readConfig, healthCheck, probeAlive, 
   resolveAutoCompactWindow, planEnableEnv, planDisableEnv, enableSettingsRouting, disableSettingsRouting,
   contextTuningEnabled, planTuningEnv, planTuningRemoval, applySettingsTuning, applyCostTuning, planCostTuningNow,
   // servesThisBuild/processCommandLine/normPath exportados p/ os testes de troca-de-build no boot.
-  servesThisBuild, processCommandLine, normPath, sessionGateway, isOurProxyUrl };
+  servesThisBuild, processCommandLine, normPath, sessionGateway, isOurProxyUrl, cleanupGlobalEnv };

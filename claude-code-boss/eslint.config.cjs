@@ -385,12 +385,12 @@ module.exports = [
     // No local escape hatch: an inline `eslint-disable` would silently switch
     // off require-windows-hide (or the catch rules). ESLint warns on any inline
     // config here, and --max-warnings=0 turns that into a gate failure.
-    files: ['scripts/**', 'servers/**'],
+    files: ['scripts/**', 'servers/**', 'engine/**'],
     linterOptions: { noInlineConfig: true },
   },
   {
-    // scripts/ — CommonJS hooks/CLI (zero extra deps).
-    files: ['scripts/**/*.js'],
+    // scripts/ — CommonJS hooks/CLI (zero extra deps); engine/ — the shared core, same rules.
+    files: ['scripts/**/*.js', 'engine/**/*.js'],
     plugins: { local: localPlugin },
     languageOptions: {
       ecmaVersion: 2022,
@@ -436,14 +436,14 @@ module.exports = [
     // .mjs / .ts / .mts anywhere under scripts/ or servers/ (ESM) — ESLint lints
     // them too, so without this a new .mjs hook would dodge require-windows-hide.
     // Only that rule here: the full shared set was never applied to these files.
-    files: ['scripts/**/*.{mjs,ts,mts}', 'servers/**/*.{mjs,ts,mts}'],
+    files: ['scripts/**/*.{mjs,ts,mts}', 'servers/**/*.{mjs,ts,mts}', 'engine/**/*.{mjs,ts,mts}'],
     plugins: { local: localPlugin },
     languageOptions: { ecmaVersion: 2022, sourceType: 'module', globals: nodeGlobals },
     rules: { 'local/require-windows-hide': 'error' },
   },
   {
     // .cjs / .cts anywhere under scripts/ or servers/ (CommonJS) — same reason.
-    files: ['scripts/**/*.{cjs,cts}', 'servers/**/*.{cjs,cts}'],
+    files: ['scripts/**/*.{cjs,cts}', 'servers/**/*.{cjs,cts}', 'engine/**/*.{cjs,cts}'],
     plugins: { local: localPlugin },
     languageOptions: {
       ecmaVersion: 2022,

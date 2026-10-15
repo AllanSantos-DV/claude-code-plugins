@@ -20,12 +20,12 @@
 'use strict';
 
 const fs = require('fs');
-const { writeJsonAtomic } = require('./lib/atomic-write.js');
+const { writeJsonAtomic } = require('../engine/lib/atomic-write.js');
 const path = require('path');
 
 const verifyJournal = require('./lib/verify-journal.js');
 const hooksCfg = require('./lib/hooks-config.js');
-const metrics = require('./lib/metrics.js');
+const metrics = require('../engine/lib/metrics.js');
 
 // Word-boundary tokens that mark a command as a test/verify run. Compound tool
 // names (vitest, pytest) are listed explicitly so `\btest\b` tightness doesn't
@@ -90,11 +90,11 @@ function buildReason(edits) {
 // ── Per-session counter cap (mirrors auto-continue-stop) ──────────────────────
 
 function dataDir() {
-  return require('./lib/data-dir.js').dataDir();
+  return require('../engine/lib/data-dir.js').dataDir();
 }
 
 function counterPath(dir, sid) {
-  const safe = String(sid).replace(/[^a-zA-Z0-9_-]/g, '_').slice(0, 64) || 'default';
+  const safe = require('../engine/lib/session-id.js').sanitizeSessionId(sid);
   return path.join(dir, '.runtime', `verify-nudge-${safe}.json`);
 }
 

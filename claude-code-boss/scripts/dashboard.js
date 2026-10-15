@@ -9,20 +9,20 @@ const crypto = require('crypto');
 
 const { findProjectRoot, getShellsConfigPath, resolveScriptPath } = require('./curation-paths.js');
 const configTesters = require('./config-testers');
-const { USER_SENTINEL, prepareForUserScope } = require('./lib/scope-sanitizer.js');
-const { sanitizeProjectId, sanitizeLogicalProjectId } = require('./lib/project-id.js');
+const { USER_SENTINEL, prepareForUserScope } = require('../engine/lib/scope-sanitizer.js');
+const { sanitizeProjectId, sanitizeLogicalProjectId } = require('../engine/lib/project-id.js');
 const { listBrainProjects, brainDbPath } = require('./lib/brain-projects.js');
 const { aggregateSkillRoi } = require('./lib/skill-roi.js');
 const { aggregateCaptureRate } = require('./lib/capture-rate.js');
-const { loadSqlite } = require('./lib/sqlite-compat.js');
+const { loadSqlite } = require('../engine/lib/sqlite-compat.js');
 const pluginUpdater = require('./lib/plugin-updater.js');
 const { resolveMode } = require('./lib/router-mode.js');
 const hooksConfig = require('./lib/hooks-config.js');
 const { HOOKS: HOOK_TOOLS } = require('./lib/hook-tools.js');
-const { validEnvDir, dataDir } = require('./lib/data-dir.js');
+const { validEnvDir, dataDir } = require('../engine/lib/data-dir.js');
 const { isValidHost, tokenMatches } = require('./lib/dashboard-auth.js');
 const { resolveStaticPath } = require('./lib/dashboard-static.js');
-const { writeFileAtomic, writeJsonAtomic } = require('./lib/atomic-write.js');
+const { writeFileAtomic, writeJsonAtomic } = require('../engine/lib/atomic-write.js');
 const { routerUserConfigPath, hardenRouterConfigPerms } = require('./lib/router-config-path.js');
 const { normalizeTimeoutMs } = require('./lib/normalize-timeout.js');
 const upstreamProfile = require('../servers/model-router/upstream-profile.js');
@@ -56,7 +56,7 @@ const RUNTIME_DIR = path.join(DATA_DIR, '.runtime');
 
 // Backup card: create / list / download / restore the plugin data (+ the memory server part).
 const backupRoutes = require('./dashboard-backup.js').createBackupRoutes({
-  pluginRoot: ROOT, dataDir: () => DATA_DIR, globalDir: () => require('./lib/data-dir.js').globalDir(), json, fail,
+  pluginRoot: ROOT, dataDir: () => DATA_DIR, globalDir: () => require('../engine/lib/data-dir.js').globalDir(), json, fail,
 });
 
 // model-router (F3) — shipped defaults vs. user override (key + toggles).
@@ -332,7 +332,7 @@ async function getStatusAsync(req, res) {
 
   let backendMode = 'local', backendConnected = false;
   try {
-    const backend = require('./brain-backend.js');
+    const backend = require('../engine/brain-backend.js');
     backend.init({ project: 'default' });
     const s = backend.getStatus();
     backendMode = s.mode || 'local';
@@ -357,7 +357,7 @@ async function getStatusAsync(req, res) {
 let _serverKbCache = null;
 
 function serverMode() {
-  try { return require('./brain-backend.js').peekMode() === 'mcp-memory'; } catch (err) { console.error(`[DASHBOARD] backend mode: ${err.message}`); return false; }
+  try { return require('../engine/brain-backend.js').peekMode() === 'mcp-memory'; } catch (err) { console.error(`[DASHBOARD] backend mode: ${err.message}`); return false; }
 }
 
 /**
@@ -388,8 +388,8 @@ async function refreshServerKb() {
   // never blocks the Home view for the launcher's boot (pre-release audit 3.1.1).
   if (!_serverKbInflight) {
     _serverKbInflight = (async () => {
-      const mcp = ((require('./lib/brain-config.js').load().backend || {}).mcpMemory) || {};
-      const McpClient = require('./mcp-client.js');
+      const mcp = ((require('../engine/lib/brain-config.js').load().backend || {}).mcpMemory) || {};
+      const McpClient = require('../engine/mcp-client.js');
       const client = new McpClient({ transport: 'http', serverUrl: mcp.serverUrl || '', runDir: mcp.runDir || '', projectId: 'default', timeout: 30000, restartMode: 'background' });
       const parse = (r) => { const d = JSON.parse((r && r.text) || '{}'); return Array.isArray(d) ? d : (d.data || d.projects || d.documents || d.results || d.items || []); };
       try {
@@ -418,7 +418,7 @@ async function refreshServerKb() {
 
 function getBrainBackend(req, res) {
   try {
-    const backend = require('./brain-backend.js');
+    const backend = require('../engine/brain-backend.js');
     backend.init({ project: 'default' });
     const status = backend.getStatus();
     json(res, status);
@@ -433,7 +433,7 @@ function getBrainBackend(req, res) {
 function getBrainHealth(req, res) {
   try {
     const { probeHealth } = require('./lib/mcp-health.js');
-    const config = require('./lib/brain-config.js').load();
+    const config = require('../engine/lib/brain-config.js').load();
     probeHealth(config).then((status) => json(res, status)).catch((err) => {
       console.error(`[DASHBOARD] Brain health probe failed: ${err.message}`);
       json(res, { mode: 'unknown', connected: false, project: 'default', backend: 'unknown', details: { error: err.message }, latency: 0 });
@@ -448,7 +448,7 @@ function getBrainHealth(req, res) {
 
 function getBrainConfig(req, res) {
   try {
-    const brainConfig = require('./lib/brain-config.js');
+    const brainConfig = require('../engine/lib/brain-config.js');
     brainConfig._resetCache(); // reflect any on-disk change since the last read
     // shipped ⊕ globalDir()/user-config.json, plus the on-disk override version
     // as `_version` — the dashboard client round-trips this back on PUT so
@@ -477,7 +477,7 @@ async function saveBrainConfig(req, res) {
     // save() enforces CAS via expectedVersion — a concurrent saver (the wizard,
     // or another dashboard tab) that wrote in between gets this save REJECTED
     // (409) instead of silently discarding their change.
-    const brainConfig = require('./lib/brain-config.js');
+    const brainConfig = require('../engine/lib/brain-config.js');
     let newVersion;
     try {
       newVersion = brainConfig.save(parsed, { expectedVersion });
@@ -493,8 +493,8 @@ async function saveBrainConfig(req, res) {
 function getProjectMarker(req, res, url) {
   const folder = (url.searchParams.get('folder') || '').trim();
   if (!folder) return fail(res, 'folder query param required', 400);
-  const projectIdLib = require('./lib/project-id.js');
-  const projectConfig = require('./lib/project-config.js');
+  const projectIdLib = require('../engine/lib/project-id.js');
+  const projectConfig = require('../engine/lib/project-config.js');
   const current = projectConfig.declaredProjectId(projectConfig.loadProjectConfig(folder)) || '';
   // The deprecated marker is only REPORTED (it still resolves, below a declared id),
   // so the user sees why a folder without .memory/project.json has an id anyway.
@@ -519,8 +519,8 @@ async function saveProjectMarker(req, res) {
     let stat;
     try { stat = fs.statSync(dir); } catch (err) { void err; return fail(res, `folder not found: ${dir}`, 400); }
     if (!stat.isDirectory()) return fail(res, `not a directory: ${dir}`, 400);
-    const projectIdLib = require('./lib/project-id.js');
-    const projectConfig = require('./lib/project-config.js');
+    const projectIdLib = require('../engine/lib/project-id.js');
+    const projectConfig = require('../engine/lib/project-config.js');
     const raw = String(projectId || '').trim();
     const clean = projectIdLib.sanitizeLogicalProjectId(raw);
     if (raw && !clean) return fail(res, `invalid projectId: ${JSON.stringify(raw)} — use letters, numbers, - _ . and optional / segments`, 400);
@@ -607,7 +607,7 @@ async function searchBrain(req, res, url) {
   const scope = url.searchParams.get('scope') || 'project';
   if (!q || !project) return json(res, []);
   try {
-    const brainBackend = require('./brain-backend.js');
+    const brainBackend = require('../engine/brain-backend.js');
     // Route through brain-backend facade for mcp-memory mode
     const mode = brainBackend.peekMode();
     if (mode === 'mcp-memory') {
@@ -615,17 +615,17 @@ async function searchBrain(req, res, url) {
       return json(res, results);
     }
     // Local mode — existing two-pass search logic
-    const embedder = require('./brain-embedder.js');
+    const embedder = require('../engine/brain-embedder.js');
     await embedder.init();
-    const store = require('./brain-store.js');
-    const USER_SENTINEL = require('./lib/scope-sanitizer.js').USER_SENTINEL;
+    const store = require('../engine/brain-store.js');
+    const USER_SENTINEL = require('../engine/lib/scope-sanitizer.js').USER_SENTINEL;
     const startProject = scope === 'user' ? USER_SENTINEL : project;
     await store.init({ project: startProject });
     let vec = null;
     if (embedder.getStatus().ready) vec = await embedder.embed(q);
     let results = [];
     if (vec) {
-      const { searchTwoPass } = require('./lib/scope-search.js');
+      const { searchTwoPass } = require('../engine/lib/scope-search.js');
       if (scope === 'both') {
         results = await searchTwoPass(store, project, vec, { topK: k, minScore: 0.05 });
       } else {
@@ -633,9 +633,9 @@ async function searchBrain(req, res, url) {
       }
     }
     if (results.length < 2 && scope !== 'both') {
-      const index = require('./brain-index.js');
+      const index = require('../engine/brain-index.js');
       await index.init({ project: startProject });
-      const { extractKeywords } = require('./lib/text-utils.js');
+      const { extractKeywords } = require('../engine/lib/text-utils.js');
       const kw = extractKeywords(q);
       if (kw.length > 0) {
         const kwResults = await index.lookup(kw, { topK: k });
@@ -658,7 +658,7 @@ async function getBrainEntry(req, res, url) {
   const project = sanitizeLogicalProjectId(url.searchParams.get('project') || '');
   if (!id || !project) return fail(res, 'Missing id or project', 400);
   try {
-    const brainBackend = require('./brain-backend.js');
+    const brainBackend = require('../engine/brain-backend.js');
     const entry = await brainBackend.get(id);
     if (!entry) return fail(res, 'Not found', 404);
     json(res, entry);
@@ -671,7 +671,7 @@ async function deleteBrainEntry(req, res, url) {
   const project = sanitizeLogicalProjectId(url.searchParams.get('project') || '');
   if (!id || !project) return fail(res, 'Missing id or project', 400);
   try {
-    const brainBackend = require('./brain-backend.js');
+    const brainBackend = require('../engine/brain-backend.js');
     const mode = brainBackend.peekMode();
     // mcp-memory mode: no raw/vector local APIs — route delete via the facade.
     if (mode === 'mcp-memory') {
@@ -699,8 +699,8 @@ async function deleteBrainEntry(req, res, url) {
       if (gone) return fail(res, 'delete verify failed — entry still readable', 500);
       return json(res, { ok: true, backupPath });
     }
-    const store = require('./brain-store.js');
-    const index = require('./brain-index.js');
+    const store = require('../engine/brain-store.js');
+    const index = require('../engine/brain-index.js');
     await store.init({ project });
     // Fase F: backup OBRIGATÓRIO ANTES de qualquer mutação. Bundle single-entry
     // com o MESMO formato do /api/brain/export → round-trip com o import.
@@ -778,7 +778,7 @@ async function updateBrainEntry(req, res, url) {
   if (clean.detail !== undefined) clean.detail = cap(clean.detail, 100000);
   if (clean.type !== undefined && !/^[a-z][a-z0-9-]{0,31}$/.test(String(clean.type))) return fail(res, 'invalid type', 400);
   try {
-    const brainBackend = require('./brain-backend.js');
+    const brainBackend = require('../engine/brain-backend.js');
     const mode = brainBackend.peekMode();
     let store = null;
     let existing;
@@ -786,7 +786,7 @@ async function updateBrainEntry(req, res, url) {
       existing = await brainBackend.get(id);
       if (!existing) return fail(res, 'Not found', 404);
     } else {
-      store = require('./brain-store.js');
+      store = require('../engine/brain-store.js');
       await store.init({ project });
       existing = store.getRaw(id); // getRaw (não get): não infla access_count/telemetria
       if (!existing) return fail(res, 'Not found', 404);
@@ -820,17 +820,17 @@ async function updateBrainEntry(req, res, url) {
     let embedFailed = false;
     if ('title' in clean || 'summary' in clean) {
       try {
-        const embedder = require('./brain-embedder.js');
+        const embedder = require('../engine/brain-embedder.js');
         if (!embedder.getStatus().ready) await embedder.init();
         if (embedder.getStatus().ready) {
-          const { buildEmbedText } = require('./lib/embed-text.js');
+          const { buildEmbedText } = require('../engine/lib/embed-text.js');
           vector = await embedder.embed(buildEmbedText(updated));
         } else embedFailed = true;
       } catch (err) { void err; embedFailed = true; }
       if (embedFailed) await store.deleteVector(id);
     }
     await store.save(updated, vector || undefined);
-    const index = require('./brain-index.js');
+    const index = require('../engine/brain-index.js');
     await index.init({ project });
     await index.index(updated);
     // Verify-before-return: relê do disco (getRaw — sem bump de telemetria)
@@ -855,7 +855,7 @@ async function listBrainEntries(req, res, url) {
   const offset = Math.max(0, parseInt(url.searchParams.get('offset') || '0', 10) || 0);
   const limit = Math.min(200, Math.max(1, parseInt(url.searchParams.get('limit') || '50', 10) || 50));
   try {
-    const brainBackend = require('./brain-backend.js');
+    const brainBackend = require('../engine/brain-backend.js');
     let listed;
     if (serverMode()) {
       // Scoped to the project: the server's plain list() spans every project's documents.
@@ -896,9 +896,9 @@ async function moveBrainEntryScope(req, res, url) {
   }
 
   try {
-    const store = require('./brain-store.js');
-    const index = require('./brain-index.js');
-    const graph = require('./brain-graph.js');
+    const store = require('../engine/brain-store.js');
+    const index = require('../engine/brain-index.js');
+    const graph = require('../engine/brain-graph.js');
 
     await store.init({ project: srcProject });
     const entry = await store.get(id);
@@ -951,7 +951,7 @@ async function exportBrain(req, res, url) {
   const project = scope === 'user' ? USER_SENTINEL : projectArg;
   if (!project) return fail(res, 'Missing scope=user or project=<name>', 400);
   try {
-    const store = require('./brain-store.js');
+    const store = require('../engine/brain-store.js');
     await store.init({ project });
     const listed = await store.list();
     // Decode SEGURO via API do store (o decode Float32 cru ignorava byteOffset
@@ -1011,9 +1011,9 @@ async function importBrain(req, res) {
   if (!dstProject) return fail(res, 'project or scope=user required', 400);
 
   try {
-    const store = require('./brain-store.js');
-    const index = require('./brain-index.js');
-    const graph = require('./brain-graph.js');
+    const store = require('../engine/brain-store.js');
+    const index = require('../engine/brain-index.js');
+    const graph = require('../engine/brain-graph.js');
     await store.init({ project: dstProject });
     await index.init({ project: dstProject });
     await graph.init({ project: dstProject });
@@ -1063,7 +1063,7 @@ async function getBrainRelated(req, res, url) {
   const project = sanitizeLogicalProjectId(url.searchParams.get('project') || '');
   if (!id || !project) return fail(res, 'Missing id or project', 400);
   try {
-    const brainBackend = require('./brain-backend.js');
+    const brainBackend = require('../engine/brain-backend.js');
     const related = await brainBackend.getRelated(id);
     json(res, related || []);
   } catch (e) { fail(res, e.message); }
@@ -1094,7 +1094,7 @@ function runBrainPromote(argvArray) {
 
 async function getSkillPromotionConfig(req, res) {
   // Shipped ⊕ user override, the same reader brain-promote uses (BACKLOG Q44).
-  const cfg = require('./lib/brain-config.js').getSkillPromotion();
+  const cfg = require('../engine/lib/brain-config.js').getSkillPromotion();
   let projects = [];
   if (serverMode()) {
     // The scan reads the server in this mode (Q53) — offer the server's project ids, not the old local folders.
@@ -1166,6 +1166,8 @@ function discardSkillDraft(req, res, url) {
   const dir = path.join(SKILL_STAGING_DIR, slug);
   if (!fs.existsSync(dir)) return fail(res, 'draft not found', 404);
   fs.rmSync(dir, { recursive: true, force: true });
+  // Without the mark the next promotion scan drafts it again.
+  require('./brain-promote.js').markHandled(slug);
   json(res, { ok: true, discarded: slug });
 }
 
@@ -1356,18 +1358,18 @@ function clearLogs(req, res) {
 // ─── API: Metrics (Plan #5) ────────────────────────────────────────
 
 function listMetricsProjects() {
-  return require('./lib/metrics-store.js').listProjects();
+  return require('../engine/lib/metrics-store.js').listProjects();
 }
 
 // Read-only queries pass a `memoKey` naming the query (time bounds already rounded with bucketTs): an unchanged project
 // database is not even opened again (lib/metrics-memo.js). Without a key the op always runs (writes, e.g. cleanup).
 const _metricsMemo = require('./lib/metrics-memo.js').createMemo({
   sigTtlMs: 1500,
-  signatureOf: (project) => require('./lib/metrics-memo.js').dbSignature(require('./lib/metrics-store.js')._dbPath(project)),
+  signatureOf: (project) => require('./lib/metrics-memo.js').dbSignature(require('../engine/lib/metrics-store.js')._dbPath(project)),
 });
 
 async function aggregateAcrossProjects(projects, op, memoKey) {
-  const store = require('./lib/metrics-store.js');
+  const store = require('../engine/lib/metrics-store.js');
   const results = [];
   const run = (project) => {
     // Cycle the store per-project (single-instance module).
@@ -1397,7 +1399,7 @@ async function aggregateAcrossProjects(projects, op, memoKey) {
 const { bucketTs } = require('./lib/metrics-memo.js');
 // One open per project serves every event name asked for (opening a database is the expensive part).
 async function eventsSinceBatch(projects, names, sinceTs) {
-  const store = require('./lib/metrics-store.js');
+  const store = require('../engine/lib/metrics-store.js');
   const bound = bucketTs(sinceTs, 3600_000); // rows are re-filtered to the exact bound by the caller: a coarse step costs nothing in accuracy
   const out = Object.fromEntries(names.map((n) => [n, []]));
   for (const project of projects) {
@@ -1447,7 +1449,7 @@ async function warmHomeMetrics() {
     console.error(`[DASHBOARD] warm-up of the Home metrics failed (the first visit will compute them): ${err.message}`);
   }
 }
-const TUNING_EVENTS = ['stop.dispatch', 'nudge.emitted', 'lesson.captured', 'retrieve.fired', 'retrieve.cited'];
+const TUNING_EVENTS = ['stop.dispatch', 'nudge.emitted', 'lesson.captured', 'retrieve.injected', 'retrieve.cited'];
 const eventsLatest = (projects, eventName, limit) => aggregateAcrossProjects(projects, (s) => s.getEventLog({ eventName, limit }), `ev:${eventName}:latest:${limit}`);
 
 async function getMetricsSummary(req, res, url) {
@@ -1495,7 +1497,7 @@ async function postBrainConsolidate(req, res, url) {
     const apply = url.searchParams.get('apply') === 'true';
     if (!project) return fail(res, 'project required', 400);
     const { consolidate } = require('./brain-consolidate.js');
-    const store = require('./brain-store.js');
+    const store = require('../engine/brain-store.js');
     try { await store.close(); } catch (e) { void e; }
     const result = await consolidate({ project, apply });
     json(res, result);
@@ -2460,7 +2462,7 @@ async function getTuningRecommendations(req, res, url) {
     const dispatch = gather('stop.dispatch');
     const nudges = gather('nudge.emitted');
     const caps = gather('lesson.captured');
-    const fired = gather('retrieve.fired').length;
+    const injected = require('./lib/value-summary.js').injectedCount(gather('retrieve.injected'));
     const cited = gather('retrieve.cited').length;
     const { aggregateProfileImpact } = require('./lib/profile-impact.js');
     const { analyze } = require('./lib/tuning-advisor.js');
@@ -2469,7 +2471,7 @@ async function getTuningRecommendations(req, res, url) {
       activeProfile,
       impact: aggregateProfileImpact(dispatch),
       captureRate: aggregateCaptureRate([...nudges, ...caps]),
-      retrieval: { fired, cited },
+      retrieval: { injected, cited },
     });
     json(res, { rangeDays: range, activeProfile, ...out });
   } catch (err) {

@@ -16,7 +16,7 @@
 const fs = require('fs');
 const path = require('path');
 const { getShellsConfigPath, resolveScriptPath } = require('../curation-paths.js');
-const { writeFileAtomic } = require('./atomic-write.js');
+const { writeFileAtomic } = require('../../engine/lib/atomic-write.js');
 
 const DAY = 86400_000;
 
@@ -32,7 +32,7 @@ const scriptOf = (s) => String((s && (s.script || s.command || s.path)) || '').t
 // would get them committed) — and only the newest KEEP_BACKUPS per project are kept.
 const KEEP_BACKUPS = 5;
 function backupPath(root, now) {
-  const { dataDir } = require('./data-dir.js');
+  const { dataDir } = require('../../engine/lib/data-dir.js');
   const dir = path.join(dataDir(), '.runtime', 'shells-backups');
   fs.mkdirSync(dir, { recursive: true });
   const prefix = `${path.basename(path.resolve(root)).replace(/[^\w.-]+/g, '_')}-`;
@@ -72,8 +72,8 @@ function pruneCandidates({ root, days = 30, now = Date.now(), usage, project } =
     return { ok: false, days, historyFromTs: null, candidates: [], error: `shells config unreadable: ${err.message}` };
   }
   const since = now - days * DAY;
-  const read = usage || ((project, sinceTs) => require('./metrics-store.js').getCurationUsageIsolated(project, sinceTs));
-  const { historyFromTs, usedIds } = read(project || metricsProjectFor(root, require('./metrics-store.js').listProjects()), since);
+  const read = usage || ((project, sinceTs) => require('../../engine/lib/metrics-store.js').getCurationUsageIsolated(project, sinceTs));
+  const { historyFromTs, usedIds } = read(project || metricsProjectFor(root, require('../../engine/lib/metrics-store.js').listProjects()), since);
   if (!historyFromTs || historyFromTs > since) {
     const from = historyFromTs ? new Date(historyFromTs).toISOString().slice(0, 10) : 'never';
     return { ok: true, days, historyFromTs, candidates: [], reason: `insufficient usage history for a ${days}-day window (curation metrics since ${from}) — nothing is called unused before the window is covered` };
@@ -121,9 +121,9 @@ function pruneShells({ root, ids, days = 30, now = Date.now(), usage, project } 
  * in `known`, else basename(root).
  */
 function metricsProjectFor(root, known) {
-  const pid = require('./project-id.js');
+  const pid = require('../../engine/lib/project-id.js');
   const id = pid.sanitizeLogicalProjectId(pid.tryResolveProjectId({ cwd: root }) || '');
-  if (id) return require('./metrics-project.js').metricsKeyFor(root);
+  if (id) return require('../../engine/lib/metrics-project.js').metricsKeyFor(root);
   const have = new Set(known || []);
   let dir = path.resolve(root);
   for (let i = 0; i < 12; i++) {
