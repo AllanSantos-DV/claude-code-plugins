@@ -10,6 +10,12 @@ const EventEmitter = require('events');
 const { dataDir } = require('./lib/data-dir.js');
 const DATA_DIR = dataDir();
 
+/** The rejection for a call cancelled through its AbortSignal (no retry, not a transport failure). */
+function abortError(method, signal) {
+  const why = signal && signal.reason && signal.reason.message ? `: ${signal.reason.message}` : '';
+  return Object.assign(new Error(`MCP request "${method}" aborted${why}`), { code: 'ABORTED', name: 'AbortError' });
+}
+
 class McpClient extends EventEmitter {
   #reconnecting = false;
 
@@ -159,9 +165,12 @@ class McpClient extends EventEmitter {
     });
   }
 
-  /** POST one JSON-RPC message to <url>/mcp. Resolves the unwrapped result (or void for notifications). */
-  _httpSend(method, params, isNotification, timeoutMs = this.requestTimeout) {
+  /** POST one JSON-RPC message to <url>/mcp. Resolves the unwrapped result (or void for notifications).
+   *  `signal` (AbortSignal) cancels the request for real: the socket is destroyed, so a caller's
+   *  deadline does not leave the call running in the background until the 60 s client timeout. */
+  _httpSend(method, params, isNotification, timeoutMs = this.requestTimeout, signal = undefined) {
     return new Promise((resolve, reject) => {
+      if (signal && signal.aborted) return reject(abortError(method, signal));
       let u;
       try { u = new URL(this._resolvedUrl + '/mcp'); }
       catch (err) { return reject(new Error(`MCP bad URL: ${err.message}`)); }
@@ -176,7 +185,7 @@ class McpClient extends EventEmitter {
 
       const lib = u.protocol === 'https:' ? https : http;
       const req = lib.request(
-        { hostname: u.hostname, port: u.port, path: u.pathname, method: 'POST', headers, timeout: timeoutMs },
+        { hostname: u.hostname, port: u.port, path: u.pathname, method: 'POST', headers, timeout: timeoutMs, ...(signal ? { signal } : {}) },
         (res) => {
           // The initialize response carries the session id every later call must echo.
           const sid = res.headers['mcp-session-id'];
@@ -208,7 +217,7 @@ class McpClient extends EventEmitter {
         },
       );
       req.on('timeout', () => { req.destroy(new Error(`MCP request "${method}" timed out after ${timeoutMs}ms`)); });
-      req.on('error', reject);
+      req.on('error', (err) => reject(signal && signal.aborted ? abortError(method, signal) : err));
       req.write(data);
       req.end();
     });
@@ -239,6 +248,8 @@ class McpClient extends EventEmitter {
     try {
       return await this._sendRequest('tools/call', { name, arguments: args }, opts);
     } catch (err) {
+      // The caller gave up (its deadline): retrying would only redo the slow call.
+      if (err && err.code === 'ABORTED') throw err;
       // The daemon dropped our HTTP session (idle TTL, ~30min). Reconnect (fresh
       // initialize → new session id) and retry the SAME call exactly ONCE. This
       // keeps long-lived stdio brain-servers (opencode/Claude Code sessions that
@@ -322,7 +333,7 @@ class McpClient extends EventEmitter {
 
   _sendRequest(method, params, opts = {}) {
     const timeoutMs = Number.isFinite(opts.timeoutMs) && opts.timeoutMs > 0 ? opts.timeoutMs : this.requestTimeout;
-    if (this.transport === 'http') return this._httpSend(method, params, false, timeoutMs);
+    if (this.transport === 'http') return this._httpSend(method, params, false, timeoutMs, opts.signal);
     return new Promise((resolve, reject) => {
       const id = ++this._requestId;
       const msg = JSON.stringify({

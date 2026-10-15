@@ -64,14 +64,56 @@ function projectArmIds(project, ancestorIds) {
 let circuitOpenUntil = 0;
 const CIRCUIT_COOLDOWN_MS = Number.parseInt(process.env.CCB_MCP_MEMORY_CIRCUIT_MS, 10) || 15000;
 
-/** Race a promise against a timeout (ms<=0 disables). Rejects with a timeout error. */
-function withTimeout(promise, ms) {
-  if (!ms || ms <= 0) return promise;
-  return new Promise((resolve, reject) => {
-    const t = setTimeout(() => reject(new Error(`compose timed out after ${ms}ms`)), ms);
-    promise.then((v) => { clearTimeout(t); resolve(v); }, (e) => { clearTimeout(t); reject(e); });
+/**
+ * Run `run(signal)` with a deadline (ms<=0 disables). At the deadline the signal aborts —
+ * the HTTP request is destroyed, not left running for the client's 60 s timeout while the
+ * next prompt queues behind it — and the promise rejects with a timeout error.
+ */
+function withDeadline(run, ms, label) {
+  if (!ms || ms <= 0) return run(undefined);
+  const ac = new AbortController();
+  let timer;
+  const expired = new Promise((_, reject) => {
+    timer = setTimeout(() => {
+      const err = new Error(`${label} timed out after ${ms}ms`);
+      ac.abort(err);
+      reject(err);
+    }, ms);
   });
+  return Promise.race([run(ac.signal), expired]).finally(() => clearTimeout(timer));
 }
+
+/**
+ * Failure-rate breaker for ONE recall arm. The old breaker was a 15 s cooldown, useless
+ * with prompts minutes apart, and it never opened while the other arm answered — so a
+ * compose that timed out 13 times in a row cost 8 s on every one of those prompts.
+ * Opens when at least `minFailures` of the last `window` calls failed and the latest
+ * did; while open it skips `skip` calls, then lets one probe through. A probe that
+ * answers closes it.
+ */
+function createArmBreaker({ window = 10, minFailures = 5, skip = 4 } = {}) {
+  let outcomes = [];
+  let skipLeft = 0;
+  let open = false;
+  return {
+    allow() {
+      if (!open) return true;
+      if (skipLeft > 0) { skipLeft--; return false; }
+      return true; // probe
+    },
+    result(ok) {
+      if (open) {
+        if (ok) { open = false; outcomes = []; } else skipLeft = skip;
+        return;
+      }
+      outcomes.push(!!ok);
+      if (outcomes.length > window) outcomes.shift();
+      if (!ok && outcomes.filter((x) => !x).length >= minFailures) { open = true; skipLeft = skip; }
+    },
+    state() { return { open, skipLeft, failures: outcomes.filter((x) => !x).length, calls: outcomes.length }; },
+  };
+}
+const armBreakers = { compose: createArmBreaker(), project: createArmBreaker() };
 
 /**
  * Choose what actually gets injected from a compose result: optionally drop the
@@ -191,7 +233,7 @@ async function retrieveRemote(prompt, { project, ancestorIds, topK, keywords }, 
     // runs in the persistent brain-server daemon, so the search completes in the
     // background without adding its latency (up to timeoutMs) to this per-turn recall.
     if (cc.poolWarming && backendRef.warmPool) {
-      withTimeout(backendRef.warmPool(query, { topK }), cc.timeoutMs)
+      withDeadline((signal) => backendRef.warmPool(query, { topK, signal }), cc.timeoutMs, 'pool-warming')
         .catch((err) => { console.error(`[retrieve-core] pool-warming skipped: ${err.message}`); });
     }
     const hasCompose = !!(backendRef.hasCompose && backendRef.hasCompose());
@@ -199,14 +241,32 @@ async function retrieveRemote(prompt, { project, ancestorIds, topK, keywords }, 
       console.error('[retrieve-core] compose_recall unavailable on mcp-memory daemon — typed/home recall skipped (requires memory-server >=2.18)');
     }
     const armIds = projectArmIds(project, ancestorIds);
+    const breakers = deps.armBreakers || armBreakers;
+    const arms = {};
+    const timed = (name, p) => {
+      const t0 = Date.now();
+      return p.then(
+        (v) => { arms[name] = { ms: Date.now() - t0 }; return v; },
+        (e) => { arms[name] = { ms: Date.now() - t0, reason: (e && e.reason) || (isTimeout(e) ? 'timeout' : 'error') }; throw e; },
+      );
+    };
+    const skipped = (reason) => Promise.reject(Object.assign(new Error(`${reason} (breaker open: recent calls failed)`), { reason }));
+    const runCompose = hasCompose && breakers.compose.allow();
+    const runArm = !!backendRef.search && breakers.project.allow();
     const [composeRes, armRes] = await Promise.allSettled([
-      hasCompose
-        ? withTimeout(backendRef.compose(query, cc.overlay ? { metadata: cc.overlay } : {}), cc.timeoutMs)
-        : Promise.reject(Object.assign(new Error('compose_recall unavailable'), { reason: 'no-compose' })),
-      backendRef.search
-        ? withTimeout(backendRef.search(query, { projectIds: armIds, includeHome: false, topK: topK + 4 }), ANCESTOR_TIMEOUT_MS || cc.timeoutMs)
-        : Promise.resolve([]),
+      !hasCompose
+        ? Promise.reject(Object.assign(new Error('compose_recall unavailable'), { reason: 'no-compose' }))
+        : runCompose
+          ? timed('compose', withDeadline((signal) => backendRef.compose(query, { ...(cc.overlay ? { metadata: cc.overlay } : {}), signal }), cc.timeoutMs, 'compose'))
+          : skipped('compose-skipped'),
+      !backendRef.search
+        ? Promise.resolve([])
+        : runArm
+          ? timed('project', withDeadline((signal) => backendRef.search(query, { projectIds: armIds, includeHome: false, topK: topK + 4, signal }), ANCESTOR_TIMEOUT_MS || cc.timeoutMs, 'project arm'))
+          : skipped('project-arm-skipped'),
     ]);
+    if (runCompose) breakers.compose.result(composeRes.status === 'fulfilled');
+    if (runArm) breakers.project.result(armRes.status === 'fulfilled');
     let composeReason;
     let composed = { facts: [], capabilities: [] };
     if (composeRes.status === 'fulfilled') composed = composeRes.value || composed;
@@ -219,7 +279,7 @@ async function retrieveRemote(prompt, { project, ancestorIds, topK, keywords }, 
     let armFacts = [];
     if (armRes.status === 'fulfilled') armFacts = armHitsToFacts(armRes.value, cc.projectArmMinScore);
     else {
-      armReason = isTimeout(armRes.reason) ? 'project-arm-timeout' : 'project-arm-error';
+      armReason = (armRes.reason && armRes.reason.reason) || (isTimeout(armRes.reason) ? 'project-arm-timeout' : 'project-arm-error');
       console.error(`[retrieve-core] project arm failed (${armReason}): ${armRes.reason && armRes.reason.message}`);
     }
     const merged = mergeFactsSpine(composed.facts, armFacts);
@@ -228,13 +288,13 @@ async function retrieveRemote(prompt, { project, ancestorIds, topK, keywords }, 
     });
     // One record per turn: a failed compose outranks a failed arm, which outranks an honest miss.
     const reason = composeReason || armReason || (facts.length ? undefined : 'no-match');
-    healthRef.record(reason, undefined, Date.now() - startedAt);
+    healthRef.record(reason, undefined, Date.now() - startedAt, arms);
     // Breaker: the daemon answered if compose, or a REAL project-arm search (a backend
     // without search() resolves [] locally — no evidence), settled fulfilled. Only a
     // transport failure of compose (timeout/remote-error — not 'no-compose', which is
     // an old daemon that IS up) with no such answer treats the daemon as down.
     const composeDown = composeReason === 'timeout' || composeReason === 'remote-error';
-    const armAnswered = !!backendRef.search && armRes.status === 'fulfilled';
+    const armAnswered = runArm && armRes.status === 'fulfilled';
     if (composeDown && !armAnswered) {
       circuitOpenUntil = Date.now() + CIRCUIT_COOLDOWN_MS;
       if (backendRef.reportMcpFailure) backendRef.reportMcpFailure(composeRes.reason);
@@ -343,5 +403,5 @@ module.exports = {
   retrieve, formatContext, filterInjectableEntries, pickInjectable, ANCESTOR_TIMEOUT_MS,
   // F2 test seam: retrieveRemote accepts an injected fake backend/recallHealth via its
   // 3rd `deps` arg; mergeFactsSpine is pure (order/dedup assertions).
-  __testHooks: { retrieveRemote, mergeFactsSpine, capQuery, projectArmIds, armHitsToFacts, resetCircuit: () => { circuitOpenUntil = 0; } },
+  __testHooks: { retrieveRemote, mergeFactsSpine, capQuery, projectArmIds, armHitsToFacts, createArmBreaker, withDeadline, resetCircuit: () => { circuitOpenUntil = 0; armBreakers.compose = createArmBreaker(); armBreakers.project = createArmBreaker(); } },
 };

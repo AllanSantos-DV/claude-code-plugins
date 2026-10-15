@@ -37,7 +37,9 @@ const FILE = path.join(DATA_DIR, '.runtime', 'recall-health.json');
 
 // 'retrieve-error': the daemon's brain_retrieve_context handler itself threw (fail-open
 // → empty recall); before, only the daemon's stderr — kept nowhere — saw it.
-const DEGRADED_REASONS = new Set(['no-compose', 'remote-error', 'timeout', 'project-arm-timeout', 'project-arm-error', 'circuit-open', 'retrieve-error']);
+// 'compose-skipped' / 'project-arm-skipped': that arm's failure-rate breaker is open
+// (retrieve-core createArmBreaker), so the turn ran with the other arm only.
+const DEGRADED_REASONS = new Set(['no-compose', 'remote-error', 'timeout', 'project-arm-timeout', 'project-arm-error', 'circuit-open', 'retrieve-error', 'compose-skipped', 'project-arm-skipped']);
 
 // Quantos outcomes recentes decidem o veredito. Grande o bastante para uma
 // degradação real não sumir num soluço; pequeno o bastante para o alarme APAGAR
@@ -60,13 +62,15 @@ function read() {
  * vazia a partir de agora, que é justamente o que permite o alarme se apagar.
  * @returns {object} novo estado
  */
-function applyOutcome(state, reason, now, detail, ms) {
+function applyOutcome(state, reason, now, detail, ms, arms) {
   const h = state || {};
   const degraded = isDegraded(reason);
   const recent = Array.isArray(h.recent) ? h.recent.slice() : [];
   // `ms` = how long the recall took: tells a slow daemon (p95 near the timeout) from a dead one.
   const lat = Number.isFinite(ms) && ms >= 0 ? { ms: Math.round(ms) } : {};
-  recent.push(degraded ? { ok: false, reason, ts: now, ...lat } : { ok: true, ts: now, ...lat });
+  // Per-arm timing ({compose:{ms,reason?}, project:{...}}): which arm is slow or failing.
+  const perArm = arms && typeof arms === 'object' && Object.keys(arms).length ? { arms } : {};
+  recent.push(degraded ? { ok: false, reason, ts: now, ...lat, ...perArm } : { ok: true, ts: now, ...lat, ...perArm });
   // Descarta o excedente pela FRENTE: a janela guarda sempre os mais recentes.
   if (recent.length > WINDOW_SIZE) recent.splice(0, recent.length - WINDOW_SIZE);
 
@@ -94,8 +98,15 @@ function summarize(state) {
   const windowTotal = recent.length;
   const lat = recent.filter((e) => e && e.ok && Number.isFinite(e.ms)).map((e) => e.ms).sort((a, b) => a - b);
   const at = (q) => (lat.length ? lat[Math.min(lat.length - 1, Math.floor(q * lat.length))] : null);
+  const armStats = (name) => {
+    const runs = recent.map((e) => e && e.arms && e.arms[name]).filter(Boolean);
+    const okMs = runs.filter((a) => !a.reason && Number.isFinite(a.ms)).map((a) => a.ms).sort((x, y) => x - y);
+    const q = (p) => (okMs.length ? okMs[Math.min(okMs.length - 1, Math.floor(p * okMs.length))] : null);
+    return { runs: runs.length, failed: runs.filter((a) => a.reason).length, p50: q(0.5), p95: q(0.95) };
+  };
   return {
     latencyMs: { samples: lat.length, p50: at(0.5), p95: at(0.95) },
+    arms: { compose: armStats('compose'), project: armStats('project') },
     ok: h.ok || 0,
     degraded: h.degraded || 0,
     lifetimeOk: h.ok || 0,
@@ -110,8 +121,8 @@ function summarize(state) {
 }
 
 /** Record one recall outcome (`detail`: optional error text kept on lastDegraded). */
-function record(reason, detail, ms) {
-  const h = applyOutcome(read(), reason, Date.now(), detail, ms);
+function record(reason, detail, ms, arms) {
+  const h = applyOutcome(read(), reason, Date.now(), detail, ms, arms);
   // Best-effort, last-writer-wins (tear-free publish, no cross-process lock).
   try {
     writeJsonAtomic(FILE, h);

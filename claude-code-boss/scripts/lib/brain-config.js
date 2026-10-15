@@ -232,8 +232,11 @@ function getRecallCompose() {
     projectArmMinScore: typeof c.projectArmMinScore === 'number' ? c.projectArmMinScore : 0.65,
     // Pool-warming (ADR-017): fire a home-federated search alongside compose so
     // ingested HOME docs accumulate recall signal and graduate (async Dreaming).
-    // Non-injected; default ON. Set false to disable the extra background search.
-    poolWarming: c.poolWarming !== false,
+    // Non-injected; default OFF since the 2026-10-15 check-up: the graduation it feeds
+    // only runs with the server's promotion flags on (off by default, and off on the
+    // machine measured), and it is a 3rd remote call per prompt on a server whose
+    // search p95 was 4 s. Set true when the server promotes.
+    poolWarming: c.poolWarming === true,
   };
 }
 
