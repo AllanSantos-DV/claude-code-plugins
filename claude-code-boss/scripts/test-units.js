@@ -8794,6 +8794,12 @@ test('plugin-updater.performUpdate: registry records the SEMVER version (what Cl
   assertEq(keep, path.basename(r.installPath), 'stale-process cleanup keeps the dir actually installed');
 });
 
+test('plugin-updater.performUpdate: o registro installed_plugins.json e gravado de forma ATOMICA (nunca truncado se o processo cair no meio)', () => {
+  const src = fs.readFileSync(path.join(SCRIPTS, 'lib', 'plugin-updater.js'), 'utf8');
+  assert(/writeFileAtomic\(registryPath,/.test(src), 'registry goes through writeFileAtomic');
+  assert(!/fs\.writeFileSync\(registryPath/.test(src), 'no plain writeFileSync on the registry');
+});
+
 test('plugin-updater.freshCacheDir: first free name, never an existing dir', () => {
   const taken = new Set([path.join('B', 'x'), ]);
   assertEq(pu.freshCacheDir('B', 'y', (p) => taken.has(p)), path.join('B', 'y'));
@@ -25966,16 +25972,37 @@ test('seams: withStubbedChildProcess leaves child_process untouched on a bad pat
   assert(cp.spawn === real, 'spawn must not stay stubbed');
 });
 
-test('seams: plugin-updater default spawnSync forces windowsHide after the spread', () =>
-  withStubbedChildProcess({ spawnSync: (cmd, args, opts) => ({ cmd, args, opts }) }, 'lib/plugin-updater.js', (M) => {
-    const r = M._hiddenSpawnSync('npm', ['install'], { cwd: '/x', windowsHide: false });
-    assertEq(r.opts.windowsHide, true);
-    assertEq(r.opts.cwd, '/x', 'caller options are preserved');
-    assertEq([r.cmd, r.args], ['npm', ['install']], 'cmd/args forwarded');
+test('seams: plugin-updater default runner is ASYNC (dashboard keeps answering during npm install) and forces windowsHide after the spread', async () => {
+  const EventEmitter = require('events');
+  let seen = null;
+  const fakeSpawn = (cmd, args, opts) => {
+    seen = { cmd, args, opts };
+    const c = new EventEmitter(); c.stdout = new EventEmitter(); c.stderr = new EventEmitter(); c.kill = () => {};
+    setImmediate(() => { c.stdout.emit('data', 'added 3 packages'); c.emit('close', 0); });
+    return c;
+  };
+  let pending = null;
+  withStubbedChildProcess({ spawn: fakeSpawn }, 'lib/plugin-updater.js', (M) => {
+    pending = M._hiddenRun('npm', ['install'], { cwd: '/x', windowsHide: false, timeout: 1000 });
+    assert(pending && typeof pending.then === 'function', 'returns a promise, does not block');
     let err = null;
-    try { M._hiddenSpawnSync('npm', { cwd: '/y', windowsHide: false }); } catch (e) { err = e; }
+    try { M._hiddenRun('npm', { cwd: '/y', windowsHide: false }); } catch (e) { err = e; }
     assert(err instanceof TypeError && /args must be an array/.test(err.message), 'non-array args must throw TypeError');
-  }));
+  });
+  const r = await pending;
+  assertEq(seen.opts.windowsHide, true);
+  assertEq(seen.opts.cwd, '/x', 'caller options are preserved');
+  assertEq([seen.cmd, seen.args], ['npm', ['install']], 'cmd/args forwarded');
+  assertEq([r.status, r.stdout], [0, 'added 3 packages']);
+});
+
+test('plugin-updater.killStale: so casa modulos da PASTA DE CACHE do plugin, nao um checkout de desenvolvimento chamado claude-code-boss', () => {
+  const like = pu.CACHE_MODULE_LIKE;
+  if (process.platform !== 'win32') { assert(/plugins\\cache/.test(like)); return; }
+  const check = (p) => require('child_process').spawnSync('powershell', ['-NoProfile', '-NonInteractive', '-Command', `'${p}' -like '${like}'`], { encoding: 'utf8', windowsHide: true }).stdout.trim();
+  assertEq(check('C:\\Users\\a\\.claude\\plugins\\cache\\allansantos-plugins\\claude-code-boss\\3.9.0\\node_modules\\better-sqlite3\\build\\Release\\better_sqlite3.node'), 'True');
+  assertEq(check('C:\\Users\\a\\Desktop\\Projetos\\claude-code\\claude-code-boss\\node_modules\\better-sqlite3\\build\\Release\\better_sqlite3.node'), 'False');
+});
 
 // ─── Phase G (ADR-015): hook tools served by the brain daemon ─────────────────
 {
