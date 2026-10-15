@@ -30,6 +30,12 @@ const { spawnSync } = require('child_process');
 /** Every spawn here is hidden (no console window flashing on Windows); also the default `run` seam of the functions below. */
 function hiddenSpawnSync(cmd, args, opts) { return spawnSync(cmd, args, { ...opts, windowsHide: true }); }
 const { writeFileAtomic } = require('./atomic-write.js');
+const { reasonText } = require('./doctor-reason.js');
+
+// The English sentence (`why`, for logs and the CLI) and the code + numbers the dashboard/notice translate (doctor-reason.js).
+const whyOf = (whyCode, whyArgs = {}) => ({ why: reasonText({ whyCode, whyArgs }, 'en'), whyCode, whyArgs });
+/** Records on `row` why it got its verdict: the English `reason` plus the code + numbers a UI translates. */
+function setWhy(row, whyCode, whyArgs) { const w = whyOf(whyCode, whyArgs); row.reason = w.why; row.whyCode = whyCode; row.whyArgs = w.whyArgs; }
 
 const estTokens = (s) => Math.ceil(String(s == null ? '' : s).length / 4);
 
@@ -437,11 +443,11 @@ function buildAudit(f) {
     }
     // Only what lives in the user's own config is ours to remove: a project .mcp.json is a versioned file of that repo, a plugin's server is the plugin's.
     const removable = s.scope === 'user' || s.scope === 'local';
-    if (needsAuth) { row.verdict = 'needs-auth'; row.reason = 'asks for authentication (HTTP 401) and was never authenticated: it cannot work'; }
-    else if (u.calls === 0 && enoughHistory) { row.verdict = 'unused'; row.reason = `no calls in the last ${days} days (${usage.sessions} sessions, ${historyDays.toFixed(0)} days of history)`; }
+    if (needsAuth) { row.verdict = 'needs-auth'; setWhy(row, 'mcp-needs-auth'); }
+    else if (u.calls === 0 && enoughHistory) { row.verdict = 'unused'; setWhy(row, 'mcp-unused', { days, sessions: usage.sessions, historyDays: historyDays.toFixed(0) }); }
     else if (u.calls === 0) { row.reason = `no calls found, but only ${historyDays.toFixed(0)} day(s) of history: not enough to call it unused`; }
     if (row.verdict !== 'keep' && removable) {
-      actions.push({ kind: 'mcp-remove', target: s.name, scope: s.scope, config: s.config, tokens: row.perMessageTokens, why: row.reason });
+      actions.push({ kind: 'mcp-remove', target: s.name, scope: s.scope, config: s.config, tokens: row.perMessageTokens, why: row.reason, whyCode: row.whyCode, whyArgs: row.whyArgs });
     } else if (row.verdict !== 'keep') {
       row.reason += s.scope === 'plugin' ? ' (bundled by a plugin: disable the plugin to drop it)' : " (from the project's .mcp.json: edit that file if you want it gone)";
     }
@@ -459,7 +465,7 @@ function buildAudit(f) {
   for (const s of skills) {
     if (s.used || s.override !== 'on' || keep.has(s.name)) continue;
     if (s.source === 'user' || s.source === 'project') {
-      actions.push({ kind: 'skill-name-only', target: s.name, tokens: s.listedTokens - s.nameOnlyTokens, why: `never used in the last ${days} days (Claude Code's own skillUsage)` });
+      actions.push({ kind: 'skill-name-only', target: s.name, tokens: s.listedTokens - s.nameOnlyTokens, ...whyOf('skill-unused', { days }) });
     }
   }
 
@@ -490,15 +496,13 @@ function buildAudit(f) {
     if (!enoughHistory) { row.reason = `only ${historyDays.toFixed(0)} day(s) of history: not enough to call it unused`; return row; }
     row.verdict = 'unused';
     if (uses === 0 && mcpCalls === 0) {
-      row.reason = neverLoggedIn
-        ? `never authenticated and never used since it was installed ${Math.round(ageDays)}d ago`
-        : `never used since it was installed ${Math.round(ageDays)}d ago`;
-    } else row.reason = `last used ${dAgo(lastUsedAt)} (${uses} use(s) in total), none in the last ${days} days`;
+      setWhy(row, neverLoggedIn ? 'plugin-never-auth' : 'plugin-never-used', { ageDays: Math.round(ageDays) });
+    } else setWhy(row, 'plugin-stale', { lastUsedDaysAgo: lastUsedAt ? Math.max(0, Math.round((now - lastUsedAt) / DAY)) : null, uses, days });
     return row;
   });
   for (const p of plugins) {
     if (p.verdict !== 'unused') continue;
-    actions.push({ kind: 'plugin-disable', target: p.id, tokens: p.cost, why: p.reason });
+    actions.push({ kind: 'plugin-disable', target: p.id, tokens: p.cost, why: p.reason, whyCode: p.whyCode, whyArgs: p.whyArgs });
   }
 
   const sum = (rows, k) => rows.reduce((n, r) => n + (r[k] || 0), 0);
@@ -657,7 +661,7 @@ function applyActions(actions, { home = os.homedir(), env = process.env, run = h
   const results = [];
   for (const a of actions) {
     if (only && !only.includes(a.kind)) continue;
-    const entry = { id: `${Date.now().toString(36)}-${results.length}`, at: new Date().toISOString(), kind: a.kind, target: a.target, why: a.why || null, tokens: a.tokens || 0 };
+    const entry = { id: `${Date.now().toString(36)}-${results.length}`, at: new Date().toISOString(), kind: a.kind, target: a.target, why: a.why || null, ...(a.whyCode ? { whyCode: a.whyCode, whyArgs: a.whyArgs || {} } : {}), tokens: a.tokens || 0 };
     try {
       if (a.kind === 'mcp-remove') {
         Object.assign(entry, { scope: a.scope, config: a.config });
@@ -695,7 +699,7 @@ function applyActions(actions, { home = os.homedir(), env = process.env, run = h
  * @returns {Array<{id:string,at:string,kind:string,target:string,scope:(string|undefined),why:(string|null),tokens:number}>}
  */
 function listJournal({ home = os.homedir() } = {}) {
-  return readUndo(undoPath(home)).map((e) => ({ id: e.id, at: e.at, kind: e.kind, target: e.target, scope: e.scope, why: e.why || null, tokens: e.tokens || 0 }));
+  return readUndo(undoPath(home)).map((e) => ({ id: e.id, at: e.at, kind: e.kind, target: e.target, scope: e.scope, why: e.why || null, whyCode: e.whyCode, whyArgs: e.whyArgs, tokens: e.tokens || 0 }));
 }
 
 /**

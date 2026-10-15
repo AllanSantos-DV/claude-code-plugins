@@ -16971,6 +16971,49 @@ test('doctor-first-run: o aviso diz QUAIS itens foram desativados, POR QUE (sem 
   fs.rmSync(dir, { recursive: true, force: true });
 });
 
+test('doctor-reason: o motivo sai no idioma pedido a partir do codigo; entrada antiga (sem codigo) cai no texto gravado; userLang le a configuracao do SO', () => {
+  const { reasonText, userLang, REASON_CODES } = require('./lib/doctor-reason.js');
+  const args = { days: 30, sessions: 12, historyDays: '40', ageDays: 60, uses: 3, lastUsedDaysAgo: 45 };
+  for (const code of REASON_CODES) {
+    const en = reasonText({ whyCode: code, whyArgs: args }, 'en');
+    const pt = reasonText({ whyCode: code, whyArgs: args }, 'pt-BR');
+    assert(en && pt && en !== pt, `${code}: pt e en existem e diferem`);
+    assert(!/undefined|\[object/.test(en + pt), `${code}: nenhum argumento sem preencher`);
+  }
+  assert(/nenhuma chamada nos últimos 30 dias \(12 sessões, 40 dias/.test(reasonText({ whyCode: 'mcp-unused', whyArgs: args }, 'pt')));
+  assert(/never used since it was installed 60d ago/.test(reasonText({ whyCode: 'plugin-never-used', whyArgs: args }, 'en')));
+  assert(/nunca/.test(reasonText({ whyCode: 'plugin-stale', whyArgs: { ...args, lastUsedDaysAgo: null } }, 'pt')));
+  assertEq(reasonText({ why: 'texto antigo' }, 'pt'), 'texto antigo');
+  assertEq(reasonText({ whyCode: 'codigo-que-nao-existe', why: 'fallback' }, 'pt'), 'fallback');
+  assertEq(reasonText({}, 'pt'), null);
+  assertEq(userLang({ CCB_LANG: 'pt_BR.UTF-8' }), 'pt');
+  assertEq(userLang({ LANG: 'en_US.UTF-8' }), 'en');
+});
+
+test('doctor-reason: o planner grava codigo+numeros no diario, a lista os devolve e o aviso da primeira sessao usa o idioma', async () => {
+  const now = Date.parse('2026-10-14T12:00:00Z');
+  const a = fixedCost.buildAudit(fcFacts({
+    skills: [{ name: 'never', source: 'user', file: 'f', listedTokens: 100, nameOnlyTokens: 10 }],
+    plugins: [{ id: 'x@m', name: 'x', enabled: true, installedAt: now - 60 * 86400000 }],
+    servers: [fcServer('dead', 'user')],
+  }));
+  const sk = a.actions.find((x) => x.kind === 'skill-name-only');
+  assertEq(sk.whyCode, 'skill-unused');
+  assert(/never used in the last 30 days/.test(sk.why), 'o texto em ingles segue disponivel para logs e --undo');
+  const home = fcTmp('why-journal');
+  fs.mkdirSync(path.join(home, '.claude'), { recursive: true });
+  fixedCost.applyActions([sk], { home });
+  const [e] = fixedCost.listJournal({ home });
+  assertEq(e.whyCode, 'skill-unused'); assertEq(e.whyArgs.days, 30);
+  const { reasonText } = require('./lib/doctor-reason.js');
+  assert(/nunca usada nos últimos 30 dias/.test(reasonText(e, 'pt')));
+  const firstRun = require('./doctor-first-run.js');
+  const base = { key: 'k', results: [], fixes: [], audit: null, turnedOff: [e] };
+  assert(/nunca usada nos últimos 30 dias/.test(firstRun.composeNotice({ ...base, lang: 'pt' })), 'aviso em pt');
+  assert(/never used in the last 30 days/.test(firstRun.composeNotice({ ...base, lang: 'en' })), 'aviso em en');
+  fs.rmSync(home, { recursive: true, force: true });
+});
+
 test('fixed-cost.listJournal / undoActions({ids}): a lista nao leva a config do servidor; desfazer um item deixa os outros no diario', () => {
   const home = fcTmp('journal');
   const env = { CLAUDE_CODE_EXECPATH: process.execPath };
@@ -17016,6 +17059,12 @@ test('dashboard /api/doctor/switched-off e /api/doctor/undo: lista com o motivo,
     const list = await call(dash.getDoctorSwitchedOff, {});
     assertEq(list.body.items.map((e) => e.target), ['pdf@mkt'], 'so o que foi desviado; ajuste do boss fica de fora');
     assertEq(list.body.items[0].why, 'installed but not used in the last 30 days');
+    fixedCost.applyActions([{ kind: 'skill-name-only', target: 'big', tokens: 1, why: 'never used in the last 30 days (Claude Code\'s own skillUsage)', whyCode: 'skill-unused', whyArgs: { days: 30 } }]);
+    const ptList = await call(dash.getDoctorSwitchedOff, { url: '/api/doctor/switched-off?lang=pt' });
+    assertEq(ptList.body.items.find((e) => e.target === 'big').why, 'nunca usada nos últimos 30 dias (skillUsage do próprio Claude Code)', 'o painel em pt recebe o motivo em pt');
+    assertEq(ptList.body.items.find((e) => e.target === 'pdf@mkt').why, 'installed but not used in the last 30 days', 'entrada sem codigo mantem o texto gravado');
+    assert(/never used in the last 30 days/.test((await call(dash.getDoctorSwitchedOff, { url: '/api/doctor/switched-off?lang=en' })).body.items.find((e) => e.target === 'big').why), 'en');
+    fixedCost.undoActions({ ids: [ptList.body.items.find((e) => e.target === 'big').id] });
     const bad = await call(dash.postDoctorUndo, Readable.from([JSON.stringify({})]));
     assertEq(bad.status, 400, 'sem id: falha alto');
     const none = await call(dash.postDoctorUndo, Readable.from([JSON.stringify({ id: 'nao-existe' })]));
@@ -17096,7 +17145,7 @@ test('hooks-config.saveFixedCost + dashboard /api/doctor/config: o usuario liga/
 test('dashboard Home: card "Desativados pelo doctor" tem a lista, o Desfazer por item (sem onclick com string), o interruptor do autoFix e pt/en', () => {
   const html = fs.readFileSync(path.join(ROOT, 'dashboard', 'index.html'), 'utf8');
   assert(/id="home-switched-off-card"/.test(html) && /id="home-switched-off"/.test(html) && /id="doctor-autofix"/.test(html), 'card, lista e interruptor');
-  assert(/api\('GET', '\/api\/doctor\/switched-off'\)/.test(html) && /api\('POST', '\/api\/doctor\/undo', \{ id \}\)/.test(html), 'chama a lista e o undo por id');
+  assert(/api\('GET', '\/api\/doctor\/switched-off\?lang=' \+ _lang\)/.test(html) && /api\('POST', '\/api\/doctor\/undo', \{ id \}\)/.test(html), 'chama a lista e o undo por id');
   assert(/api\('PUT', '\/api\/doctor\/config', \{ autoFix: want \}\)/.test(html), 'o interruptor grava o autoFix');
   assert(/data-id="\$\{escapeHtml\(e\.id\)\}" onclick="undoSwitchedOff\(this\)"/.test(html), 'o id vai em data-id (convencao: nada de onclick com arg-string)');
   assert(/'home\.switchedOff': 'Desativados pelo doctor'/.test(html) && /'home\.switchedOff': 'Switched off by the doctor'/.test(html), 'pt e en');
