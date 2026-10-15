@@ -26,7 +26,8 @@ Check-up do motor (2026-10-15). Cada item tem teste; os números são do dado re
   do servidor, que vem desligada.
 - **Captura de lição: nenhuma oferta fica presa.** Depois do limite de bloqueios, a oferta fecha e a sessão para de oferecer; os
   ciclos ficam na fila e uma próxima sessão do mesmo projeto os adota (24 h depois do fim da sessão). Havia 2.103 ciclos parados em
-  154 arquivos e 13 ofertas abertas para sempre.
+  154 arquivos e 13 ofertas abertas para sempre. A adoção também pega as filas gravadas com o formato antigo de id do projeto
+  (902 ciclos em 47 arquivos nesta máquina).
 - **Perfil `free` desliga os guards de verdade** (curadoria, error-guard, escape de shell, PowerShell, formato de arquivo, injeção de
   políticas, pesquisa ativa) e não roda passe-sombra — antes eles liam a config crua e seguiam negando e reescrevendo.
 - **Telemetria de skills conta a ferramenta Skill** (PostToolUse matcher `Skill`): só o `/skill` digitado era contado (2 de 645

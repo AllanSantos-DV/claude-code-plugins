@@ -21047,6 +21047,25 @@ test('capture-queue.adoptOrphans: se salvar a fila da sessao falha, o orfao NAO 
   } finally { fs.rmSync(f, { force: true }); fs.rmSync(own, { recursive: true, force: true }); }
 });
 
+test('capture-queue.adoptOrphans: a fila do id LEGADO do mesmo repo (github_com_owner_repo) e adotada pela sessao com o id owner/repo; outro repo do mesmo dono fica', () => {
+  const q = require('./lib/capture-queue.js');
+  const stamp = Date.now();
+  const P = `Owner-${stamp}/Repo-x`;
+  const mk = (proj, sid, ids) => {
+    const f = q._file(proj, sid);
+    fs.mkdirSync(path.dirname(f), { recursive: true });
+    fs.writeFileSync(f, JSON.stringify({ rev: 1, queue: ids.map((id) => ({ id, promptId: id, user: 'u', assistant: 'a' })), seen: ids }));
+    const t = (Date.now() - 3 * 864e5) / 1000; fs.utimesSync(f, t, t); return f;
+  };
+  const legacy = mk(`github_com_owner-${stamp}_repo-x`, 'old', ['L1', 'L2']);
+  const otherRepo = mk(`github_com_owner-${stamp}_repo-y`, 'old', ['Y1']);
+  try {
+    assertEq(q.adoptOrphans(P, 'me', { force: true }), { files: 1, cycles: 2 });
+    assertEq([fs.existsSync(legacy), fs.existsSync(otherRepo)], [false, true]);
+    assertEq(q.adoptOrphans('plain-id-' + stamp, 'me', { force: true }), { files: 0, cycles: 0 }, 'an id without owner/repo has no legacy form');
+  } finally { for (const f of [legacy, otherRepo, q._file(P, 'me'), q._file('plain-id-' + stamp, 'me')]) fs.rmSync(f, { force: true }); }
+});
+
 test('capture-dispatch (FIX #6): an ack drains the offer so a LATER offer starts the block counter fresh', () => {
   // 12 big cycles → offer1 packs a prefix; after acking it, the remainder (>= maxTurns)
   // opens a NEW offer whose blockCount must be 0 (the counter is per-offer, not global).
