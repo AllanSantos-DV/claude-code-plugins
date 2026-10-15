@@ -25,19 +25,19 @@ const turnJournal = require('./lib/turn-journal.js');
 const pipedStore = require('./lib/piped-store.js');
 const { pipeFilterOf } = require('./curation-guard.js');
 const verifyJournal = require('./lib/verify-journal.js');
-const metrics = require('./lib/metrics.js');
-const { canonicalSig } = require('./lib/command-signature.js');
+const metrics = require('../engine/lib/metrics.js');
+const { canonicalSig } = require('../engine/lib/command-signature.js');
 const oneoff = require('./lib/oneoff-store.js');
-const { classifyCommand } = require('./lib/curation-families.js');
+const { classifyCommand } = require('../engine/lib/curation-families.js');
 const { unwrapShaped, splitTopLevel, planRedirect, RAW_ESCAPE } = require('./lib/curation-redirect.js');
 
 const { findProjectRoot, loadShellsConfig, matchCuratedShell, _tokenize, _pathMatches } = require('./shells-config.js');
 const { classify, successBudgetFor }                            = require('./curation-classifier.js');
 
-const { dataDir } = require('./lib/data-dir.js');
+const { dataDir } = require('../engine/lib/data-dir.js');
 const { hookEnv } = require('./lib/hook-context.js');
 const DATA_DIR = dataDir();
-const brainConfig = require('./lib/brain-config.js');
+const brainConfig = require('../engine/lib/brain-config.js');
 
 // ─── Turn state ──────────────────────────────────────────────────────────────
 // All state lives in the append-only turn journal (lib/turn-journal.js) —
@@ -149,10 +149,13 @@ async function run(event) {
 
     // One-hit / recurrence accounting (cross-session, per-project). Count every
     // invocation that matches a known signature (D1); create a fresh entry only
-    // for volume-heavy commands (those that would be curated).
+    // for volume-heavy commands that could become a script: exploration and inline
+    // code are never curated (C3 below), and their entries only bloated the store
+    // (6.893 skipped events had each minted an entry nothing would ever read).
+    const cls = reason === 'needs-curation' ? classifyCommand(command) : null;
     const projectKey = oneoff.resolveProjectKey(cwd);
     const seen = oneoff.touch(DATA_DIR, projectKey, command, {
-      sessionId, windowDays: _curationCfg.oneHitWindowDays, create: !!reason,
+      sessionId, windowDays: _curationCfg.oneHitWindowDays, create: !!reason && (cls === null || cls === 'task'),
     });
 
     // C4: a curated script actually RAN (its path is a token — a raw alias match is not a
@@ -208,7 +211,6 @@ async function run(event) {
     // again (18 of 41 in the field). A task's FIRST noisy occurrence stays pending; the
     // second one asks for the script. A noisy CURATED script still asks (tune it).
     if (reason === 'needs-curation') {
-      const cls = classifyCommand(command);
       if (cls !== 'task') {
         metrics.fire('curation.skipped', { class: cls, chars: charCount, lines: lineCount }, { sessionId, cwd });
         return;

@@ -7,10 +7,9 @@
 //                          vez por sessão (turno 0, sem cache = grátis) e FIXA o
 //                          modelo pelo resto da sessão — modelo constante preserva
 //                          o prompt cache. Inclui o 429→plano B. OFF por padrão.
-//   - `enabled`          → cost-routing per-turn (DEPRECADO). Reescreve o modelo a
-//                          CADA request: rotear por-modelo QUEBRA o prompt cache da
-//                          Anthropic (cache é POR MODELO). OFF por padrão. Prefira
-//                          `sticky.enabled`. Ver _comment_enabled.
+//   - `enabled`          → o antigo cost-routing per-turn foi REMOVIDO (check-up 2026-10-15):
+//                          reescrever o modelo a cada request quebrava o prompt cache.
+//                          A chave é ignorada; use `sticky.enabled`.
 //   - `fallback.enabled` → rede de segurança de LIMITE (429). OFF por padrão.
 //                          Roda o proxy como PASSTHROUGH cache-safe (NUNCA troca
 //                          modelo/effort, NÃO classifica) e só intervém no 429 do
@@ -23,17 +22,14 @@
 //
 //   'off'           → todos os flags !==true (totalmente inerte)
 //   'sticky-tier'   → sticky.enabled===true (roteador cache-safe; inclui 429→plano B)
-//   'routing'       → enabled===true (cost-routing per-turn DEPRECADO; inclui 429→plano B)
 //   'fallback-only' → só fallback.enabled===true (passthrough + 429)
 //
-// PRECEDÊNCIA: `sticky.enabled` VENCE `enabled` VENCE `fallback.enabled`. Em
-// sticky-tier e routing o 429→plano B já está embutido, então ligar o fallback
-// junto é redundante (não muda o comportamento).
+// PRECEDÊNCIA: `sticky.enabled` VENCE `fallback.enabled`. Em sticky-tier o 429→plano B
+// já está embutido, então ligar o fallback junto é redundante (não muda o comportamento).
 function resolveMode(config) {
   const c = config || {};
   const st = (c.sticky && typeof c.sticky === 'object') ? c.sticky : {};
   if (st.enabled === true) return 'sticky-tier';
-  if (c.enabled === true) return 'routing';
   const fb = (c.fallback && typeof c.fallback === 'object') ? c.fallback : {};
   if (fb.enabled === true) return 'fallback-only';
   // BYOK é ORTOGONAL à rota: ele escolhe o DESTINO, não como se classifica. Por
@@ -57,12 +53,10 @@ function resolveMode(config) {
 //   off           → cinza  (proxy fora / inerte)
 //   fallback-only → azul   (passthrough + 429)
 //   sticky-tier   → verde  (roteador cache-safe RECOMENDADO)
-//   routing       → âmbar  (per-turn DEPRECADO)
 const MODE_META = {
   'off':           { i18n: 'mode.off',          color: 'grey',  deprecated: false },
   'fallback-only': { i18n: 'mode.fallbackOnly', color: 'blue',  deprecated: false },
   'sticky-tier':   { i18n: 'mode.stickyTier',   color: 'green', deprecated: false },
-  'routing':       { i18n: 'mode.routing',      color: 'amber', deprecated: true  },
   // BYOK direto: o proxy serve TUDO por um endpoint Anthropic-compatible do
   // usuário — não depende da assinatura Claude. Roxo p/ não se confundir com os
   // modos que falam com a Anthropic.

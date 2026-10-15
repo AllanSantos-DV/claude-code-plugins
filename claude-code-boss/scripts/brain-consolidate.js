@@ -13,7 +13,7 @@
  */
 'use strict';
 
-const store = require('./brain-store.js');
+const store = require('../engine/brain-store.js');
 const { planMerges } = require('./lib/consolidate-plan.js');
 
 function arg(name, fallback) {
@@ -41,12 +41,12 @@ async function consolidateRemote({ project, apply, minSim, maxSim, backend, embe
   for (const d of all) for (const id of ((d.metadata && d.metadata.absorbedIds) || [])) pending.add(id);
   const leftovers = all.filter((d) => pending.has(d.id));
   const docs = all.filter((d) => !pending.has(d.id));
-  const emb = embedder || require('./brain-embedder.js');
+  const emb = embedder || require('../engine/brain-embedder.js');
   await emb.init();
   if (!emb.getStatus().ready) {
     return { ok: false, project, apply, groups: 0, merged: 0, deleted: 0, plans: [], source: 'mcp-memory', reason: `embedder unavailable: ${emb.getStatus().error || 'not ready'}` };
   }
-  const { buildEmbedText } = require('./lib/embed-text.js');
+  const { buildEmbedText } = require('../engine/lib/embed-text.js');
   const entries = [];
   for (const d of docs) {
     entries.push({ id: d.id, type: d.type, recurrence: d.recurrence || 1, confidence: d.confidence, createdAt: d.created_at, vector: await emb.embed(buildEmbedText({ title: d.title, summary: d.summary })) });
@@ -81,7 +81,7 @@ async function consolidateRemote({ project, apply, minSim, maxSim, backend, embe
  * @returns {Promise<{ok, project, apply, groups, merged, deleted, plans, reason?}>}
  */
 async function consolidate({ project, apply = false, minSim = 0.7, maxSim = 0.9, _store, _backend, _embedder } = {}) {
-  const backend = _backend || (_store ? null : require('./brain-backend.js'));
+  const backend = _backend || (_store ? null : require('../engine/brain-backend.js'));
   if (backend && backend.peekMode() === 'mcp-memory') {
     return consolidateRemote({ project, apply, minSim, maxSim, backend, embedder: _embedder });
   }
@@ -110,7 +110,7 @@ if (require.main === module) {
   (async () => {
     // The STRICT project id of --cwd (the KB has been keyed by it since 2.29.1) — not the folder
     // name; an explicit --project is still sanitized (BACKLOG Q54).
-    const { sanitizeProjectId, tryResolveProjectId } = require('./lib/project-id.js');
+    const { sanitizeProjectId, tryResolveProjectId } = require('../engine/lib/project-id.js');
     const cwd = arg('cwd', process.cwd());
     const project = arg('project', '') ? sanitizeProjectId(arg('project', '')) : tryResolveProjectId({ cwd });
     if (!project) {
@@ -127,11 +127,11 @@ if (require.main === module) {
     }
     if (!res.ok && apply) {
       // The weekly trigger stamped this project before spawning us — a failed run gives the week back.
-      const stamp = require('path').join(require('./lib/data-dir.js').dataDir(), '.runtime', 'brain-consolidate-last.json');
+      const stamp = require('path').join(require('../engine/lib/data-dir.js').dataDir(), '.runtime', 'brain-consolidate-last.json');
       require('./curation-session.js').unmarkConsolidated(stamp, project);
     }
     try { await store.close(); } catch (e) { void e; }
-    try { await require('./brain-backend.js').close(); } catch (e) { void e; }
+    try { await require('../engine/brain-backend.js').close(); } catch (e) { void e; }
     console.log(JSON.stringify({
       ...res,
       note: apply

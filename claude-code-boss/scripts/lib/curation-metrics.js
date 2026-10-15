@@ -15,6 +15,8 @@ const CURATION_EVENTS = [
   'curation.used', 'curation.redirected', 'curation.uncovered', 'curation.skipped', 'curation.pending',
   'curation.bypass', 'curation.shaped', 'curation.flagged', 'curation.piped',
   'error-guard.denied', 'graph-guard.fired',
+  // Daily counts that replaced old raw noise rows (metrics-store.compactNoise): same totals.
+  'metrics.daily',
 ];
 
 const { summarizeEconomy, CHARS_PER_TOKEN } = require('./economy-metrics');
@@ -78,6 +80,12 @@ function summarizeCuration(rows, { shellIds = [], limitUnitsPerPercent } = {}) {
         for (const id of [].concat(p.shells || [])) { s.uncovered.total++; bump(s.uncovered.byScript, id); }
         break;
       case 'curation.skipped': bump(s.skipped, p.class === 'inline' ? 'inline' : 'exploration'); break;
+      case 'metrics.daily':
+        if (p.event === 'curation.skipped' && p.byClass) {
+          bump(s.skipped, 'inline', num(p.byClass.inline));
+          bump(s.skipped, 'exploration', num(p.byClass.exploration));
+        }
+        break;
       case 'curation.pending':
         s.pending++;
         if (p.sig) { const b = baseline[p.sig] || (baseline[p.sig] = { chars: 0, n: 0 }); b.chars += num(p.chars); b.n++; }

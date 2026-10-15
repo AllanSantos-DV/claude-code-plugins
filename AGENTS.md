@@ -179,6 +179,27 @@ no model quota** — by `.github/scripts/pages-guard.mjs`, which hashes each
 plugin's sources (`plugin.json` + `README.md` + `CHANGELOG.md`, EOL-normalized so
 Windows and CI agree) against `pages/<plugin>/.source-hash`.
 
+**Three layers (Allan, 2026-10-15 — standing rule).** The plugin page is used to
+present the product to people, who do not want to scroll through versions. So
+every plugin page has three separate layers:
+
+1. **Presentation** — `pages/<plugin>/index.html`: value proposition and
+   features only, short. **No changelog** ("New in X.Y", per-version
+   paragraphs, version tables, version numbers in the copy) and **no technical
+   detail** (file paths, env vars, module names, flags). The version number only
+   appears as a badge in the brand/menu and in the footer.
+2. **Technical** — `pages/<plugin>/tech.html`: architecture and internals,
+   linked from the presentation.
+3. **Changelog** — its own page (`pages/<plugin>/changelog.html`, or the GitHub
+   `CHANGELOG.md` for a plugin without one), linked **only discreetly** from the
+   footer or menu.
+
+A new feature reaches the presentation as a benefit in a feature section, never
+as a "new in vX" note. `pages-guard` enforces layer 1 mechanically
+(`presentationViolations`: a version number or changelog phrase in the
+presentation copy, an `id`/`class` `changelog|versoes` block, or no link to a
+changelog page → state `layers`, merge blocked); unit-tested in `test-units.js`.
+
 - **CI gate** (`.github/workflows/pages-guard.yml`) runs on every PR/push to
   `main`. Mark it **required** in branch protection to hard-block stale merges.
 - **Local gate** (`.githooks/pre-merge-commit`) mirrors the CI check. Enable it

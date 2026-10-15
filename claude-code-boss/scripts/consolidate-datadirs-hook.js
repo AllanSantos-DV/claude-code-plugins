@@ -39,7 +39,7 @@ const { readStdin, emitEmpty } = require('./lib/hook-io.js');
 // Default seams — lazy requires keep the steady-state no-op cheap and avoid
 // pulling SQLite into this process. doctor.js is SQLite-free (fs/path/os/http).
 function dataDirDefault() {
-  return require('./lib/data-dir.js').dataDir();
+  return require('../engine/lib/data-dir.js').dataDir();
 }
 function enumerateDefault(activeDir) {
   return require('./doctor.js').findDataDirCandidates(activeDir);

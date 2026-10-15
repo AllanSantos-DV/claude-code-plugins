@@ -78,7 +78,7 @@ async function migrateLocalToMcp(opts = {}, deps = {}) {
 // ── Deps default (produção) — reusam as primitivas confirmadas ────────────────
 function activeBrainDir(opts) {
   if (opts && opts.brainDir) return opts.brainDir;
-  const { dataDir } = require('./lib/data-dir.js');
+  const { dataDir } = require('../engine/lib/data-dir.js');
   return path.join(dataDir(), 'brain');
 }
 
@@ -91,7 +91,7 @@ async function defaultEnumerateProjects(opts = {}) {
 
 /** Lê as entradas LOCAIS full-fidelity de um projeto (brain-store, direto no SQLite). */
 async function defaultReadEntries(project) {
-  const store = require('./brain-store.js');
+  const store = require('../engine/brain-store.js');
   await store.init({ project });
   const list = await store.list(null, project);
   const entries = [];
@@ -108,7 +108,7 @@ async function defaultReadEntries(project) {
  * NÃO estiver em mcp-memory, é ERRO ALTO — jamais grava no store local em silêncio.
  */
 async function defaultWriteEntry(entry, project) {
-  const backend = require('./brain-backend.js');
+  const backend = require('../engine/brain-backend.js');
   if (backend.peekMode() !== 'mcp-memory') {
     throw new Error(`migração exige backend.type=mcp-memory (alvo do daemon); modo atual: ${backend.peekMode()}`);
   }
@@ -144,7 +144,7 @@ async function verifyMigration(perProject, deps = {}) {
 
 /** Contagem remota de docs de um projeto no daemon (brain-backend.count em mcp-memory). */
 async function defaultRemoteCount(project) {
-  const backend = require('./brain-backend.js');
+  const backend = require('../engine/brain-backend.js');
   if (backend.peekMode() !== 'mcp-memory') {
     throw new Error(`verificação exige backend.type=mcp-memory (alvo do daemon); modo atual: ${backend.peekMode()}`);
   }

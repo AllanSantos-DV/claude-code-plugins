@@ -18,8 +18,8 @@
  * `CCB_RAW=1 <cmd>` is the escape hatch when the raw output is genuinely needed.
  */
 const path = require('path');
-const { canonicalSig, principalSegment, indexOfShellMeta } = require('./command-signature.js');
-const { classifySegment } = require('./curation-families.js');
+const { canonicalSig, principalSegment, indexOfShellMeta } = require('../../engine/lib/command-signature.js');
+const { classifySegment } = require('../../engine/lib/curation-families.js');
 
 const RAW_ESCAPE = /(^|\s)CCB_RAW=1(\s|$)/;
 
@@ -252,7 +252,7 @@ const SHAPER = path.join(__dirname, '..', 'shape-output.js').replace(/\\/g, '/')
  * installed, else null. `deps` is a test seam for the Token Guard detection.
  */
 function planShaping(command, projectRoot, deps = {}) {
-  const { classifyCommand, tokenGuardActive } = require('./curation-families.js');
+  const { classifyCommand, tokenGuardActive } = require('../../engine/lib/curation-families.js');
   const cmd = String(command || '').trim();
   if (!cmd || RAW_ESCAPE.test(cmd) || cmd.includes('shape-output.js')) return null;
   const parts = splitTopLevel(cmd);

@@ -20,6 +20,28 @@ Você é acionado de duas formas:
 1. **Direto** pelo usuário: "desenhe/atualize a página do `<plugin>`".
 2. **Pelo block de merge**: o `pages-guard` barrou um commit/merge e apontou você.
 
+## Regra permanente: três camadas (Allan, 2026-10-15)
+
+A página do plugin é usada para **apresentar o produto a pessoas**. Quem chega
+não quer rolar por versões. Por isso ela tem três camadas, sempre separadas:
+
+1. **Apresentação** (`index.html`) — só proposta de valor e funcionalidades, curta.
+   **Sem changelog** (nada de "Novo na X.Y", "Na 3.2.0, …", tabela de versões,
+   número de versão no texto) e **sem detalhe técnico** (caminhos de arquivo,
+   variáveis de ambiente, nomes de módulo, flags). O número da versão só aparece
+   como selo na marca/menu e no rodapé.
+2. **Técnica** (`tech.html`) — arquitetura e funcionamento interno, para quem quer
+   saber como funciona por baixo. Linkada da apresentação.
+3. **Changelog** (`changelog.html`, ou o `CHANGELOG.md` no GitHub para plugin sem
+   página própria) — em página própria, linkada **só discretamente**, no rodapé ou
+   no menu. Nunca no herói nem no corpo da apresentação.
+
+O `pages-guard` verifica a camada 1 sozinho (`presentationViolations`): número de
+versão ou frase de changelog no texto da apresentação, bloco `id/class`
+`changelog|versoes`, ou falta de link para o changelog → estado `layers`, merge
+bloqueado. Quando uma feature nova merece aparecer na apresentação, descreva o
+**benefício** dela na seção de funcionalidade, sem dizer a versão.
+
 ## Fluxo (siga sempre nesta ordem)
 
 1. **Descubra o que fazer.** Rode:
@@ -27,7 +49,8 @@ Você é acionado de duas formas:
    node .github/scripts/pages-guard.mjs list
    ```
    Ele lista cada plugin com `state`: `ok` (nada a fazer), `missing` (nunca
-   desenhado) ou `stale` (as fontes mudaram — redesenhar). Trabalhe apenas os que
+   desenhado), `stale` (as fontes mudaram — redesenhar) ou `layers` (changelog
+   na apresentação — mover para `changelog.html`; o motivo vem em `layers`). Trabalhe apenas os que
    **não** estão `ok`. Se o usuário nomeou um plugin específico, foque nele.
 
 2. **Leia as fontes** daquele plugin (a matéria-prima da página):
@@ -37,13 +60,16 @@ Você é acionado de duas formas:
    - a entrada do plugin em `.claude-plugin/marketplace.json`
    O conteúdo da página **vem daí** — não invente features nem versões.
 
-3. **Desenhe** `pages/<plugin>/index.html` seguindo a disciplina de design abaixo.
+3. **Desenhe** as três camadas (regra acima) seguindo a disciplina de design:
+   `pages/<plugin>/index.html` (apresentação), `pages/<plugin>/tech.html` (técnica)
+   e `pages/<plugin>/changelog.html` (histórico). Novidade de versão entra no
+   `changelog.html`, **nunca** como parágrafo ou selo na apresentação.
 
 4. **VALIDE VISUALMENTE — obrigatório, NÃO pule.** Uma página **não** se valida lendo o
    HTML/CSS: você **renderiza e OLHA**. Bugs de layout (texto vazando da caixa, overflow
    horizontal, quebra de 1 caractere por linha, elementos sobrepostos, tabela desalinhada)
    **só aparecem no render** — jamais declare "pronto" sem ter visto o pixel.
-   1. Renderize em **desktop E mobile** com Chrome headless (fallback: `msedge.exe`):
+   1. Renderize **cada uma das três páginas** em **desktop E mobile** com Chrome headless (fallback: `msedge.exe`):
       ```powershell
       $b="C:\Program Files\Google\Chrome\Application\chrome.exe"
       $pg="file:///CAMINHO/ABSOLUTO/pages/<plugin>/index.html"
@@ -88,7 +114,8 @@ mínimos, inegociáveis:
 - **Fiel ao plugin**: hero que diz em uma frase o que o plugin faz; seções de
   features reais (tiradas do README), instalação via marketplace
   (`/plugin marketplace add AllanSantos-DV/claude-code-plugins` +
-  `/plugin install <plugin>@allansantos-plugins`), e links para README/CHANGELOG/repo.
+  `/plugin install <plugin>@allansantos-plugins`), e links para README, página
+  técnica, repo e — discretamente, no rodapé/menu — o changelog.
 - **Família, com sotaque próprio**: as páginas compartilham a identidade do
   marketplace (mesma estrutura/tom), mas cada plugin tem seu **acento** — derive-o
   do assunto do plugin (ex.: `claude-code-boss` = memória/terminal/conhecimento;
@@ -111,6 +138,7 @@ mínimos, inegociáveis:
 ## Checklist antes de encerrar
 
 - [ ] `pages/<plugin>/index.html` existe e reflete README/CHANGELOG/manifest atuais
+- [ ] Três camadas: apresentação sem changelog e sem detalhe técnico; `tech.html`; changelog em página própria linkada só no rodapé/menu
 - [ ] Instalação via marketplace correta no HTML
 - [ ] Responsivo + foco visível + reduced-motion
 - [ ] **RENDERIZADO e OLHADO (Chrome headless) em desktop E mobile — zero overflow/quebra/sobreposição, auto-corrigido até o render sair limpo**

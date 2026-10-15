@@ -7,7 +7,7 @@
 const { summarizeCompaction, COMPACTION_EVENTS } = require('./compaction-metrics.js');
 
 /** Every compaction-related row of the last `days` days across the metrics projects (or one). */
-function loadCompactionRows({ days = 30, project = null, store = require('./metrics-store.js') } = {}) {
+function loadCompactionRows({ days = 30, project = null, store = require('../../engine/lib/metrics-store.js') } = {}) {
   const sinceTs = Date.now() - days * 86400_000;
   const projects = project ? [project] : store.listProjects();
   const rows = [];

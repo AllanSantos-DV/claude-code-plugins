@@ -5,7 +5,7 @@
  */
 const fs = require('fs');
 const path = require('path');
-const { writeJsonAtomic } = require('./atomic-write.js');
+const { writeJsonAtomic } = require('../../engine/lib/atomic-write.js');
 
 /** True while the stamp at `p` is younger than `ms`. Absent → false; unreadable → logged, false. */
 function onCooldown(p, ms, now = Date.now()) {

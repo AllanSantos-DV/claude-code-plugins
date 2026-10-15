@@ -16,7 +16,7 @@ const os = require('os');
 const path = require('path');
 const crypto = require('crypto');
 const hooksConfig = require('./lib/hooks-config.js');
-const metrics = require('./lib/metrics.js');
+const metrics = require('../engine/lib/metrics.js');
 const { readStdin, parsePayload, emitEmpty } = require('./lib/hook-io.js');
 
 const MAX_BYTES = 5 * 1024 * 1024;

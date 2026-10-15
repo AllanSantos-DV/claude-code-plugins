@@ -27,7 +27,6 @@ const v8 = require('v8');
 const { spawn, spawnSync } = require('child_process');
 
 const LOG_NAME = 'brain-crash.log';
-const REPORT_DIR = 'crash-reports';
 const MAX_RECORDS = 20;
 const MAX_REPORTS = 10;
 const STDERR_TAIL_LINES = 60;
@@ -35,14 +34,11 @@ const NATIVE_PACKAGES = ['onnxruntime-node', 'onnxruntime-common', '@huggingface
 const SYSTEM_DLLS = ['msvcp140.dll', 'vcruntime140.dll', 'vcruntime140_1.dll', 'onnxruntime.dll'];
 
 function crashLogFile(dataDir) { return path.join(dataDir, LOG_NAME); }
-function reportDir(dataDir) { return path.join(dataDir, REPORT_DIR); }
 function lockPath(dataDir) { return path.join(dataDir, 'brain-http.lock.json'); }
 function spawnLogPath(dataDir) { return path.join(dataDir, 'brain-http.spawn.log'); }
 
-/** Node flags for the daemon: a V8 fatal error or an uncaught exception writes a report. */
-function reportFlags(dataDir) {
-  return ['--report-on-fatalerror', '--report-uncaught-exception', `--report-directory=${reportDir(dataDir)}`];
-}
+// Report dir + flags live in crash-report-flags.js (engine side); re-exported here for the old callers.
+const { reportDir, reportFlags } = require('../../engine/lib/crash-report-flags.js');
 
 /** kill(pid, 0) probes without signalling; EPERM means the pid exists under another user. */
 function pidAlive(pid) {
@@ -50,12 +46,7 @@ function pidAlive(pid) {
   try { process.kill(pid, 0); return true; } catch (err) { return err.code === 'EPERM'; }
 }
 
-function readJson(file) {
-  try { return JSON.parse(fs.readFileSync(file, 'utf8')); } catch (err) {
-    if (err.code !== 'ENOENT') console.error(`[crash-evidence] ${file} unreadable: ${err.message}`);
-    return null;
-  }
-}
+const readJson = (file) => require('../../engine/lib/json-file.js').readJsonLoud(file, 'crash-evidence');
 
 /**
  * The lock of a daemon that died without shutting down, or null.
@@ -143,7 +134,7 @@ function nativePackages(pluginRoot) {
 }
 
 function embedderProvider() {
-  try { return (require('./brain-config.js').load().embedder || {}).provider || 'transformers'; } catch (err) {
+  try { return (require('../../engine/lib/brain-config.js').load().embedder || {}).provider || 'transformers'; } catch (err) {
     return `unknown (${err.message})`;
   }
 }
@@ -188,10 +179,7 @@ function readRecords(dataDir) {
 }
 
 function writeRecords(dataDir, records) {
-  const file = crashLogFile(dataDir);
-  const tmp = `${file}.${process.pid}.tmp`;
-  fs.writeFileSync(tmp, records.slice(-MAX_RECORDS).map((r) => JSON.stringify(r)).join('\n') + '\n');
-  fs.renameSync(tmp, file);
+  require('../../engine/lib/atomic-write.js').writeFileAtomic(crashLogFile(dataDir), records.slice(-MAX_RECORDS).map((r) => JSON.stringify(r)).join('\n') + '\n');
 }
 
 function stderrTail(dataDir) {

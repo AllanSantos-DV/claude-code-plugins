@@ -25,10 +25,10 @@
 
 const fs = require('fs');
 const path = require('path');
-const { writeFileAtomic } = require('./lib/atomic-write.js');
+const { writeFileAtomic } = require('../engine/lib/atomic-write.js');
 
 const { runTextCli } = require('./lib/hook-io.js');
-const { getSqliteBackend } = require('./lib/sqlite-compat.js');
+const { getSqliteBackend } = require('../engine/lib/sqlite-compat.js');
 
 const COOLDOWN_MS = 60_000;
 
@@ -38,7 +38,7 @@ function pluginRoot() {
 }
 
 function dataDir() {
-  return require('./lib/data-dir.js').dataDir();
+  return require('../engine/lib/data-dir.js').dataDir();
 }
 
 function checkExists(p, kind) {
@@ -124,7 +124,7 @@ function staticChecks(root, data) {
   const checks = [
     [path.join(root, 'servers', 'brain-server', 'index.js'), 'brain-server entry'],
     [path.join(root, 'node_modules'), 'plugin deps (run npm install in plugin root)'],
-    [path.join(root, 'scripts', 'brain-store.js'), 'brain-store script'],
+    [path.join(root, 'engine', 'brain-store.js'), 'brain-store script'],
   ];
   for (const [p, kind] of checks) {
     const err = checkExists(p, kind);
@@ -141,7 +141,7 @@ async function liveProbe(root, projectKey) {
   // Active probe: exercise the same module path the MCP server uses.
   // Skip if static checks already failed (would crash on require).
   try {
-    const backend = require(path.join(root, 'scripts', 'brain-backend.js'));
+    const backend = require(path.join(root, 'engine', 'brain-backend.js'));
     await backend.init({ project: projectKey, skipEmbedder: true });
     await backend.count();
     if (backend.close) await backend.close();
@@ -210,7 +210,7 @@ function buildPendingDraftsText(count, dir) {
  */
 function embedderModelMissing() {
   try {
-    const embedder = require('./brain-embedder.js');
+    const embedder = require('../engine/brain-embedder.js');
     const model = embedder.getModel(); // loads config → sets provider/model
     if (embedder.getProvider() !== 'transformers') return false; // external provider, no local model
     return !fs.existsSync(path.join(embedder.getModelCacheDir(), model));
@@ -232,10 +232,10 @@ function embedderDimMismatch(data) {
   try {
     const brainDir = path.join(data, 'brain');
     if (!fs.existsSync(brainDir)) return null;
-    const embedder = require('./brain-embedder.js');
+    const embedder = require('../engine/brain-embedder.js');
     embedder.getModel(); // loads the layered config → sets provider/model/dimensions
     const dims = embedder.getDimensions();
-    const Db = require('./lib/sqlite-compat.js').loadSqlite();
+    const Db = require('../engine/lib/sqlite-compat.js').loadSqlite();
     if (!Db) return null;
     let count = 0;
     for (const proj of fs.readdirSync(brainDir)) {
@@ -258,10 +258,10 @@ function embedderDimMismatch(data) {
  * @returns {string|null}
  */
 function configRecoveryText() {
-  const { userConfigRecoveryStatus } = require('./lib/config-merge.js');
+  const { userConfigRecoveryStatus } = require('../engine/lib/config-merge.js');
   const lines = [];
   const files = [];
-  try { files.push({ f: require('./lib/brain-config.js').userConfigPath(), what: ' (memory backend: local)' }); } catch (err) { console.error(`[BRAIN-HEALTH] brain config path: ${err.message}`); }
+  try { files.push({ f: require('../engine/lib/brain-config.js').userConfigPath(), what: ' (memory backend: local)' }); } catch (err) { console.error(`[BRAIN-HEALTH] brain config path: ${err.message}`); }
   try { files.push({ f: require('./lib/hooks-config.js').userConfigPath(), what: ' (hooks profile and settings)' }); } catch (err) { console.error(`[BRAIN-HEALTH] hooks config path: ${err.message}`); }
   for (const { f, what } of files) {
     const st = userConfigRecoveryStatus(f);
@@ -305,9 +305,14 @@ function buildDegradedSqliteText() {
 function buildRecallDegradedText(status) {
   const reason = status.lastDegraded && status.lastDegraded.reason;
   const pct = Math.round(status.degradedRate * 100);
+  // Which arm is the problem, and how slow the answers that did come were: "timeout" with a
+  // healthy daemon used to read as "is the daemon running?" while compose answered in 5–8 s.
+  const arm = (name, a) => (a && a.runs ? `${name} ${a.failed}/${a.runs} failed${a.p50 != null ? `, p50 ${(a.p50 / 1000).toFixed(1)} s` : ''}` : null);
+  const arms = status.arms ? [arm('compose', status.arms.compose), arm('project arm', status.arms.project)].filter(Boolean) : [];
   return `[BRAIN-HEALTH] Memory recall is DEGRADED — ${status.windowDegraded} of the last ` +
     `${status.windowTotal} recalls were degraded (${pct}%: empty, or one of compose / project arm failed)` +
     (reason ? ` (last reason: ${reason})` : '') + '. ' +
+    (arms.length ? `Per arm: ${arms.join('; ')}. ` : '') +
     'compose_recall is the required path on the mcp-memory backend: check the daemon is running and is version >= 2.18.';
 }
 
@@ -322,7 +327,7 @@ function buildRecallDegradedText(status) {
  */
 function recallDegradedStatus() {
   try {
-    const status = require('./lib/recall-health.js').getStatus();
+    const status = require('../engine/lib/recall-health.js').getStatus();
     const recent = status.lastDegraded && (Date.now() - status.lastDegraded.ts) < 60 * 60 * 1000;
     const bad = status.windowDegraded >= 3 && status.degradedRate >= 0.2;
     return (bad && recent) ? status : null;
@@ -346,8 +351,8 @@ async function slowHookAlert(root, data) {
     // judge — and a test runner (repo root) never reads the machine's real daemon.
     const same = (a, b) => path.resolve(String(a || '')).toLowerCase() === path.resolve(String(b || '')).toLowerCase();
     if (!health.pluginRoot || !same(health.pluginRoot, root)) return null;
-    const { deadlinesFromHooksJson } = require('./lib/hook-tools.js');
-    return alert.alertOnce({ health, deadlines: deadlinesFromHooksJson(root), stampFile: path.join(data, '.runtime', 'hook-latency-alert.json') });
+    const { deadlinesFromHooksJson, eventsFromHooksJson } = require('./lib/hook-tools.js');
+    return alert.alertOnce({ health, deadlines: deadlinesFromHooksJson(root), events: eventsFromHooksJson(root), stampFile: path.join(data, '.runtime', 'hook-latency-alert.json') });
   } catch (err) {
     console.error(`[BRAIN-HEALTH] slow-hook check failed: ${err.message}`);
     return null;
@@ -357,7 +362,9 @@ async function slowHookAlert(root, data) {
 async function run(event) {
   try {
     const eventName = event.hook_event_name || 'SessionStart';
-    const project = event.cwd ? path.basename(event.cwd) : 'default';
+    // The folder's project id, not its name: a basename opened a local shard per folder name
+    // (103 shards like Temp/docs/dist measured) and handshook the server with a junk scope.
+    const project = (event.cwd && require('../engine/lib/project-id.js').tryResolveProjectId({ cwd: event.cwd })) || 'default';
 
     const root = pluginRoot();
     const data = dataDir();
@@ -411,4 +418,4 @@ function main() { return runTextCli(run, 'BRAIN-HEALTH', 'SessionStart'); }
 if (require.main === module) main();
 
 module.exports = {
-  embedderDimMismatch, configRecoveryText, countPendingDrafts, shouldRunOnPrompt, brainServerDepsOk, run, _slowHookAlert: slowHookAlert };
+  embedderDimMismatch, configRecoveryText, countPendingDrafts, shouldRunOnPrompt, brainServerDepsOk, run, _slowHookAlert: slowHookAlert, buildRecallDegradedText };

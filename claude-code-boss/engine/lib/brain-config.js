@@ -176,25 +176,6 @@ function getSkillPromotion() {
 }
 
 /**
- * Limits for `capture_lesson` `type:"skill"` (mechanical validation in
- * scripts/lib/skill-capture.js). Config: kb.skillCapture. Same shape as the
- * module's own defaults — this getter exists so an operator can tune the
- * budget without a code change; validateSkillFields() stays pure (limits
- * passed in, never reads config itself).
- * @returns {{descriptionMin:number, descriptionMax:number, useForMax:number, doNotUseForMax:number}}
- */
-function getSkillCapture() {
-  const cfg = load();
-  const s = (cfg.kb && cfg.kb.skillCapture) || {};
-  return {
-    descriptionMin: Number.isInteger(s.descriptionMin) && s.descriptionMin > 0 ? s.descriptionMin : 40,
-    descriptionMax: Number.isInteger(s.descriptionMax) && s.descriptionMax > 0 ? s.descriptionMax : 280,
-    useForMax: Number.isInteger(s.useForMax) && s.useForMax > 0 ? s.useForMax : 400,
-    doNotUseForMax: Number.isInteger(s.doNotUseForMax) && s.doNotUseForMax > 0 ? s.doNotUseForMax : 400,
-  };
-}
-
-/**
  * Conversation ingestion setting (backend.ingestion). Opt-in: when enabled AND
  * the backend is the external mcp-memory server, the Stop hook ships each turn's
  * conversation to the daemon for server-side curation. Default OFF (privacy).
@@ -232,8 +213,11 @@ function getRecallCompose() {
     projectArmMinScore: typeof c.projectArmMinScore === 'number' ? c.projectArmMinScore : 0.65,
     // Pool-warming (ADR-017): fire a home-federated search alongside compose so
     // ingested HOME docs accumulate recall signal and graduate (async Dreaming).
-    // Non-injected; default ON. Set false to disable the extra background search.
-    poolWarming: c.poolWarming !== false,
+    // Non-injected; default OFF since the 2026-10-15 check-up: the graduation it feeds
+    // only runs with the server's promotion flags on (off by default, and off on the
+    // machine measured), and it is a 3rd remote call per prompt on a server whose
+    // search p95 was 4 s. Set true when the server promotes.
+    poolWarming: c.poolWarming === true,
   };
 }
 
@@ -347,7 +331,6 @@ module.exports = {
   getSubmission,
   getContextExcludeTypes,
   getCuration,
-  getSkillCapture,
   getSkillPromotion,
   getIngestion,
   getRecallCompose,

@@ -15,13 +15,13 @@
  * Best-effort and silent when there's nothing to report.
  */
 const fs = require('fs');
-const { writeJsonAtomic, writeFileAtomic } = require('./lib/atomic-write.js');
+const { writeJsonAtomic, writeFileAtomic } = require('../engine/lib/atomic-write.js');
 const path = require('path');
 const { runTextCli } = require('./lib/hook-io.js');
 const oneoff = require('./lib/oneoff-store.js');
-const { getCuration } = require('./lib/brain-config.js');
+const { getCuration } = require('../engine/lib/brain-config.js');
 
-const { dataDir } = require('./lib/data-dir.js');
+const { dataDir } = require('../engine/lib/data-dir.js');
 const DATA_DIR = dataDir();
 
 /**
@@ -62,23 +62,39 @@ async function run(event) {
     try {
       const sid = event && (event.session_id || event.sessionId);
       if (sid) {
-        const safe = String(sid).replace(/[^a-zA-Z0-9_-]/g, '_').slice(0, 64);
+        const safe = require('../engine/lib/session-id.js').sanitizeSessionId(sid);
         const stamp = path.join(DATA_DIR, '.runtime', `session-start-${safe}.json`);
         if (!fs.existsSync(stamp)) {
           fs.mkdirSync(path.dirname(stamp), { recursive: true });
-          writeFileAtomic(stamp, JSON.stringify({ ts: Date.now(), project: path.basename(cwd) }));
+          // The metrics key session-summary falls back to (not the folder name).
+          writeFileAtomic(stamp, JSON.stringify({ ts: Date.now(), project: require('../engine/lib/metrics-project.js').sessionMetricsKey(cwd) }));
         }
       }
     } catch (e) { void e; /* stamp is best-effort */ }
 
     oneoff.prune(DATA_DIR, projectKey, { windowDays: oneHitWindowDays });
 
+    // P7 retention: old noise rows of THIS project become daily counts (at most once a day).
+    try {
+      const mstamp = path.join(DATA_DIR, '.runtime', 'metrics-compact-last.json');
+      const key = require('../engine/lib/metrics-project.js').metricsKeyFor(cwd);
+      let last = {};
+      try { last = JSON.parse(fs.readFileSync(mstamp, 'utf8')); } catch (e) { void e; }
+      if (key && Date.now() - (last[key] || 0) > 86400_000) {
+        const store = require('../engine/lib/metrics-store.js');
+        if (store.init({ project: key })) store.compactNoise();
+        last[key] = Date.now();
+        fs.mkdirSync(path.dirname(mstamp), { recursive: true });
+        writeFileAtomic(mstamp, JSON.stringify(last));
+      }
+    } catch (e) { console.error(`[curation-session] metrics compaction: ${e.message}`); }
+
     // Weekly KB consolidation (F3 #5): spawn the hygiene job at most once a week
     // (fire-and-forget, like the skill-promotion trigger). Manual control lives
     // in the dashboard; this keeps the KB tidy without user action.
     try {
       const cstamp = path.join(DATA_DIR, '.runtime', 'brain-consolidate-last.json');
-      const pid = require('./lib/project-id.js').tryResolveProjectId({ cwd });
+      const pid = require('../engine/lib/project-id.js').tryResolveProjectId({ cwd });
       const root = process.env.CLAUDE_PLUGIN_ROOT;
       if (pid && consolidationDue(cstamp, pid, Date.now()) && root && !root.includes('${')) {
         markConsolidated(cstamp, pid, Date.now());

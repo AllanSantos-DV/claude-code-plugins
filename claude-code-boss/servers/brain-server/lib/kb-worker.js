@@ -39,10 +39,10 @@ const require = createRequire(import.meta.url);
 const { pluginRoot } = workerData;
 
 const modules = {
-  store: require(path.join(pluginRoot, 'scripts', 'brain-store.js')),
-  metrics: require(path.join(pluginRoot, 'scripts', 'lib', 'metrics-store.js')),
-  index: require(path.join(pluginRoot, 'scripts', 'brain-index.js')),
-  graph: require(path.join(pluginRoot, 'scripts', 'brain-graph.js')),
+  store: require(path.join(pluginRoot, 'engine', 'brain-store.js')),
+  metrics: require(path.join(pluginRoot, 'engine', 'lib', 'metrics-store.js')),
+  index: require(path.join(pluginRoot, 'engine', 'brain-index.js')),
+  graph: require(path.join(pluginRoot, 'engine', 'brain-graph.js')),
 };
 
 parentPort.on('message', async (msg) => {

@@ -34,7 +34,7 @@ const fsDefault = require('fs');
 const path = require('path');
 const { loadProjectConfig, declaredProjectId, projectConfigPath } = require('./project-config.js');
 // Default env is the per-call hook env when running inside the daemon (Phase G).
-const { hookEnv } = require('./hook-context.js');
+const { hostEnv } = require('./host-env.js');
 
 const MARKER_FILE = '.claude-boss-project'; // legacy boss marker (deprecated; read-only)
 const MAX_WALK_UP = 8; // cap parent traversal so a stray cwd can't scan the whole disk
@@ -245,7 +245,7 @@ function isWithin(child, parent) {
  * So worktrees + subfolders of the same project converge on the SAME root → SAME id.
  * null when no marker is found at any anchor (outside git it does NOT climb the disk).
  */
-function findProjectRoot({ cwd, env = hookEnv(), fs = fsDefault, git = defaultGit } = {}) {
+function findProjectRoot({ cwd, env = hostEnv(), fs = fsDefault, git = defaultGit } = {}) {
   const dir = _trim(cwd);
   if (!dir) return null;
   if (hasMarker(dir, fs)) return safeResolve(dir);
@@ -290,7 +290,7 @@ const OPT_OUT_FILE = path.join('.memory', 'memory-off.json');
  * off there (it already is without an id). Nearest wins: walking up from cwd (same
  * bounds as the findProjectRoot climb), an opt-out found before any project marker.
  */
-function memoryOptedOut({ cwd, env = hookEnv(), fs = fsDefault } = {}) {
+function memoryOptedOut({ cwd, env = hostEnv(), fs = fsDefault } = {}) {
   let d = _trim(cwd);
   if (!d) return false;
   const home = homeDirOf(env);
@@ -349,7 +349,7 @@ function readMarker(startDir, fs = fsDefault) {
 // ─── the strict resolver (single source of truth for the ladder) ─────────────
 
 /** Resolve id + which rung produced it, or THROW. Internal (DRY for the 3 facades). */
-function _resolveWithStrength({ cwd, env = hookEnv(), fs = fsDefault, git = defaultGit } = {}) {
+function _resolveWithStrength({ cwd, env = hostEnv(), fs = fsDefault, git = defaultGit } = {}) {
   // Rung 1 — env override (explicit, wins over everything).
   const forced = sanitize(env && env.CCB_PROJECT_ID);
   if (forced) return { id: assertSafeProjectId(forced), strength: 'env' };
@@ -435,7 +435,7 @@ function fallbackStrength({ cwd, git = defaultGit } = {}) {
  * legacy marker) OR a declared .memory/project.json already wins (migration done).
  * NEVER writes anything (the boss never auto-creates .memory/project.json — owner "c").
  */
-function migrationHint({ cwd, env = hookEnv(), fs = fsDefault, git = defaultGit } = {}) {
+function migrationHint({ cwd, env = hostEnv(), fs = fsDefault, git = defaultGit } = {}) {
   const dir = _trim(cwd);
   if (!dir) return null;
   const legacy = legacyMarkerPresent(dir, fs);
@@ -460,7 +460,7 @@ function migrationHint({ cwd, env = hookEnv(), fs = fsDefault, git = defaultGit 
  * non-contaminating (these stores are local, not the shared memory daemon), so the
  * basename fallback is acceptable here where it is NOT at the memory boundary.
  */
-function resolveLocalScopeId({ cwd, env = hookEnv(), fs = fsDefault, git = defaultGit } = {}) {
+function resolveLocalScopeId({ cwd, env = hostEnv(), fs = fsDefault, git = defaultGit } = {}) {
   const id = tryResolveProjectId({ cwd, env, fs, git });
   if (id) return id;
   if (cwd && typeof cwd === 'string') {
@@ -512,7 +512,7 @@ function _chainCeiling({ start, sessionRoot, git }) {
  * Never climbs above the ceiling; never scans the raw filesystem unbounded. Best-effort:
  * every git/fs probe is guarded so it NEVER throws (safe on the per-turn recall path).
  */
-function resolveProjectChain({ cwd, sessionRoot, env = hookEnv(), fs = fsDefault, git = defaultGit } = {}) {
+function resolveProjectChain({ cwd, sessionRoot, env = hostEnv(), fs = fsDefault, git = defaultGit } = {}) {
   const start = _trim(cwd);
   if (!start) return { focusId: null, chain: [] };
 

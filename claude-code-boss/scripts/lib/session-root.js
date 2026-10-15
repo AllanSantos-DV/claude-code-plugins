@@ -17,8 +17,8 @@
  */
 const fs = require('fs');
 const path = require('path');
-const { dataDir } = require('./data-dir.js');
-const { writeJsonAtomic } = require('./atomic-write.js');
+const { dataDir } = require('../../engine/lib/data-dir.js');
+const { writeJsonAtomic } = require('../../engine/lib/atomic-write.js');
 
 const TTL_MS = 7 * 86400_000;
 const MEMO_MAX = 256;
@@ -31,7 +31,8 @@ const _memo = new Map();
 const _rootIndex = new Map();
 const ROOT_INDEX_MAX = 16;
 
-const safeId = (sid) => String(sid || '').replace(/[^a-zA-Z0-9_-]/g, '_').slice(0, 64);
+// No id → '' (the callers treat it as "nothing to record"), else the shared sanitizer.
+const safeId = (sid) => (sid ? require('../../engine/lib/session-id.js').sanitizeSessionId(sid) : '');
 const dirOf = (base) => path.join(base || dataDir(), '.runtime', 'session-roots');
 
 /**

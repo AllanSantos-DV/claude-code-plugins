@@ -14,7 +14,7 @@ const path = require('path');
 
 const { loadCurationConfig, findProjectRoot, getShellsConfigPath } = require('./curation-paths.js');
 const { readStdin } = require('./lib/hook-io.js');
-const { writeFileAtomic } = require('./lib/atomic-write.js');
+const { writeFileAtomic } = require('../engine/lib/atomic-write.js');
 
 // Safe defaults applied regardless of ecosystem: idempotent, non-destructive,
 // small-output, high-frequency commands.

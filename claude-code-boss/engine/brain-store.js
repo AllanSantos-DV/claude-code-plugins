@@ -19,8 +19,9 @@ const path = require('path');
 const crypto = require('crypto');
 const { loadSqlite, getSqliteBackend } = require('./lib/sqlite-compat');
 
-const { dataDir } = require('./lib/data-dir.js');
-const STORE_DIR = dataDir();
+// opts.dataDir on init / searchIsolated (a host passing its own), else the resolved data dir.
+const storeDir = require('./lib/data-dir.js').dirResolver();
+let _storeDir = null;
 
 let _db = null;
 let _useSqlite = false;
@@ -172,7 +173,7 @@ function loadKbLimits() {
 }
 
 function getProjectDir() {
-  const dir = path.join(STORE_DIR, 'brain', _project);
+  const dir = path.join(_storeDir || storeDir(), 'brain', _project);
   if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
   return dir;
 }
@@ -399,7 +400,7 @@ async function searchIsolated(project, queryVector, opts = {}) {
   const type = opts.type || null;
   const Database = loadSqlite();
   if (!Database) return [];
-  const dbPath = path.join(STORE_DIR, 'brain', project, 'brain.db');
+  const dbPath = path.join(opts.dataDir ? storeDir(opts) : (_storeDir || storeDir()), 'brain', project, 'brain.db');
   if (!fs.existsSync(dbPath)) return [];
   let db;
   try { db = new Database(dbPath); } catch (e) { console.error('[brain] isolated DB open failed:', dbPath, e.message); return []; }
@@ -724,9 +725,11 @@ async function listJson(type, project) {
 
 async function init(opts = {}) {
   const newProject = opts.project || 'default';
-  if (_initialized && _project === newProject) return;
+  const newDir = storeDir(opts);
+  if (_initialized && _project === newProject && _storeDir === newDir) return;
   if (_initialized) await close();
   _project = newProject;
+  _storeDir = newDir;
   const _dir = getProjectDir();
 
   const sqliteOk = await tryInitSqlite();

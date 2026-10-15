@@ -1126,13 +1126,6 @@ table{font-variant-numeric:tabular-nums}
           </span>
         </label>
 
-        <label class="switch-row switch-deprecated">
-          <input type="checkbox" id="router-enable" onchange="updateRouterSaveState()">
-          <span>
-            <span class="switch-title"><span data-i18n="router.enable">Ativar reescrita de modelo per-turn (roteador)</span> <span class="badge-pill badge-deprecated" data-i18n="router.deprecatedBadge">Deprecated</span></span>
-            <span class="text-muted" style="display:block;font-size:.78rem;margin-top:.25rem" data-i18n="router.enableDeprecated">DEPRECADO: reescrever o modelo a cada request quebra o prompt cache da Anthropic (cache é por modelo). Prefira o Sticky Router acima.</span>
-          </span>
-        </label>
       </div>
 
       <div style="margin:1rem 0;max-width:480px">
@@ -1884,7 +1877,6 @@ async function loadRouterConfig() {
       throw new Error((cfg && cfg.error) || 'resposta sem a seção byok');
     }
     _routerConfigLoadError = '';
-    document.getElementById('router-enable').checked = !!cfg.enabled;
     const stEl = document.getElementById('router-sticky-enable');
     if (stEl) stEl.checked = !!cfg.stickyEnabled;
     const fbEl = document.getElementById('router-fallback-enable');
@@ -2000,7 +1992,6 @@ const MODE_META = {
   'off':           { i18n: 'mode.off',          color: 'grey',  deprecated: false },
   'fallback-only': { i18n: 'mode.fallbackOnly', color: 'blue',  deprecated: false },
   'sticky-tier':   { i18n: 'mode.stickyTier',   color: 'green', deprecated: false },
-  'routing':       { i18n: 'mode.routing',      color: 'amber', deprecated: true  },
   'byok-direct':   { i18n: 'mode.byokDirect',   color: 'purple', deprecated: false },
 };
 function modeMeta(mode) { return MODE_META[mode] || MODE_META.off; }
@@ -2015,7 +2006,7 @@ function dismissBillingNotice() {
 })();
 
 async function disableAllRouter() {
-  ['router-sticky-enable', 'router-fallback-enable', 'router-enable', 'router-upstream-enable', 'router-byok-enable', 'router-context-tuning']
+  ['router-sticky-enable', 'router-fallback-enable', 'router-upstream-enable', 'router-byok-enable', 'router-context-tuning']
     .forEach(id => { const el = document.getElementById(id); if (el) el.checked = false; });
   // Desmarca checkbox BYOK
   const byokEnable = document.getElementById('router-byok-enable');
@@ -2335,7 +2326,7 @@ async function resetRouterMetrics() {
 
 // Enabling the router requires the terms checkbox to be ticked.
 function updateRouterSaveState() {
-  const enabled = document.getElementById('router-enable').checked;
+  const enabled = false; // per-turn routing was removed; false clears a legacy opt-in
   const stEl = document.getElementById('router-sticky-enable');
   const stickyEnabled = stEl ? stEl.checked : false;
   const fbEl = document.getElementById('router-fallback-enable');
@@ -2391,7 +2382,7 @@ function optionalHttpUrl(value, label) {
 }
 
 async function applyRouter() {
-  const enabled = document.getElementById('router-enable').checked;
+  const enabled = false; // per-turn routing was removed; false clears a legacy opt-in
   const stEl = document.getElementById('router-sticky-enable');
   const stickyEnabled = stEl ? stEl.checked : false;
   const fbEl = document.getElementById('router-fallback-enable');

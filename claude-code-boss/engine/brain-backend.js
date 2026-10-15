@@ -1,11 +1,6 @@
 #!/usr/bin/env node
-const fs = require('fs');
-const path = require('path');
 const crypto = require('crypto');
 const { buildEmbedText } = require('./lib/embed-text.js');
-
-const { dataDir } = require('./lib/data-dir.js');
-const DATA_DIR = dataDir();
 
 let _config = null;
 let _mode = null;
@@ -58,7 +53,9 @@ async function guardMcp(label, fn, { trip = true } = {}) {
     reportMcpSuccess();
     return result;
   } catch (err) {
-    if (trip) reportMcpFailure(err);
+    // ABORTED = the caller's own deadline cancelled the call; it says nothing about the
+    // daemon (retrieve-core reports a real outage itself, per arm).
+    if (trip && !(err && err.code === 'ABORTED')) reportMcpFailure(err);
     throw err;
   }
 }
@@ -144,37 +141,17 @@ function deriveTitle(text) {
 async function initMcp() {
   const config = loadConfig();
   const mcpCfg = (config.backend && config.backend.mcpMemory) || {};
-  const transport = mcpCfg.transport === 'http' ? 'http' : 'stdio';
   const McpClient = require('./mcp-client.js');
-
-  if (transport === 'http') {
-    // Remote mode: talk to an already-running daemon. URL is explicit or
-    // auto-discovered from ~/.mcp-memory/run/daemon.json. No JAR, no spawn.
-    _mcp = new McpClient({
-      transport: 'http',
-      serverUrl: mcpCfg.serverUrl || '',
-      runDir: mcpCfg.runDir || '',
-      projectId: mcpCfg.projectId || _project,
-      timeout: mcpCfg.timeout || 60000,
-      // The brain daemon answers tools in-session: fail fast while the server restarts (Q59).
-      restartMode: process.env.CCB_MCP_RESTART_MODE === 'background' ? 'background' : 'wait',
-    });
-    await _mcp.connect();
-    return;
-  }
-
-  const jarDir = path.join(DATA_DIR, 'mcp');
-  if (!fs.existsSync(jarDir)) fs.mkdirSync(jarDir, { recursive: true });
-  const jarPath = mcpCfg.jarPath || path.join(jarDir, 'mcp-memory-server.jar');
+  // ONE per-user HTTP daemon (native-java ADR-023), whatever the config's legacy
+  // `transport` says: the URL is explicit or auto-discovered from
+  // ~/.mcp-memory/run/daemon.json. The client never runs the jar.
   _mcp = new McpClient({
-    jarPath,
-    workspacePath: path.join(DATA_DIR, 'brain', _project),
-    javaArgs: mcpCfg.javaArgs || ['-Xmx512m'],
-    downloadUrl: mcpCfg.downloadUrl || '',
-    expectedSha256: mcpCfg.expectedSha256 || '',
+    serverUrl: mcpCfg.serverUrl || '',
+    runDir: mcpCfg.runDir || '',
     projectId: mcpCfg.projectId || _project,
     timeout: mcpCfg.timeout || 60000,
-    restartMode: process.env.CCB_MCP_RESTART_MODE === 'background' ? 'background' : 'wait', // Q59
+    // The brain daemon answers tools in-session: fail fast while the server restarts (Q59).
+    restartMode: process.env.CCB_MCP_RESTART_MODE === 'background' ? 'background' : 'wait',
   });
   await _mcp.connect();
 }
@@ -285,7 +262,7 @@ async function searchMcp(query, opts = {}) {
     ...(minScore > 0 ? { minScore } : {}),
     ...(Object.keys(metadata).length ? { metadata } : {}),
     ...(opts.includeHome ? { includeHome: true } : {}),
-  });
+  }, opts.signal ? { signal: opts.signal } : {});
   return parseSearchResults(result).slice(0, topK).map(item => normalizeSearchItem(item));
 }
 
@@ -370,7 +347,7 @@ async function composeMcp(query, opts = {}) {
   const args = { query: typeof query === 'string' ? query : '', includeLifecycleState: true };
   if (opts.metadata && typeof opts.metadata === 'object') args.metadata = opts.metadata;
   if (opts.setup) args.setup = true;
-  const result = await _mcp.callTool('compose_recall', args);
+  const result = await _mcp.callTool('compose_recall', args, opts.signal ? { signal: opts.signal } : {});
   return parseComposeEnvelope(result);
 }
 
@@ -741,10 +718,24 @@ async function warmPool(query, opts = {}) {
   if (_warmInFlight) return [];
   _warmInFlight = true;
   try {
-    return await guardMcp('warmPool', () => searchMcp(query, { topK: opts.topK || 5, includeHome: true }));
+    return await guardMcp('warmPool', () => searchMcp(query, { topK: opts.topK || 5, includeHome: true, signal: opts.signal }));
   } finally {
     _warmInFlight = false;
   }
+}
+
+/**
+ * Tell the memory server that a recalled document was USED (the agent's reply cited it):
+ * signal_memory_feedback verdict "helpful" (ADR-008: bumps last-validated, never dominates
+ * ranking). The local citation boost (brain-store.recordCitation) only exists in the local
+ * SQLite; on mcp-memory it changed 0 rows. Returns false when this backend or server has no
+ * such tool (nothing to do), true once the signal was sent.
+ */
+async function signalHelpful(documentId) {
+  if (_mode !== 'mcp-memory' || !_mcp || !documentId) return false;
+  if (!_mcp.hasToolAvailable('signal_memory_feedback')) return false;
+  await guardMcp('signalHelpful', () => _mcp.callTool('signal_memory_feedback', { documentId: String(documentId), verdict: 'helpful' }, { timeoutMs: 3000 }), { trip: false });
+  return true;
 }
 
 async function searchByKeywords(keywords, opts = {}) {
@@ -825,7 +816,7 @@ const _textUtils = require('./lib/text-utils.js');
 
 module.exports = {
   init, save, get, search, searchByKeywords,
-  compose, hasCompose, ingestConversation, ingestStatus, warmPool,
+  compose, hasCompose, ingestConversation, ingestStatus, warmPool, signalHelpful,
   delete: delete_, list, listDocuments, listProjects, patchMetadata, count, getRelated, close,
   getStatus, getMode, peekMode, _resetConfig,
   // Circuit breaker on the mcp-memory backend — reportMcpFailure/reportMcpSuccess

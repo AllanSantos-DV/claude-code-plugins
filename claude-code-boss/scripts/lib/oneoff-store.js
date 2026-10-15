@@ -15,10 +15,10 @@
  * Identity = canonicalSig(command), so cwd/flags/wrappers don't fragment the count.
  */
 const fs = require('fs');
-const { saveJson } = require('./json-file.js');
+const { saveJson } = require('../../engine/lib/json-file.js');
 const path = require('path');
 const crypto = require('crypto');
-const { canonicalSig } = require('./command-signature.js');
+const { canonicalSig } = require('../../engine/lib/command-signature.js');
 
 const DAY_MS = 86400_000;
 const MAX_SEEN = 50;        // cap of retained per-entry occurrence timestamps
@@ -116,14 +116,37 @@ function isCeilingExempt(sig) {
   return toks.length === 1 && PROGRAM_NAME.test(toks[0]) && !toks[0].startsWith('heredoc-');
 }
 
+// Parsed + pruned stores by path, valid while the file's mtime/size are the ones we
+// last read or wrote. Every Bash touches the store: re-parsing it and re-signing every
+// key (pruneOrphanKeys) cost ~39 ms per call on a real 3k-entry store. Callers mutate
+// the returned object and save() it within the same synchronous call, so sharing it is
+// safe; a write by another process changes the stamp and forces a fresh read.
+const _cache = new Map(); // path -> { stamp, store }
+const MAX_CACHED = 16;
+function fileStamp(p) {
+  const st = fs.statSync(p);
+  return `${st.mtimeMs}:${st.size}`;
+}
+function remember(p, stamp, store) {
+  _cache.delete(p);
+  _cache.set(p, { stamp, store });
+  if (_cache.size > MAX_CACHED) _cache.delete(_cache.keys().next().value);
+}
+
 function load(dataDir, projectKey) {
   const p = storePath(dataDir, projectKey);
   try {
-    if (!fs.existsSync(p)) return { entries: {} };
+    if (!fs.existsSync(p)) { _cache.delete(p); return { entries: {} }; }
+    const stamp = fileStamp(p);
+    const hit = _cache.get(p);
+    if (hit && hit.stamp === stamp) return hit.store;
     const obj = JSON.parse(fs.readFileSync(p, 'utf-8'));
-    return obj && typeof obj === 'object' && obj.entries ? pruneOrphanKeys(obj) : { entries: {} };
+    const store = obj && typeof obj === 'object' && obj.entries ? pruneOrphanKeys(obj) : { entries: {} };
+    remember(p, stamp, store);
+    return store;
   } catch (err) {
     console.error(`[oneoff-store] load failed (${p}): ${err.message}`);
+    _cache.delete(p);
     return { entries: {} };
   }
 }
@@ -131,7 +154,11 @@ function load(dataDir, projectKey) {
 // Best-effort, last-writer-wins: writeJsonAtomic publishes tear-free, but two
 // concurrent load→mutate→save cycles can still lose an update (see atomic-write.js).
 function save(dataDir, projectKey, store) {
-  return saveJson(storePath(dataDir, projectKey), store, 'oneoff-store');
+  const p = storePath(dataDir, projectKey);
+  const ok = saveJson(p, store, 'oneoff-store');
+  if (!ok) { _cache.delete(p); return ok; }
+  try { remember(p, fileStamp(p), store); } catch (err) { void err; _cache.delete(p); }
+  return ok;
 }
 
 function countInWindow(entry, now, windowDays) {

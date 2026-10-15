@@ -36,15 +36,15 @@
  */
 'use strict';
 
-const { writeJsonAtomic } = require('./lib/atomic-write.js');
+const { writeJsonAtomic } = require('../engine/lib/atomic-write.js');
 const fs = require('fs');
 const path = require('path');
 
 const { runStopDetectorCli } = require('./lib/hook-io.js');
-const brainConfig = require('./lib/brain-config.js');
-const brainBackend = require('./brain-backend.js');
+const brainConfig = require('../engine/lib/brain-config.js');
+const brainBackend = require('../engine/brain-backend.js');
 
-const { dataDir } = require('./lib/data-dir.js');
+const { dataDir } = require('../engine/lib/data-dir.js');
 const { readRange } = require('./lib/transcript-tail.js');
 const STATE = path.join(dataDir(), '.runtime', 'ingest-state.json');
 
@@ -266,7 +266,7 @@ async function run(event, deps = {}) {
   const prev = state.sessions[sid];
   let project;
   try {
-    project = require('./lib/project-id.js').resolveProjectId({ cwd: ev.cwd || require('./lib/hook-context.js').hookEnv().CLAUDE_PROJECT_DIR });
+    project = require('../engine/lib/project-id.js').resolveProjectId({ cwd: ev.cwd || require('./lib/hook-context.js').hookEnv().CLAUDE_PROJECT_DIR });
   } catch (err) {
     console.error(`[conversation-ingest] ${err.message}`);
     if (prev && prev.scopeNoticed) return {};

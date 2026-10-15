@@ -46,12 +46,12 @@
 'use strict';
 
 const fs = require('fs');
-const { pidAlive } = require('./lib/process-lock.js');
-const { blobToVector, safeJson, rowToEntry: kbRowToEntry } = require('./lib/kb-row.js');
+const { pidAlive } = require('../engine/lib/process-lock.js');
+const { blobToVector, safeJson, rowToEntry: kbRowToEntry } = require('../engine/lib/kb-row.js');
 const os = require('os');
 const path = require('path');
-const { loadSqlite } = require('./lib/sqlite-compat.js');
-const { writeJsonAtomic } = require('./lib/atomic-write.js');
+const { loadSqlite } = require('../engine/lib/sqlite-compat.js');
+const { writeJsonAtomic } = require('../engine/lib/atomic-write.js');
 
 // A lock older than this — OR whose owning pid is gone — is STALE and stealable.
 // 30 min comfortably outlasts a real absorb (seconds), so a live apply is always
@@ -158,7 +158,7 @@ function enumerateDefault(activeDir) {
 
 function resolveDeps(_deps) {
   const dd = _deps || {};
-  const activeDir = dd.activeDir || require('./lib/data-dir.js').dataDir();
+  const activeDir = dd.activeDir || require('../engine/lib/data-dir.js').dataDir();
   // When an explicit target dir is given AND the REAL store is in use (not an
   // injected test mock), freeze brain-store/index/graph/backend to that dir by
   // normalizing CLAUDE_PLUGIN_DATA BEFORE their lazy require: brain-store snapshots
@@ -171,11 +171,11 @@ function resolveDeps(_deps) {
   }
   return {
     activeDir,
-    mode: dd.mode || require('./lib/brain-config.js').getBackendType(),
-    store: dd.store || require('./brain-store.js'),
-    index: dd.index || require('./brain-index.js'),
-    graph: dd.graph || require('./brain-graph.js'),
-    backend: dd.backend || require('./brain-backend.js'),
+    mode: dd.mode || require('../engine/lib/brain-config.js').getBackendType(),
+    store: dd.store || require('../engine/brain-store.js'),
+    index: dd.index || require('../engine/brain-index.js'),
+    graph: dd.graph || require('../engine/brain-graph.js'),
+    backend: dd.backend || require('../engine/brain-backend.js'),
     consolidate: dd.consolidate || require('./brain-consolidate.js').consolidate,
     enumerate: dd.enumerate || enumerateDefault,
     readShard: dd.readShard || readShardDefault,
@@ -642,8 +642,8 @@ if (require.main === module) {
       report = { ok: false, apply, mode: 'unknown', activeDir: '', siblings: [], reason: `fatal: ${err.message}` };
     }
     // Best-effort teardown of any singleton we may have opened.
-    try { await require('./brain-store.js').close(); } catch (err) { void err; }
-    if (apply) { try { await require('./brain-backend.js').close(); } catch (err) { void err; } }
+    try { await require('../engine/brain-store.js').close(); } catch (err) { void err; }
+    if (apply) { try { await require('../engine/brain-backend.js').close(); } catch (err) { void err; } }
 
     if (asJson) process.stdout.write(JSON.stringify(report, null, 2) + '\n');
     else process.stdout.write(formatReport(report) + '\n');

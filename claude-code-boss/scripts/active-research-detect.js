@@ -20,7 +20,7 @@ const path = require('path');
 const { readStdin, parsePayload, emitEmpty, emitJson } = require('./lib/hook-io.js');
 const hooksConfig = require('./lib/hooks-config.js');
 const state = require('./lib/active-research-state.js');
-const metrics = require('./lib/metrics.js');
+const metrics = require('../engine/lib/metrics.js');
 
 const LIBS_FILE = path.join(__dirname, 'data', 'research-libs.json');
 
@@ -42,8 +42,7 @@ const DEFAULTS = {
 };
 
 function loadConfig() {
-  const cfg = hooksConfig.load();
-  const ar = cfg.activeResearch || {};
+  const ar = hooksConfig.getActiveResearch();
   return {
     enabled: ar.enabled !== false,
     triggers: { ...DEFAULTS.triggers, ...(ar.triggers || {}) },

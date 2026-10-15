@@ -82,7 +82,7 @@ function modelPresent(cacheDir) {
 }
 
 function probeArgs(data) {
-  const ce = require('./crash-evidence.js');
+  const ce = require('./crash-report-flags.js');
   const embedder = path.join(__dirname, '..', 'brain-embedder.js');
   const code = `const e=require(${JSON.stringify(embedder)});const t=Date.now();` +
     `e.init().then(ok=>{if(!ok)throw new Error(e.getStatus().error||'init failed');return e.embed('doctor probe')})` +
@@ -96,7 +96,7 @@ function probeEnv(env = process.env) { return { ...env, [GUARD_OFF_ENV]: 'off' }
 
 /** Turn a finished test process into {ok, dims, ms} or {ok:false, status, error, lastLine, reportDir}. */
 function interpret({ status, stdout, stderr, error }, data) {
-  const reportDir = require('./crash-evidence.js').reportDir(data);
+  const reportDir = require('./crash-report-flags.js').reportDir(data);
   const lines = `${stdout || ''}\n${stderr || ''}`.split(/\r?\n/).map(l => l.trim()).filter(Boolean);
   const result = lines.map(l => { try { return JSON.parse(l); } catch (err) { void err; return null; } }).filter(x => x && typeof x.ok === 'boolean').pop();
   const lastLine = lines.filter(l => !l.startsWith('{')).pop() || '';
@@ -146,9 +146,9 @@ function recordOutcome(data, { model, node }, result, now = new Date()) {
   }
   if (!rec) return null;
   fs.mkdirSync(data, { recursive: true });
-  const file = guardFile(data);
-  fs.writeFileSync(`${file}.tmp`, JSON.stringify(rec, null, 2));
-  fs.renameSync(`${file}.tmp`, file);
+  // Unique temp + retried rename: a FIXED `.tmp` name let two daemons booting at once
+  // write the same temp file and publish each other's half.
+  require('./atomic-write.js').writeFileAtomic(guardFile(data), JSON.stringify(rec, null, 2));
   return rec;
 }
 

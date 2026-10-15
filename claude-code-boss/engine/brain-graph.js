@@ -16,8 +16,9 @@ const fs = require('fs');
 const { writeFileAtomic } = require('./lib/atomic-write.js');
 const path = require('path');
 
-const { dataDir } = require('./lib/data-dir.js');
-const STORE_DIR = dataDir();
+// opts.dataDir on init (a host passing its own), else the resolved data dir.
+const storeDir = require('./lib/data-dir.js').dirResolver();
+let _storeDir = null;
 
 let _project = 'default';
 let _graphPath = null;
@@ -27,15 +28,17 @@ let _initialized = false;
 const EDGE_TYPES = ['references', 'related', 'contradicts', 'supersedes'];
 
 function getGraphPath() {
-  const dir = path.join(STORE_DIR, 'brain', _project);
+  const dir = path.join(_storeDir || storeDir(), 'brain', _project);
   if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
   return path.join(dir, 'graph.json');
 }
 
 async function init(opts = {}) {
   const newProject = opts.project || 'default';
-  if (_initialized && _project === newProject) return;
+  const newDir = storeDir(opts);
+  if (_initialized && _project === newProject && _storeDir === newDir) return;
   _project = newProject;
+  _storeDir = newDir;
   _graph = null;
   _graphPath = getGraphPath();
 

@@ -61,31 +61,10 @@ function activePointerPath() {
   return path.join(globalDir(), 'active-data-dir.json');
 }
 
-// Tear-free write: unique temp sibling + rename. Inlined here (not lib/atomic-
-// write.js) so this hot, module-load-critical resolver stays dependency-light
-// (path/os/fs only). rename(2) can fail TRANSIENTLY on Windows under the
-// SessionStart hook fan-out (MoveFileEx sharing violation → EPERM/EACCES/EBUSY);
-// retry those a bounded number of times so a contended pointer publish isn't
-// dropped. Never called on the read path.
-const _TRANSIENT_RENAME = new Set(['EPERM', 'EACCES', 'EBUSY', 'ENOTEMPTY']);
-
-function _writeJsonAtomic(file, obj) {
-  fs.mkdirSync(path.dirname(file), { recursive: true });
-  const tmp = `${file}.tmp-${process.pid}-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
-  fs.writeFileSync(tmp, JSON.stringify(obj));
-  try {
-    for (let attempt = 1; ; attempt++) {
-      try { fs.renameSync(tmp, file); return; }
-      catch (err) {
-        if (attempt >= 20 || !_TRANSIENT_RENAME.has(err && err.code)) throw err;
-        Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, Math.min(2 * attempt, 25));
-      }
-    }
-  } catch (err) {
-    try { fs.unlinkSync(tmp); } catch (e) { void e; /* orphan temp already gone */ }
-    throw err;
-  }
-}
+// Tear-free pointer publish (temp + rename, retried on Windows' transient EPERM/EBUSY
+// under the SessionStart fan-out). atomic-write.js needs only fs/path, so the resolver
+// stays dependency-light. Never called on the read path.
+const { writeJsonAtomic: _writeJsonAtomic } = require('./atomic-write.js');
 
 /**
  * SQLite-free proxy for "how much KB data lives under `dir`": the total bytes of
@@ -284,7 +263,16 @@ function bootstrapMostRecent() {
  * absorbs POPULATED siblings, and the stray dir here is empty by definition.
  * @returns {string}
  */
+// Engine seam: a host that is not Claude Code (codex-boss, OpenCode, Copilot) either passes
+// `dataDir` to each store call (init/isolated reads, see dirResolver) or sets it here once, before
+// the first store call. Then none of the Claude Code resolution below (CLAUDE_PLUGIN_DATA, active
+// pointer, sibling consolidation) runs.
+let _hostDataDir = null;
+/** @param {string|null} dir absolute data dir for this process, or null to go back to the Claude Code resolution */
+function setDataDir(dir) { _hostDataDir = dir ? path.resolve(dir) : null; }
+
 function dataDir() {
+  if (_hostDataDir) return _hostDataDir;
   const env = validEnvDir(process.env.CLAUDE_PLUGIN_DATA);
   // publishAndFollow honors the SAME verdict the publish reaches: when a heavier
   // live folder owns the KB, FOLLOW it instead of stranding this caller in an
@@ -297,8 +285,21 @@ function dataDir() {
   return HOME_FALLBACK();
 }
 
+/**
+ * A module's data-dir lookup: an explicit `opts.dataDir` (a host passing it per call) wins;
+ * otherwise dataDir(), resolved at the module's FIRST use and then kept — a long-lived daemon
+ * must not follow a pointer moved mid-life into another folder (one KB split in two).
+ * @returns {(opts?: {dataDir?: string}) => string}
+ */
+function dirResolver() {
+  let fallback = null;
+  return (opts) => (opts && opts.dataDir ? path.resolve(opts.dataDir) : (fallback || (fallback = dataDir())));
+}
+
 module.exports = {
   dataDir,
+  dirResolver,
+  setDataDir,
   validEnvDir,
   globalDir,
   activePointerPath,

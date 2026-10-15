@@ -24,12 +24,12 @@
  */
 'use strict';
 const fs   = require('fs');
-const { writeJsonAtomic } = require('./lib/atomic-write.js');
+const { writeJsonAtomic } = require('../engine/lib/atomic-write.js');
 const path = require('path');
 
 const { getShellsConfigPath } = require('./curation-paths.js');
 
-const { dataDir } = require('./lib/data-dir.js');
+const { dataDir } = require('../engine/lib/data-dir.js');
 const DATA_DIR = dataDir();
 const RUNTIME_DIR = path.join(DATA_DIR, '.runtime');
 
@@ -39,8 +39,9 @@ function loadConfig() {
 }
 
 const { runStopDetectorCli } = require('./lib/hook-io.js');
-const { sanitizeSessionId } = require('./lib/session-id.js');
+const { sanitizeSessionId } = require('../engine/lib/session-id.js');
 const turnJournal = require('./lib/turn-journal.js');
+const metrics = require('../engine/lib/metrics.js');
 const oneoff = require('./lib/oneoff-store.js');
 const { reconcileEntries } = require('./lib/curation-reconcile.js');
 const { findProjectRoot, loadShellsConfig, matchCuratedShell } = require('./shells-config.js');
@@ -58,7 +59,7 @@ const { findProjectRoot, loadShellsConfig, matchCuratedShell } = require('./shel
  */
 function filterUnresolved(entries, cwd, { shellsSinceMs = Infinity } = {}) {
   if (!Array.isArray(entries) || entries.length === 0) return { pending: [], resolved: [] };
-  const { oneHitMaxRecurrence, oneHitWindowDays } = require('./lib/brain-config.js').getCuration();
+  const { oneHitMaxRecurrence, oneHitWindowDays } = require('../engine/lib/brain-config.js').getCuration();
   const store = oneoff.load(DATA_DIR, oneoff.resolveProjectKey(cwd));
   let matchShell = () => null;
   try {
@@ -81,15 +82,7 @@ function escalationPath(sessionId) {
   return path.join(RUNTIME_DIR, `curation-stop-${sanitizeSessionId(sessionId)}.json`);
 }
 
-function loadJson(p) {
-  try {
-    if (!fs.existsSync(p)) return null;
-    return JSON.parse(fs.readFileSync(p, 'utf-8'));
-  } catch (err) {
-    console.error(`[CURATION-STOP] load failed (${p}): ${err.message}`);
-    return null;
-  }
-}
+const loadJson = (p) => require('../engine/lib/json-file.js').readJsonLoud(p, 'CURATION-STOP');
 
 function saveJson(p, data) {
   try {
@@ -145,7 +138,7 @@ function curatedScriptsTouchedSince(prev, cwd) {
 }
 
 function buildReason(entries, attempt, maxAttempts) {
-  const { oneHitMaxRecurrence } = require('./lib/brain-config.js').getCuration();
+  const { oneHitMaxRecurrence } = require('../engine/lib/brain-config.js').getCuration();
   const refineEntries = entries.filter(e => e.curatedScript);
   const extendEntries = entries.filter(e => !e.curatedScript && e.extendShell);
   const createEntries = entries.filter(e => !e.curatedScript && !e.extendShell);
@@ -208,6 +201,9 @@ async function run(event) {
     const { maxAttempts } = cfg;
 
     const sessionId = event.session_id || event.sessionId || 'default';
+    // Blocks, releases and relents were stderr-only: no way to count what the curation
+    // Stop cost in extra turns or how often the agent was let go without acting.
+    const mctx = { sessionId, cwd: event.cwd };
     const entries = turnJournal.readEntries(sessionId);
 
     const escPath = escalationPath(sessionId);
@@ -258,6 +254,7 @@ async function run(event) {
           : editedCurated ? 'curated script(s) edited since first block'
           : 'new non-overlapping work';
         console.error(`[CURATION-STOP] progress detected (${why}), releasing stop`);
+        metrics.fire('curation.stop.released', { why, attempts: prev.attempts, entries: prevBlocked.length }, mctx);
         unlinkSafe(escPath);
         turnJournal.clearEntries(sessionId);
         return {};
@@ -266,6 +263,7 @@ async function run(event) {
       // Safety cap: relent after maxAttempts with no progress.
       if (prev.attempts >= maxAttempts) {
         console.error(`[CURATION-STOP] gave up after ${prev.attempts} attempts (no progress) — relenting`);
+        metrics.fire('curation.stop.relented', { attempts: prev.attempts, entries: prevPending.length }, mctx);
         unlinkSafe(escPath);
         turnJournal.clearEntries(sessionId);
         return {};
@@ -282,6 +280,7 @@ async function run(event) {
         firstBlockedAt: prev.firstBlockedAt,
       });
       turnJournal.clearEntries(sessionId);
+      metrics.fire('curation.stop.blocked', { attempt: nextAttempt, entries: escalateEntries.length }, mctx);
       const reason = buildReason(escalateEntries, nextAttempt, maxAttempts);
       return { block: true, reason };
     }
@@ -304,6 +303,7 @@ async function run(event) {
       firstBlockedAt: new Date().toISOString(),
     });
     turnJournal.clearEntries(sessionId);
+    metrics.fire('curation.stop.blocked', { attempt: 1, entries: pending.length }, mctx);
     const reason = buildReason(pending, 1, maxAttempts);
     return { block: true, reason };
   } catch (err) {

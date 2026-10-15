@@ -72,7 +72,16 @@ function createTestTemp({ borrowedRoot } = {}) {
   trackDaemonSpawns();
   function remove(target) {
     if (!inside(target)) throw new Error('test cleanup escaped its owned tree');
-    fs.rmSync(target, { recursive: true, force: true, maxRetries: 2, retryDelay: 25 });
+    // Windows refuses to remove a folder that is still some exiting process's cwd (or held by the
+    // AV) with EPERM/EBUSY; that lasts a few hundred ms. rmSync's own maxRetries does not cover it
+    // (Node 24 gives up at once on the root's EPERM), so retry here for up to 5 s, then fail loud.
+    const deadline = Date.now() + 5000;
+    for (;;) {
+      try { fs.rmSync(target, { recursive: true, force: true, maxRetries: 2, retryDelay: 25 }); return; } catch (err) {
+        if (!['EPERM', 'EBUSY', 'ENOTEMPTY'].includes(err.code) || Date.now() >= deadline) throw err;
+        Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 100);
+      }
+    }
   }
   function stopOwnedDaemons(target) {
     for (const entry of daemons) {

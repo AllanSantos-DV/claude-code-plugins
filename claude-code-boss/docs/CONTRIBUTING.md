@@ -38,8 +38,8 @@ claude --plugin-dir ./claude-code-boss   # (raiz do repo) carrega o checkout num
 | Sem `catch {}` vazio | eslint `no-empty` |
 | Catch que retorna precisa logar/`void err` | regra custom `local/no-silent-return-catch` |
 | Fail-loud: sem fallback que mascara erro | revisão + skills do repo |
-| Escrita atômica via `scripts/lib/atomic-write.js` | teste EXAUSTIVO varre offenders |
-| DATA_DIR só via `scripts/lib/data-dir.js` | idem |
+| Escrita atômica via `engine/lib/atomic-write.js` | teste EXAUSTIVO varre offenders |
+| DATA_DIR só via `engine/lib/data-dir.js` | idem |
 | Version sync entre package.json/READMEs | `sync-version.js --check` no gate |
 
 ## Testes

@@ -2,7 +2,7 @@
 'use strict';
 
 const fs = require('fs');
-const { writeJsonAtomic } = require('./lib/atomic-write.js');
+const { writeJsonAtomic } = require('../engine/lib/atomic-write.js');
 const path = require('path');
 
 const { runStopDetectorCli } = require('./lib/hook-io.js');
@@ -37,7 +37,7 @@ async function run(event) {
   if (!cfg.enabled) return {};
 
   const sid = ev.session_id || ev.sessionId || 'default';
-  const { dataDir: resolveDataDir } = require('./lib/data-dir.js');
+  const { dataDir: resolveDataDir } = require('../engine/lib/data-dir.js');
   const dataDir = resolveDataDir();
   const cFile = counterPath(dataDir, sid);
 

@@ -23,7 +23,7 @@ function asPct(x) { return Math.round(x * 100); }
  *   activeProfile?: string,
  *   impact?: { profiles: Array<{profile,stops,blocked,gated,wouldBlock,shadowSamples}> },
  *   captureRate?: { byKind: Record<string,{nudges,captures,rate}> },
- *   retrieval?: { fired: number, cited: number }
+ *   retrieval?: { injected: number, cited: number }
  * }} input
  * @returns {{ recommendations: Array<{id,level,title,detail,evidence}> }}
  *   level: 'warn' | 'suggest' | 'info'
@@ -72,24 +72,24 @@ function analyze(input = {}) {
     }
   }
 
-  // ── Recall threshold rules (citation precision = cited/fired) ────────────────
-  const fired = num(input.retrieval && input.retrieval.fired);
+  // ── Recall threshold rules (citation precision = cited/injected: the same ratio as the Home card) ──
+  const injected = num(input.retrieval && input.retrieval.injected);
   const cited = num(input.retrieval && input.retrieval.cited);
-  const prec = ratio(cited, fired);
-  if (fired >= SAMPLE_MIN.retrievals && prec !== null) {
+  const prec = ratio(cited, injected);
+  if (injected >= SAMPLE_MIN.retrievals && prec !== null) {
     if (prec < 0.30) {
       recs.push({
         id: 'recall-noisy', level: 'suggest',
         title: 'recall com baixa precisão de citação',
         detail: `Só ${asPct(prec)}% do que o retrieval injeta é citado — provável minScore baixo demais (entra ruído). Suba minScoreFast/Deep um pouco.`,
-        evidence: `cited/fired = ${cited}/${fired}`,
+        evidence: `cited/injected = ${cited}/${injected}`,
       });
-    } else if (prec > 0.90 && fired < SAMPLE_MIN.retrievals * 3) {
+    } else if (prec > 0.90 && injected < SAMPLE_MIN.retrievals * 3) {
       recs.push({
         id: 'recall-tight', level: 'info',
         title: 'recall pode estar conservador demais',
         detail: `Precisão altíssima (${asPct(prec)}%) com poucos hits — talvez minScore alto demais esteja deixando contexto útil de fora. Considere baixar um pouco.`,
-        evidence: `cited/fired = ${cited}/${fired}`,
+        evidence: `cited/injected = ${cited}/${injected}`,
       });
     }
   }
