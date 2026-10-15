@@ -18060,6 +18060,34 @@ test('stop-dispatcher.dispatch: detector pendurado e cortado no prazo por detect
   assert(errors.length === 1 && /timed out after 50ms/.test(errors[0].msg), JSON.stringify(errors));
 });
 
+test('P3: os 8 detectores que nunca rodaram no standard (todos com teste) ficam atras do perfil dev — rodam no dev, nunca no standard, e nenhum quebra num Stop real', async () => {
+  const telem = require('./lib/stop-telemetry.js');
+  const hc = require('./lib/hooks-config.js');
+  const DEV_ONLY = ['pattern-detect', 'decision-scan-response', 'refine-research', 'self-review', 'verify-nudge', 'research-followup-detect', 'failure-retro', 'auto-continue-stop'];
+  // Getters over a given profile's resolved config (the real getters read the configured profile).
+  const gettersFor = (profile) => {
+    const r = hc.resolveProfileConfig({ profile });
+    const on = (k) => () => ({ enabled: !(r[k] && r[k].enabled === false) });
+    return { getPatternDetect: on('patternDetect'), getDecisionScan: on('decisionScan'), getRefineResearch: on('refineResearch'), getSelfReview: on('selfReview'),
+      getVerifyNudge: on('verifyNudge'), getResearchFollowup: on('researchFollowup'), getFailureRetro: on('failureRetro'), getAutoContinue: on('autoContinue') };
+  };
+  for (const name of DEV_ONLY) {
+    assertEq(telem.gateState(name, 'dev', gettersFor('dev')).enabled, true, `${name} runs in dev`);
+    assertEq(telem.gateState(name, 'standard', gettersFor('standard')).enabled, false, `${name} off in standard`);
+  }
+  // Smoke: each detector's run() on a minimal real Stop event answers (no throw) within the per-detector ceiling.
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-p3-'));
+  const tp = path.join(dir, 't.jsonl');
+  fs.writeFileSync(tp, JSON.stringify({ type: 'user', message: { role: 'user', content: 'oi' } }) + '\n');
+  try {
+    const list = dispatcher.DETECTORS.filter((d) => DEV_ONLY.includes(d.name));
+    assertEq(list.map((d) => d.name).sort(), [...DEV_ONLY].sort(), 'all 8 are registered in the Stop dispatcher');
+    const errors = [];
+    await withDevProfile(() => dispatcher.dispatch({ hook_event_name: 'Stop', session_id: 'p3-smoke-' + Date.now(), transcript_path: tp, cwd: dir }, { profile: 'dev', shadowRate: 0, detectors: list, onError: (n, m) => errors.push(`${n}: ${m}`) }));
+    assertEq(errors, [], 'no dev-only detector crashed');
+  } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+});
+
 test('stop-dispatcher.mergeBlocks: no blocks → {}', () => {
   assertEq(dispatcher.mergeBlocks([]), {});
   assertEq(dispatcher.mergeBlocks(null), {});
