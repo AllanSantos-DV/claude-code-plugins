@@ -83,13 +83,14 @@ function readLastAssistantText(transcriptPath, lookback = 30) {
   } catch { /* unreadable transcript: empty */ return ''; }
 }
 
-function extractAssistantText(rec) {
+/**
+ * Text of one transcript record of `role` ('' for another role). Tolerates schema variations (`type`, `role` or
+ * `message.role`; content as a string or blocks, under `message.content`, `content` or `text`). A user turn's
+ * tool_result blocks are tool output echoed back, not something the human typed — skipped.
+ */
+function extractTextOf(rec, role) {
   if (!rec || typeof rec !== 'object') return '';
-  const isAssistant =
-    rec.type === 'assistant' ||
-    rec.role === 'assistant' ||
-    rec.message?.role === 'assistant';
-  if (!isAssistant) return '';
+  if (rec.type !== role && rec.role !== role && rec.message?.role !== role) return '';
   const content =
     (rec.message && rec.message.content) ??
     rec.content ??
@@ -97,36 +98,17 @@ function extractAssistantText(rec) {
   if (typeof content === 'string') return content;
   if (Array.isArray(content)) {
     return content
-      .filter(c => c && (c.type === 'text' || typeof c.text === 'string'))
+      .filter(c => c && (role !== 'user' || c.type !== 'tool_result') && (c.type === 'text' || typeof c.text === 'string'))
       .map(c => c.text || '')
       .join(' ');
   }
   return '';
 }
 
+function extractAssistantText(rec) { return extractTextOf(rec, 'assistant'); }
+
 /** User counterpart of extractAssistantText — pulls the text of a user turn. */
-function extractUserText(rec) {
-  if (!rec || typeof rec !== 'object') return '';
-  const isUser =
-    rec.type === 'user' ||
-    rec.role === 'user' ||
-    rec.message?.role === 'user';
-  if (!isUser) return '';
-  const content =
-    (rec.message && rec.message.content) ??
-    rec.content ??
-    rec.text ?? '';
-  if (typeof content === 'string') return content;
-  if (Array.isArray(content)) {
-    // Skip tool_result blocks — those are tool output echoed back as a "user"
-    // turn, not something the human typed.
-    return content
-      .filter(c => c && c.type !== 'tool_result' && (c.type === 'text' || typeof c.text === 'string'))
-      .map(c => c.text || '')
-      .join(' ');
-  }
-  return '';
-}
+function extractUserText(rec) { return extractTextOf(rec, 'user'); }
 
 /**
  * Last human user prompt in the transcript (mirrors readLastAssistantText).
