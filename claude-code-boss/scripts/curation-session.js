@@ -62,7 +62,7 @@ async function run(event) {
     try {
       const sid = event && (event.session_id || event.sessionId);
       if (sid) {
-        const safe = String(sid).replace(/[^a-zA-Z0-9_-]/g, '_').slice(0, 64);
+        const safe = require('./lib/session-id.js').sanitizeSessionId(sid);
         const stamp = path.join(DATA_DIR, '.runtime', `session-start-${safe}.json`);
         if (!fs.existsSync(stamp)) {
           fs.mkdirSync(path.dirname(stamp), { recursive: true });

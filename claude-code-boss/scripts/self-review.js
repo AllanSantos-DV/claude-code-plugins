@@ -124,7 +124,7 @@ function buildAdvisory(entries) {
 // ── Per-session "already surfaced" guard ──────────────────────────────────────
 
 function surfacedPath(dir, sid) {
-  const safe = String(sid).replace(/[^a-zA-Z0-9_-]/g, '_').slice(0, 64) || 'default';
+  const safe = require('./lib/session-id.js').sanitizeSessionId(sid);
   return path.join(dir, '.runtime', `self-review-surfaced-${safe}.json`);
 }
 
