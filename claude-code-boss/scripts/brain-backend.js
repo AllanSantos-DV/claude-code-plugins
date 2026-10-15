@@ -749,6 +749,20 @@ async function warmPool(query, opts = {}) {
   }
 }
 
+/**
+ * Tell the memory server that a recalled document was USED (the agent's reply cited it):
+ * signal_memory_feedback verdict "helpful" (ADR-008: bumps last-validated, never dominates
+ * ranking). The local citation boost (brain-store.recordCitation) only exists in the local
+ * SQLite; on mcp-memory it changed 0 rows. Returns false when this backend or server has no
+ * such tool (nothing to do), true once the signal was sent.
+ */
+async function signalHelpful(documentId) {
+  if (_mode !== 'mcp-memory' || !_mcp || !documentId) return false;
+  if (!_mcp.hasToolAvailable('signal_memory_feedback')) return false;
+  await guardMcp('signalHelpful', () => _mcp.callTool('signal_memory_feedback', { documentId: String(documentId), verdict: 'helpful' }, { timeoutMs: 3000 }), { trip: false });
+  return true;
+}
+
 async function searchByKeywords(keywords, opts = {}) {
   if (_mode === 'mcp-memory') return guardMcp('searchByKeywords', () => searchByKeywordsMcp(keywords, opts));
   return searchByKeywordsLocal(keywords, opts);
@@ -827,7 +841,7 @@ const _textUtils = require('./lib/text-utils.js');
 
 module.exports = {
   init, save, get, search, searchByKeywords,
-  compose, hasCompose, ingestConversation, ingestStatus, warmPool,
+  compose, hasCompose, ingestConversation, ingestStatus, warmPool, signalHelpful,
   delete: delete_, list, listDocuments, listProjects, patchMetadata, count, getRelated, close,
   getStatus, getMode, peekMode, _resetConfig,
   // Circuit breaker on the mcp-memory backend — reportMcpFailure/reportMcpSuccess
