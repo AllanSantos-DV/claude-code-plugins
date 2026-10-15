@@ -37,13 +37,13 @@ async function gather(project) {
     .map(e => ({ eventName: 'nudge.emitted', payload: e.payload, project, ts: e.ts }));
   const caps = metricsStore.getEventLog({ eventName: 'lesson.captured', limit: 1000 })
     .map(e => ({ eventName: 'lesson.captured', payload: e.payload, project, ts: e.ts }));
-  const fired = metricsStore.getEventLog({ eventName: 'retrieve.fired', limit: 2000 }).length;
+  const injected = require('./lib/value-summary.js').injectedCount(metricsStore.getEventLog({ eventName: 'retrieve.injected', limit: 2000 }));
   const cited = metricsStore.getEventLog({ eventName: 'retrieve.cited', limit: 2000 }).length;
   return {
     activeProfile: hooksConfig.getProfile(),
     impact: aggregateProfileImpact(dispatch),
     captureRate: aggregateCaptureRate([...nudges, ...caps]),
-    retrieval: { fired, cited },
+    retrieval: { injected, cited },
   };
 }
 

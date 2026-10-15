@@ -26,7 +26,7 @@ function _resolveProject(ctx) {
  * Append a metric event. Always returns Promise<number> (inserted id or 0).
  * Errors are swallowed and logged.
  *
- * @param {string} eventName  snake.case event id (e.g. `retrieve.fired`)
+ * @param {string} eventName  snake.case event id (e.g. `retrieve.injected`)
  * @param {object} [payload]  arbitrary JSON-serializable object
  * @param {object} [ctx]      { sessionId, project, cwd } — project derived from cwd if omitted
  */

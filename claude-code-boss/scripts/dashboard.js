@@ -1447,7 +1447,7 @@ async function warmHomeMetrics() {
     console.error(`[DASHBOARD] warm-up of the Home metrics failed (the first visit will compute them): ${err.message}`);
   }
 }
-const TUNING_EVENTS = ['stop.dispatch', 'nudge.emitted', 'lesson.captured', 'retrieve.fired', 'retrieve.cited'];
+const TUNING_EVENTS = ['stop.dispatch', 'nudge.emitted', 'lesson.captured', 'retrieve.injected', 'retrieve.cited'];
 const eventsLatest = (projects, eventName, limit) => aggregateAcrossProjects(projects, (s) => s.getEventLog({ eventName, limit }), `ev:${eventName}:latest:${limit}`);
 
 async function getMetricsSummary(req, res, url) {
@@ -2460,7 +2460,7 @@ async function getTuningRecommendations(req, res, url) {
     const dispatch = gather('stop.dispatch');
     const nudges = gather('nudge.emitted');
     const caps = gather('lesson.captured');
-    const fired = gather('retrieve.fired').length;
+    const injected = require('./lib/value-summary.js').injectedCount(gather('retrieve.injected'));
     const cited = gather('retrieve.cited').length;
     const { aggregateProfileImpact } = require('./lib/profile-impact.js');
     const { analyze } = require('./lib/tuning-advisor.js');
@@ -2469,7 +2469,7 @@ async function getTuningRecommendations(req, res, url) {
       activeProfile,
       impact: aggregateProfileImpact(dispatch),
       captureRate: aggregateCaptureRate([...nudges, ...caps]),
-      retrieval: { fired, cited },
+      retrieval: { injected, cited },
     });
     json(res, { rangeDays: range, activeProfile, ...out });
   } catch (err) {
