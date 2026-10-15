@@ -482,7 +482,7 @@ table{font-variant-numeric:tabular-nums}
     </div>
     <div class="card" id="home-switched-off-card">
       <h2 style="margin:0 0 .25rem 0"><span data-i18n="home.switchedOff">Switched off by the doctor</span></h2>
-      <label class="flex" style="gap:.5rem;align-items:center;font-size:.85rem;margin-bottom:.5rem"><input type="checkbox" id="doctor-autofix" onchange="saveDoctorAutoFix(this)"> <span data-i18n="home.autoFix">Let the doctor switch things off on its own (after an update). You always keep the final say: undo any item below.</span></label>
+      <label class="flex" style="gap:.5rem;align-items:center;font-size:.85rem;margin-bottom:.5rem"><input type="checkbox" id="doctor-autofix" style="width:auto;flex:0 0 auto" onchange="saveDoctorAutoFix(this)"> <span data-i18n="home.autoFix">Let the doctor switch things off on its own (after an update). You always keep the final say: undo any item below.</span></label>
       <p class="text-muted" id="home-switched-off-hint" style="font-size:.85rem;margin:0 0 .5rem 0" data-i18n="home.switchedOffHint">The doctor switches off, on its own, what every message pays for and you do not use: plugins and MCP servers unused for the audit period or never authenticated, and skills that stay listed by name only. Press Undo to bring one back; it is never switched off again. Restart Claude Code after an undo.</p>
       <div id="home-switched-off"></div>
     </div>
@@ -1502,6 +1502,7 @@ const I18N = {
     'home.title': 'System Overview', 'home.brain': 'Brain Knowledge Base', 'home.value': 'Value at a glance', 'home.curation': 'Curation & guards', 'home.compaction': 'Compaction & cache',
     'home.switchedOff': 'Switched off by the doctor', 'home.switchedOffHint': 'The doctor switches off, on its own, what every message pays for and you do not use: plugins and MCP servers unused for the audit period or never authenticated, and skills that stay listed by name only. Press Undo to bring one back; it is never switched off again. Restart Claude Code after an undo.',
     'home.autoFix': 'Let the doctor switch things off on its own (after an update). You always keep the final say: undo any item below.', 'home.autoFixSaved': 'Saved.', 'home.switchedOffNone': 'Nothing has been switched off.',
+    'home.kindPlugin': 'plugin', 'home.kindMcp': 'MCP server', 'home.kindSkill': 'skill (name only)', 'home.colItem': 'Item', 'home.colWhy': 'Why', 'home.colWhen': 'When', 'home.switchedOffReadFailed': "Could not read the doctor's journal",
     'home.undo': 'Undo', 'home.undone': 'Restored — restart Claude Code to load it.', 'home.undoFailed': 'Could not undo',
     'home.start.title': 'Getting started', 'home.start.lead': 'This panel fills itself as you use Claude Code. Nothing to set up.',
     'home.start.s1t': 'Correct the agent when it gets something wrong', 'home.start.s1': 'The correction becomes a lesson and shows up under Lessons learned. Next time, it is remembered.',
@@ -1734,6 +1735,7 @@ const I18N = {
     'home.title': 'Visão Geral', 'home.brain': 'Base de Conhecimento (Brain)', 'home.value': 'Valor gerado', 'home.curation': 'Curadoria e guards', 'home.compaction': 'Compactação e cache',
     'home.switchedOff': 'Desativados pelo doctor', 'home.switchedOffHint': 'O doctor desativa sozinho o que pesa em toda mensagem e você não usa: plugins e servidores MCP sem uso no período da auditoria ou sem autenticação, e skills que passam a aparecer só pelo nome. Clique em Desfazer para trazer um de volta; ele não é desativado de novo. Reinicie o Claude Code depois de desfazer.',
     'home.autoFix': 'Deixar o doctor desativar coisas sozinho (depois de uma atualização). A palavra final é sua: desfaça qualquer item abaixo.', 'home.autoFixSaved': 'Salvo.', 'home.switchedOffNone': 'Nada foi desativado.',
+    'home.kindPlugin': 'plugin', 'home.kindMcp': 'servidor MCP', 'home.kindSkill': 'skill (só o nome)', 'home.colItem': 'Item', 'home.colWhy': 'Motivo', 'home.colWhen': 'Quando', 'home.switchedOffReadFailed': 'Não foi possível ler o registro do doctor',
     'home.undo': 'Desfazer', 'home.undone': 'Restaurado — reinicie o Claude Code para carregar.', 'home.undoFailed': 'Não foi possível desfazer',
     'home.start.title': 'Primeiros passos', 'home.start.lead': 'Este painel se preenche sozinho conforme você usa o Claude Code. Nada a configurar.',
     'home.start.s1t': 'Corrija o agente quando ele errar', 'home.start.s1': 'A correção vira uma lição e aparece em Lições aprendidas. Na próxima vez, ele lembra.',
@@ -1825,7 +1827,7 @@ function applyTheme() {
   if (tt) tt.textContent = _theme === 'dark' ? '🌙' : '☀';
 }
 
-function toggleLang() { _lang = _lang === 'en' ? 'pt' : 'en'; localStorage.setItem('dash.lang', _lang); applyI18n(); }
+function toggleLang() { _lang = _lang === 'en' ? 'pt' : 'en'; localStorage.setItem('dash.lang', _lang); applyI18n(); if (typeof loadSwitchedOff === 'function') loadSwitchedOff(); }
 function toggleTheme() { _theme = _theme === 'dark' ? 'light' : 'dark'; localStorage.setItem('dash.theme', _theme); applyTheme(); }
 
 // ─── Navigation ──────────────────────────────────────────────────
@@ -2994,7 +2996,7 @@ async function runDoctor() {
 }
 
 // What the doctor switched off on its own, with the reason, and a per-item undo (the journal behind `doctor --undo`).
-const SWITCHED_OFF_KIND = { 'plugin-disable': 'plugin', 'mcp-remove': 'MCP server', 'skill-name-only': 'skill (name only)' };
+const SWITCHED_OFF_KIND = { 'plugin-disable': 'home.kindPlugin', 'mcp-remove': 'home.kindMcp', 'skill-name-only': 'home.kindSkill' };
 
 async function loadSwitchedOff() {
   const card = document.getElementById('home-switched-off-card');
@@ -3008,18 +3010,19 @@ async function loadSwitchedOff() {
     if (cfg.error) throw new Error(cfg.error);
     document.getElementById('doctor-autofix').checked = cfg.autoFix !== false;
     if (!items.length) { el.innerHTML = `<p class="text-muted" style="font-size:.85rem">${escapeHtml(t('home.switchedOffNone'))}</p>`; return; }
-    el.innerHTML = '<table style="width:100%;font-size:.85rem"><thead><tr><th>Item</th><th>Why</th><th>When</th><th></th></tr></thead><tbody>' + items.map((e) =>
-      `<tr><td><span class="badge badge-yellow">${escapeHtml(SWITCHED_OFF_KIND[e.kind] || e.kind)}</span> <strong>${escapeHtml(e.target)}</strong></td>`
+    el.innerHTML = `<table style="width:100%;font-size:.85rem"><thead><tr><th>${escapeHtml(t('home.colItem'))}</th><th>${escapeHtml(t('home.colWhy'))}</th><th>${escapeHtml(t('home.colWhen'))}</th><th></th></tr></thead><tbody>` + items.map((e) =>
+      `<tr><td><span class="badge badge-yellow">${escapeHtml(SWITCHED_OFF_KIND[e.kind] ? t(SWITCHED_OFF_KIND[e.kind]) : e.kind)}</span> <strong>${escapeHtml(e.target)}</strong></td>`
       + `<td class="text-muted">${escapeHtml(e.why || '—')}</td><td class="text-muted" style="white-space:nowrap">${escapeHtml(String(e.at || '').slice(0, 10))}</td>`
       + `<td style="text-align:right"><button class="btn-sm" data-id="${escapeHtml(e.id)}" onclick="undoSwitchedOff(this)">${escapeHtml(t('home.undo'))}</button></td></tr>`
     ).join('') + '</tbody></table>';
   } catch (err) {
-    el.innerHTML = `<p class="text-muted">Could not read the doctor's journal: ${escapeHtml(err.message)}</p>`;
+    el.innerHTML = `<p class="text-muted">${escapeHtml(t('home.switchedOffReadFailed'))}: ${escapeHtml(err.message)}</p>`;
   }
 }
 
 async function saveDoctorAutoFix(box) {
   const want = box.checked;
+  box.parentElement.querySelectorAll('.badge').forEach((b) => b.remove());
   try {
     const r = await api('PUT', '/api/doctor/config', { autoFix: want });
     if (r.error) throw new Error(r.error);
