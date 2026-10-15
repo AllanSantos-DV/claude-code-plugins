@@ -41,9 +41,11 @@ Relatórios: `docs/research/checkup/` (local). Tudo abaixo marcado [x] tem teste
 - [ ] **P13 (proposta, não implementar sem o Allan):** expor `mechanicalCut`, `briefTailTokens` e `folderTtl` na Home do painel.
 - [ ] **Smoke `smoke-decision` desatualizado** (4 de 8 asserções falham já antes da mudança; movido para `smoke/plugin-smokes/`). Visto ao
   rodá-lo depois de mover. Proposta: o smoke passa `session_id` (o decision-promote só mostra a entrada da própria sessão desde a 3.x).
-- [ ] **Rascunhos de skill com descrição de OUTRA lição**: `draftSkillMd` usa o `summary` da entrada, que o merge de dedup sobrescreve com o
-  da lição absorvida (visto nos 4 rascunhos exportados: título de uma, descrição de outra). Proposta: guardar o summary original no merge ou
-  derivar a descrição do título + detalhe.
+- [x] **Rascunhos de skill com descrição de OUTRA lição**: `draftSkillMd` usa o `summary` da entrada, que o merge de dedup sobrescreve com o
+  da lição absorvida (visto nos 4 rascunhos exportados: título de uma, descrição de outra). Corrigido na origem, nos dois caminhos do
+  `capture_lesson` (local `kbStore.merge` e servidor mcp-memory): o merge só sobe recorrência e confiança, e o sobrevivente fica com o
+  próprio título, summary e detalhe. Testes Q42 e Q53 (falham sem a correção). As entradas já mescladas antes disso continuam com o par
+  misturado (o texto original não foi guardado); a próxima exportação delas deve ser revista à mão.
 - [ ] **Filas de captura com id de projeto legado** (`github_com_allansantos-dv_claude-code-plugins`, 327 ciclos) não são adotadas por sessões
   com o id novo (`AllanSantos-DV/claude-code-plugins`). Proposta: mapa de aliases de id no `adoptOrphans`.
 - [x] **Painel: eventos sem leitor** ganharam leitor. O painel de curadoria conta os bloqueios do Stop (`curation.stop.*`: bloqueou,

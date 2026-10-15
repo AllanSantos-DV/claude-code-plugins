@@ -395,7 +395,8 @@ export function createBrainServer({ pluginRoot, mode = 'http', kbWorker, kbLock,
           if (dup) {
             const recurrence = (dup.recurrence || 1) + 1;
             // baseMetadata: add_document REPLACES metadata on upsert — keep the document's other keys.
-            await backend.save({ id: dup.id, baseMetadata: dup.metadata, title: dup.title, summary: f.summary, content: { detail: f.detail || f.summary }, type, tags: dup.tags && dup.tags.length ? dup.tags : (Array.isArray(a.tags) ? a.tags : []), confidence: Math.max(dup.confidence || 0.5, confidence), scope: dup.scope || w.effective, projectId: w.projectId, recurrence });
+            // The survivor keeps its own title, summary and detail (a mixed pair made drafts with another lesson's description).
+            await backend.save({ id: dup.id, baseMetadata: dup.metadata, title: dup.title, summary: dup.summary, content: { detail: (dup.content && dup.content.detail) || dup.summary }, type, tags: dup.tags && dup.tags.length ? dup.tags : (Array.isArray(a.tags) ? a.tags : []), confidence: Math.max(dup.confidence || 0.5, confidence), scope: dup.scope || w.effective, projectId: w.projectId, recurrence });
             await recordLessonMetric(project, { type, decision: 'merge', scope: w.effective, recurrence, ...captureSource(a) });
             recordCaptureAck(a.windowId, 'captured');
             return asText({ decision: 'merge', id: dup.id, recurrence, title: dup.title, type, project: w.projectId, scope: w.effective, backend: 'mcp-memory' });
@@ -1060,7 +1061,9 @@ export function createBrainServer({ pluginRoot, mode = 'http', kbWorker, kbLock,
             // distinct record — merging it would just bump the lesson's recurrence and lose it.
             const hits = await kbStore.search(vector, { topK: 1, minScore: DEDUP, rerank: false, type });
             if (hits.length > 0) {
-              const merged = await kbStore.merge(hits[0].id, { summary: safeSummary, content: { detail: safeDetail || safeSummary }, confidence });
+              // The survivor keeps its own text: the title stays, so overwriting summary/detail with the absorbed
+              // lesson's left title of one, description of another (seen in the exported skill drafts).
+              const merged = await kbStore.merge(hits[0].id, { confidence });
               if (merged) {
                 await recordLessonMetric(storageProject, { type, decision: 'merge', scope: effectiveScope, recurrence: merged.recurrence, ...captureSource(args) });
                 recordCaptureAck(args.windowId, 'captured');

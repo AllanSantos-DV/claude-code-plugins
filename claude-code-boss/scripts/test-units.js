@@ -21339,11 +21339,11 @@ test('capture_lesson (Q42): dedup merges only within the SAME type — a decisio
   const R = process.env.CLAUDE_PLUGIN_ROOT;
   const entries = [];
   const searches = [];
-  let merges = 0;
+  let merges = 0; const patches = [];
   // In-memory KB honoring brain-store's search contract (opts.type filters before topK).
   const store = {
     search: async (_v, opts) => { searches.push(opts); return entries.filter((e) => !opts.type || e.type === opts.type).slice(0, opts.topK).map((e) => ({ id: e.id, title: e.title, type: e.type, score: 1 })); },
-    merge: async (id) => { merges++; const e = entries.find((x) => x.id === id); e.recurrence = (e.recurrence || 1) + 1; return { recurrence: e.recurrence }; },
+    merge: async (id, patch) => { patches.push(patch); merges++; const e = entries.find((x) => x.id === id); e.recurrence = (e.recurrence || 1) + 1; return { recurrence: e.recurrence }; },
     save: async (e) => { e.id = e.id || `id-${entries.length + 1}`; entries.push(e); },
   };
   const mod = await import(url.pathToFileURL(path.join(R, 'servers', 'brain-server', 'lib', 'mcp-server.js')).href);
@@ -21358,6 +21358,7 @@ test('capture_lesson (Q42): dedup merges only within the SAME type — a decisio
   assertEq(searches[1].type, 'decision', 'the dedup search is scoped to the captured type');
   assertEq((await cap('decision')).decision, 'merge', 'a repeat of the SAME type still merges (recurrence)');
   assertEq([entries.length, merges], [2, 1]);
+  assertEq(patches, [{ confidence: 0.85 }], 'the merge only bumps confidence/recurrence: the survivor keeps its title, summary and detail together');
 });
 
 test('user-config writers (auditoria 3.1.0): an unreadable user-config fails loud and is NOT replaced (no silent wipe of the other settings)', () => {
@@ -21798,9 +21799,10 @@ test('mcp-memory capture_lesson (Q53): admission dedup on the server — an equi
     const cap = async (a) => JSON.parse((await withUserConfig(cfg, () => { backend._resetConfig(); return server.handleTool('capture_lesson', { scope: 'project', cwd, ...a }); })).content[0].text);
     const first = await cap({ title: 'Same lesson', summary: 'same text', type: 'lesson', tags: ['code'] });
     assertEq(first.decision, 'admit');
-    const second = await cap({ title: 'Same lesson again', summary: 'same text', type: 'lesson', confidence: 0.95 });
+    const second = await cap({ title: 'Same lesson again', summary: 'same text reworded', detail: 'another detail', type: 'lesson', confidence: 0.95 });
     assertEq([second.decision, second.id, second.recurrence], ['merge', first.id, 2], 'merged into the existing document');
     assertEq([saves[1].id, saves[1].recurrence, saves[1].title, saves[1].confidence, saves[1].tags], [first.id, 2, 'Same lesson', 0.95, ['code']], 'upsert on the same documentId; keeps title/tags, max confidence');
+    assertEq([saves[1].summary, saves[1].content.detail], ['same text', 'same text'], 'the survivor keeps its own summary/detail — not the absorbed lesson\'s next to its title');
     assertEq(saves[1].baseMetadata && saves[1].baseMetadata.extra, 'keep-me', 'the existing metadata is carried forward (add_document replaces it on upsert — audit 3.1.1)');
     assertEq((await cap({ title: 'Same lesson', summary: 'same text', type: 'lesson' })).recurrence, 3, 'the third capture reaches the promotion threshold');
     assertEq((await cap({ title: 'Same lesson', summary: 'same text', type: 'decision' })).decision, 'admit', 'another type is never merged');
