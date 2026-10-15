@@ -27704,6 +27704,12 @@ test('compaction-episodes.buildEpisodes: one episode per compaction with who/whe
   assertEq(s2[0].windowTokens, null, 'no gate seen → window unknown, not invented');
   assertEq(s2[0].tokensBefore, 40010, 'before = the previous call');
   assertEq(turnCostUsd({ model: 'm-unknown', input: 1 }), null, 'unpriced model → null cost, not 0');
+  // compactacao-router-14: the transcript's dated / suffixed / provider-prefixed ids are the same model and price
+  const { priceOf } = require('./lib/economy-metrics.js');
+  for (const id of ['claude-haiku-4-5-20251001', 'claude-opus-5-5[1m]', 'vertex_ai.anthropic.claude-opus-5-5[1m]', 'us.anthropic.claude-sonnet-5-5-v1:0', 'claude-sonnet-5@20260101']) assert(priceOf(id), `priced: ${id}`);
+  assertEq([priceOf('claude-haiku-4-5-20251001').inputUsd, priceOf('vertex_ai.anthropic.claude-opus-5-5[1m]').inputUsd], [1, 4]);
+  assertEq([priceOf('gemini-3-flash'), priceOf('claude-opus-5-5-fast'), priceOf('')], [null, null, null], 'another model stays unpriced, never guessed');
+  assertEq(turnCostUsd({ model: 'claude-opus-5-5[1m]', read: 1e6 }), turnCostUsd({ model: 'claude-opus-5-5', read: 1e6 }), 'the [1m] call costs like the base id');
   const ss2 = sessions.find((s) => s.sessionId === 's2');
   assertEq(ss2.compactions, 2); assertEq(ss2.engine, 2); assertEq(ss2.per100Turns, 33.3); assertEq(ss2.compactsTooMuch, 'yes');
   assertEq(sessions.find((s) => s.sessionId === 's1').per100Turns, 8.3);

@@ -14,6 +14,9 @@ Check-up do motor (2026-10-15). Cada item tem teste; os números são do dado re
 - **Funil da revisão de captura conta por oferta.** Ele mostrava "2 de 280 respondidas" porque comparava 30 dias de ofertas com a
   resposta, que só passou a ser registrada nesta versão; nos transcripts, 287 de 296 ofertas foram respondidas. Agora cada oferta
   conta uma vez (respondida, desistida ou aberta) e as ofertas de versões que não registravam a resposta aparecem à parte.
+- **Custo da compactação com todos os modelos Claude.** O id com data, o sufixo `[1m]` e o prefixo do provedor passam a ter o preço
+  do modelo (antes saíam do total em dólar), e o Haiku 4.5 entrou na tabela. As métricas da compactação também registram o que
+  escolheu o corte mecânico e as chamadas que ficaram fora da leitura do transcript.
 - **Lição repetida não troca mais a descrição.** Quando uma captura é reconhecida como repetição de uma lição existente, a lição
   antiga fica com o próprio título, resumo e detalhe (só a recorrência e a confiança sobem); antes o resumo era trocado pelo da
   repetida e o rascunho de skill saía com o título de uma lição e a descrição de outra.
