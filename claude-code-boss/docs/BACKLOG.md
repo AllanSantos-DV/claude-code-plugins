@@ -1,5 +1,24 @@
 # Backlog
 
+## Doctor: aviso, desfazer no dashboard e desativação por evidência (PEDIDO 413, 2026-10-15) — pronto na develop, aguardando a validação do Allan
+
+Decisão do Allan: `fixedCost.autoFix` continua LIGADO por padrão; em troca o usuário é avisado com clareza e tem o controle final.
+
+- [x] **Aviso claro**: o doctor da 1ª sessão (`scripts/doctor-first-run.js`) lista cada item desativado (plugin, servidor MCP, skill só por nome) com o motivo gravado no diário
+  (`fixed-cost-undo.json` agora guarda `why` e `tokens`), diz onde desfazer e como desligar o automático. O contexto também instrui o agente a contar isso ao usuário
+  na primeira resposta e PERGUNTAR se quer abrir o dashboard; se ele aceitar, o próprio agente roda `scripts/dashboard-open.js` (sobe o dashboard e abre o navegador na Home), sem `/dashboard`.
+- [x] **Desfazer por item no dashboard** (Home → "Desativados pelo doctor"): `GET /api/doctor/switched-off` (lista sem a config do servidor, que pode ter headers/env) e
+  `POST /api/doctor/undo {id}` (usa `undoActions({ids})`; o item desfeito entra em `fixedCost.keep` e não é desativado de novo). Interruptor do `autoFix` no mesmo card
+  (`GET/PUT /api/doctor/config`, `hooks-config.saveFixedCost`, gravado no user-config update-safe).
+- [x] **Regra por evidência para plugins** (`fixed-cost.js` `buildAudit`): só vira candidato o plugin que (1) custa algo por mensagem (skills listadas ou nomes de ferramentas MCP),
+  (2) tem pelo menos 14 dias de instalação (`PLUGIN_MIN_AGE_DAYS`; sem data de instalação não é julgado), (3) tem histórico suficiente (≥ metade da janela) e (4) não mostra NENHUM uso na janela:
+  nem o contador do Claude Code (`pluginUsage`) nem chamada a um servidor MCP do plugin (login que dura minutos continua contando como uso). Plugin só de hooks/agents/commands
+  (custo 0) não é tocado. O motivo distingue "nunca autenticou e nunca usou desde a instalação (Nd)" de "último uso há Nd (N usos no total), nenhum nos últimos 30 dias".
+- **Validação com dados reais** (`docs/research/doctor-plugin-rule/`, local): nesta máquina só há 1 plugin instalado (o próprio boss: 149 453 usos contados, 8 307 chamadas MCP, instalado há 72 dias)
+  e 6 servidores MCP, todos com uso intenso nos últimos 30 dias (761 sessões, 124 dias de histórico): a regra antiga e a nova desativam 0. A diferença entre as regras só aparece
+  em plugins novos, sem custo, ou com login curto; isso está coberto por teste com os exemplos do Allan (instalado há 5 dias, usado há 5 dias, login de minutos, nunca autenticou).
+  Não há dado real para provar o caso "desativaria X" nesta máquina.
+
 ## Auditoria adversarial pré-release 3.9.0 (2026-10-15, diff v3.8.0..develop) — 7 achados, 4 corrigidos na hora
 
 Sem achado blocking (credencial, RCE, vazamento). Cada achado foi conferido contra o código atual.
