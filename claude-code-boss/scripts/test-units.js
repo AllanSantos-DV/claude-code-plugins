@@ -27312,6 +27312,7 @@ test('compaction-core.isMechanicalCut + chooseCompaction: the brief only with a 
   assertEq(cmpCore.chooseCompaction({ plan: { ratio: 0.3, verbatimTextIntact: false }, trigger: 'auto', warm: false, mechanical: true }).kind, 'brief', 'the brief rebuilds user text itself');
   const hook = fs.readFileSync(path.join(ROOT, 'hooks', 'compaction.mjs'), 'utf8');
   assert(/isMechanicalCut\(\{ warm, trigger: e\.trigger, reason: ctx\.compactReason \}\)/.test(hook), 'the hook judges the brief by warm + trigger + our reason');
+  assertEq((hook.match(/mechanical, mechanicalCut: ctx\.config\.mechanicalCut !== false/g) || []).length, 2, 'both run events (summary/prune and brief) record what chose the cut (compactacao-router-07: 0 briefs in 315 runs could not tell "never fires" from "not yet")');
   assert(/if \(!b\.cutMessages \|\| !b\.userTextIntact\)[\s\S]{0,300}return next\(e\);/.test(hook), 'a brief that cuts nothing or loses user text → the engine summary');
   assert(/await leaveAbove\(\$, ctx\);\s*emit\(\$, ctx, 'run', \{/.test(hook), 'the folder TTL is released BEFORE the brief is handed back');
   assert(/const r = await next\(e\);[^\n]*\n\s*await leaveAbove\(\$, ctx\);/.test(hook) && /await leaveAbove\(\$, ctx\);\s*\$\.ui\.toast\(`compaction: every message kept/.test(hook), 'pruning and the engine summary release it too (any compaction leaves the session below)');
