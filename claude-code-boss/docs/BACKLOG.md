@@ -27,6 +27,13 @@ Relatórios: `docs/research/checkup/` (local). Tudo abaixo marcado [x] tem teste
   chave da home (`?key=`, validada por `curationHomeOfKey`: nada sai da pasta de curadoria). Teste `dashboard curadoria` (lista, shells, remoção,
   chave com `..` recusada). Achado junto e corrigido: o teste `metrics totals` cortava o `dashboard.js` por `'\n}\n'` e falhava
   num checkout CRLF (o arquivo regravado em CRLF pelo autocrlf); agora normaliza o EOL antes de cortar.
+- [ ] **Revisão de captura quase nunca é respondida** (visto no funil novo do painel, build instalado d961738): 280 ofertas, 2 respondidas,
+  243 desistidas pelo limite de bloqueios, 63 re-pedidas (todos os projetos). Ou o agente não chama `capture_lesson`/`capture_ack` com o
+  `windowId` (ack não casa) ou a reconciliação não vê o ack. Proposta: cruzar `capture.offered.windowId` com as chamadas de
+  `capture_ack`/`capture_lesson` no log do daemon e nos transcripts; corrigir a ponta que perde o ack, com teste.
+- [ ] **SessionStart real do build novo, amostra pequena** (n=7 depois das 19:30Z de 15/10): dispatcher p50 de 2.954 ms no startup (n=3)
+  e 3.088 ms no resume (n=4), contra 2.177/2.318 ms antes (n=109/55). O comando no transcript não diz o build. Remedir com n ≥ 30
+  (`.claude/scripts/transcript-sessionstart.cjs`) antes de concluir melhora ou piora.
 - [ ] **P13 (proposta, não implementar sem o Allan):** expor `mechanicalCut`, `briefTailTokens` e `folderTtl` na Home do painel.
 - [ ] **Smoke `smoke-decision` desatualizado** (4 de 8 asserções falham já antes da mudança; movido para `smoke/plugin-smokes/`). Visto ao
   rodá-lo depois de mover. Proposta: o smoke passa `session_id` (o decision-promote só mostra a entrada da própria sessão desde a 3.x).
