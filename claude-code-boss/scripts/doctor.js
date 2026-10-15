@@ -261,6 +261,22 @@ function checkBossConfig(ctx) {
   return b.items.map((i) => ({ ...i, critical: i.status === 'fail', ...(i.status !== 'ok' && b.actions.length ? { autofix: 'boss-config' } : {}) }));
 }
 
+/** Compactions per model|window from ctx.compaction (summary.episodes; read by `--cost`): warns on a group that compacts too much, never changes the threshold. */
+function checkCompactionRate(ctx) {
+  const base = { id: 'compaction-rate', label: 'Compaction frequency', critical: false };
+  const c = ctx.compaction;
+  if (!c) return { ...base, status: 'ok', detail: 'not measured here (run `doctor --cost`)', fix: '' };
+  if (c.error) return { ...base, status: 'warn', detail: `could not read the compaction history: ${c.error}`, fix: '' };
+  if (!c.total) return { ...base, status: 'ok', detail: 'no compaction recorded in the period', fix: '' };
+  const bad = c.groups.filter((g) => g.compactsTooMuch === 'yes');
+  const line = (g) => `${g.model || '?'} window ${g.windowTokens ? `${Math.round(g.windowTokens / 1000)}k` : '?'}: ${g.compactions} cuts / ${g.turns} calls (${g.per100Turns} per 100)`;
+  if (!bad.length) return { ...base, status: 'ok', detail: `${c.total} compaction(s), none of the groups compacts too much (\`node scripts/compaction-report.js\` for the detail)`, fix: '' };
+  return {
+    ...base, status: 'warn', detail: `compacts too much: ${bad.map(line).join('; ')}`,
+    fix: 'Run `node scripts/compaction-report.js` to see the cost and the threshold the data suggests; the default is not changed automatically.',
+  };
+}
+
 /** Fixed cost every message pays (MCP definitions, skill listing, plugins): measured in ctx.fixedCost by `--cost` / `--fix` / first run. */
 function checkFixedCost(ctx) {
   const base = { id: 'fixed-cost', label: 'Fixed cost per message (MCP, skills, plugins)', critical: false };
@@ -419,7 +435,7 @@ function gatherCrashes(data, now = Date.now()) {
   return { file: ce.crashLogFile(data), records };
 }
 
-const CHECKS = [checkNode, checkDaemonNode, checkNativeDeps, checkEnv, checkDataDirs, checkModel, checkDaemon, checkNativeRuntime, checkEmbedderProbe, checkEmbedderGuard, checkCrashes, checkCostTuning, checkBossConfig, checkFixedCost, checkHooksEvents];
+const CHECKS = [checkNode, checkDaemonNode, checkNativeDeps, checkEnv, checkDataDirs, checkModel, checkDaemon, checkNativeRuntime, checkEmbedderProbe, checkEmbedderGuard, checkCrashes, checkCostTuning, checkBossConfig, checkFixedCost, checkCompactionRate, checkHooksEvents];
 
 /** Run every pure check over a ctx snapshot (a check may return one result or a list). */
 function runChecks(ctx) {
@@ -602,6 +618,14 @@ async function gatherContext({ probe = false, audit = false } = {}) {
     } catch (e) { console.error(`[doctor] fixed cost: ${e.message}`); fixedCost = { error: e.message }; }
   }
 
+  let compaction = null;
+  if (audit) {
+    try {
+      const cr = require('./lib/compaction-report.js');
+      compaction = cr.summarizeCompaction(cr.loadCompactionRows({ days: 30 })).episodes;
+    } catch (e) { console.error(`[doctor] compaction history: ${e.message}`); compaction = { error: e.message }; }
+  }
+
   const nodeChoice = nodeSupport.pickSupportedNode();
   let embedderCfg = null;
   try { embedderCfg = embedderGuard.configured(); } catch (e) { console.error(`[doctor] embedder config: ${e.message}`); }
@@ -627,6 +651,7 @@ async function gatherContext({ probe = false, audit = false } = {}) {
     costTuning,
     bossConfig,
     fixedCost,
+    compaction,
   };
 }
 

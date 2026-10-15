@@ -2159,3 +2159,26 @@ Lacunas conhecidas do gate de project id (2.29.1):
   (`restartForBootUpdate`, Windows-only: inspeciona o PID via PowerShell). Em Linux/macOS com daemon antigo vivo o CLI falha alto
   ("restart auxiliar só é necessário/suportado no Windows"); instalar e subir (daemon parado) funciona em qualquer SO. Correção proposta:
   inspeção por `/proc/<pid>/cmdline` / `ps` no restart. Só vira trabalho quando houver cliente não-Windows.
+
+## Relatório de custo do claude-code (custo-agente, 2026-10-14) e contagem de compactações
+
+- [x] **Retomada (`--resume`) lia "cache quente" sem estar** — `hooks/compaction.mjs` (SessionStart), `scripts/lib/compaction-core.mjs` (`resumedAnswerAt`).
+  Visto no relatório de custo (470k tokens reescritos após 6 min de pausa) e confirmado em `docs/research/relatorio-custo/resume-cache.js`: 5 de 5
+  retomadas grandes regravaram 88–100% do histórico (~US$ 3–7 cada), porque o primeiro request de uma sessão retomada reescreve tudo seja qual
+  for o TTL; o gate, porém, datava a última resposta por `seconds_since_last_response` e, com TTL de 1h, decidia `cache-warm` e esperava.
+  *Achado e corrigido na hora*: numa retomada a última resposta conta como mais velha que 2h (`RESUMED_CACHE_AGE_MS`), então o primeiro prompt
+  acima do limiar é cortado (corte frio, sem modelo) em vez de reescrever o histórico inteiro. Teste `compaction-core.resumedAnswerAt`. Muda o
+  comportamento visível (o primeiro prompt de uma retomada grande passa por corte) — reverter = reverter o commit.
+- [ ] **Item 2 do relatório — ferramenta que entrega o contexto pronto nas rajadas de leitura** (44 rajadas, 401 turnos só lendo, ~US$ 15,87 de teto).
+  Dono: o boss, mas é funcionalidade nova que muda o uso → vira pergunta com pacote ao Allan (reuso: `smart-tool`, `brain_retrieve_context`, `task-map`),
+  não implementada.
+- [ ] **Fora do boss (outros donos)**: item 1 (modelo por tipo de tarefa — harness), item 4 (regra do Smart Tool na instrução — smart-tool/harness; a
+  mensagem do hook já nomeia a ferramenta de troca), e troca de modelo na mesma sessão (opus→sonnet) gera miss de cache (explica parte do caso de 470k).
+- [ ] **Sessões abertas antes da instalação ainda carregam `CLAUDE_CODE_AUTO_COMPACT_WINDOW=153000` no env do processo** — por isso houve compactações
+  automáticas do engine em ~118k em 2026-10-15 (smart-tool 6af663dc, custo-agente f9a74c71/b82a294d). Some sozinho quando essas sessões forem reiniciadas.
+- [x] **Contagem de compactações por sessão** (pedido do orquestrador): `scripts/lib/compaction-episodes.js` (um registro por compactação: quando, modelo,
+  janela, antes/depois, % da janela no disparo, boss auto/manual × engine, custo do turno de reescrita), exposto em `/api/metrics/compaction`
+  (`episodes`), no painel Home, no doctor (`--cost`, checagem `compaction-rate`) e em `node scripts/compaction-report.js [dias] [--json]`.
+  O padrão de 30% NÃO foi alterado. A sugestão de teto é um modelo (custo mínimo = A + √(2·w·A·g/r)), só sai com ≥ 5 compactações medidas por
+  modelo|janela e diz o que falta quando não sai. Limites: sessões que o gate nunca viu não têm janela (`?`); o preço vem da tabela do
+  `economy-metrics` (US$/MTok de entrada), não do gateway; o modelo ignora que o boss só corta com cache frio.
