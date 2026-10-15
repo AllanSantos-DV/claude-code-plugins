@@ -27770,6 +27770,13 @@ test('compaction-event.readNewApiCalls: one entry per API call since the last on
   const noB = cmpTranscript(fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-cmp-nb-')), [call('n1', real(5)), call('n2', real(6))]);
   assertEq(ce.readNewApiCalls(noB, null).map((c) => c.id), ['n2'], 'no boundary: the latest call only');
   assertEq(ce.readNewApiCalls(f, 'gone-out-of-window').map((c) => c.id), ['m4'], 'since not in the tail: latest only (never a flood)');
+  const info = {};
+  ce.readNewApiCalls(f, 'gone-out-of-window', info);
+  assertEq([info.gap && info.gap.skippedInWindow, info.gap && info.gap.transcriptBytes], [2, fs.statSync(f).size], 'and the gap is reported: the in-window calls not recorded are counted (compactacao-router-13)');
+  const seenInfo = {};
+  ce.readNewApiCalls(f, 'm1', seenInfo);
+  assertEq(seenInfo.gap, undefined, 'no gap when the last call seen is in the window');
+  assert(/if \(info\.gap\) await metrics\.record\('cache\.turn\.gap'/.test(fs.readFileSync(path.join(__dirname, 'compaction-event.js'), 'utf8')), 'the turn records the gap as cache.turn.gap');
   assertEq(ce.readNewApiCalls(path.join(dir, 'missing.jsonl'), null), []);
 });
 

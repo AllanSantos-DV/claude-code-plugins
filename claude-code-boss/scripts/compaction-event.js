@@ -52,9 +52,12 @@ function compactionConfig() {
  *     observed (`sinceId`) records each exactly once, whenever it lands.
  * `afterCompaction` = the first real call after a compact_boundary: the price of rewriting
  * history, read from the transcript itself.
+ * When `sinceId` fell out of the tail window, only the latest call is returned (never a flood) and
+ * `info.gap` says so: the calls between it and the window are not recorded (compactacao-router-13).
+ * @param {{gap?:{skippedInWindow:number, transcriptBytes:number}}} [info] filled when the last call seen is out of the window
  * @returns {Array<{id:string, model:string|null, usage:object, afterCompaction:boolean}>}
  */
-function readNewApiCalls(transcriptPath, sinceId) {
+function readNewApiCalls(transcriptPath, sinceId, info) {
   if (!transcriptPath || !fs.existsSync(transcriptPath)) return [];
   const st = fs.statSync(transcriptPath);
   const len = Math.min(st.size, TAIL_BYTES);
@@ -92,7 +95,9 @@ function readNewApiCalls(transcriptPath, sinceId) {
   // this session's (a resumed one compacted before its first prompt); no boundary: the latest only.
   if (!sinceId) { const afterB = calls.filter((c, k) => k >= lastBoundaryCall); return lastBoundaryCall >= 0 && afterB.length ? afterB : calls.slice(-1); }
   const at = calls.findIndex((c) => c.id === sinceId);
-  return at >= 0 ? calls.slice(at + 1) : calls.slice(-1); // since fell out of the window: latest only
+  if (at >= 0) return calls.slice(at + 1);
+  if (info && calls.length) info.gap = { skippedInWindow: calls.length - 1, transcriptBytes: st.size };
+  return calls.slice(-1); // since fell out of the window: latest only
 }
 
 /** Window verdict for one host|auth from the cache.turn rows already stored. */
@@ -135,7 +140,10 @@ async function run(ev) {
   }
 
   if (kind === 'turn') {
-    const calls = readNewApiCalls(ev.transcript_path, data.sinceMessageId || null);
+    const info = {};
+    const calls = readNewApiCalls(ev.transcript_path, data.sinceMessageId || null, info);
+    // Calls lost between the last one seen and the tail window: counted, not silently dropped.
+    if (info.gap) await metrics.record('cache.turn.gap', { ...info.gap, tailBytes: TAIL_BYTES, sinceMessageId: data.sinceMessageId }, ctx);
     let observed = null;
     for (const c of calls) {
       const u = c.usage;
