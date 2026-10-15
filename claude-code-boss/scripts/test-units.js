@@ -16614,8 +16614,13 @@ test('doctor.checkModel: present → ok, absent → warn', () => {
   assertEq(doctor.checkModel({ modelPresent: false }).status, 'warn');
 });
 
-test('doctor.checkDaemon: no lock → ok, unhealthy lock → warn, healthy → ok', () => {
-  assertEq(doctor.checkDaemon({ daemon: { lockPresent: false } }).status, 'ok');
+test('doctor.checkDaemon: no lock → warn (todo hook mcp_tool depende dele), deps faltando → warn, unhealthy lock → warn, healthy → ok', () => {
+  const absent = doctor.checkDaemon({ daemon: { lockPresent: false } });
+  assertEq(absent.status, 'warn', 'daemon ausente nao e "ok": os hooks e a memoria das sessoes dependem dele');
+  assert(absent.fix.length > 0, 'diz o que fazer');
+  const noDeps = doctor.checkDaemon({ daemon: { lockPresent: false, deps: { ok: false, detail: 'brain-server deps não resolvem: @modelcontextprotocol/sdk' } } });
+  assert(noDeps.status === 'warn' && /@modelcontextprotocol\/sdk/.test(noDeps.detail) && /plugin-setup/.test(noDeps.fix), JSON.stringify(noDeps));
+  assertEq(doctor.checkDaemon({ daemon: { lockPresent: true, healthy: true, tokenReadable: true, port: 5, deps: { ok: true } } }).status, 'ok');
   assertEq(doctor.checkDaemon({ daemon: { lockPresent: true, healthy: true, tokenReadable: true, port: 5 } }).status, 'ok');
   assertEq(doctor.checkDaemon({ daemon: { lockPresent: true, healthy: false } }).status, 'warn');
   assertEq(doctor.checkDaemon({ daemon: { lockPresent: true, healthy: true, tokenReadable: false } }).status, 'warn');
@@ -16630,9 +16635,8 @@ test('doctor.checkHooksEvents: evento OFICIAL nao pode virar falso positivo (rep
   assertEq(doctor.checkHooksEvents({ hooksEvents: ['SessionStart', 'Stop', 'PreToolUse'] }).status, 'ok');
   assertEq(doctor.checkHooksEvents({ hooksEvents: ['SubagentStart', 'SubagentStop'] }).status, 'ok');
   // A lista tem que cobrir o ciclo de vida documentado, nao um subconjunto de 9.
-  // (UserPromptExpansion/PostToolUseFailure sao oficiais MAS runtime-dependentes →
-  // saem como aviso informativo de proposito; o que nao pode e virar DESCONHECIDO.)
   const oficiais = [
+    'UserPromptExpansion', 'PostToolUseFailure',
     'Setup', 'PermissionRequest', 'PermissionDenied', 'PostToolBatch', 'MessageDisplay',
     'TaskCreated', 'TaskCompleted', 'StopFailure', 'TeammateIdle', 'InstructionsLoaded',
     'ConfigChange', 'CwdChanged', 'FileChanged', 'WorktreeCreate', 'WorktreeRemove',
@@ -16641,11 +16645,14 @@ test('doctor.checkHooksEvents: evento OFICIAL nao pode virar falso positivo (rep
   for (const ev of oficiais) {
     assertEq(doctor.checkHooksEvents({ hooksEvents: [ev] }).status, 'ok', `${ev} e oficial`);
   }
-  for (const ev of ['UserPromptExpansion', 'PostToolUseFailure']) {
-    const r = doctor.checkHooksEvents({ hooksEvents: [ev] });
-    assertEq(r.status, 'warn', `${ev} e runtime-dependente`);
-    assertEq(/fora da lista conhecida/.test(r.detail), false, `${ev} NAO pode ser tratado como desconhecido`);
-  }
+});
+
+test('doctor.checkHooksEvents: os eventos do proprio plugin dao ok, sem o aviso "runtime-dependent" que disparava em TODA execucao', () => {
+  // UserPromptExpansion e PostToolUseFailure estao na lista oficial (code.claude.com/docs/en/hooks,
+  // 2026-10-15) e o Claude Code os dispara; o aviso fixo ensinava a ignorar o doctor.
+  const hooksJson = JSON.parse(fs.readFileSync(path.join(__dirname, '..', 'hooks', 'hooks.json'), 'utf8'));
+  const r = doctor.checkHooksEvents({ hooksEvents: Object.keys(hooksJson.hooks) });
+  assertEq(r.status, 'ok', r.detail);
 });
 
 test('doctor.checkHooksEvents: evento DESCONHECIDO avisa (warn), nunca crava fail', () => {
@@ -16659,10 +16666,6 @@ test('doctor.checkHooksEvents: evento DESCONHECIDO avisa (warn), nunca crava fai
 });
 
 test('doctor: todo aviso/falha diz o que fazer (fix nao vazio), inclusive Hook events', () => {
-  const rt = doctor.checkHooksEvents({ hooksEvents: ['Stop', 'PostToolUseFailure'] });
-  assertEq(rt.status, 'warn');
-  assertEq(/^What to do:/.test(rt.fix), true, 'runtime-dependent diz a acao');
-  assertEq(/safe to ignore/.test(rt.fix), false, 'sem o "ignore" solto de antes');
   const unk = doctor.checkHooksEvents({ hooksEvents: ['BogusEvent'] });
   assertEq(/^What to do:/.test(unk.fix), true);
   const warns = [
@@ -27538,6 +27541,26 @@ test('doctor.checkEmbedderProbe + probeEmbedder: 0xC0000409 and 134 exits are na
   assertEq(doctor.probeEmbedder({ ...base, provider: 'voyage' }).skipped.includes('voyage'), true);
   assertEq(doctor.probeEmbedder({ ...base, modelPresent: false }).skipped, 'the embedding model is not downloaded yet');
   assertEq(doctor.checkEmbedderProbe({}).status, 'ok', 'dashboard path: not run');
+});
+
+test('doctor.checkCrashes: crash ANTES do listen (sem lock, so o report do Node em crash-reports/) tambem avisa', () => {
+  const w = doctor.checkCrashes({ crashes: { file: '/d/brain-crash.log', records: [], reports: [{ file: '/d/crash-reports/report.1.json', mtimeMs: Date.UTC(2026, 9, 14, 22, 47) }] } });
+  assertEq(w.status, 'warn');
+  assert(/1 Node crash report/.test(w.detail) && /report\.1\.json/.test(w.fix), JSON.stringify(w));
+});
+
+test('doctor.gatherCrashes: lista os reports recentes de crash-reports/ e ignora os velhos', () => {
+  const d = fs.mkdtempSync(path.join(os.tmpdir(), 'doc-cr-'));
+  try {
+    const dir = path.join(d, 'crash-reports');
+    fs.mkdirSync(dir);
+    fs.writeFileSync(path.join(dir, 'new.json'), '{}');
+    fs.writeFileSync(path.join(dir, 'old.json'), '{}');
+    const old = (Date.now() - 30 * 86400000) / 1000;
+    fs.utimesSync(path.join(dir, 'old.json'), old, old);
+    const c = doctor.gatherCrashes(d);
+    assertEq(c.reports.map((r) => path.basename(r.file)), ['new.json']);
+  } finally { fs.rmSync(d, { recursive: true, force: true }); }
 });
 
 test('doctor.checkCrashes: recent records → warn with the advice and the evidence file', () => {

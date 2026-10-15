@@ -38,10 +38,6 @@ const STANDARD_EVENTS = new Set([
   'CwdChanged', 'FileChanged', 'WorktreeCreate', 'WorktreeRemove',
   'PreCompact', 'PostCompact', 'Elicitation', 'ElicitationResult', 'SessionEnd',
 ]);
-// Eventos que só alguns runtimes honram (VS Code Copilot / Claude Code mais novo).
-// São oficiais, mas viram no-op silencioso onde não existem — por isso saem como
-// aviso informativo, não como defeito.
-const RUNTIME_DEPENDENT_EVENTS = new Set(['UserPromptExpansion', 'PostToolUseFailure']);
 
 // ── Pure checks ───────────────────────────────────────────────────────────────
 
@@ -190,8 +186,23 @@ function checkModel(ctx) {
 
 function checkDaemon(ctx) {
   const d = ctx.daemon || {};
+  if (d.deps && !d.deps.ok) {
+    return {
+      id: 'daemon', label: 'Brain HTTP daemon', status: 'warn',
+      detail: `${d.deps.detail} — the daemon cannot start without them`,
+      fix: 'Run `node scripts/plugin-setup.js` in the plugin folder (or open a new session: it installs them in the background).',
+      critical: false,
+    };
+  }
   if (!d.lockPresent) {
-    return { id: 'daemon', label: 'Brain HTTP daemon', status: 'ok', detail: 'not running (optional; retrieval falls back fine)', fix: '', critical: false };
+    // Every mcp_tool hook and the memory tools are served by this daemon (ADR-001):
+    // absent is not "optional", it means those hooks fail open until it is back.
+    return {
+      id: 'daemon', label: 'Brain HTTP daemon', status: 'warn',
+      detail: 'not running — the hooks and memory tools of open sessions need it',
+      fix: 'It starts with the next session or prompt. If it does not, read brain-http.spawn.log in the data dir and run `node servers/brain-server/index.js` to see the error.',
+      critical: false,
+    };
   }
   if (d.healthy && d.tokenReadable) {
     return { id: 'daemon', label: 'Brain HTTP daemon', status: 'ok', detail: `healthy on port ${d.port}`, fix: '', critical: false };
@@ -208,8 +219,7 @@ function checkDaemon(ctx) {
 
 function checkHooksEvents(ctx) {
   const events = ctx.hooksEvents || [];
-  const unknown = events.filter(e => !STANDARD_EVENTS.has(e) && !RUNTIME_DEPENDENT_EVENTS.has(e));
-  const runtimeDep = events.filter(e => RUNTIME_DEPENDENT_EVENTS.has(e));
+  const unknown = events.filter(e => !STANDARD_EVENTS.has(e));
   if (unknown.length) {
     // NÃO dá para distinguir um typo de um evento MAIS NOVO que esta versão do
     // plugin. Cravar `fail` + "corrija o nome" afirma uma certeza que não temos e
@@ -221,16 +231,6 @@ function checkHooksEvents(ctx) {
       fix: 'What to do: compare each name with the official list (code.claude.com/docs/en/hooks). '
         + 'If it is a typo, fix the name in hooks/hooks.json; if it is a newer event, update the plugin (`claude plugin update claude-code-boss`) '
         + 'and do not touch hooks.json. Never delete the hook just to silence this.',
-      critical: false,
-    };
-  }
-  if (runtimeDep.length) {
-    return {
-      id: 'hooks-events', label: 'Hook events',
-      status: 'warn',
-      detail: `runtime-dependent event(s): ${runtimeDep.join(', ')} — honored by VS Code Copilot / newer Claude Code, no-op elsewhere`,
-      fix: 'What to do: nothing, if the features that depend on them work. If they seem inactive, your runtime does not fire these events: '
-        + 'update Claude Code (`claude update`) or use a runtime that does (VS Code Copilot).',
       critical: false,
     };
   }
@@ -326,6 +326,17 @@ function checkNativeRuntime(ctx) {
 function checkCrashes(ctx) {
   const c = ctx.crashes || { records: [] };
   const base = { id: 'daemon-crashes', label: 'Brain daemon crashes', critical: false };
+  const reports = c.reports || [];
+  if (!c.records.length && reports.length) {
+    // A crash before listen (e.g. a missing module on import) writes no lock, so the
+    // supervisor never records it — only Node's own report in crash-reports/ is left.
+    const newest = reports[reports.length - 1];
+    return {
+      ...base, status: 'warn',
+      detail: `${reports.length} Node crash report(s) in ${CRASH_WINDOW_DAYS} days (the daemon died before listening); newest ${new Date(newest.mtimeMs).toISOString()}`,
+      fix: `Open ${newest.file} (header.event / javascriptStack) for the cause. Evidence dir: ${path.dirname(newest.file)}`,
+    };
+  }
   if (!c.records.length) return { ...base, status: 'ok', detail: `no unexpected daemon exit in the last ${CRASH_WINDOW_DAYS} days`, fix: '' };
   const ce = require('./lib/crash-evidence.js');
   const last = c.records[c.records.length - 1];
@@ -432,7 +443,14 @@ function gatherCrashes(data, now = Date.now()) {
   const ce = require('./lib/crash-evidence.js');
   const since = now - CRASH_WINDOW_DAYS * 86400000;
   const records = ce.readRecords(data).filter(r => Date.parse(r.detectedAt) >= since);
-  return { file: ce.crashLogFile(data), records };
+  const dir = ce.reportDir(data);
+  let reports = [];
+  try {
+    reports = fs.readdirSync(dir).filter(n => n.endsWith('.json'))
+      .map(n => { const file = path.join(dir, n); return { file, mtimeMs: fs.statSync(file).mtimeMs }; })
+      .filter(r => r.mtimeMs >= since).sort((a, b) => a.mtimeMs - b.mtimeMs);
+  } catch (err) { if (err.code !== 'ENOENT') console.error(`[doctor] ${dir}: ${err.message}`); }
+  return { file: ce.crashLogFile(data), records, reports };
 }
 
 const CHECKS = [checkNode, checkDaemonNode, checkNativeDeps, checkEnv, checkDataDirs, checkModel, checkDaemon, checkNativeRuntime, checkEmbedderProbe, checkEmbedderGuard, checkCrashes, checkCostTuning, checkBossConfig, checkFixedCost, checkCompactionRate, checkHooksEvents];
@@ -572,6 +590,7 @@ async function gatherContext({ probe = false, audit = false } = {}) {
 
   // Daemon: lock + token + health.
   const daemon = { lockPresent: false, port: null, tokenReadable: false, healthy: false };
+  try { daemon.deps = require('./brain-health.js').brainServerDepsOk(pluginRoot()); } catch (e) { void e; }
   try {
     const lockP = path.join(data, 'brain-http.lock.json');
     if (fs.existsSync(lockP)) {
@@ -764,5 +783,5 @@ module.exports = {
   runChecks, summarize, applyFixes, FIXERS, checkCostTuning, checkBossConfig, checkFixedCost, bossPluginId, gatherContext, formatReport,
   checkNode, checkDaemonNode, checkNativeDeps, checkEnv, checkDataDirs, checkModel, checkDaemon, checkNativeRuntime, checkEmbedderProbe, checkEmbedderGuard, checkCrashes, checkHooksEvents,
   findDataDirCandidates, probeEmbedder, gatherNative, gatherCrashes, MIN_MSVCP,
-  STANDARD_EVENTS, RUNTIME_DEPENDENT_EVENTS, MIN_NODE,
+  STANDARD_EVENTS, MIN_NODE,
 };
