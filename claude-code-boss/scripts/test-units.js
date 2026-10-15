@@ -4969,18 +4969,21 @@ test('curation-stop: bloqueio, desistencia e liberacao viram eventos (curation.s
   try {
     await detect.run(ev('npm run evcheck')); await detect.run(ev('npm run evcheck')); // 2nd noisy task run is journaled
     m.fire = (name, payload) => { if (name.startsWith('curation.stop.')) fired.push([name, payload]); };
+    const max = require('./lib/hooks-config.js').getCurationStop().maxAttempts;
     const r1 = await stop.run({ hook_event_name: 'Stop', session_id: sid, cwd: proj });
     assert(r1.block, 'first Stop blocks');
+    for (let i = 2; i <= max; i++) assert((await stop.run({ hook_event_name: 'Stop', session_id: sid, cwd: proj, stop_hook_active: true })).block, `no progress, attempt ${i}: blocks again`);
     const r2 = await stop.run({ hook_event_name: 'Stop', session_id: sid, cwd: proj, stop_hook_active: true });
-    assert(!r2.block, 'no progress at the attempt cap (maxAttempts 1): relents');
+    assert(!r2.block, 'no progress at the attempt cap: relents');
     await detect.run(ev('npm run evcheck')); // recurs → journaled again
     const r3 = await stop.run({ hook_event_name: 'Stop', session_id: sid, cwd: proj });
     assert(r3.block, 'blocks again on the next turn');
     await detect.run(ev('npm run other-work-entirely')); await detect.run(ev('npm run other-work-entirely'));
     await stop.run({ hook_event_name: 'Stop', session_id: sid, cwd: proj, stop_hook_active: true });
-    assertEq(fired.map((x) => x[0]), ['curation.stop.blocked', 'curation.stop.relented', 'curation.stop.blocked', 'curation.stop.released']);
-    assertEq([fired[0][1].attempt, fired[1][1].attempts], [1, 1]);
-    assertEq(fired[3][1].why, 'new non-overlapping work');
+    const blockedRun = Array.from({ length: max }, () => 'curation.stop.blocked');
+    assertEq(fired.map((x) => x[0]), [...blockedRun, 'curation.stop.relented', 'curation.stop.blocked', 'curation.stop.released']);
+    assertEq([fired[0][1].attempt, fired[max][1].attempts], [1, max]);
+    assertEq(fired[max + 2][1].why, 'new non-overlapping work');
   } finally {
     m.fire = orig;
     journal.clearEntries(sid);
@@ -26690,7 +26693,8 @@ test('plugin-updater.killStale: so casa modulos da PASTA DE CACHE do plugin, nao
     const d = deadlinesFromHooksJson(ROOT);
     const { HOOKS: SPECS_D } = require('./lib/hook-tools.js');
     // module-called tools have no hooks.json entry: they run on the default deadline.
-    assertEq(Object.keys(d).sort(), [...hookTools.names].filter(n => SPECS_D[n].caller !== 'module').sort());
+    // + brain_retrieve_context: not a hook_* tool, but hooks.json calls it on every prompt (TIMED_TOOLS).
+    assertEq(Object.keys(d).sort(), [...[...hookTools.names].filter(n => SPECS_D[n].caller !== 'module'), 'brain_retrieve_context'].sort());
     assertEq(d.hook_stop_dispatcher, 29000);
     assertEq(d.hook_curation_guard, 7000);
     assertEq(d.hook_graph_guard, 4000);
