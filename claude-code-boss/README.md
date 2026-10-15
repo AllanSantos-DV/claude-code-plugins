@@ -185,8 +185,9 @@ prazo interno de `timeout − 1 s`.
 | PostToolUse (Bash, via dispatcher) | `decision-detect.js` | Detecta commit/PR com cara de decisão arquitetural e stash pending para o Stop promover |
 | PostToolUse (Edit\|Write\|NotebookEdit) | `mcp_tool` → `hook_file_edit_detect` (`file-edit-detect.js`) | Journala arquivos editados no turno (alimenta `verify-nudge` e `self-review`) |
 | PostToolUse (Edit\|Write\|MultiEdit\|NotebookEdit) | `mcp_tool` → `hook_policy_glob_inject` (`policy-glob-inject.js`) | Injeta advisory de política glob (per-file) quando o arquivo editado casa um padrão de política ativa |
+| PostToolUse (Skill) | `mcp_tool` → `hook_skill_metric` (`skill-metric.js`) | Métrica de uso de skill chamada pelo modelo (ferramenta Skill, a maior parte dos usos) |
 | UserPromptExpansion | `dashboard-command.js` (command, matcher `dashboard`) | **`/dashboard` sem LLM**: garante o dashboard no ar (sonda HTTP da porta publicada), abre o navegador e **bloqueia** a expansão mostrando a URL — o prompt nunca chega ao modelo; falha também bloqueia, com a causa |
-| UserPromptExpansion | `mcp_tool` → `hook_skill_metric` (`skill-metric.js`) | Métrica de uso de skill (matcher `.*`) |
+| UserPromptExpansion | `mcp_tool` → `hook_skill_metric` (`skill-metric.js`) | Métrica de uso de skill digitada (`/skill`, matcher `.*`) |
 | **PostToolUseFailure** | **`mcp_tool` → `hook_posttoolusefailure_dispatcher` (`posttoolusefailure-dispatcher.js`)** | **Entry único** — roda `curation-detect.js` (já filtra `tool_name==='Bash'` internamente) + `failure-detect.js` in-process |
 | PostToolUseFailure (via dispatcher) | `failure-detect.js` | Journala a falha (alimenta `failure-retro`). O `error-guard` não depende mais dele: decide pelo transcript da própria sessão (`lib/session-failures.js`) |
 | **Stop** | **`mcp_tool` → `hook_stop_dispatcher` (`stop-dispatcher.js`)** | **Entry único** — roda in-process no daemon, em ordem, todos os detectores abaixo e funde os blocks num só `{decision:'block', reason}` |
