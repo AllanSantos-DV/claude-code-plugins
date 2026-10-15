@@ -2891,6 +2891,22 @@ async function loadCompactionPanel() {
       + c.timeline.map(t => `<tr><td>${t.ts ? new Date(t.ts).toLocaleString() : '—'}</td><td>${escapeHtml(t.trigger || '')}</td><td>${escapeHtml(t.reason || '')}</td><td>${escapeHtml(t.outcome || '')}</td><td>${fmt(t.charsCut)}</td><td>${Math.round(t.ratio * 100)}%</td></tr>`).join('')
       + '</tbody></table>';
   }
+  const eps = c.episodes;
+  if (eps && eps.groups.length) {
+    const kk = n => (n == null ? '?' : Math.round(n / 1000) + 'k');
+    const tm = { yes: '<span class="badge badge-red">compacts too much</span>', no: '<span class="badge badge-green">ok</span>', insufficient: '<span class="text-muted">too few cuts</span>' };
+    const sug = s => (s.ok ? `~${kk(s.tokens)} (${s.percent}%)` : `<span class="text-muted" title="${escapeHtml(s.missing.join('; '))}">missing: ${escapeHtml(s.missing[0])}</span>`);
+    html += `<h3 style="font-size:.9rem;margin:.9rem 0 .2rem 0">Compactions per model &amp; window <span class="text-muted" style="font-size:.75rem">(${eps.total} in 30 days — boss and engine; suggestion = model estimate, nothing is applied)</span></h3>`
+      + '<table style="width:100%;font-size:.78rem"><thead><tr><th>Model</th><th>Window</th><th>Cuts</th><th>Boss / engine</th><th>Per 100 calls</th><th>Median % of window</th><th>Rewrite cost</th><th>Indicator</th><th>Suggested ceiling</th></tr></thead><tbody>'
+      + eps.groups.map(g => `<tr><td>${escapeHtml(g.model || '?')}</td><td>${kk(g.windowTokens)}</td><td>${g.compactions}</td><td>${g.boss} / ${g.engine}</td><td>${g.per100Turns ?? '—'}</td><td>${g.medianPctAtTrigger != null ? g.medianPctAtTrigger + '%' : '—'}</td><td>US$ ${(g.totalCostUsd || 0).toFixed(2)}</td><td>${tm[g.compactsTooMuch] || ''}</td><td>${sug(g.suggestion)}</td></tr>`).join('')
+      + '</tbody></table>';
+    const ss = eps.sessions.filter(s => s.compactions).slice(0, 8);
+    if (ss.length) {
+      html += '<table style="width:100%;font-size:.78rem;margin-top:.5rem"><thead><tr><th>Session</th><th>Cuts</th><th>Boss / engine</th><th>Calls</th><th>Hours</th><th>Indicator</th><th>Rewrite cost</th></tr></thead><tbody>'
+        + ss.map(s => `<tr><td>${escapeHtml(s.sessionId.slice(0, 8))}</td><td>${s.compactions}</td><td>${s.boss} / ${s.engine}</td><td>${s.turns}</td><td>${s.spanHours}</td><td>${tm[s.compactsTooMuch] || ''}</td><td>US$ ${(s.costUsd || 0).toFixed(2)}</td></tr>`).join('')
+        + '</tbody></table>';
+    }
+  }
   el.innerHTML = html;
   return c;
 }
