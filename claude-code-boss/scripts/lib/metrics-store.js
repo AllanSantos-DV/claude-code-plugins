@@ -391,6 +391,65 @@ function cleanupMetrics(keepDays = 30) {
   }
 }
 
+// Retention of high-volume NOISE rows (P7, 2026-10-15). These events only ever feed counts
+// (curation.skipped: by class in the curation panel) or nothing at all (shell-escape.*: no
+// reader), yet they grew +590/day per project with no retention. Raw rows older than
+// NOISE_KEEP_DAYS become ONE `metrics.daily` row per (UTC day, event) holding the count, so
+// every panel total stays the same; nothing else is touched.
+const NOISE_EVENTS = ['curation.skipped', 'shell-escape.rewritten', 'shell-escape.warned', 'shell-escape.denied'];
+const NOISE_KEEP_DAYS = 14;
+const DAY_MS = 86400_000;
+
+/**
+ * Summarize then delete the noise rows of the OPEN project older than `keepDays` (whole UTC
+ * days only, so a day is summarized exactly once). One transaction: the summaries and the
+ * delete land together or not at all.
+ * @returns {{summarized:number, deleted:number}}
+ */
+function compactNoise({ keepDays = NOISE_KEEP_DAYS, now = Date.now() } = {}) {
+  const out = { summarized: 0, deleted: 0 };
+  if (!_db) return out;
+  const cutoff = Math.floor((now - keepDays * DAY_MS) / DAY_MS) * DAY_MS;
+  const marks = NOISE_EVENTS.map(() => '?').join(',');
+  try {
+    const rows = _db.prepare(`SELECT ts, event_name, payload FROM metrics_event WHERE ts < ? AND event_name IN (${marks})`).all(cutoff, ...NOISE_EVENTS);
+    if (!rows.length) return out;
+    const days = new Map();
+    for (const r of rows) {
+      const day = Math.floor(r.ts / DAY_MS) * DAY_MS;
+      const key = `${day}|${r.event_name}`;
+      let d = days.get(key);
+      if (!d) { d = { day, event: r.event_name, count: 0, byClass: {} }; days.set(key, d); }
+      d.count++;
+      if (r.event_name === 'curation.skipped') {
+        const p = safeParseJson(r.payload) || {};
+        const cls = p.class === 'inline' ? 'inline' : 'exploration';
+        d.byClass[cls] = (d.byClass[cls] || 0) + 1;
+      }
+    }
+    const insert = _db.prepare(`INSERT INTO metrics_event (ts, event_name, payload, session_id, project) VALUES (?, 'metrics.daily', ?, NULL, ?)`);
+    const del = _db.prepare(`DELETE FROM metrics_event WHERE ts < ? AND event_name IN (${marks})`);
+    // BEGIN/COMMIT by hand: node:sqlite (sqlite-compat) has no transaction() helper.
+    _db.exec('BEGIN');
+    try {
+      for (const d of days.values()) {
+        const payload = { day: new Date(d.day).toISOString().slice(0, 10), event: d.event, count: d.count, ...(Object.keys(d.byClass).length ? { byClass: d.byClass } : {}) };
+        insert.run(d.day, JSON.stringify(payload), _project || null);
+        out.summarized++;
+      }
+      out.deleted = Number(del.run(cutoff, ...NOISE_EVENTS).changes) || 0;
+      _db.exec('COMMIT');
+    } catch (err) {
+      _db.exec('ROLLBACK');
+      throw err;
+    }
+    return out;
+  } catch (err) {
+    console.error(`[metrics-store] compactNoise failed (${_project}): ${err.message}`);
+    return { summarized: 0, deleted: 0 };
+  }
+}
+
 /**
  * Row cap of an event read. A TIME-WINDOW read (`sinceTs`) is a total, not a "latest N" peek: the
  * old fixed cap of 500 silently cut the dashboard's 30-day curation summary (it asked for 2000) and
@@ -437,6 +496,9 @@ module.exports = {
   getEvaluationCounts, getEvaluationCountsIsolated,
   getMetricsSummary, cleanupMetrics,
   listProjects, _dbPath: dbPath,
+  compactNoise,
+  NOISE_EVENTS,
+  NOISE_KEEP_DAYS,
   _getDbForTests: () => _db,
   _openCountForTests: () => _open.size,
 };

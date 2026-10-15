@@ -73,6 +73,21 @@ async function run(event) {
 
     oneoff.prune(DATA_DIR, projectKey, { windowDays: oneHitWindowDays });
 
+    // P7 retention: old noise rows of THIS project become daily counts (at most once a day).
+    try {
+      const mstamp = path.join(DATA_DIR, '.runtime', 'metrics-compact-last.json');
+      const key = require('./lib/metrics-project.js').metricsKeyFor(cwd);
+      let last = {};
+      try { last = JSON.parse(fs.readFileSync(mstamp, 'utf8')); } catch (e) { void e; }
+      if (key && Date.now() - (last[key] || 0) > 86400_000) {
+        const store = require('./lib/metrics-store.js');
+        if (store.init({ project: key })) store.compactNoise();
+        last[key] = Date.now();
+        fs.mkdirSync(path.dirname(mstamp), { recursive: true });
+        writeFileAtomic(mstamp, JSON.stringify(last));
+      }
+    } catch (e) { console.error(`[curation-session] metrics compaction: ${e.message}`); }
+
     // Weekly KB consolidation (F3 #5): spawn the hygiene job at most once a week
     // (fire-and-forget, like the skill-promotion trigger). Manual control lives
     // in the dashboard; this keeps the KB tidy without user action.
