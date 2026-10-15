@@ -35,11 +35,18 @@ Relatórios: `docs/research/checkup/` (local). Tudo abaixo marcado [x] tem teste
   derivar a descrição do título + detalhe.
 - [ ] **Filas de captura com id de projeto legado** (`github_com_allansantos-dv_claude-code-plugins`, 327 ciclos) não são adotadas por sessões
   com o id novo (`AllanSantos-DV/claude-code-plugins`). Proposta: mapa de aliases de id no `adoptOrphans`.
-- [ ] **Painel**: eventos sem leitor — `curation.stop.*`, funil `capture.*`, `shell-escape.*`, `stop.detector.error` (curadoria-12/13, reuso-13).
-  Proposta: card de funil e de guards (é UI nova → perguntar).
-- [ ] **decision-promote ainda bloqueia ~28 % dos Stops** (custo de turno extra). Proposta: juntar com a oferta do capture-dispatch num único
-  bloqueio por Stop (muda o fluxo → perguntar).
-- [ ] **Latência do compose no servidor** (`tool:compose_recall` p50 ~8 s no `memory_metrics`): causa raiz no servidor de memória (native-java).
+- [x] **Painel: eventos sem leitor** ganharam leitor. O painel de curadoria conta os bloqueios do Stop (`curation.stop.*`: bloqueou,
+  resolvido, desistiu), a correção de escape do Bash (`shell-escape.*`, inclusive o resumo diário das linhas compactadas) e os detectores
+  do Stop que falharam (`stop.detector.error`); a eficácia do loop mostra o funil da oferta de captura (`capture.*`). Teste `leitores:`.
+- [x] **decision-promote e a oferta de captura no mesmo bloqueio.** O número real era 9,6 % dos Stops (357 de 3.736 em 30 d, 284 sozinho),
+  não 28 %. Feito: o dispatcher passa `blockPending` e a oferta de captura pega carona num Stop que outro detector já bloqueia (sem esperar
+  a cadência). Replay: 14 dos 138 bloqueios solo da captura por 30 d tinham um bloqueio nos 30 min anteriores. **Não feito, com número:**
+  adiar o decision-promote até outro bloqueio economizaria 66 turnos por 30 d (janela de 30 min), mas perderia 32 decisões de sessões
+  que acabam antes (`docs/research/checkup/s3-replay-decision-defer.txt`): não é ganho puro.
+- [x] **Latência do braço compose.** Medido no servidor real: o custo cresce com o tamanho da consulta (120 → 2,4 s, 300 → 2,7 s,
+  800 → 4,2 s); em 8 prompts reais, 800 chars deu mediana de 9,1 s com metade estourando o prazo de 8 s (nenhum fato do compose),
+  300 chars deu 5,2 s e nenhum estouro. `maxQueryChars` padrão 800 → 300. Os fatos mudam (sobreposição média de 50 %), mas o compose
+  passa a responder em vez de expirar. Cache por consulta não compensa: só repetição exata acertaria. `s3-compose-latency.txt`.
 - [ ] **compactacao-router-07/13/14**: `compaction.run` sem `mechanical/mechanicalCut/warm`; `cache.turn` perde chamadas além de 512 KB sem
   contar; preço por família de modelo (12 de 5.619 sem preço).
 - [ ] **Hooks**: SessionStart de `resume` ainda roda os 18 detectores (só `compact` foi enxugado, P6); Workers sem `resourceLimits` (plataforma-09).
@@ -50,8 +57,9 @@ Relatórios: `docs/research/checkup/` (local). Tudo abaixo marcado [x] tem teste
   em vez de no `require`; `projectRoot` em `metrics.record`; `project-id`/`metrics`/`metrics-project` leem `engine/lib/host-env.js`
   e o `hook-context` se registra nele. `mcp-bootstrap` fica em `scripts/lib/` (URL pública fixa dos vendors). Testes `engine:`
   (fronteira = pasta, `dataDir` por chamada, `host-env`); eslint passou a cobrir `engine/`.
-- [ ] **Retenção do one-off store** (6,2 MiB, 2.755 entradas vistas 1 vez): teto por projeto + poda das vistas uma vez (muda a contagem de
-  recorrência → perguntar).
+- [x] **Retenção do one-off store**: teto de 500 entradas por projeto (na criação e no `prune`), despejando primeiro as menos
+  recorrentes e mais antigas; marcação one-hit e a entrada recém-criada nunca saem. Real: 13.894 entradas em 120 arquivos, 97 % vistas
+  uma vez, 3.215 num só projeto. Um comando despejado que volta recomeça a contagem em 1. Teste `oneoff-store: teto por projeto`.
 - [ ] **Medir depois de instalar**: precisão do recall (era 17,6 % com a chave errada), recall-health por braço, SessionStart real.
 
 ## Vitrine em três camadas: changelog fora da apresentação (pedido do Allan via orquestrador, 2026-10-15) — achado e corrigido na hora, aguardando a validação do Allan
