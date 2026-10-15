@@ -20157,6 +20157,25 @@ test('data-dir: migrated consumers import the shared resolver', () => {
   }
 });
 
+test('json-file (reuso-06): readJsonLoud — ausente e null calado, corrompido e null DITO; readJsonSafe tambem passa a dizer; leitores duplicados usam o canonico', () => {
+  const { readJsonLoud, readJsonSafe } = require('./lib/json-file.js');
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-jsonf-'));
+  const errs = []; const orig = console.error; console.error = (m) => errs.push(String(m));
+  try {
+    assertEq(readJsonLoud(path.join(dir, 'none.json'), 'x'), null);
+    assertEq(errs.length, 0, 'missing file is silent');
+    fs.writeFileSync(path.join(dir, 'bad.json'), '{ broken');
+    assertEq(readJsonLoud(path.join(dir, 'bad.json'), 'tagX'), null);
+    assertEq(readJsonSafe(path.join(dir, 'bad.json'), 7), 7);
+    assert(errs.length === 2 && /\[tagX\]/.test(errs[0]) && /fallback/.test(errs[1]), JSON.stringify(errs));
+  } finally { console.error = orig; fs.rmSync(dir, { recursive: true, force: true }); }
+  for (const rel of ['lib/hook-owner.js', 'lib/crash-evidence.js', 'session-summary.js', 'curation-stop.js']) {
+    assert(/readJsonLoud\(/.test(fs.readFileSync(path.join(SCRIPTS, rel), 'utf8')), `${rel} uses readJsonLoud`);
+  }
+  assertEq(require('./lib/session-id.js').sanitizeSessionId(''), 'default', 'reuso-05: empty session id → default');
+  assertEq(require('./lib/session-id.js').sanitizeSessionId('a/b'), 'a_b');
+});
+
 test('atomic-write (reuso-07): as copias de temp+rename sem retry ou com nome FIXO usam atomic-write.js', () => {
   const files = ['lib/data-dir.js', 'lib/embedder-guard.js', 'lib/crash-evidence.js', 'lib/capture-queue.js', 'model-router-ensure.js'];
   for (const rel of files) {

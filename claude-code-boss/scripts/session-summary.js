@@ -40,9 +40,8 @@ function counterPath(dir, sid) {
   return path.join(dir, '.runtime', `session-summary-${safeSid(sid)}.json`);
 }
 
-function readJson(p) {
-  try { return JSON.parse(fs.readFileSync(p, 'utf8')); } catch { /* absent */ return null; }
-}
+// A corrupt stamp was swallowed as "absent"; now it is said.
+const readJson = (p) => require('./lib/json-file.js').readJsonLoud(p, 'session-summary');
 
 function buildNotice(n) {
   const s = n === 1 ? '' : 's';
