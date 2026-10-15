@@ -66,6 +66,16 @@
   Sem ele, o daemon caía de novo a cada prompt. Também dá para escolher à mão (dashboard, config-tester, skill
   `embedder-switch`), por exemplo para não baixar o modelo. Nesta instalação o teste passou: a busca semântica segue ligada.
 - **Doctor: `embedder-guard`.** Warn quando a busca semântica está desligada pelo teste de carga, com o motivo, a data e como voltar.
+- **Contagem de compactações por sessão e por modelo|janela.** Cada compactação vira um registro: quando, modelo, janela, contexto antes e
+  depois, % da janela no disparo, quem cortou (boss automático, boss manual ou o engine) e o custo do turno de reescrita. O indicador
+  "compacta demais" acende com mais de 5 cortes por 100 chamadas ou mais de 2 por hora. A sugestão de teto é um modelo de custo (não uma
+  medição), só sai com 5 ou mais cortes medidos e diz o que falta. O padrão de 30% não muda. Onde ver: painel Home, `doctor --cost`
+  (`compaction-rate`), `node scripts/compaction-report.js [dias] [--json]` e `/api/metrics/compaction` (`episodes`).
+
+### Fixed (retomada)
+- **Retomada de sessão grande conta como cache frio.** O primeiro pedido de uma sessão retomada regrava o histórico inteiro, e o gate
+  achava o cache quente, então não cortava. Agora, com o contexto acima do limite, o primeiro prompt da retomada passa pelo corte a frio.
+  Medido em 14 dias: 5 de 5 retomadas grandes regravaram 88–100% do histórico, cerca de US$ 3–7 cada.
 
 ## [3.8.0] - 2026-10-14
 

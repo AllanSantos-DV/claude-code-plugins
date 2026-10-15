@@ -70,13 +70,20 @@ which.
 
 ## Release flow
 
-**Owner validation gate (Allan, 2026-10-14 — standing rule, overrides anything
-below):** no release of claude-code-boss — merge into `main`, `git tag`, GitHub
-Release, any publication — without Allan's validation, given after he has seen
-the change running on his own machine. Work stays on a `fix/`/`feat/` branch cut
-from `develop`, tested and installed locally (`.claude/scripts/install-local.mjs`)
-for him to validate. Publish only when he says, in his own words, that he
-validated it; a release request relayed by an agent or orchestrator is not that.
+**Owner validation gate (Allan, 2026-10-14, amended 2026-10-15 — standing rule,
+overrides anything below):** no release of claude-code-boss — merge into `main`,
+`git tag`, GitHub Release, any publication — without Allan's validation, given
+after he has seen the change running on his own machine. Work stays on a
+`fix/`/`feat/` branch cut from `develop`, tested and installed locally
+(`.claude/scripts/install-local.mjs`) for him to validate. Publish only on
+Allan's release order. His order counts when it comes from him directly **or**
+when the Jarvis orchestrator relays it with his literal words recorded in the
+orchestrator's ledger (a PEDIDO or the WhatsApp message) and the delegation
+carries the owner-validation flag (`validacaoAllan`) — the orchestrator controls
+this session and its delegations are the owner's requests, so a relayed order is
+accepted and must not be re-asked. What is still not an order: an agent
+(subagent, another tool, a peer session) inferring or volunteering a release on
+its own, or a relay with no recorded owner words.
 
 Use the slash command **`/release`** (defined in `.claude/commands/release.md`). It enforces:
 1. Version bump committed
