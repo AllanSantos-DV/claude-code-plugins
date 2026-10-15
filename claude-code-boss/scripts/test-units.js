@@ -2671,6 +2671,14 @@ test('O2: transcript-tail.readRange — the one range reader (range, short file,
   assertEq(transcriptTail.readRange(f, 8, 50).toString(), '89', 'past EOF → what exists');
   assertEq(transcriptTail.readRange(f, 5, 5).length, 0);
   assertEq(transcriptTail.readRange(path.join(os.tmpdir(), 'nope-ccb-range.txt'), 0, 10).length, 0);
+  // A missing file is silent; any other read failure (here: a directory) is empty too but must say so on stderr.
+  const errs = []; const origErr = console.error; console.error = (...a) => errs.push(a.join(' '));
+  try {
+    assertEq(transcriptTail.readRange(path.join(os.tmpdir(), 'nope-ccb-range.txt'), 0, 10).length, 0);
+    assertEq(errs.length, 0, 'ENOENT is not an error');
+    assertEq(transcriptTail.readRange(os.tmpdir(), 0, 10).length, 0);
+  } finally { console.error = origErr; }
+  assert(errs.length === 1 && /cannot read/.test(errs[0]), `a read failure is logged: ${JSON.stringify(errs)}`);
 });
 
 // ─── retrieval-feedback (Plan #1) ────────────────────────────────────────────
@@ -16734,9 +16742,15 @@ test('fixed-cost.applyActions mcp-remove: diario antes de remover, argumentos do
   const r2 = fixedCost.applyActions([{ kind: 'mcp-remove', target: 'x', scope: 'user', config: cfg }], { home, env, run: failing });
   assertEq(r2[0].ok, false);
   assert(/boom/.test(r2[0].message), r2[0].message);
+  // The remove failed, so nothing was removed: no journal entry may be left behind (an undo would "re-add" a server that is still there).
+  assertEq(JSON.parse(fs.readFileSync(fixedCost.undoPath(home), 'utf8')), [], 'remocao que falhou nao deixa entrada no diario');
+  assertEq(fixedCost.undoActions({ home, env, run: failing }), [], 'nada a desfazer');
+  // An entry whose restore fails (the server is gone and add-json fails) does stay in the journal.
+  fixedCost.applyActions([{ kind: 'mcp-remove', target: 'y', scope: 'user', config: cfg }], { home, env, run });
   const u2 = fixedCost.undoActions({ home, env, run: failing });
   assertEq(u2[0].ok, false);
   assertEq(JSON.parse(fs.readFileSync(fixedCost.undoPath(home), 'utf8')).length, 1, 'o que nao deu para restaurar continua no diario');
+  if (process.platform !== 'win32') assertEq(fs.statSync(fixedCost.undoPath(home)).mode & 0o777, 0o600, 'o diario guarda config com headers/env: so o dono le');
   fs.rmSync(home, { recursive: true, force: true });
 });
 
@@ -25842,6 +25856,13 @@ test('compaction-core.isMechanicalCut + chooseCompaction: the brief only with a 
   assert(/on\('session\.end'[\s\S]{0,400}reportFolder\(\$, ctx, \{ end: true \}\)[\s\S]{0,300}observeCalls\(\$, ctx\)/.test(hook), 'session.end leaves the folder BEFORE the transcript read (short budget)');
   assert(/if \(!d && ctx\.awaitCallAfterCut\) d = \{ action: 'none', reason: 'just-compacted' \};/.test(hook) && /if \(ctx\.awaitCallAfterCut\) return; \/\/ just compacted/.test(hook), 'neither the gate nor the turn-end rule compacts again from a pre-cut reading (E2E: a second, needless summary)');
   assert(/if \(seen > 0\) ctx\.sessionTtlMs = seen;/.test(hook), 'the TTL in use is the latest call\'s (a 1h→5m switch is seen)');
+});
+
+test('compaction hook: with folderTtl off the session still leaves its folder once, so a 5m left by the time it was on is restored', () => {
+  const hook = fs.readFileSync(path.join(ROOT, 'hooks', 'compaction.mjs'), 'utf8');
+  assert(/if \(ctx\.config\.folderTtl === false\) \{[\s\S]{0,500}if \(ctx\.folderOffReleased\) return;\s*ctx\.folderOffReleased = true;\s*end = true;/.test(hook), 'off → one folder-end, then silent');
+  assert(!/!ctx\.configLoaded \|\| ctx\.config\.folderTtl === false\) return;/.test(hook), 'the old early return for folderTtl:false is gone');
+  assert(/end \? 'folder-end' : 'folder'/.test(hook), 'the leave is a folder-end (the daemon restores what is ours and sweeps dead owners)');
 });
 
 // ─── folder TTL (lib/folder-ttl.js): 1h → 5m while EVERY live session of the launch folder is past the threshold ──

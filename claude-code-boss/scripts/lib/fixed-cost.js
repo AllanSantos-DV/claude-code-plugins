@@ -569,7 +569,11 @@ function readUndo(file) {
     throw new Error(`undo journal ${file} is unreadable (${err.message}) — fix or remove it before applying more changes`);
   }
 }
-const writeUndo = (file, list) => writeFileAtomic(file, JSON.stringify(list, null, 2) + '\n');
+// The journal can hold a removed MCP server's whole config (headers, env): owner-only where the OS has modes.
+const writeUndo = (file, list) => {
+  writeFileAtomic(file, JSON.stringify(list, null, 2) + '\n');
+  try { fs.chmodSync(file, 0o600); } catch (err) { console.error(`[fixed-cost] could not restrict ${file} to the owner: ${err.message}`); }
+};
 
 /** The claude CLI as an exe we can spawn without a shell (quoting a JSON argument through cmd.exe is a trap). */
 function resolveClaudeBin(env = process.env, run = hiddenSpawnSync) {
@@ -628,7 +632,13 @@ function applyActions(actions, { home = os.homedir(), env = process.env, run = h
       if (a.kind === 'mcp-remove') {
         Object.assign(entry, { scope: a.scope, config: a.config });
         const journal = readUndo(jf); journal.push(entry); writeUndo(jf, journal);
-        _claude(['mcp', 'remove', a.target, '-s', a.scope], { env: claudeEnv, run });
+        try {
+          _claude(['mcp', 'remove', a.target, '-s', a.scope], { env: claudeEnv, run });
+        } catch (err) {
+          // Nothing was removed: a journal entry for it would make --undo "re-add" a server that is still there (duplicate → stuck entry).
+          writeUndo(jf, readUndo(jf).filter((x) => x.id !== entry.id));
+          throw err;
+        }
         results.push({ kind: a.kind, target: a.target, ok: true, message: `removed the "${a.target}" server (${a.scope} scope); its config is saved in ${jf}`, undo: 'node scripts/doctor.js --undo' });
       } else if (SETTINGS_KINDS[a.kind]) {
         const k = SETTINGS_KINDS[a.kind];

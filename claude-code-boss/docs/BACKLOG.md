@@ -1,5 +1,30 @@
 # Backlog
 
+## Auditoria adversarial pré-release 3.9.0 (2026-10-15, diff v3.8.0..develop) — 7 achados, 4 corrigidos na hora
+
+Sem achado blocking (credencial, RCE, vazamento). Cada achado foi conferido contra o código atual.
+
+- [x] **Corrigido na hora — `mcp-remove` que falha deixava entrada falsa no diário de undo** (`scripts/lib/fixed-cost.js` `applyActions`): a entrada era gravada
+  antes do `claude mcp remove`; se o comando falhava, o `--undo` tentava re-adicionar um servidor que nunca saiu (duplicado) e a entrada ficava presa, com
+  o `--undo` saindo com código 1. Agora a entrada sai do diário quando a remoção falha. Teste `fixed-cost.applyActions mcp-remove` (diário vazio após a falha).
+- [x] **Corrigido na hora — `folderTtl` desligado deixava a pasta em 5m para sempre** (`hooks/compaction.mjs` `reportFolder`): com a feature desligada nenhuma
+  sessão reportava, e o daemon só restaura/varre quando recebe um report. Agora a sessão sai da pasta uma vez (`folder-end`) mesmo com `folderTtl: false`,
+  e o daemon restaura o que é nosso. Teste "with folderTtl off the session still leaves its folder once".
+- [x] **Corrigido na hora — o diário de undo guarda a config completa do servidor MCP (headers/env) em texto puro** (`fixed-cost.js` `writeUndo`): agora o arquivo
+  fica 0600 onde o SO tem modos (no Windows o perfil do usuário já é privado). Teste no `mcp-remove` (modo 0600 fora do Windows).
+- [x] **Corrigido na hora — `readRange` engolia o erro de leitura do transcript** (`scripts/lib/transcript-tail.js`): só ENOENT é silencioso; qualquer outra falha de
+  leitura vai para o stderr. Teste `O2: transcript-tail.readRange`.
+- [x] **Registrado para o Allan decidir — o doctor da 1ª sessão após atualizar desativa plugins e remove MCPs sem confirmação** (`fixedCost.autoFix: true` por
+  padrão, `scripts/doctor-first-run.js:68-70`; `fixed-cost.js` `plugin-disable` sem piso de idade nem histórico): é o comportamento projetado e descrito no CHANGELOG
+  3.9.0 (tudo journalado, `--undo`, nomes em `fixedCost.keep`), então não é defeito. Risco: um plugin com menos de 30 dias, ou só com hooks/agents/MCP, aparece
+  como "não usado" e é desativado no update seguinte. Proposta: padrão `autoFix: false`, ou piso de idade e dispensa de plugin só de hooks para `plugin-disable`.
+- [x] **Registrado — `settings.local.json` da pasta é reescrito inteiro sem trava** (`scripts/lib/folder-ttl.js` `applySwitch`/`restore`): o Claude Code também grava
+  permissões aprovadas ali; a janela é de milissegundos e a escrita é atômica, então só há risco de perder uma aprovação numa corrida. Aceito e documentado.
+- [x] **Registrado — o embedder-guard força `none` depois de um único aborto nativo** (`scripts/lib/embedder-guard.js`): o código 134 inclui OOM do V8, e o override dura
+  até mudar a versão do plugin, do Node ou do modelo (logado e visível no doctor). No primeiro boot por chave o recall pode esperar até 180 s pelo teste de carga
+  (`embed-worker-client.js`). Documentado; limitar a espera por chamada é melhoria opcional.
+- **Não confirmado pelo auditor (sem evidência de defeito)**: `doctor --fix` usa `~/.claude` fixo com `CLAUDE_CONFIG_DIR` diferente; `claude mcp remove -s local` a partir do `cwd` do hook.
+
 ## Auto-update do marketplace sobrescreve o build local (pedido do orquestrador, 2026-10-15) — causa verificada, não é defeito do plugin
 
 - **Visto**: o build local c26e4f5 (3.9.0) foi instalado às 22:02 de 14/10 e o registro voltou à 3.8.0 às 22:32 (`installed_plugins.json`,
