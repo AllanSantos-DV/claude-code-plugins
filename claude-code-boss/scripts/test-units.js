@@ -9734,10 +9734,11 @@ test('resolveMode: off quando enabled!==true E fallback.enabled!==true', () => {
   assertEq(resolveMode({ enabled: false }), 'off'); // sem bloco fallback
 });
 
-test('resolveMode: routing quando enabled===true (independe do fallback)', () => {
-  assertEq(resolveMode({ enabled: true }), 'routing');
-  assertEq(resolveMode({ enabled: true, fallback: { enabled: true } }), 'routing');
-  assertEq(resolveMode({ enabled: true, fallback: { enabled: false } }), 'routing');
+test('resolveMode (P11): enabled===true (per-turn routing, removido) e IGNORADO — o modo vem dos outros interruptores', () => {
+  assertEq(resolveMode({ enabled: true }), 'off');
+  assertEq(resolveMode({ enabled: true, fallback: { enabled: true } }), 'fallback-only');
+  assertEq(resolveMode({ enabled: true, fallback: { enabled: false } }), 'off');
+  assertEq(MODE_META.routing, undefined, 'no routing mode left');
 });
 
 test('resolveMode: fallback-only quando enabled:false + fallback.enabled:true', () => {
@@ -9750,8 +9751,8 @@ test('resolveMode: sticky-tier quando sticky.enabled===true (vence enabled e fal
   assertEq(resolveMode({ sticky: { enabled: true }, fallback: { enabled: true } }), 'sticky-tier');
 });
 
-test('resolveMode: precedência sticky > enabled > fallback > off', () => {
-  assertEq(resolveMode({ sticky: { enabled: false }, enabled: true }), 'routing');
+test('resolveMode: precedência sticky > fallback > off', () => {
+  assertEq(resolveMode({ sticky: { enabled: false }, enabled: true }), 'off');
   assertEq(resolveMode({ sticky: { enabled: false }, enabled: false, fallback: { enabled: true } }), 'fallback-only');
   assertEq(resolveMode({ sticky: { enabled: false }, enabled: false, fallback: { enabled: false } }), 'off');
   assertEq(resolveMode({ sticky: {} }), 'off'); // bloco sticky sem enabled
@@ -9785,8 +9786,7 @@ test('modeMeta: mapeia cada modo para cor/deprecado corretos', () => {
   assertEq(modeMeta('fallback-only').deprecated, false);
   assertEq(modeMeta('sticky-tier').color, 'green');
   assertEq(modeMeta('sticky-tier').deprecated, false);
-  assertEq(modeMeta('routing').color, 'amber');
-  assertEq(modeMeta('routing').deprecated, true);      // per-turn é deprecado
+  assertEq(modeMeta('routing'), MODE_META.off, 'the removed per-turn mode falls back to off');
 });
 
 test('dashboard i18n: every key the page uses has an EN and a PT translation (a missing one renders as the raw key)', () => {
@@ -9811,7 +9811,7 @@ test('dashboard i18n: every key the page uses has an EN and a PT translation (a 
 });
 
 test('modeMeta: cada modo tem uma chave i18n mode.*', () => {
-  for (const mode of ['off', 'fallback-only', 'sticky-tier', 'routing']) {
+  for (const mode of ['off', 'fallback-only', 'sticky-tier', 'byok-direct']) {
     assert(/^mode\./.test(modeMeta(mode).i18n), `i18n key p/ ${mode}`);
   }
 });
@@ -9824,7 +9824,7 @@ test('modeMeta: modo desconhecido/ausente cai em off (fail-safe)', () => {
 
 test('resolveMode→modeMeta: cadeia config→modo→apresentação coerente', () => {
   assertEq(modeMeta(resolveMode({ sticky: { enabled: true } })).color, 'green');
-  assertEq(modeMeta(resolveMode({ enabled: true })).color, 'amber');
+  assertEq(modeMeta(resolveMode({ enabled: true })).color, 'grey');
   assertEq(modeMeta(resolveMode({ fallback: { enabled: true } })).color, 'blue');
   assertEq(modeMeta(resolveMode({})).color, 'grey');
 });
@@ -10521,7 +10521,7 @@ test('mergeUserConfig (server): {fallback:{enabled:true}} preserva cooldown/trig
 
 test('server.resolveMode === lib impl (mesma regra nos dois processos)', () => {
   assertEq(routerServer.resolveMode({ enabled: false, fallback: { enabled: true } }), 'fallback-only');
-  assertEq(routerServer.resolveMode({ enabled: true }), 'routing');
+  assertEq(routerServer.resolveMode({ enabled: true }), 'off');
   assertEq(routerServer.resolveMode({ sticky: { enabled: true }, enabled: true }), 'sticky-tier');
   assertEq(routerServer.resolveMode({}), 'off');
 });
@@ -15276,7 +15276,7 @@ test('resolveMode: custom upstream sozinho liga o proxy em passthrough', () => {
   const rm = require('./lib/router-mode.js');
   assertEq(rm.resolveMode({ upstream: { enabled: true } }), 'fallback-only');
   assertEq(rm.resolveMode({ upstream: { enabled: false } }), 'off');
-  assertEq(rm.resolveMode({ enabled: true, upstream: { enabled: true } }), 'routing');
+  assertEq(rm.resolveMode({ enabled: true, upstream: { enabled: true } }), 'fallback-only');
 });
 
 test('modeMeta: byok-direct tem rotulo e cor proprios (nao cai no fail-safe off)', () => {
@@ -19412,7 +19412,7 @@ test('dashboard UI: loadRouterConfig trata resposta de erro e trava o save (não
   const load = html.slice(html.indexOf('async function loadRouterConfig()'), html.indexOf('// Espelha scripts/lib/router-mode.js'));
   assert(load.length > 0, 'loadRouterConfig não encontrado');
   assert(/if \(!cfg \|\| cfg\.error \|\| !cfg\.byok\)/.test(load), 'precisa detectar resposta de erro antes de preencher o form');
-  assert(load.indexOf('cfg.error') < load.indexOf("getElementById('router-enable').checked"), 'checagem vem antes de preencher');
+  assert(load.indexOf('cfg.error') < load.indexOf("getElementById('router-accept').checked"), 'checagem vem antes de preencher');
   assert(/_routerConfigLoadError = e\.message/.test(load), 'o catch registra o erro');
   const upd = html.slice(html.indexOf('function updateRouterSaveState()'), html.indexOf('function parseHeaderLinesUI'));
   assert(/btn\.disabled = !!_routerConfigLoadError/.test(upd), 'save travado enquanto a config não carregou');
