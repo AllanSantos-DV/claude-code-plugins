@@ -205,7 +205,8 @@ function startHeartbeat($, ctx) {
   ctx.heartbeat = true;
   const beat = () => $.clock.after(FOLDER_HEARTBEAT_MS, () => {
     (async () => {
-      if (ctx.transcriptPath && !ctx.busy) { const { reply } = await observeCalls($, ctx); await folderFromReply($, ctx, reply); }
+      if (ctx.transcriptPath) { const { reply } = await observeCalls($, ctx); await folderFromReply($, ctx, reply); }
+      else $.ui.log('compaction: folder heartbeat has no transcript path (classic SessionStart not seen) — calls not observed');
       await reportFolder($, ctx);
     })().catch((err) => $.ui.log(`compaction: folder heartbeat failed: ${String(err && err.message ? err.message : err)}`)).finally(beat);
   });
