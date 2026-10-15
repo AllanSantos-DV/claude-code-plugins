@@ -1,5 +1,18 @@
 # Backlog
 
+## Vitrine em três camadas: changelog fora da apresentação (pedido do Allan via orquestrador, 2026-10-15) — achado e corrigido na hora, aguardando a validação do Allan
+
+- [x] **Achado**: `pages/claude-code-boss/index.html` tinha 13 parágrafos de versão ("Também na 3.1.0", "Na 3.1.1", … "Novo na 3.9.0") empilhados na seção de compactação, nos dois temas
+  (~17 KB de texto), e um selo "Novo na 3.1.0". O Allan apresenta o produto a pessoas e não quer rolar por versões. `tech.html` tinha a tabela "Versões" e o changelog no menu principal.
+- [x] **Corrigido**: os parágrafos e a tabela foram para `pages/claude-code-boss/changelog.html` (novo, mesmo visual da página técnica, mais recente primeiro); a apresentação ficou só com
+  proposta de valor e funcionalidades; o changelog é linkado só no rodapé da apresentação e da técnica.
+- [x] **Guard**: `pages-guard.mjs` ganhou `presentationViolations` (estado `layers`, merge bloqueado): número de versão ou frase de changelog no texto, bloco `id/class` de versões, ou falta de link
+  para o changelog. Provado: a página antiga falha (`3.1.0, 2.1.274, …; "Novo na 3"`), a nova passa; 6 testes em `test-units.js` (filtro `pages-guard`). Regra gravada no `vitrine.agent.md` e no `AGENTS.md`.
+- [x] **Detalhe técnico na apresentação, corrigido junto**: os cards de compactação diziam "30% de 200K = 60k; 30% de 1M = 300k", "`--resume`" e "corta 85% ou mais"; viraram texto simples
+  nos dois temas. Fica o pré-requisito "Node.js 22.13+" da instalação (informação que quem instala precisa).
+- [ ] **Limite do guard, registrado**: ele não pega detalhe técnico sem número de versão (não há regra exata, só julgamento); isso fica com o agente da vitrine, que tem a regra nas instruções.
+- [ ] **Fora do escopo, registrado**: `rf-reviewer` não tem `changelog.html` próprio; passa a regra porque linka o `CHANGELOG.md` do GitHub no rodapé.
+
 ## Contexto pronto nas rajadas de leitura — protótipo opt-in e medição com sessões reais (PEDIDO 413, pendência 4009a9, 2026-10-15)
 
 - **Protótipo** (`scripts/context-bundle.js "<tema>"`, `scripts/lib/context-bundle.js`; nada o chama sozinho): uma chamada devolve trechos de código, testes e docs ranqueados pelo Smart Tool (via o MCP HTTP dele,

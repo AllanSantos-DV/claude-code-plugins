@@ -9672,6 +9672,52 @@ test('release-guard: o workflow passa o token p/ datar pela atividade da main', 
   assert(/GITHUB_TOKEN:\s*\$\{\{\s*github\.token\s*\}\}/.test(wf), 'sem o token o guard volta a datar pelo commit (drift falso no push do release)');
 });
 
+// ─── pages-guard: a apresentação não carrega changelog (regra do Allan, 2026-10-15) ──
+// A página de vitrine é mostrada a pessoas; o histórico de versões vai para uma
+// página própria linkada no rodapé. A do boss tinha virado um muro de "Na 3.1.1,
+// … Na 3.2.0, …" dentro de uma seção de funcionalidade.
+const PG_PATH = path.resolve(ROOT, '..', '.github', 'scripts', 'pages-guard.mjs');
+const loadPagesGuard = () => import(require('url').pathToFileURL(PG_PATH).href);
+const pgPage = (body, footer = '<footer><a href="changelog.html">Changelog</a> · MIT · v3.9.0</footer>') =>
+  `<html><head><title>x 1.2.3</title><style>.a{}</style></head><body><header><span class="brand">boss <small>v3.9.0</small></span><a href="#top" class="ver">v3.9.0</a></header>${body}${footer}<script>var v="1.0.0"</script></body></html>`;
+
+test('pages-guard: importar o modulo NAO executa o CLI', async () => {
+  const pg = await loadPagesGuard();
+  assertEq(typeof pg.presentationViolations, 'function');
+});
+
+test('pages-guard.presentationViolations: apresentacao limpa (versao so na marca/rodape, link do changelog no rodape) passa', async () => {
+  const { presentationViolations } = await loadPagesGuard();
+  assertEq(presentationViolations(pgPage('<section><h2>Menos repetição.</h2><p>Node.js 22.13+ no PATH.</p></section>')), []);
+});
+
+test('pages-guard.presentationViolations: notas de versao na apresentacao falham', async () => {
+  const { presentationViolations } = await loadPagesGuard();
+  const v = presentationViolations(pgPage('<section><span class="soon">Novo na 3.1.0</span><p class="more">Na 3.2.0, os scripts curados…</p></section>'));
+  assert(v.some((m) => /3\.1\.0/.test(m)), `numero de versao apontado: ${JSON.stringify(v)}`);
+  assert(v.some((m) => /novo na 3/i.test(m)), `frase de changelog apontada: ${JSON.stringify(v)}`);
+});
+
+test('pages-guard.presentationViolations: secao de versoes ou palavra changelog no corpo falham', async () => {
+  const { presentationViolations } = await loadPagesGuard();
+  assert(presentationViolations(pgPage('<section id="versoes"><h2>Histórico</h2></section>')).length > 0, 'id versoes');
+  assert(presentationViolations(pgPage('<section><h2>Changelog</h2></section>')).length > 0, 'titulo Changelog fora de link');
+});
+
+test('pages-guard.presentationViolations: sem link para uma pagina de changelog falha', async () => {
+  const { presentationViolations } = await loadPagesGuard();
+  const v = presentationViolations(pgPage('<section><h2>Oi</h2></section>', '<footer>MIT</footer>'));
+  assert(v.some((m) => /sem link/.test(m)), JSON.stringify(v));
+});
+
+test('pages-guard: as paginas reais do repo cumprem a regra das camadas', async () => {
+  const { presentationViolations } = await loadPagesGuard();
+  for (const name of ['claude-code-boss', 'rf-reviewer']) {
+    const html = fs.readFileSync(path.resolve(ROOT, '..', 'pages', name, 'index.html'), 'utf8');
+    assertEq(presentationViolations(html), [], name);
+  }
+});
+
 
 const routerServer = require('../servers/model-router/index.js');
 
