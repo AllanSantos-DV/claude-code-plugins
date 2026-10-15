@@ -362,7 +362,9 @@ async function slowHookAlert(root, data) {
 async function run(event) {
   try {
     const eventName = event.hook_event_name || 'SessionStart';
-    const project = event.cwd ? path.basename(event.cwd) : 'default';
+    // The folder's project id, not its name: a basename opened a local shard per folder name
+    // (103 shards like Temp/docs/dist measured) and handshook the server with a junk scope.
+    const project = (event.cwd && require('./lib/project-id.js').tryResolveProjectId({ cwd: event.cwd })) || 'default';
 
     const root = pluginRoot();
     const data = dataDir();

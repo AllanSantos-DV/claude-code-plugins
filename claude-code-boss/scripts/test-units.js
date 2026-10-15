@@ -20157,6 +20157,22 @@ test('data-dir: migrated consumers import the shared resolver', () => {
   }
 });
 
+test('reuso-04: nenhum script de producao deriva projeto de basename(cwd) — a chave e o id do projeto (project-id / metrics-project)', () => {
+  const offenders = [];
+  const walk = (d) => {
+    for (const e of fs.readdirSync(d, { withFileTypes: true })) {
+      const p = path.join(d, e.name);
+      if (e.isDirectory()) { if (!['__fixtures__', 'node_modules'].includes(e.name)) walk(p); continue; }
+      if (!/\.(c|m)?js$/.test(e.name) || /^test-/.test(e.name)) continue;
+      const src = fs.readFileSync(p, 'utf8');
+      if (/path\.basename\((?:ev\.|event\.|input\.)?cwd\)/.test(src)) offenders.push(path.relative(SCRIPTS, p));
+    }
+  };
+  walk(SCRIPTS);
+  // project-id.resolveLocalScopeId is THE documented local-only fallback (never the memory boundary).
+  assertEq(offenders.filter((f) => f.replace(/\\/g, '/') !== 'lib/project-id.js'), []);
+});
+
 test('json-file (reuso-06): readJsonLoud — ausente e null calado, corrompido e null DITO; readJsonSafe tambem passa a dizer; leitores duplicados usam o canonico', () => {
   const { readJsonLoud, readJsonSafe } = require('./lib/json-file.js');
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-jsonf-'));
