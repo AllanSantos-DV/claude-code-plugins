@@ -117,7 +117,8 @@ async function dispatch(event, opts = {}) {
   const profile = opts.profile || hooksConfig.getProfile();
   const detectorTimeoutMs = Number.isFinite(opts.detectorTimeoutMs) ? opts.detectorTimeoutMs : DETECTOR_TIMEOUT_MS;
   const runId = opts.runId || telem.newRunId();
-  const shadowRate = typeof opts.shadowRate === 'number' ? opts.shadowRate : getShadowRate();
+  // free promises a passthrough: no sampled shadow runs of gated detectors either (unless a caller asks).
+  const shadowRate = typeof opts.shadowRate === 'number' ? opts.shadowRate : (profile === 'free' ? 0 : getShadowRate());
   const onError = typeof opts.onError === 'function' ? opts.onError : () => {};
   const list = Array.isArray(opts.detectors) ? opts.detectors : DETECTORS;
   const resolveId = typeof opts.resolveProjectId === 'function' ? opts.resolveProjectId : require('./lib/project-id.js').tryResolveProjectId;

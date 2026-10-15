@@ -9,7 +9,7 @@ O argumento é: `$ARGUMENTS`
 Os três perfis:
 - **dev** — tudo ligado: constrói a KB e enforça (a curadoria escala até 3x). Para quem desenvolve/estende o plugin.
 - **standard** — silencioso (padrão de fábrica): só a curadoria dá **1 aviso soft**; os nudges de dev e os blockers extras do Stop (refine-research, failure-retro, research-followup, auto-continue) ficam desligados.
-- **free** — passa tudo: **nenhum bloqueio** no Stop. O retrieval de contexto no início do turno continua (é read-only e barato).
+- **free** — passa tudo: **nenhum bloqueio** no Stop e os guards desligados (curadoria, error-guard, escape de shell, PowerShell, formato de arquivo, políticas, pesquisa ativa) — nada bloqueia nem reescreve. O retrieval de contexto no início do turno continua (é read-only e barato).
 
 Faça:
 
