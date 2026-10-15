@@ -5278,7 +5278,7 @@ test('brain-config.getRecallCompose: sane defaults', () => {
   assert(c.maxInjectChars > 0, 'maxInjectChars default');
   assert(c.timeoutMs > 0, 'timeoutMs default');
   assertEq(c.overlay, null);
-  assertEq(c.poolWarming, true);
+  assertEq(c.poolWarming, false, 'off by default: its signal only matters with the server promotion flags on');
   assertEq(c.maxQueryChars, 800, 'maxQueryChars default (2.29.1)');
   assertEq(c.projectArmMinScore, 0.65, 'projectArmMinScore default (2.29.1)');
 });
@@ -5345,6 +5345,104 @@ function fakeComposeBackend({ facts, onSearch, onCompose, hasCompose = true }) {
     search: onSearch,
   };
 }
+
+// ─── recall P4: deadline com cancelamento real, breaker por taxa de falha, metrica por braco ──
+// recall-health real (janela de 50): p50 5,6 s, 26 % estouraram 8 s, os ultimos 13 seguidos; o
+// prazo nao cancelava a requisicao (seguia ate 60 s) e o breaker de 15 s nunca abria com o braco
+// do projeto respondendo.
+test('mcp-client: AbortSignal cancela a requisicao HTTP de verdade (o servidor ve o socket fechar) e callTool NAO repete a chamada abortada', async () => {
+  const McpClient = require('./mcp-client.js');
+  const http = require('http');
+  let requests = 0; let closed = 0;
+  const srv = http.createServer((req, res) => { requests++; req.on('close', () => { if (!res.writableEnded) closed++; }); });
+  await new Promise((r) => srv.listen(0, '127.0.0.1', r));
+  try {
+    const c = new McpClient({ timeout: 60000 });
+    c._resolvedUrl = `http://127.0.0.1:${srv.address().port}`;
+    c._initialized = true;
+    const ac = new AbortController();
+    setTimeout(() => ac.abort(new Error('compose timed out after 50ms')), 50);
+    const t0 = Date.now();
+    let err = null;
+    try { await c.callTool('compose_recall', { query: 'x' }, { signal: ac.signal }); } catch (e) { err = e; }
+    assert(err && err.code === 'ABORTED' && /timed out/.test(err.message), `aborted with the deadline reason: ${err && err.message}`);
+    assert(Date.now() - t0 < 2000, 'gave up at the deadline, not at the 60 s client timeout');
+    await new Promise((r) => setTimeout(r, 50));
+    assertEq(requests, 1, 'no retry of an aborted call');
+    assertEq(closed, 1, 'the server saw the connection closed (the request does not keep running)');
+  } finally { srv.close(); }
+});
+
+test('retrieve-core.withDeadline: no prazo aborta o signal e rejeita com timeout', async () => {
+  const { withDeadline } = retrieveCore.__testHooks;
+  let seen = null;
+  let err = null;
+  try { await withDeadline((signal) => { seen = signal; return new Promise(() => {}); }, 30, 'compose'); } catch (e) { err = e; }
+  assert(err && /compose timed out after 30ms/.test(err.message), String(err));
+  assertEq(seen.aborted, true, 'the signal handed to the call is aborted');
+  assertEq(await withDeadline(async (signal) => (signal ? 'with-signal' : 'none'), 1000, 'x'), 'with-signal');
+});
+
+test('retrieve-core.createArmBreaker: abre com 5 falhas nas ultimas 10, pula 4 chamadas, deixa 1 sonda; a sonda que responde fecha', () => {
+  const b = retrieveCore.__testHooks.createArmBreaker();
+  for (let i = 0; i < 4; i++) { assert(b.allow()); b.result(false); }
+  assertEq(b.state().open, false, '4 failures: still closed');
+  assert(b.allow()); b.result(false);
+  assertEq(b.state().open, true, '5th failure opens');
+  assertEq([b.allow(), b.allow(), b.allow(), b.allow()], [false, false, false, false], 'skips 4 calls');
+  assertEq(b.allow(), true, 'then one probe');
+  b.result(false);
+  assertEq(b.allow(), false, 'failed probe: skips again');
+  for (let i = 0; i < 3; i++) b.allow();
+  assertEq(b.allow(), true); b.result(true);
+  assertEq(b.state(), { open: false, skipLeft: 0, failures: 0, calls: 0 }, 'answered probe closes and clears');
+  const sparse = retrieveCore.__testHooks.createArmBreaker();
+  for (let i = 0; i < 10; i++) { sparse.allow(); sparse.result(i % 3 !== 0); } // 4 failures in 10 (40 %)
+  assertEq(sparse.state().open, false, 'below the rate it stays closed');
+});
+
+test('retrieve-core retrieveRemote: compose que estoura sempre e PULADO pelo breaker do braco (o braco do projeto segue), cancelado no prazo, e a latencia por braco vai ao recall-health', async () => {
+  retrieveCore.__testHooks.resetCircuit();
+  const breakers = { compose: retrieveCore.__testHooks.createArmBreaker(), project: retrieveCore.__testHooks.createArmBreaker() };
+  let composeCalls = 0; let aborted = 0;
+  const fake = fakeComposeBackend({
+    facts: [],
+    onCompose: (_q, opts) => { composeCalls++; return new Promise((_, rej) => opts.signal.addEventListener('abort', () => { aborted++; rej(opts.signal.reason); })); },
+    onSearch: async () => [{ id: 'p1', title: 'proj hit', score: 0.9 }],
+  });
+  const records = [];
+  const health = { record: (reason, _d, ms, arms) => records.push({ reason, arms }) };
+  const t0 = Date.now();
+  for (let i = 0; i < 7; i++) {
+    // getRecallCompose() is read synchronously, before retrieveRemote's first await.
+    await withUserConfig({ kb: { retrieval: { compose: { timeoutMs: 30 } } } }, () => retrieveCore.__testHooks.retrieveRemote('a real prompt here', { project: 'projB', ancestorIds: [], topK: 5, keywords: ['x'] }, { backend: fake, recallHealth: health, armBreakers: breakers }));
+  }
+  assert(Date.now() - t0 < 3000, 'every compose gave up at the 30 ms deadline');
+  assertEq(composeCalls, 5, 'after 5 timeouts the compose arm is skipped (no 8 s wait on the next prompts)');
+  assertEq(aborted, 5, 'every timed-out compose was cancelled through its signal');
+  assertEq(records.map((r) => r.reason), ['timeout', 'timeout', 'timeout', 'timeout', 'timeout', 'compose-skipped', 'compose-skipped']);
+  assert(records[0].arms.compose.reason === 'timeout' && Number.isFinite(records[0].arms.compose.ms), JSON.stringify(records[0].arms));
+  assert(Number.isFinite(records[6].arms.project.ms) && !records[6].arms.project.reason, 'the project arm kept answering, timed');
+  assertEq(records[6].arms.compose, undefined, 'a skipped arm has no timing');
+  assert(require('./lib/recall-health.js').isDegraded('compose-skipped'), 'a skipped compose is a visible degradation');
+});
+
+test('brain-health: o aviso de recall degradado diz QUAL braco falha e o p50 do que respondeu', () => {
+  const bh = require('./brain-health.js');
+  const txt = bh.buildRecallDegradedText({ windowDegraded: 16, windowTotal: 50, degradedRate: 0.32, lastDegraded: { reason: 'timeout' },
+    arms: { compose: { runs: 50, failed: 16, p50: 5629, p95: 7400 }, project: { runs: 50, failed: 0, p50: 410, p95: 900 } } });
+  assert(/Per arm: compose 16\/50 failed, p50 5\.6 s; project arm 0\/50 failed, p50 0\.4 s/.test(txt), txt);
+});
+
+test('recall-health.summarize: p50/p95 e falhas POR BRACO', () => {
+  const rh = require('./lib/recall-health.js');
+  let st = {};
+  st = rh.applyOutcome(st, undefined, 1, null, 900, { compose: { ms: 800 }, project: { ms: 300 } });
+  st = rh.applyOutcome(st, 'timeout', 2, null, 8000, { compose: { ms: 8000, reason: 'timeout' }, project: { ms: 400 } });
+  const sum = rh.summarize(st);
+  assertEq(sum.arms.compose, { runs: 2, failed: 1, p50: 800, p95: 800 });
+  assertEq(sum.arms.project, { runs: 2, failed: 0, p50: 400, p95: 400 });
+});
 
 test('retrieve-core retrieveRemote (2.29.1): project arm ALWAYS fires (focus+ancestors+__user__, no home) with the capped query; merged project-first', async () => {
   let seenOpts = null;

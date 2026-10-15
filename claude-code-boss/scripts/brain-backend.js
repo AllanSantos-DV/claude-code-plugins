@@ -58,7 +58,9 @@ async function guardMcp(label, fn, { trip = true } = {}) {
     reportMcpSuccess();
     return result;
   } catch (err) {
-    if (trip) reportMcpFailure(err);
+    // ABORTED = the caller's own deadline cancelled the call; it says nothing about the
+    // daemon (retrieve-core reports a real outage itself, per arm).
+    if (trip && !(err && err.code === 'ABORTED')) reportMcpFailure(err);
     throw err;
   }
 }
@@ -285,7 +287,7 @@ async function searchMcp(query, opts = {}) {
     ...(minScore > 0 ? { minScore } : {}),
     ...(Object.keys(metadata).length ? { metadata } : {}),
     ...(opts.includeHome ? { includeHome: true } : {}),
-  });
+  }, opts.signal ? { signal: opts.signal } : {});
   return parseSearchResults(result).slice(0, topK).map(item => normalizeSearchItem(item));
 }
 
@@ -370,7 +372,7 @@ async function composeMcp(query, opts = {}) {
   const args = { query: typeof query === 'string' ? query : '', includeLifecycleState: true };
   if (opts.metadata && typeof opts.metadata === 'object') args.metadata = opts.metadata;
   if (opts.setup) args.setup = true;
-  const result = await _mcp.callTool('compose_recall', args);
+  const result = await _mcp.callTool('compose_recall', args, opts.signal ? { signal: opts.signal } : {});
   return parseComposeEnvelope(result);
 }
 
@@ -741,7 +743,7 @@ async function warmPool(query, opts = {}) {
   if (_warmInFlight) return [];
   _warmInFlight = true;
   try {
-    return await guardMcp('warmPool', () => searchMcp(query, { topK: opts.topK || 5, includeHome: true }));
+    return await guardMcp('warmPool', () => searchMcp(query, { topK: opts.topK || 5, includeHome: true, signal: opts.signal }));
   } finally {
     _warmInFlight = false;
   }

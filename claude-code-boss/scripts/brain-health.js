@@ -305,9 +305,14 @@ function buildDegradedSqliteText() {
 function buildRecallDegradedText(status) {
   const reason = status.lastDegraded && status.lastDegraded.reason;
   const pct = Math.round(status.degradedRate * 100);
+  // Which arm is the problem, and how slow the answers that did come were: "timeout" with a
+  // healthy daemon used to read as "is the daemon running?" while compose answered in 5–8 s.
+  const arm = (name, a) => (a && a.runs ? `${name} ${a.failed}/${a.runs} failed${a.p50 != null ? `, p50 ${(a.p50 / 1000).toFixed(1)} s` : ''}` : null);
+  const arms = status.arms ? [arm('compose', status.arms.compose), arm('project arm', status.arms.project)].filter(Boolean) : [];
   return `[BRAIN-HEALTH] Memory recall is DEGRADED — ${status.windowDegraded} of the last ` +
     `${status.windowTotal} recalls were degraded (${pct}%: empty, or one of compose / project arm failed)` +
     (reason ? ` (last reason: ${reason})` : '') + '. ' +
+    (arms.length ? `Per arm: ${arms.join('; ')}. ` : '') +
     'compose_recall is the required path on the mcp-memory backend: check the daemon is running and is version >= 2.18.';
 }
 
@@ -411,4 +416,4 @@ function main() { return runTextCli(run, 'BRAIN-HEALTH', 'SessionStart'); }
 if (require.main === module) main();
 
 module.exports = {
-  embedderDimMismatch, configRecoveryText, countPendingDrafts, shouldRunOnPrompt, brainServerDepsOk, run, _slowHookAlert: slowHookAlert };
+  embedderDimMismatch, configRecoveryText, countPendingDrafts, shouldRunOnPrompt, brainServerDepsOk, run, _slowHookAlert: slowHookAlert, buildRecallDegradedText };
