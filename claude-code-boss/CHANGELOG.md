@@ -5,6 +5,12 @@
 Check-up do motor (2026-10-15). Cada item tem teste; os números são do dado real desta máquina.
 
 ### Fixed
+- **Recall mais rápido e mais completo.** A consulta enviada ao compose do servidor de memória passa a ter 300 caracteres (era 800):
+  em prompts reais a mediana caiu de 9,1 s para 5,2 s e o compose deixou de estourar o prazo em metade dos prompts.
+- **Menos turnos extras no fim da resposta.** A revisão de captura de lição entra no mesmo bloqueio de outro aviso do Stop em vez de
+  pedir um turno só para ela.
+- **Painel mostra o que antes era só gravado:** bloqueios de curadoria no Stop, correções de escape do Bash, detectores que falharam e
+  o funil da revisão de captura. O registro de comandos de uso único tem teto por projeto.
 - **Painel de curadoria mostra os projetos.** A lista vinha sempre vazia (lia uma pasta que a curadoria não usa mais); agora vem
   das pastas de curadoria de cada projeto, com o número de scripts.
 - **Recall não trava mais o prompt.** O prazo de 8 s cancela a requisição de verdade (o socket fecha; antes ela seguia até 60 s

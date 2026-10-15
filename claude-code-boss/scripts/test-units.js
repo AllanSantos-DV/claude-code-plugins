@@ -5388,7 +5388,7 @@ test('brain-config.getRecallCompose: sane defaults', () => {
   assert(c.timeoutMs > 0, 'timeoutMs default');
   assertEq(c.overlay, null);
   assertEq(c.poolWarming, false, 'off by default: its signal only matters with the server promotion flags on');
-  assertEq(c.maxQueryChars, 800, 'maxQueryChars default (2.29.1)');
+  assertEq(c.maxQueryChars, 300, 'maxQueryChars default');
   assertEq(c.projectArmMinScore, 0.65, 'projectArmMinScore default (2.29.1)');
 });
 
@@ -5442,7 +5442,7 @@ test('brain-config.getRecallCompose: maxQueryChars / projectArmMinScore override
   const c = withUserConfig({ kb: { retrieval: { compose: { maxQueryChars: 0, projectArmMinScore: 0.5 } } } }, () => bc.getRecallCompose());
   assertEq([c.maxQueryChars, c.projectArmMinScore], [0, 0.5]);
   const d = withUserConfig({ kb: { retrieval: { compose: { maxQueryChars: -1 } } } }, () => bc.getRecallCompose());
-  assertEq(d.maxQueryChars, 800);
+  assertEq(d.maxQueryChars, 300);
 });
 
 // Fake mcp-memory backend for retrieveRemote (no warmPool → pool-warming branch skipped).
@@ -5582,8 +5582,8 @@ test('retrieve-core retrieveRemote (2.29.1): project arm ALWAYS fires (focus+anc
   );
   assertEq(seenOpts.projectIds, ['projB', '__user__'], 'arm fires even with ancestorIds ⊆ {focus}; includes __user__');
   assertEq(seenOpts.includeHome, false, 'home stays with compose');
-  assertEq(seenComposeQ.length, 800, 'compose gets the capped query');
-  assertEq(seenSearchQ.length, 800, 'arm gets the capped query');
+  assertEq(seenComposeQ.length, 300, 'compose gets the capped query');
+  assertEq(seenSearchQ.length, 300, 'arm gets the capped query');
   assertEq(out.entries.map((e) => e.id), ['d1', 'd2', 'h1'], 'compose project fact, arm hit above the floor, home last');
   assertEq(reasons, [undefined], 'one ok record per turn');
   assertEq(out.reason, undefined);
@@ -7296,6 +7296,25 @@ test('oneoff-store: prune removes cold entries (D5)', () => {
   oneoff.touch(dd, pk, 'npm test', { now, create: true });
   assertEq(oneoff.prune(dd, pk, { now, windowDays: 90 }), 1);
   assertEq(oneoff.summary(dd, pk).total, 1);
+});
+test('oneoff-store: teto por projeto — a criacao alem do teto despeja as avistadas uma vez mais antigas; marcacao one-hit, recorrentes e a nova ficam', () => {
+  const dd = freshDataDir(); const pk = 'p'; let now = 1_700_000_000_000;
+  const max = oneoff.MAX_ENTRIES;
+  oneoff.mark(dd, pk, { sigs: ['npm run marked-old'], now: now++, maxRecurrence: 3 });
+  for (let i = 0; i < 3; i++) oneoff.touch(dd, pk, 'npm run recurring', { now: now++, create: true });
+  const store = oneoff.load(dd, pk);
+  for (let i = 0; store.entries && Object.keys(store.entries).length < max; i++) {
+    store.entries[`node gen-${i}.js`] = { sig: `node gen-${i}.js`, aliases: [], aliasSigs: [], seen: [now], sessions: [], firstSeen: now, lastSeen: now + i, oneHit: false, markedAt: null };
+  }
+  oneoff.save(dd, pk, store);
+  const r = oneoff.touch(dd, pk, 'node brand-new.js', { now: now + 10_000, create: true });
+  assert(r.created, 'the new one is recorded');
+  const after = oneoff.load(dd, pk).entries;
+  assertEq(Object.keys(after).length, max, 'stays at the cap');
+  assert(!after['node gen-0.js'] && after['node gen-1.js'], 'the oldest single sighting went first');
+  assert(Object.values(after).some((e) => e.oneHit), 'a one-hit marking is never evicted');
+  assert(Object.keys(after).some((k) => /recurring/.test(k)) && Object.keys(after).some((k) => /brand-new/.test(k)), 'recurring and just-created stay');
+  assertEq(oneoff.prune(dd, pk, { now: now + 10_000, windowDays: 90 }), 0, 'prune at the cap removes nothing more');
 });
 test('oneoff-store: marked one-hit under ceiling is suppressible (detect path)', () => {
   const dd = freshDataDir(); const pk = 'p'; let now = 1_700_000_000_000;
@@ -17792,6 +17811,33 @@ test('fixed-cost.listJournal / undoActions({ids}): a lista nao leva a config do 
   fs.rmSync(home, { recursive: true, force: true });
 });
 
+test('leitores: curation summary conta bloqueios do Stop, correcao de escape (bruto + resumo diario) e erros de detector; capture-rate traz o funil da oferta', () => {
+  const { summarizeCuration, CURATION_EVENTS } = require('./lib/curation-metrics.js');
+  for (const e of ['curation.stop.blocked', 'curation.stop.released', 'curation.stop.relented', 'shell-escape.rewritten', 'shell-escape.warned', 'shell-escape.denied', 'stop.detector.error']) assert(CURATION_EVENTS.includes(e), `${e} is read by the curation panel`);
+  const s = summarizeCuration([
+    { eventName: 'curation.stop.blocked', payload: { attempt: 1 } }, { eventName: 'curation.stop.blocked', payload: { attempt: 2 } },
+    { eventName: 'curation.stop.released', payload: {} }, { eventName: 'curation.stop.relented', payload: {} },
+    { eventName: 'shell-escape.rewritten', payload: { kinds: ['heredoc'] } }, { eventName: 'shell-escape.denied', payload: {} },
+    { eventName: 'metrics.daily', payload: JSON.stringify({ event: 'shell-escape.rewritten', count: 5 }) },
+    { eventName: 'stop.detector.error', payload: { name: 'verify-nudge' } }, { eventName: 'stop.detector.error', payload: { name: 'verify-nudge' } },
+  ]);
+  assertEq(s.stopBlocks, { blocked: 2, released: 1, relented: 1 });
+  assertEq(s.shellEscape, { rewritten: 6, warned: 0, denied: 1 }, 'the daily summary of compacted rows keeps the total');
+  assertEq(s.detectorErrors, { 'verify-nudge': 2 });
+  const { aggregateCaptureRate } = require('./lib/capture-rate.js');
+  const f = aggregateCaptureRate([
+    { eventName: 'capture.offered', payload: {}, ts: 1 }, { eventName: 'capture.offered', payload: {}, ts: 2 },
+    { eventName: 'capture.acked', payload: { outcome: 'none' }, ts: 3 }, { eventName: 'capture.acked', payload: { outcome: 'captured' }, ts: 4 },
+    { eventName: 'capture.reoffered', payload: {}, ts: 5 }, { eventName: 'capture.relented', payload: {}, ts: 6 },
+    { eventName: 'capture.adopted', payload: { cycles: 7 }, ts: 7 },
+  ]).funnel;
+  assertEq(f, { offered: 2, acked: 2, ackedNone: 1, relented: 1, reoffered: 1, adopted: 1, adoptedCycles: 7 });
+  const dash = fs.readFileSync(path.join(ROOT, 'scripts', 'dashboard.js'), 'utf8');
+  assert(/CAPTURE_FUNNEL_EVENTS = \['capture\.offered', 'capture\.acked', 'capture\.relented', 'capture\.reoffered', 'capture\.adopted'\]/.test(dash), 'capture-rate route reads the funnel events');
+  const ui = fs.readFileSync(path.join(ROOT, 'dashboard', 'index.html'), 'utf8');
+  assert(/c\.stopBlocks/.test(ui) && /c\.shellEscape/.test(ui) && /c\.detectorErrors/.test(ui) && /captureFunnelLine\(data\.funnel\)/.test(ui), 'the panels render them');
+});
+
 test('dashboard curadoria: /api/curation/projects lista as homes de curadoria com shells.json (fonte atual); shells e remocao por chave; chave com .. e recusada', async () => {
   delete require.cache[require.resolve('./dashboard.js')];
   const dash = require('./dashboard.js');
@@ -20734,6 +20780,35 @@ test('capture-dispatch: run offers from the queue, then acks when capture_lesson
   assert(!queue.getState(project, sid).offer, 'offer acked/cleared');
   assertEq(queue.getState(project, sid).queue.length, 0, 'captured cycles drained from the queue');
   queue.reset(project, sid);
+});
+
+test('capture-dispatch: com outro bloqueio ja neste Stop a oferta pega carona (ignora o cooldown); sozinha espera a cadencia; o dispatcher passa blockPending', async () => {
+  const cd = require('./capture-dispatch.js');
+  const queue = require('./lib/capture-queue.js');
+  const sid = 'cap-ride-' + Date.now();
+  const cwd = process.env.CLAUDE_PLUGIN_DATA;
+  const project = require('../engine/lib/project-id.js').resolveProjectId({ cwd });
+  const tp = path.join(cwd, `capride-${sid}.jsonl`);
+  queue.reset(project, sid);
+  const turns = (from, to) => { const l = []; for (let i = from; i <= to; i++) { l.push(JSON.stringify({ type: 'user', promptId: 'p' + i, message: { role: 'user', content: 'question ' + i } })); l.push(JSON.stringify({ type: 'assistant', message: { role: 'assistant', model: 'claude-sonnet-5', content: [{ type: 'text', text: 'answer ' + i }] } })); } return l; };
+  const all = turns(1, 6);
+  _writeTurnsAsStops(tp, project, sid, all);
+  assert(cd.run({ session_id: sid, cwd, transcript_path: tp }).block, 'first offer');
+  queue.recordAck(queue.getState(project, sid).offer.windowId, 'captured');
+  assert(!cd.run({ session_id: sid, cwd, transcript_path: tp }).block, 'ack drains');
+  _writeTurnsAsStops(tp, project, sid, [...all, ...turns(7, 12)]);
+  assert(!cd.run({ session_id: sid, cwd, transcript_path: tp }).block, 'alone, inside the cooldown: waits');
+  const ride = cd.run({ session_id: sid, cwd, transcript_path: tp }, { blockPending: true });
+  assert(ride.block && /answer 12/.test(ride.reason), 'rides the Stop another detector already blocks');
+  queue.reset(project, sid);
+  const seen = [];
+  const sd = require('./stop-dispatcher.js');
+  const r = await sd.dispatch({}, { profile: 'dev', shadowRate: 0, resolveProjectId: () => 'x', detectors: [
+    { name: 'a', mod: { run: (ev, d) => { seen.push(d.blockPending); return { block: true, reason: 'A' }; } } },
+    { name: 'b', mod: { run: (ev, d) => { seen.push(d.blockPending); return {}; } } },
+  ] });
+  assertEq(seen, [false, true]);
+  assertEq(r.blocks.map((b) => b.name), ['a']);
 });
 
 test('capture-dispatch: an OPEN offer re-blocks even on stop_hook_active until the agent acks (real block-until-ack)', () => {
