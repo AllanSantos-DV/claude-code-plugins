@@ -5,6 +5,8 @@
 Check-up do motor (2026-10-15). Cada item tem teste; os números são do dado real desta máquina.
 
 ### Fixed
+- **Painel de curadoria mostra os projetos.** A lista vinha sempre vazia (lia uma pasta que a curadoria não usa mais); agora vem
+  das pastas de curadoria de cada projeto, com o número de scripts.
 - **Recall não trava mais o prompt.** O prazo de 8 s cancela a requisição de verdade (o socket fecha; antes ela seguia até 60 s
   e ainda era repetida uma vez). Cada braço (compose e projeto) tem um disjuntor por taxa de falha: 5 falhas nas últimas 10
   pulam as próximas 4 chamadas daquele braço e deixam uma sonda passar. O aviso `[BRAIN-HEALTH]` mostra falhas e p50 por braço.

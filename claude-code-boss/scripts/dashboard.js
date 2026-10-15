@@ -7,7 +7,7 @@ const { execSync, execFileSync, spawn } = require('child_process');
 const os = require('os');
 const crypto = require('crypto');
 
-const { findProjectRoot, getShellsConfigPath, resolveScriptPath } = require('./curation-paths.js');
+const { listCurationHomes, curationHomeOfKey } = require('./curation-paths.js');
 const configTesters = require('./config-testers');
 const { USER_SENTINEL, prepareForUserScope } = require('../engine/lib/scope-sanitizer.js');
 const { sanitizeProjectId, sanitizeLogicalProjectId } = require('../engine/lib/project-id.js');
@@ -1174,50 +1174,32 @@ function discardSkillDraft(req, res, url) {
 // ─── API: Curation ─────────────────────────────────────────────────
 
 function getCurationProjects(req, res) {
-  // Collect unique cwd values from detect-curation payloads (pending + processed).
-  // Reuse the module-level DATA_DIR so this never resolves to a different dir.
-  const dirs = [
-    path.join(DATA_DIR, 'detect-curation'),
-    path.join(DATA_DIR, 'detect-curation', 'processed'),
-  ];
-  const seen = new Set();
-  for (const dir of dirs) {
-    if (!fs.existsSync(dir)) continue;
-    for (const f of fs.readdirSync(dir).filter(f => f.endsWith('.json'))) {
-      try {
-        const d = JSON.parse(fs.readFileSync(path.join(dir, f), 'utf-8'));
-        if (d.cwd) seen.add(d.cwd);
-      } catch (err) { console.error(`[DASHBOARD] Curation payload parse error (${f}): ${err.message}`); }
-    }
-  }
-  // For each cwd, check if a curated shells config exists (configurable path)
-  const projects = [...seen].map(cwd => {
-    const projectRoot = findProjectRoot(cwd) || cwd;
-    const shellsPath = getShellsConfigPath(projectRoot);
-    const hasShells = !!shellsPath && fs.existsSync(shellsPath);
+  const projects = listCurationHomes().map(({ key, shellsPath }) => {
     let shellCount = 0;
-    if (hasShells) {
-      try { shellCount = JSON.parse(fs.readFileSync(shellsPath, 'utf-8')).shells?.length || 0; } catch (err) { console.error(`[DASHBOARD] Shells count read error: ${err.message}`); }
-    }
-    return { cwd, projectRoot, hasShells, shellCount, shellsPath };
+    try { shellCount = (JSON.parse(fs.readFileSync(shellsPath, 'utf-8')).shells || []).length; } catch (err) { console.error(`[DASHBOARD] Shells count read error (${key}): ${err.message}`); }
+    return { key, shellCount };
   });
   json(res, projects);
 }
 
+/** shells.json of the project named by `?key=` (a curation key from /api/curation/projects). */
+function curationTarget(url) {
+  const key = url.searchParams.get('key') || '';
+  const home = curationHomeOfKey(key);
+  return home ? { key, home, shellsPath: path.join(home, 'shells.json') } : null;
+}
+
 function getCurationShells(req, res, url) {
-  const cwd = url.searchParams.get('cwd') || '';
-  const projectRoot = cwd ? (findProjectRoot(cwd) || cwd) : '';
-  const shellsPath = projectRoot ? getShellsConfigPath(projectRoot) : null;
-  if (!shellsPath || !fs.existsSync(shellsPath)) {
-    return json(res, { shells: [], whitelist: [], cwd, found: false });
-  }
+  const t = curationTarget(url);
+  if (!t) return fail(res, 'invalid curation key', 400);
+  if (!fs.existsSync(t.shellsPath)) return json(res, { shells: [], whitelist: [], key: t.key, found: false });
   try {
-    const data = JSON.parse(fs.readFileSync(shellsPath, 'utf-8'));
-    // Enrich each shell with script existence check.
-    // Schema: `script` is the canonical field; legacy `command` accepted as fallback.
+    const data = JSON.parse(fs.readFileSync(t.shellsPath, 'utf-8'));
+    // Schema: `script` is the canonical field; legacy `command` accepted as fallback. A relative
+    // script lives in the curation home; an absolute one (a repo script kept in place) stays as is.
     const shells = (data.shells || []).map(s => {
       const scriptRel = s.script || s.command;
-      const scriptPath = scriptRel && projectRoot ? resolveScriptPath(projectRoot, scriptRel) : null; // curation home (or a repo script kept in place)
+      const scriptPath = scriptRel ? path.resolve(t.home, scriptRel) : null;
       const scriptExists = scriptPath ? fs.existsSync(scriptPath) : false;
       let scriptContent = null;
       if (scriptExists) {
@@ -1225,20 +1207,19 @@ function getCurationShells(req, res, url) {
       }
       return { ...s, script: scriptRel, scriptExists, scriptPath, scriptContent };
     });
-    json(res, { shells, whitelist: data.whitelist || [], cwd, found: true });
+    json(res, { shells, whitelist: data.whitelist || [], key: t.key, found: true });
   } catch (e) { fail(res, e.message); }
 }
 
 async function deleteCurationShell(req, res, url) {
-  const cwd = url.searchParams.get('cwd') || '';
+  const t = curationTarget(url);
   const idx = parseInt(url.pathname.split('/').pop());
-  const projectRoot = cwd ? (findProjectRoot(cwd) || cwd) : '';
-  const shellsPath = projectRoot ? getShellsConfigPath(projectRoot) : null;
-  if (!shellsPath || !fs.existsSync(shellsPath)) return fail(res, 'shells config not found', 404);
+  if (!t) return fail(res, 'invalid curation key', 400);
+  if (!fs.existsSync(t.shellsPath)) return fail(res, 'shells config not found', 404);
   try {
-    const data = JSON.parse(fs.readFileSync(shellsPath, 'utf-8'));
+    const data = JSON.parse(fs.readFileSync(t.shellsPath, 'utf-8'));
     data.shells.splice(idx, 1);
-    fs.writeFileSync(shellsPath, JSON.stringify(data, null, 2));
+    writeJsonAtomic(t.shellsPath, data);
     json(res, { ok: true });
   } catch (e) { fail(res, e.message); }
 }
@@ -2668,4 +2649,4 @@ if (require.main === module) startDashboardServer();
 // exported so a test can call it with a fake res ({writeHead,end}) and assert
 // on the exact JSON it serializes — otherwise a bug in byokSafe (e.g. `x || null`
 // silently turning a valid `0` into `null`) would never be caught by any test.
-module.exports = { getValueSummary, getTuningRecommendations, _metricsMemo, getDoctorSwitchedOff, postDoctorUndo, getDoctorConfig, saveDoctorConfig, writeRouterOverride, resolveRouterFlags, getRouterConfig, fetchByokModelIds, getByokModels, opensWithField, postPluginUpdate, getProjectMarker, saveProjectMarker };
+module.exports = { getCurationProjects, getCurationShells, deleteCurationShell, getValueSummary, getTuningRecommendations, _metricsMemo, getDoctorSwitchedOff, postDoctorUndo, getDoctorConfig, saveDoctorConfig, writeRouterOverride, resolveRouterFlags, getRouterConfig, fetchByokModelIds, getByokModels, opensWithField, postPluginUpdate, getProjectMarker, saveProjectMarker };

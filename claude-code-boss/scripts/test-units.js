@@ -4620,7 +4620,7 @@ test('metrics totals: a time-window read is not cut at 500 rows; history COPIED 
     mp._resetAdopted();
     mp.metricsKeyFor(repo2);
     assertEq([fs.existsSync(path.join(base, legacy2, 'adopted.json')), shaped(legacy2)], [false, 1], 'no common row → not marked, the legacy history stays counted');
-    const dash = fs.readFileSync(path.join(ROOT, 'scripts', 'dashboard.js'), 'utf8');
+    const dash = fs.readFileSync(path.join(ROOT, 'scripts', 'dashboard.js'), 'utf8').replace(/\r\n/g, '\n'); // a CRLF checkout must split the same
     for (const fn of ['getCurationSummary', 'getValueSummary', 'getProfileImpact', 'getTuningRecommendations', 'getCompactionSummary']) {
       const body = (dash.split(`async function ${fn}(`)[1] || '').split('\nasync function ')[0];
       assert(body && /(rowsSince|eventsSinceBatch)\([^)]*sinceTs\)/.test(body) && !/limit:|eventsLatest/.test(body), `${fn}: a windowed panel route reads the whole window (sinceTs), not a capped latest-N`);
@@ -17790,6 +17790,38 @@ test('fixed-cost.listJournal / undoActions({ids}): a lista nao leva a config do 
   assertEq(fixedCost.listJournal({ home }).map((e) => e.target), ['xls@mkt', 'figma'], 'o resto segue no diario, na mesma ordem');
   assert(!calls.some((a) => a[1] === 'add-json'), 'o servidor nao foi re-adicionado');
   fs.rmSync(home, { recursive: true, force: true });
+});
+
+test('dashboard curadoria: /api/curation/projects lista as homes de curadoria com shells.json (fonte atual); shells e remocao por chave; chave com .. e recusada', async () => {
+  delete require.cache[require.resolve('./dashboard.js')];
+  const dash = require('./dashboard.js');
+  const call = async (fn, url) => { let status = 200; let body = null; await fn({}, { writeHead: (c) => { status = c; }, end: (t) => { body = JSON.parse(t); } }, new URL('http://x' + url)); return { status, body }; };
+  // withTempHome is synchronous (it restores HOME at the first await), so this async test isolates HOME itself.
+  const saved = [process.env.HOME, process.env.USERPROFILE];
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-home-'));
+  process.env.HOME = home; process.env.USERPROFILE = home;
+  try {
+    const cur = path.join(home, '.claude', 'claude-code-boss', 'curation');
+    const mk = (key, shells) => { const h = path.join(cur, ...key.split('/')); fs.mkdirSync(path.join(h, 'scripts'), { recursive: true }); fs.writeFileSync(path.join(h, 'shells.json'), JSON.stringify({ shells })); return h; };
+    const h = mk('owner/repo', [{ id: 'a', script: 'scripts/a.mjs' }, { id: 'b', script: 'scripts/b.mjs' }]);
+    fs.writeFileSync(path.join(h, 'scripts', 'a.mjs'), 'console.log(1)');
+    mk('github.com/o/r', [{ id: 'c', script: 'scripts/c.mjs' }]);
+    mk('_superseded/old/x', [{ id: 'z' }]);
+    fs.mkdirSync(path.join(cur, 'empty', 'dir'), { recursive: true });
+    const list = await call(dash.getCurationProjects, '/api/curation/projects');
+    assertEq(list.body, [{ key: 'github.com/o/r', shellCount: 1 }, { key: 'owner/repo', shellCount: 2 }], 'homes with shells.json, archives and empty folders left out');
+    const sh = await call(dash.getCurationShells, '/api/curation/shells?key=owner%2Frepo');
+    assert(sh.body.found && sh.body.shells.length === 2, JSON.stringify(sh.body));
+    assertEq(sh.body.shells.map((s) => s.scriptExists), [true, false], 'script resolved inside the curation home');
+    const del = await call(dash.deleteCurationShell, '/api/curation/shells/0?key=owner%2Frepo');
+    assertEq(del.body, { ok: true });
+    assertEq(JSON.parse(fs.readFileSync(path.join(h, 'shells.json'), 'utf8')).shells.map((s) => s.id), ['b']);
+    for (const bad of ['..%2F..%2Fx', 'owner%2F..', '%2Fabs', '']) assertEq((await call(dash.getCurationShells, `/api/curation/shells?key=${bad}`)).status, 400, `key ${bad}`);
+  } finally {
+    [process.env.HOME, process.env.USERPROFILE] = saved;
+    for (const k of ['HOME', 'USERPROFILE']) if (process.env[k] === 'undefined') delete process.env[k];
+    fs.rmSync(home, { recursive: true, force: true });
+  }
 });
 
 test('dashboard /api/doctor/switched-off e /api/doctor/undo: lista com o motivo, desfaz um plugin e o poe em fixedCost.keep para nao ser desativado de novo', async () => {

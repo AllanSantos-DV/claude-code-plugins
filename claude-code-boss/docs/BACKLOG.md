@@ -21,13 +21,12 @@ Relatórios: `docs/research/checkup/` (local). Tudo abaixo marcado [x] tem teste
   Não era um commit: intermitente (2 de 5 execuções na mesma HEAD; a pasta vazia apagava segundos depois). Causa: o Windows recusa remover
   uma pasta que ainda é o cwd de um processo saindo (ou presa pelo antivírus) e o `rmSync` do Node 24 desiste na hora no EPERM da raiz.
   `test-temp.cjs` repete por até 5 s e falha alto depois; teste em `test-temp-lifecycle.cjs` com um neto que segura o cwd por 700 ms (falhava, passa).
-- [ ] **Painel de curadoria sempre vazio** (achado ao validar o build instalado, 2026-10-15): `GET /api/curation/projects`
-  (`scripts/dashboard.js:1176` `getCurationProjects`) lista projetos a partir de `<dataDir>/detect-curation/` (+ `processed/`),
-  pasta do pipeline antigo de payload em disco que o `curation-detect.js` substituiu pelo journal por turno — ninguém grava mais
-  nela, então a resposta é `[]` (visto: 200 com `[]`, 52 scripts curados neste projeto). A curadoria em si funciona; só a lista
-  do painel não. Proposta: gravar `root.json` (raiz absoluta) no `curationHome` quando ele é resolvido e listar os projetos a
-  partir de `~/.claude/claude-code-boss/curation/**/shells.json` + esse `root.json`; teste com home falso. Não corrigido na hora:
-  precisa de um registro novo persistido (decisão de formato), fora do escopo do motor.
+- [x] **Painel de curadoria sempre vazio** (achado ao validar o build instalado e corrigido na hora): `GET /api/curation/projects`
+  lia `<dataDir>/detect-curation/`, pasta do pipeline antigo que ninguém grava mais, e devolvia `[]` (havia 13 projetos com scripts
+  curados). Agora lista as homes de curadoria com `shells.json` (`curation-paths.listCurationHomes`) e o painel endereça o projeto pela
+  chave da home (`?key=`, validada por `curationHomeOfKey`: nada sai da pasta de curadoria). Teste `dashboard curadoria` (lista, shells, remoção,
+  chave com `..` recusada). Achado junto e corrigido: o teste `metrics totals` cortava o `dashboard.js` por `'\n}\n'` e falhava
+  num checkout CRLF (o arquivo regravado em CRLF pelo autocrlf); agora normaliza o EOL antes de cortar.
 - [ ] **P13 (proposta, não implementar sem o Allan):** expor `mechanicalCut`, `briefTailTokens` e `folderTtl` na Home do painel.
 - [ ] **Smoke `smoke-decision` desatualizado** (4 de 8 asserções falham já antes da mudança; movido para `smoke/plugin-smokes/`). Visto ao
   rodá-lo depois de mover. Proposta: o smoke passa `session_id` (o decision-promote só mostra a entrada da própria sessão desde a 3.x).
