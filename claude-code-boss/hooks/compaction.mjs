@@ -546,11 +546,13 @@ export const register = (on) => {
   // The session's last API call often lands in the transcript after its turn.complete
   // (interactive): one more observation at the end, inside session.end's short budget.
   on('session.end', async ($, e, next) => {
+    // Leave the folder FIRST (session.end's budget is short): if this session held its TTL at 5m, it goes back now.
+    // E2E 14/10: after the transcript read below, the leave never reached the daemon. A crash is swept by the next
+    // report of any session (and the next session start).
+    try { await reportFolder($, ctx, { end: true }); } catch (err) { $.ui.log(`compaction: folder leave failed: ${String(err && err.message ? err.message : err)}`); }
     if (ctx.config.enabled && ctx.transcriptPath) {
       try { await observeCalls($, ctx); } catch (err) { $.ui.log(`compaction: end-of-session observation failed: ${String(err && err.message ? err.message : err)}`); }
     }
-    // Leave the folder: if this session held its TTL at 5m, it goes back now (a crash is swept by the next report).
-    try { await reportFolder($, ctx, { end: true }); } catch (err) { $.ui.log(`compaction: folder leave failed: ${String(err && err.message ? err.message : err)}`); }
     return next(e);
   });
 };
