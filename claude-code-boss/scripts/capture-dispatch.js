@@ -170,10 +170,13 @@ function run(event, deps) {
     cooldownMs: cfg.cooldownMs != null ? cfg.cooldownMs : DEFAULT_BOUNDS.cooldownMs,
   };
   if ((st.offers || 0) >= bounds.maxCapturesPerSession) return {};
-  if (st.lastOfferTs && (Date.now() - st.lastOfferTs) < bounds.cooldownMs) return {};
   if (st.queue.length === 0) return {};
+  // Another detector already blocks this Stop: the offer rides that block instead of costing its own
+  // turn on a later Stop, so the cadence (cooldown + shouldFire) is not waited for.
+  const ride = !!(deps && deps.blockPending);
+  if (!ride && st.lastOfferTs && (Date.now() - st.lastOfferTs) < bounds.cooldownMs) return {};
   const queueChars = renderBlock(st.queue, 1e9).length;
-  const decision = shouldFire(
+  const decision = ride ? { fire: true, reason: 'rides-block' } : shouldFire(
     { cycles: st.queue.length, chars: queueChars, model, capturesThisSession: st.offers || 0, lastCaptureTs: st.lastOfferTs || 0 },
     bounds,
   );
