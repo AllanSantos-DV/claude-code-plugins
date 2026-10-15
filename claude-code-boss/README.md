@@ -225,8 +225,10 @@ prazo interno de `timeout − 1 s`.
 >   `refine-research`, `failure-retro`, `research-followup`, `auto-continue`.
 >   `session-summary` (1×/sessão) e o retrieval continuam.
 > - **`dev`** — tudo ligado (curadoria escala até 3×), para quem estende o plugin.
-> - **`free`** — passa tudo: o Stop-dispatcher faz short-circuit e **nada bloqueia**;
->   só o retrieval de contexto no prompt (read-only) segue ativo.
+> - **`free`** — passa tudo: todos os detectores do Stop ficam desligados (sem passe-sombra)
+>   e os guards também — curadoria, error-guard, escape de shell, PowerShell, formato de
+>   arquivo, injeção de políticas e pesquisa ativa. **Nada bloqueia nem reescreve**; só o
+>   retrieval de contexto no prompt (read-only) segue ativo.
 >
 > **Troca update-safe:** o perfil é lido do config shipped **mesclado** com
 > `DATA_DIR/hooks/user-config.json` (nunca versionado), então trocar não edita arquivo

@@ -42,8 +42,7 @@ const DEFAULTS = {
 };
 
 function loadConfig() {
-  const cfg = hooksConfig.load();
-  const ar = cfg.activeResearch || {};
+  const ar = hooksConfig.getActiveResearch();
   return {
     enabled: ar.enabled !== false,
     triggers: { ...DEFAULTS.triggers, ...(ar.triggers || {}) },

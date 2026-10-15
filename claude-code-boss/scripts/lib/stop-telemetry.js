@@ -35,6 +35,7 @@ const PROFILE_GATE = {
   'session-summary':          'getSessionSummary',
   'auto-continue-stop':       'getAutoContinue',
   'curation-stop':            'getCurationStop',
+  'decision-promote':         'getDecisionPromote',
 };
 
 /**

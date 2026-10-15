@@ -18407,10 +18407,32 @@ test('stop-telemetry.gateState: dev enables flagged; free gates everything', () 
   const off = { getRefineResearch: () => ({ enabled: false }) };
   assertEq(telem.gateState('refine-research', 'dev', on).enabled, true);
   assertEq(telem.gateState('refine-research', 'standard', off).enabled, false);
-  const g = telem.gateState('decision-promote', 'free', {});
+  const g = telem.gateState('capture-dispatch', 'free', {});
   assertEq(g.enabled, false);
   assertEq(g.reason, 'free_passthrough');
-  assertEq(telem.gateState('decision-promote', 'dev', {}).enabled, true); // non-gated always on
+  assertEq(telem.gateState('capture-dispatch', 'dev', {}).enabled, true); // non-gated always on
+  // P2: decision-promote is under the profile gate (its getter is the switch).
+  assertEq(telem.gateState('decision-promote', 'standard', { getDecisionPromote: () => ({ enabled: false }) }), { flagged: true, enabled: false, reason: 'profile_match' });
+  assertEq(telem.gateState('decision-promote', 'standard', { getDecisionPromote: () => ({ enabled: true }) }).enabled, true);
+});
+
+test('perfil free DESLIGA os guards de verdade (README promete "nada bloqueia"); dev/standard seguem ligados', () => {
+  const hc = require('./lib/hooks-config.js');
+  const free = hc.resolveProfileConfig({ profile: 'free' });
+  for (const k of ['curationGuard', 'errorGuard', 'shellEscapeGuard', 'powershellGuard', 'fileFormatGuard', 'policyInject', 'activeResearch', 'decisionPromote']) {
+    assertEq(free[k] && free[k].enabled, false, `free: ${k} off`);
+  }
+  const std = hc.resolveProfileConfig({ profile: 'standard' });
+  for (const k of ['curationGuard', 'errorGuard', 'shellEscapeGuard', 'powershellGuard', 'fileFormatGuard', 'policyInject', 'decisionPromote']) {
+    assert(!(std[k] && std[k].enabled === false), `standard: ${k} stays on`);
+  }
+  assertEq(hc.resolveProfileConfig({ profile: 'free', errorGuard: { enabled: true } }).errorGuard.enabled, true, 'an explicit user value still wins over the preset');
+  const src = fs.readFileSync(path.join(SCRIPTS, 'lib', 'hooks-config.js'), 'utf8');
+  for (const g of ['getCurationGuard', 'getErrorGuard', 'getPowershellGuard', 'getFileFormatGuard', 'getShellEscapeGuard', 'getPolicyInject']) {
+    const body = src.slice(src.indexOf(`function ${g}(`), src.indexOf(`function ${g}(`) + 400);
+    assert(/_resolved\(\)/.test(body) && !/\bload\(\)\./.test(body.split('\n}')[0]), `${g} reads the profile-resolved config`);
+  }
+  assert(/getActiveResearch\(\)/.test(fs.readFileSync(path.join(SCRIPTS, 'active-research-detect.js'), 'utf8')), 'active-research reads the resolved block');
 });
 
 test('stop-telemetry.shouldShadow: bounds + deterministic per (runId,name)', () => {
@@ -18472,6 +18494,8 @@ test('stop-dispatcher.dispatch: gated + detect + sampled → shadow would_block,
     run: async () => ({ block: true, reason: 'R' }),
     detect: async () => { detectRan = true; return { block: true, reason: 'WOULD' }; },
   } };
+  const quiet = await dispatcher.dispatch({}, { profile: 'free', runId: 'r', detectors: [fake] });
+  assertEq([detectRan, quiet.detectors[0].would_block], [false, null], 'free: no shadow pass by default (passthrough)');
   const r = await dispatcher.dispatch({}, { profile: 'free', runId: 'r', shadowRate: 1, detectors: [fake] });
   assertEq(detectRan, true);
   assertEq(r.blocks.length, 0);

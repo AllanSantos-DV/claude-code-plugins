@@ -209,6 +209,7 @@ function allFixes(event) {
  * @returns {Promise<object>}
  */
 async function run(event) {
+  if (hooksConfig.getCurationGuard().enabled === false) return PASS;
   const fix = event && event.tool_name === 'Bash' && event.tool_input?.command ? allFixes(event) : null;
   if (!fix) return cascade(event);
   if (fix.deny) return fix.deny;
