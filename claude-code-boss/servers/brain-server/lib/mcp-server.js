@@ -268,6 +268,11 @@ export function createBrainServer({ pluginRoot, mode = 'http', kbWorker, kbLock,
   // methods return Promises — callers already fire-and-forget this, so awaiting
   // inside is enough to keep `if (init(...)) recordMetric(...)` correct instead of
   // treating a pending Promise as always-truthy.
+  // Where a capture came from: the Stop hook's review offer (windowId) or a direct call
+  // (nudged or spontaneous — the tool cannot tell). Without it the capture funnel could
+  // not separate offers from everything else (2.392 lesson.captured, none attributable).
+  const captureSource = (a) => (a && a.windowId ? { windowId: String(a.windowId), source: 'capture-dispatch' } : { source: 'direct' });
+
   async function recordLessonMetric(project, payload) {
     try {
       const metricsStore = kbWorker ? kbWorker.clientsFor(project).metricsClient : require(path.join(PLUGIN_ROOT, 'scripts', 'lib', 'metrics-store.js'));
@@ -394,13 +399,13 @@ export function createBrainServer({ pluginRoot, mode = 'http', kbWorker, kbLock,
             const recurrence = (dup.recurrence || 1) + 1;
             // baseMetadata: add_document REPLACES metadata on upsert — keep the document's other keys.
             await backend.save({ id: dup.id, baseMetadata: dup.metadata, title: dup.title, summary: f.summary, content: { detail: f.detail || f.summary }, type, tags: dup.tags && dup.tags.length ? dup.tags : (Array.isArray(a.tags) ? a.tags : []), confidence: Math.max(dup.confidence || 0.5, confidence), scope: dup.scope || w.effective, projectId: w.projectId, recurrence });
-            await recordLessonMetric(project, { type, decision: 'merge', scope: w.effective, recurrence });
+            await recordLessonMetric(project, { type, decision: 'merge', scope: w.effective, recurrence, ...captureSource(a) });
             recordCaptureAck(a.windowId, 'captured');
             return asText({ decision: 'merge', id: dup.id, recurrence, title: dup.title, type, project: w.projectId, scope: w.effective, backend: 'mcp-memory' });
           }
           const id = await backend.save({ title: f.title, summary: f.summary, content: { detail: f.detail || f.summary }, type, tags: Array.isArray(a.tags) ? a.tags : [], confidence, scope: w.effective, projectId: w.projectId });
           // Metrics are per-machine, not part of the KB — recorded locally.
-          await recordLessonMetric(project, { type, decision: 'admit', scope: w.effective });
+          await recordLessonMetric(project, { type, decision: 'admit', scope: w.effective, ...captureSource(a) });
           recordCaptureAck(a.windowId, 'captured');
           return asText({ decision: 'admit', id, type, project: w.projectId, scope: w.effective, backend: 'mcp-memory' });
         }
@@ -1069,7 +1074,7 @@ export function createBrainServer({ pluginRoot, mode = 'http', kbWorker, kbLock,
             if (hits.length > 0) {
               const merged = await kbStore.merge(hits[0].id, { summary: safeSummary, content: { detail: safeDetail || safeSummary, ...(skillFields ? { skill: skillFields } : {}) }, confidence });
               if (merged) {
-                await recordLessonMetric(storageProject, { type, decision: 'merge', scope: effectiveScope, recurrence: merged.recurrence });
+                await recordLessonMetric(storageProject, { type, decision: 'merge', scope: effectiveScope, recurrence: merged.recurrence, ...captureSource(args) });
                 recordCaptureAck(args.windowId, 'captured');
                 if (storageProject !== currentProject) await getKB(currentProject);
                 return { content: [{ type: 'text', text: JSON.stringify({ decision: 'merge', id: hits[0].id, recurrence: merged.recurrence, title: hits[0].title, project: storageProject, scope: effectiveScope }, null, 2) }] };
@@ -1084,7 +1089,7 @@ export function createBrainServer({ pluginRoot, mode = 'http', kbWorker, kbLock,
           await kbStore.save(entry, vector);
           await kbIndex.index(entry);
           await kbGraph.registerNode(entry);
-          await recordLessonMetric(storageProject, { type, decision: 'admit', scope: effectiveScope });
+          await recordLessonMetric(storageProject, { type, decision: 'admit', scope: effectiveScope, ...captureSource(args) });
           recordCaptureAck(args.windowId, 'captured');
           if (storageProject !== currentProject) await getKB(currentProject);
           return { content: [{ type: 'text', text: JSON.stringify({ decision: 'admit', id: entry.id, type, project: storageProject, scope: effectiveScope }, null, 2) }] };
