@@ -1435,7 +1435,10 @@ const DOCTOR_OFF_KINDS = ['plugin-disable', 'mcp-remove', 'skill-name-only'];
 
 function getDoctorSwitchedOff(req, res) {
   try {
-    json(res, { items: require('./lib/fixed-cost.js').listJournal().filter((e) => DOCTOR_OFF_KINDS.includes(e.kind)).reverse() });
+    const lang = new URL(req.url, 'http://localhost').searchParams.get('lang') || undefined;
+    const { reasonText } = require('./lib/doctor-reason.js');
+    const items = require('./lib/fixed-cost.js').listJournal().filter((e) => DOCTOR_OFF_KINDS.includes(e.kind)).reverse();
+    json(res, { items: items.map((e) => ({ ...e, why: reasonText(e, lang) })) });
   } catch (err) {
     console.error(`[DASHBOARD] /api/doctor/switched-off failed: ${err.message}`);
     fail(res, err.message, 500);

@@ -3003,7 +3003,7 @@ async function loadSwitchedOff() {
   const el = document.getElementById('home-switched-off');
   if (!card || !el) return;
   try {
-    const d = await api('GET', '/api/doctor/switched-off');
+    const d = await api('GET', '/api/doctor/switched-off?lang=' + _lang);
     if (d.error) throw new Error(d.error);
     const items = d.items || [];
     const cfg = await api('GET', '/api/doctor/config');
