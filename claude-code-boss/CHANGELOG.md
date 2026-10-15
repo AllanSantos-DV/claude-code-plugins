@@ -30,6 +30,22 @@
   MCP carregam sob demanda. Um valor seu (`false`, `auto`) fica como está.
 
 ### Added
+- **Corte no cache frio sem chamar o modelo.** Quando o boss compacta com o cache frio (o gate do prompt ou o fim de
+  um turno autônomo, e a compactação automática do engine a frio), o histórico vira o "brief": todos os seus pedidos na
+  íntegra, uma linha por ferramenta (arquivo, URL, comando) e as mensagens dos últimos ~2 mil tokens na íntegra. Não há
+  chamada de resumo. Medido em 6 compactações reais: guarda ~81% do que os turnos seguintes citaram, contra 73% do
+  resumo do modelo. O `/compact` digitado por você continua usando o resumo do modelo, e uma poda que corta 85% ou mais
+  continua tendo prioridade. Config `compaction.mechanicalCut` e `compaction.briefTailTokens` (2000).
+- **Cache de 5 min por pasta, só quando todas as sessões da pasta passaram do limite.** Enquanto todas as sessões
+  abertas na mesma pasta estão acima do % configurado, o boss grava `env.CLAUDE_CODE_PROMPT_CACHE_TTL=5m` no
+  `.claude/settings.local.json` daquela pasta. O Claude Code relê o arquivo na hora e o cache esfria em 5 min, então o
+  corte vem logo. Depois do corte, ao fechar a sessão ou se ela morrer, o valor anterior volta. Regras:
+  - "mesma pasta" é o cwd de abertura exato. Uma subpasta é outra pasta: medido, cada sessão lê só o arquivo do próprio
+    cwd, nem o da raiz do git nem o da pasta-mãe;
+  - cada sessão só é cortada com o próprio cache frio; a que está quente não é tocada;
+  - um valor seu no arquivo nunca é sobrescrito;
+  - um arquivo criado pelo boss vai para o `info/exclude` do git, nunca para um commit.
+  Config `compaction.folderTtl`.
 - **Doctor: custo fixo por mensagem (`node scripts/doctor.js --cost`).** Cruza o que vai em toda mensagem com o uso real dos últimos
   30 dias (transcripts): servidores MCP e backends de gateway (chamadas, autenticação, tokens das definições medidos por `tools/list`
   nos servidores HTTP), skills (uso e tokens da descrição), plugins e arquivos de instrução. Diz o que sobra, em tokens e US$ por
