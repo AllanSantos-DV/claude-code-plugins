@@ -1,5 +1,21 @@
 # Backlog
 
+## Contexto pronto nas rajadas de leitura — protótipo opt-in e medição com sessões reais (PEDIDO 413, pendência 4009a9, 2026-10-15)
+
+- **Protótipo** (`scripts/context-bundle.js "<tema>"`, `scripts/lib/context-bundle.js`; nada o chama sozinho): uma chamada devolve trechos de código, testes e docs ranqueados pelo Smart Tool (via o MCP HTTP dele,
+  com polling do job), as seções dos mapas de tarefa (`docs/maps`, `docs/plans`) que citam o tema e a memória do Brain (`retrieve-core`). Cada fonte que falha aparece em `notes`; faixa além do fim do arquivo
+  é dita como índice velho. Decisão: CLI e não ferramenta MCP nova, para não pagar definição em toda mensagem antes de haver ganho medido.
+- **Medição** (`docs/research/context-bundle/`, local; projeto claude-code, 30 dias, 63 sessões, 16 711 turnos, US$ 1 729): 290 rajadas de ≥ 3 turnos só de leitura (Read/Grep/Glob/busca; Bash não conta),
+  1 450 turnos (média 5 por rajada), US$ 105,52 = 6,1% do gasto. Não reproduzi o 44/401 do relatório original (outra definição e outro conjunto).
+- **Replay de 40 rajadas reais** contra o protótipo (Smart Tool real; memória fora, o hook já injeta): mediana de 5,5 mil tokens e 7,6 s por pacote.
+  Com o PROMPT do usuário como tema: mediana de acerto 0, só 6 de 40 rajadas com ≥ 50% dos arquivos lidos dentro do pacote, economia líquida entre −US$ 0,26 e +US$ 0,33 (prompt é tema ruim).
+  Com a PRIMEIRA BUSCA DO PRÓPRIO AGENTE como tema (123 das 290 rajadas têm uma): mediana de acerto 0,67; encurta 22 de 40 (≥ 50% dos arquivos) ou 19 de 40 (≥ 80%), removendo 82 ou 57 dos 204 turnos da amostra;
+  economia líquida US$ 2,65 ou US$ 1,63 dos US$ 15,11 da amostra (17,5% ou 10,8%), já descontando o custo de gravar o pacote e a penalidade das rajadas que não encurtam.
+  Extrapolado às 290 rajadas: US$ 11 a 18 por 30 dias neste projeto, 0,7 a 1,1% do gasto total.
+- **Limites**: acerto = arquivos lidos que o pacote trouxe (proxy: ler um arquivo não prova que era necessário, nem o contrário); o repositório mudou desde as sessões (arquivos que sumiram foram excluídos do acerto);
+  a extrapolação aplica a fatia da amostra a todas as rajadas, inclusive as sem busca própria (otimista); só um projeto; a economia do pacote que entra na janela e é relida nos turnos seguintes não foi modelada.
+- [x] **Registrado para o Allan decidir:** usar de verdade numa sessão (ligar como orientação no prompt do agente ou como ferramenta MCP) e comparar com as mesmas métricas; sem isso o número acima é replay, não ganho medido.
+
 ## Doctor: aviso, desfazer no dashboard e desativação por evidência (PEDIDO 413, 2026-10-15) — pronto na develop, aguardando a validação do Allan
 
 Decisão do Allan: `fixedCost.autoFix` continua LIGADO por padrão; em troca o usuário é avisado com clareza e tem o controle final.
