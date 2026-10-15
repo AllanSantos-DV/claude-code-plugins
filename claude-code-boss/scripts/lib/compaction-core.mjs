@@ -200,6 +200,22 @@ export function planCompaction(messages, options = {}) {
   return { messages: out, charsBefore, charsAfter, ratio: charsBefore ? (charsBefore - charsAfter) / charsBefore : 0, pruned, verbatimTextIntact, duplicatesDropped };
 }
 
+// A resumed session's first request re-writes the whole history whatever the provider TTL
+// (measured: 4 of 4 resumes past 100k tokens on the same model re-wrote 88-100%, after pauses of 1-35 min).
+// Older than any TTL, so the same rules that read a cold cache apply.
+export const RESUMED_CACHE_AGE_MS = 2 * 3600000;
+
+/**
+ * When the cache of a just-resumed session was last warm: the last answer's time, but never newer than
+ * RESUMED_CACHE_AGE_MS — the resume itself loses the cache.
+ * @param {number} now
+ * @param {number|null|undefined} secondsSinceLastResponse
+ */
+export function resumedAnswerAt(now, secondsSinceLastResponse) {
+  const real = secondsSinceLastResponse == null ? Infinity : now - secondsSinceLastResponse * 1000;
+  return Math.min(real, now - RESUMED_CACHE_AGE_MS);
+}
+
 /**
  * @param {{tokens?:number, now:number, lastAnswerAt?:number, lastCompactAt?:number, busy:boolean, ttlMs?:number}} s
  * @param {Partial<typeof DEFAULTS>} [options]
