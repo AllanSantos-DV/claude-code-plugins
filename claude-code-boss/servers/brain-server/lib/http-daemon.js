@@ -60,6 +60,16 @@ export async function startHttpDaemon({ pluginRoot, dataDir, port, host = '127.0
   const inFlight = new Set();
   const idleWaiters = [];
   const startedAt = Date.now();
+  // Since Node 15 an unhandled rejection anywhere in this process kills it, and with it
+  // the daemon every session depends on. Log it with its stack and count it in /health.
+  const unhandledRejections = { count: 0, last: null };
+  const onUnhandledRejection = (reason) => {
+    unhandledRejections.count++;
+    const message = reason instanceof Error ? reason.message : String(reason);
+    unhandledRejections.last = { at: new Date().toISOString(), message: message.slice(0, 300) };
+    console.error(`[brain-http] unhandled rejection (daemon kept running): ${(reason && reason.stack) || message}`);
+  };
+  process.on('unhandledRejection', onUnhandledRejection);
   // ONE pool of N workers for the whole daemon process (not per session): moves
   // brain-store.js's synchronous SQLite calls off this main thread, so GET /health
   // and every other session's HTTP traffic keep responding while a KB call is in
@@ -140,7 +150,7 @@ export async function startHttpDaemon({ pluginRoot, dataDir, port, host = '127.0
           ok: true, pluginRoot, dataDir, version, pid: process.pid, port,
           // The doctor checks the daemon's real runtime: the hook that spawned it may have had another node on PATH.
           node: { version: process.version, execArgv: process.execArgv, nodeOptions: process.env.NODE_OPTIONS || '' },
-          sessions: sessions.size, hookWorker: hookWorker.stats(), hookLatency: hookLatencyStats(), startedAt, uptimeMs: Date.now() - startedAt,
+          sessions: sessions.size, hookWorker: hookWorker.stats(), hookLatency: hookLatencyStats(), unhandledRejections, startedAt, uptimeMs: Date.now() - startedAt,
         }));
         return;
       }
@@ -302,6 +312,7 @@ export async function startHttpDaemon({ pluginRoot, dataDir, port, host = '127.0
     _shuttingDown = true;
     setTimeout(() => {}, 2500).unref(); // fallback de tempo — o supervisor gerencia o ciclo de vida
     clearInterval(reaper);
+    process.off('unhandledRejection', onUnhandledRejection);
     // Stop listening first: the port frees at once, so the supervisor's swap goes on
     // starting the new daemon while this one finishes what it already accepted.
     const closed = new Promise((r) => httpServer.close(r));
