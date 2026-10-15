@@ -16350,6 +16350,34 @@ test('self-review-retrieve.retrieveViaDaemon: manda o cwd no brain_search quando
   assert(/opts\.cwd \? \{ cwd: opts\.cwd \}/.test(src), 'brain_search args carry cwd');
 });
 
+// ─── skill-metric: a ferramenta Skill (PostToolUse) também conta ─────────────
+// Sonda nos transcritos de 7 d: 645 chamadas da ferramenta Skill, tool_input {skill[,args]},
+// e o PostToolUse dispara para ela (hook_success "PostToolUse:Skill"); o skill.invoked só
+// via UserPromptExpansion via 2 delas.
+test('skill-metric.run: chamada da ferramenta Skill grava skill.invoked com o nome de tool_input.skill', async () => {
+  const sm = require('./skill-metric.js');
+  const m = require('./lib/metrics.js');
+  const orig = m.fire; const got = [];
+  m.fire = (name, payload) => { got.push({ name, payload }); };
+  try {
+    await sm.run({ hook_event_name: 'PostToolUse', tool_name: 'Skill', tool_input: { skill: 'claude-code-boss:dashboard', args: 'x' }, session_id: 's' });
+    await sm.run({ hook_event_name: 'UserPromptExpansion', command: '/release now', session_id: 's' });
+    await sm.run({ hook_event_name: 'PostToolUse', tool_name: 'Skill', tool_input: {}, session_id: 's' });
+  } finally { m.fire = orig; }
+  assertEq(got, [
+    { name: 'skill.invoked', payload: { skillName: 'claude-code-boss:dashboard', via: 'tool' } },
+    { name: 'skill.invoked', payload: { skillName: 'release', via: 'typed' } },
+  ]);
+});
+
+test('hooks.json: PostToolUse matcher Skill -> hook_skill_metric com tool_name e tool_input', () => {
+  const hj = JSON.parse(fs.readFileSync(path.join(ROOT, 'hooks', 'hooks.json'), 'utf8')).hooks;
+  const g = (hj.PostToolUse || []).find((x) => x.matcher === 'Skill');
+  assert(g, 'grupo PostToolUse:Skill');
+  const h = g.hooks.find((x) => x.tool === 'hook_skill_metric');
+  assert(h && h.input.tool_name === '${tool_name}' && h.input.tool_input === '${tool_input}', 'hook_skill_metric recebe tool_name/tool_input');
+});
+
 // ─── U2 value-summary (aggregation) + session-summary detector ───────────────
 const valueSummary = require('./lib/value-summary.js');
 const sessionSummary = require('./session-summary.js');
