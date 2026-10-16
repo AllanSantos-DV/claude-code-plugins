@@ -16,10 +16,18 @@ Relatório com fontes: `docs/research/compat-2.1.300/relatorio.md` (local) e `do
   `scripts/economy-report.js` + `lib/economy-ledger.js` (custo por sessão, comparação com intervalo, validada com efeito conhecido), com testes.
 - [x] **Grupo de controle (A/B sorteado): superado pela orientação do dono (2026-10-16)** — o valor é resultado que cresce com o uso, não custo por sessão;
   sortear sessões sem as funções as privaria do que cresce. Fica só por função, se o dono quiser provar uma específica (ver `docs/ECONOMY.md`).
-- [ ] **Promoção automática de lição de projeto para usuário não existe** (achado do mapa funcional, `docs/FUNCOES.md` §2.8): o escopo user nasce na captura (tipo/tags),
-  por `scope-bulk-reclassify` ou por move manual no dashboard; a recorrência é contada dentro de um projeto e nada soma a mesma lição em N projetos. Proposta: promover
-  quando a mesma lição (cosseno ≥ 0,9) aparecer em ≥ 2 projetos, ou for citada em ≥ 2 sessões de ≥ 2 projetos, com `prepareForUserScope`; medir pelo `origin` de
-  `retrieve.cited`. Decisão de produto (copia conteúdo entre projetos) — não implementado. Achado junto: `scope-bulk-reclassify` copia `content.files` e tags sem sanitizar.
+- [x] **Promoção automática de lição de projeto para usuário** (achado do mapa funcional, `docs/FUNCOES.md` §2.8) — implementada na branch `feat/promocao-usuario`:
+  `scripts/lesson-promote.js` (`scan`, `apply`, `list`, `undo`) + `scripts/lib/lesson-promotion.js` (regras R1 e R2, puras) + `scripts/lib/promotion-registry.js`; config `kb.promotion`;
+  disparo semanal em `curation-session.js`; eventos `lesson.promoted`/`lesson.promotion.reverted` e seção PROMOÇÕES do `outcome-report.js`. Copia, nunca move; reversível; testes com
+  backend, embedder e métricas falsos e `dataDir` temporário. Riscos conhecidos abertos, cada um com a proposta:
+  - [ ] **Depende do dono confirmar o padrão `mode: apply`** (promove sozinha, com aviso e `undo`). Alternativa conservadora: `dry-run` por padrão e o dono liga. Não instalado, não aplicado em dado real.
+  - [ ] **O recall não grava quais lições entraram** (`retrieve.injected` só tem contagens), então a taxa de citação das promovidas contra as demais é aproximada. Proposta: gravar os `entryId` injetados (ou só os de origem `other`) em `retrieve.injected`.
+  - [ ] **O texto copiado pode citar outro projeto** de forma que a limpeza não pega (ela remove só id e nome, com >= 5 caracteres, dos projetos-fonte). Proposta: lista de nomes de todos os projetos conhecidos na limpeza, ou revisão do dono no primeiro ciclo (`scan`).
+  - [ ] **"Projeto distinto" é aproximado**: último segmento do id (dois repos de mesmo nome e donos diferentes contam como um, lado conservador); projeto pai e filho de monorepo contam como dois em R2. Proposta: usar a cadeia de ancestrais do `project-id` para unificar.
+  - [ ] **Cada execução refaz o embedding de todas as lições** (~36 s para 2300 lições aqui). Proposta: cache de vetor por `entryId` + hash do texto em `promotions/`.
+  - [ ] **Só o backend mcp-memory.** No backend local não há leitura de todos os projetos num lugar só; a CLI diz que não se aplica. Proposta: ler cada `brain.db` por `scripts/lib/brain-projects.js` se algum usuário local pedir.
+  - [ ] **Duas execuções manuais simultâneas** podem disputar o registro (o disparo semanal tem carimbo). Proposta: `engine/lib/process-lock.js` em volta do `apply`.
+  - [ ] **`scripts/scope-bulk-reclassify.js` ainda copia `content.files` e as tags sem sanitizar** (achado junto; a promoção automática não tem essa falha). Proposta: reaproveitar `safeTags` e o corte de `files` de `lesson-promotion.js`.
 - [x] **Subagentes: TTL de 1 h não compensa** (medido: 37 regravações a frio = 5 milhões de tokens contra 63 milhões de escrita; ganho 6 M × custo extra 47 M equivalentes)
   e **janela de compactação**: o engine corta a ~167 mil (janela de 200 mil de subagente); 7% passam de 150 mil. `subagent-report.js` só recomenda ajuste por tipo.
 - [ ] **Cobertura dos eventos de regra**: só existem desde ~3/10 e a retenção do ruído é de 14 dias; a curva por tempo de uso só fica estável repetindo `outcome-report.js` daqui a semanas.

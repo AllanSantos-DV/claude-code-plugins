@@ -5,6 +5,14 @@
 Check-up do motor (2026-10-15). Cada item tem teste; os números são do dado real desta máquina.
 
 ### Added
+- **Promoção automática de lição do projeto para o escopo do usuário** (`node scripts/lesson-promote.js scan | apply | list | undo`, `kb.promotion` em `brain-config.json`,
+  `docs/FUNCOES.md` §2.8). Copia (nunca move) para `__user__` a lição que se mostrou útil em mais de um lugar: a mesma lição (cosseno >= 0,9, mesmo tipo) em
+  >= 2 projetos (R1) ou citada em >= 2 sessões de >= 2 projetos (R2). Passa por `prepareForUserScope` (segredo rejeita e fica registrado), não leva `content.files`
+  nem tag que nomeie projeto, soma a recorrência das fontes e não duplica o que já está no escopo do usuário nem repete o que o dono desfez. Reversível com `undo`;
+  registro em `promotions/registry.json` (fontes, evidência, limiares, motivo). Roda sozinha, em segundo plano, no máximo 1 vez por semana no SessionStart
+  (só no backend mcp-memory), com `enabled`, `mode` (`apply` ou `dry-run`), `maxPerRun` e os limiares configuráveis, e avisa numa linha o que promoveu.
+  O `outcome-report.js` ganhou a seção PROMOÇÕES: por regra, ativas e revertidas, e o efeito medido pela origem de `retrieve.cited` (citações em projetos que não
+  foram fonte), dizendo o que isso prova (uso fora de onde foi aprendida) e o que não prova (erro evitado).
 - **Resultados que crescem com o uso** (`node scripts/outcome-report.js`, `docs/ECONOMY.md`, `docs/FUNCOES.md`). Mede, dos eventos já gravados em todos os
   projetos: a participação das decisões tomadas por regra (redirect de curadoria, reescritas, guards, cortes de contexto) contra as devolvidas
   ao modelo; comandos já resolvidos por script contra os que entraram crus; lições novas, recorrentes e de escopo usuário, lembradas e citadas; lições
