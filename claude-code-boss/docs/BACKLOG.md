@@ -7,6 +7,13 @@ Pesquisa: `docs/research/mods-desktop-2026-10-16.md` (local). Feito em `develop`
 
 - [ ] **Validação no Desktop real** (dono): faixa aparecendo depois de `/reload-plugins`, fetch ao 127.0.0.1:38217 de lá, `/boss` respondendo, faixa sumindo com `disableAllHooks`.
 - [ ] **Etapa 2 (pane)**: só se o uso da faixa justificar (decisão do dono).
+- [x] **Achado e corrigido na hora — a faixa não aparecia no Desktop** (relato do dono, 2026-10-16). Causa: o Desktop roda as sessões da aba Code pelo SDK
+  (`claude.exe --input-format stream-json ...`, engine 2.1.299) e lá o `session.start` chega com `isInteractive: false` — provado com um mod de sonda no
+  binário do Desktop (`PROBE isInteractive=false` no debug log). O `session.start` da faixa tinha matcher `{ isInteractive: true }`: no Desktop não registrava
+  `/boss` nem começava o polling, e a faixa ficava vazia. O módulo carregava (debug: `hooks module claude-code-boss@allansantos-plugins loaded ... admitted`);
+  o nome recusado pelo validador não impede o carregamento. Correção (`hooks/boss.mjs`): `/boss` em toda sessão (dois `session.start` com matcher) e o polling
+  começa no primeiro desenho da faixa — só onde uma superfície a desenha; `-p` continua sem polling. Teste: `boss.mjs: Desktop (SDK session, isInteractive false) ...`
+  (falha com o `boss.mjs` anterior).
 - [x] **Achado e corrigido na hora — o engine aceita UM módulo por plugin** (`claude plugin validate`: "hooks.json `modules` names one hooks module per plugin; a second
   entry is refused") **e um só `on(evento)` sem matcher por evento no plugin inteiro** (o validador segue os imports). Visto ao validar a primeira versão, com
   `["./compaction.mjs", "./boss.mjs"]`. Correção: entrada única `hooks/index.mjs` que registra os dois; o `session.start` da faixa usa matcher `{ isInteractive: true }`.
