@@ -29,6 +29,11 @@ const crypto = require('crypto');
 const META = new Set([' ', '\t', '\n', ';', '&', '|', '<', '>', '(', ')']);
 const NAME_START = /[A-Za-z_{(0-9@*#?$!-]/;
 
+// Git Bash maps /tmp to %TEMP%; a native Windows python/node resolves '/tmp/x' to C:\\tmp\\x. A file
+// written by one and read by the other "doesn't exist" — nothing to do with how the command was sent.
+const TMP_NOTE = '[boss] Windows: `/tmp/…` em python/node nativo aponta para C:\\tmp, não para o /tmp do Git Bash (%TEMP%) — um arquivo gravado por um e lido pelo outro "não existe". Use um caminho da pasta de trabalho (ou os.tmpdir()/tempfile).';
+const TMP_PATH_RE = /(^|[\s'"=(,])\/tmp\//;
+
 const ADVICE = 'Para script de mais de uma linha, grave-o com a ferramenta Write num arquivo da pasta de trabalho e rode `node arquivo` / `python -I arquivo`; para mudar arquivo use Edit, nunca regex/sed em linha de comando.';
 
 /**
@@ -228,12 +233,15 @@ const hashName = (content, ext) => crypto.createHash('sha256').update(content).d
  * @param {string} command  as the agent wrote it (PreToolUse tool_input.command)
  * @param {{dir:string, inlineMaxChars?:number, mode?:'rewrite'|'warn'}} opts
  *   dir: folder the payload files go to, in a form bash accepts (forward slashes).
- * @returns {null | {command:string|null, files:Array<{name:string, content:string}>, kinds:string[], warn:string|null}}
+ * @returns {null | {command:string|null, files:Array<{name:string, content:string}>, kinds:string[], warn:string|null, note?:string|null}}
+ *   note: informational (the /tmp pitfall) — never denies.
  *   null = nothing at risk. command = the rewritten command (null when not rewritten).
  */
 function planEscapeFix(command, { dir, inlineMaxChars = 300, mode = 'rewrite' } = {}) {
   const s = String(command || '');
-  if (!s.includes('<<') && !/\b(node|python3?|py)(\.exe)?\s/.test(s) && !s.includes('\\\\')) return null;
+  const interp = /\b(node|python3?|py)(\.exe)?\s/.test(s);
+  const note = interp && TMP_PATH_RE.test(s) ? TMP_NOTE : null;
+  if (!s.includes('<<') && !interp && !s.includes('\\\\')) return null;
   if (mode === 'rewrite' && (!dir || dir.includes("'"))) mode = 'warn';
 
   const edits = []; // {start, end, text}
@@ -273,12 +281,12 @@ function planEscapeFix(command, { dir, inlineMaxChars = 300, mode = 'rewrite' } 
   // What is left on the command line still goes through the halving.
   if (/\\\\/.test(out)) unsafe.push('double-backslash');
 
-  if (!edits.length && !unsafe.length) return null;
+  if (!edits.length && !unsafe.length) return note ? { command: null, files: [], kinds: [], warn: null, note } : null;
   const uniq = [...new Set(unsafe)];
   const warn = uniq.length
     ? `[boss] Bash no Windows: o Bash tool do Claude Code corrompe este comando antes do bash (corta \\\\ pela metade e quebra heredoc com aspas — bug aberto, anthropics/claude-code #85856/#32563); não deu para corrigir sozinho (${uniq.join(', ')}). ${ADVICE}`
     : null;
-  return { command: edits.length ? out : null, files, kinds, warn };
+  return { command: edits.length ? out : null, files, kinds, warn, note };
 }
 
 module.exports = { planEscapeFix, parseWord, findHeredocs, findInline, ADVICE };

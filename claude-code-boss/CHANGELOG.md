@@ -5,6 +5,11 @@
 Check-up do motor (2026-10-15). Cada item tem teste; os números são do dado real desta máquina.
 
 ### Fixed
+- **Aviso de heredoc não induz mais o agente a abandonar heredoc.** Em sessões reais (minecraft-addon, minecraft-aldeoes-llm) o Boss
+  reescreveu o heredoc corretamente, mas o aviso dizia que o Bash "corrompe" o comando; um erro posterior sem relação
+  (`/tmp/x` lido por python nativo) foi atribuído ao heredoc e o agente passou a evitá-lo. O aviso agora diz que o comando roda igual
+  ao escrito e que, se falhar, a causa é outra. Novo aviso informativo: `/tmp/…` em python/node nativo do Windows aponta para
+  `C:\tmp`, não para o `/tmp` do Git Bash (%TEMP%).
 - **Recall mais rápido e mais completo.** A consulta enviada ao compose do servidor de memória passa a ter 300 caracteres (era 800):
   em prompts reais a mediana caiu de 9,1 s para 5,2 s e o compose deixou de estourar o prazo em metade dos prompts.
 - **Menos turnos extras no fim da resposta.** A revisão de captura de lição entra no mesmo bloqueio de outro aviso do Stop em vez de

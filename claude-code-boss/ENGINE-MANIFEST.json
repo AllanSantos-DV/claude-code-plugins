@@ -41,7 +41,7 @@
     "engine/lib/scope-search.js": "360a3339b18c9792cee2b4f763b51e0714f714b38136f4eb308513cc5e100de7",
     "engine/lib/session-id.js": "2876977b45630e6d0f450019b16a127ddee8cf8f477c3fef19388eb693570923",
     "engine/lib/settle-within.js": "b5ce85072f12804da12f2a497b2336a6e9b397ff317bea5a4e138d53ecbaa835",
-    "engine/lib/shell-escape.js": "462d3b27e68319cf2c0de59f5518921744f6af38d7db3935800fb232436fc8a5",
+    "engine/lib/shell-escape.js": "992e6ca8e1d3b7236b8b8236cf956ee80e800f0c0532c0d1f5209be49b66b795",
     "engine/lib/sqlite-compat.js": "122746c15131a2e800451ed6d6903216f462ac59163ab65e66b8687e8ce7baaf",
     "engine/lib/text-utils.js": "68dd660d8c8c6b6930e3de9304d2d56bb2fdc6773029aa3d46b8b0eb605ad08a",
     "engine/mcp-client.js": "aedbbc616cff43b4bad04e3ab7bd0dda49f3005a4a456c882edae53a2dce2d52",
