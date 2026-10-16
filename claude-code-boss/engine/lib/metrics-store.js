@@ -227,8 +227,9 @@ function getEventLog({ eventName = null, limit = 50, sinceTs = null } = {}) {
  * rationale (e.g. a detector needs the `__user__` project's events while a
  * different project is the active one for this hook run). Read-only; []
  * if the DB file or SQLite backend is unavailable.
+ * `eventNames` (array) reads several event kinds in one open, which is the expensive part.
  */
-function getEventLogIsolated(project, { eventName = null, limit = 50, sinceTs = null, dataDir } = {}) {
+function getEventLogIsolated(project, { eventName = null, eventNames = null, limit = 50, sinceTs = null, dataDir } = {}) {
   const Database = loadSqlite();
   if (!Database) return [];
   const dir = storeDir({ dataDir });
@@ -239,9 +240,10 @@ function getEventLogIsolated(project, { eventName = null, limit = 50, sinceTs = 
   try { db = new Database(p); } catch (e) { console.error('[metrics-store] isolated open failed:', p, e.message); return []; }
   try {
     const lo = lowerBound(sinceTs, floorFor(project, dir));
-    const rows = eventName
+    const names = Array.isArray(eventNames) && eventNames.length ? eventNames : (eventName ? [eventName] : null);
+    const rows = names
       ? db.prepare(`SELECT id, ts, event_name, payload, session_id, project
-                      FROM metrics_event WHERE event_name = ? AND ts >= ? ORDER BY ts DESC LIMIT ?`).all(eventName, lo, cap)
+                      FROM metrics_event WHERE event_name IN (${names.map(() => '?').join(',')}) AND ts >= ? ORDER BY ts DESC LIMIT ?`).all(...names, lo, cap)
       : db.prepare(`SELECT id, ts, event_name, payload, session_id, project
                       FROM metrics_event WHERE ts >= ? ORDER BY ts DESC LIMIT ?`).all(lo, cap);
     return rows.map(r => ({

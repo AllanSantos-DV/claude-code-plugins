@@ -130,6 +130,8 @@ const HOOKS = {
   // records the compaction trail + cache.turn (metrics store) and replies config / observed TTL.
   // caller 'module': absent from hooks.json on purpose (its deadline is the default).
   hook_compaction_event: { lane: 'heavy', caller: 'module', script: 'compaction-event.js', call: async (m, ev) => json(await m.run(ev)) },
+  // The Boss band and /boss (hooks/boss.mjs), through GET /hook/boss-summary: read-only, cached by the daemon.
+  hook_boss_summary: { lane: 'heavy', caller: 'module', script: 'boss-summary.js', call: async (m) => json(await m.run()) },
 };
 
 // Last config source stamp seen per module path (one entry per thread: the main

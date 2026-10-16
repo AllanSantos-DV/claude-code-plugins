@@ -5,6 +5,11 @@
 Check-up do motor (2026-10-15). Cada item tem teste; os números são do dado real desta máquina.
 
 ### Added
+- **Faixa acima do prompt e `/boss`** (`hooks/boss.mjs`, README › Faixa acima do prompt). Mod que vem com o plugin: uma linha com o
+  custo da sessão, a economia do Token Guard na sessão e em 30 dias e o Brain no ar ou fora — também no Desktop, onde a `statusLine`
+  não aparece — e `/boss` com os mesmos números em tabela. Lê `GET /hook/boss-summary` (rota nova, só leitura, com o token local, em
+  cache de 30 s no daemon). Como o engine aceita um só módulo por plugin, `hooks.json` → `modules` passa a ser `./index.mjs`, que
+  registra a compactação e a faixa; o resolvedor de daemon+token dos módulos foi para `scripts/lib/module-daemon.mjs`.
 - **Promoção automática de lição do projeto para o escopo do usuário** (`node scripts/lesson-promote.js scan | apply | list | undo`, `kb.promotion` em `brain-config.json`,
   `docs/FUNCOES.md` §2.8). Copia (nunca move) para `__user__` a lição que se mostrou útil em mais de um lugar: a mesma lição (cosseno >= 0,9, mesmo tipo) em
   >= 2 projetos (R1) ou citada em >= 2 sessões de >= 2 projetos (R2). Passa por `prepareForUserScope` (segredo rejeita e fica registrado), não leva `content.files`

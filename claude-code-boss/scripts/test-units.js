@@ -26921,7 +26921,8 @@ test('plugin-updater.killStale: so casa modulos da PASTA DE CACHE do plugin, nao
     const { HOOKS: SPECS_G } = require('./lib/hook-tools.js');
     const moduleCalled = Object.keys(SPECS_G).filter(n => SPECS_G[n].caller === 'module');
     assertEq([...new Set(hookEntries.map(h => h.tool))].sort(), [...hookTools.names].filter(n => !moduleCalled.includes(n)).sort());
-    const modulesSrc = (JSON.parse(fs.readFileSync(path.join(ROOT, 'hooks', 'hooks.json'), 'utf8')).modules || []).map(m => fs.readFileSync(path.join(ROOT, 'hooks', m), 'utf8')).join('\n');
+    // The entry (hooks.json "modules", one per plugin) imports one file per feature from hooks/.
+    const modulesSrc = fs.readdirSync(path.join(ROOT, 'hooks')).filter(f => f.endsWith('.mjs')).map(f => fs.readFileSync(path.join(ROOT, 'hooks', f), 'utf8')).join('\n');
     // …through a daemon route (the tools are unlisted, a module cannot $.mcp.call them):
     // http-daemon maps the route to the tool, and a shipped module calls that route.
     const daemonSrc = fs.readFileSync(path.join(ROOT, 'servers', 'brain-server', 'lib', 'http-daemon.js'), 'utf8');
@@ -26947,7 +26948,7 @@ test('plugin-updater.killStale: so casa modulos da PASTA DE CACHE do plugin, nao
 
   test('G2: heavy lane = Stop + the PostToolUse side-effect hooks; guards and prompt detectors stay on the fast lane', () => {
     // + hook_compaction_event: SQLite (metrics store) and a transcript tail read, like Stop.
-    assertEq(HEAVY, ['hook_compaction_event', 'hook_file_edit_detect', 'hook_policy_enforce_shadow', 'hook_posttoolusebash_dispatcher', 'hook_posttoolusefailure_dispatcher', 'hook_skill_metric', 'hook_stop_dispatcher']);
+    assertEq(HEAVY, ['hook_boss_summary', 'hook_compaction_event', 'hook_file_edit_detect', 'hook_policy_enforce_shadow', 'hook_posttoolusebash_dispatcher', 'hook_posttoolusefailure_dispatcher', 'hook_skill_metric', 'hook_stop_dispatcher']);
   });
 
   test('G2: with a hook worker, heavy hooks go to it and fast hooks never do; a worker failure degrades visibly', async () => {
@@ -27983,7 +27984,8 @@ test('hook_compaction_event: daemon transport (payload arrives as an object, bad
     assert(/systemMessage/.test(bad) && /payload\.kind is required/.test(bad), 'a bad event degrades VISIBLY (systemMessage), never a silent {}');
   });
   const hooks = JSON.parse(fs.readFileSync(path.join(ROOT, 'hooks', 'hooks.json'), 'utf8'));
-  assertEq(hooks.modules, ['./compaction.mjs']);
+  assertEq(hooks.modules, ['./index.mjs']);
+  assert(fs.readFileSync(path.join(ROOT, 'hooks', 'index.mjs'), 'utf8').includes("from './compaction.mjs'"), 'the one entry registers the compaction');
   assert(fs.existsSync(path.join(ROOT, 'hooks', 'compaction.mjs')), 'module file shipped');
   const hc = require('./lib/hooks-config.js');
   assertEq(hc.resolveProfileConfig({ profile: 'free' }).compaction.enabled, false, 'free = passthrough');
@@ -28027,6 +28029,207 @@ test('http-daemon POST /hook/compaction-event: REAL daemon — token-gated like 
     if (savedTok !== undefined) process.env.BRAIN_HTTP_TOKEN = savedTok;
     await d.shutdown();
   }
+});
+
+// ─── Boss band + /boss (hooks/boss.mjs → GET /hook/boss-summary → scripts/boss-summary.js) ──
+
+const bossTokens = (chars) => Math.round(chars / require('./lib/economy-metrics.js').CHARS_PER_TOKEN);
+
+// Seeds the metrics store the daemon's worker reads (CLAUDE_PLUGIN_DATA of this run): one shaper cut of 36k chars in `sid`.
+function seedBossMetrics(sid) {
+  const store = require('../engine/lib/metrics-store.js');
+  store.close();
+  assert(store.init({ project: 'ccb-boss-band-test' }), 'metrics store opens');
+  store.recordMetric('curation.shaped', { rawChars: 40000, shownChars: 4000, family: 'test' }, sid);
+  store.recordMetric('lesson.captured', { type: 'lesson', decision: 'admit' }, sid);
+  store.close();
+}
+
+// A module's `$` with only what boss.mjs uses; `fetchImpl` defaults to the real network (loopback).
+function fakeBoss$({ env, fetchImpl, cost = 1.234, sessionId = 'sid-boss-A' } = {}) {
+  const calls = { logs: [], invalidations: 0, commands: [], timers: [] };
+  const $ = {
+    env: { get: async (k) => (env || {})[k] },
+    fs: { read: async (p) => fs.readFileSync(p, 'utf8') },
+    http: { fetch: fetchImpl || (async (url, init = {}) => { const r = await fetch(url, init); return { status: r.status, ok: r.ok, text: await r.text() }; }) },
+    session: {
+      usage: async () => ({ startedAt: 0, context: {}, rateLimits: [], ...(cost == null ? {} : { cost: { usd: cost } }) }),
+      id: async () => sessionId,
+    },
+    ui: { log: (t) => calls.logs.push(t), invalidate: (ev) => { assertEq(ev, 'ui.render'); calls.invalidations++; }, resolve: () => ({ Box: 'Box', Text: 'Text' }) },
+    command: { register: async (spec) => { calls.commands.push(spec); } },
+    clock: {
+      after: (ms) => { calls.timers.push(['after', ms]); return { cancel() {} }; },
+      every: (ms) => { calls.timers.push(['every', ms]); return { cancel() {} }; },
+    },
+  };
+  return { $, calls };
+}
+
+function collectModuleHooks(register) {
+  const hooks = [];
+  const on = (event, a, b) => {
+    hooks.push({ event, matcher: b ? a : null, fn: b || a });
+    return { catch() { return this; } };
+  };
+  register(on, {});
+  return hooks;
+}
+const findHook = (hooks, event, key) => hooks.find((x) => x.event === event && (!key || (x.matcher && JSON.stringify(x.matcher) === JSON.stringify(key))));
+// The engine's JSX factory, as plain data.
+globalThis.h = globalThis.h || ((tag, props, ...children) => ({ tag, props, children }));
+
+test('boss-band: pt-BR numbers, the band line and /boss — a failure is shown, never stale numbers', async () => {
+  const band = await import(require('url').pathToFileURL(path.join(SCRIPTS, 'lib', 'boss-band.mjs')).href);
+  assertEq(band.fmtTokens(950), '950');
+  assertEq(band.fmtTokens(12345), '12,3 mil');
+  assertEq(band.fmtTokens(2000), '2 mil');
+  assertEq(band.fmtTokens(1234567), '1,2 mi');
+  assertEq(band.fmtUsd(1.234), 'US$ 1,23');
+  assertEq(band.fmtUsd(1234.5), 'US$ 1.234,50');
+  assertEq(band.fmtUsd(undefined), null, 'no cost ledger → no cost, never US$ 0,00');
+  const summary = { tokenGuard: { days: 30, savedTokens: 111068, sessionTokens: 9000, exactTokens: 52485, estimatedTokens: 58583 }, brain: { connected: true, backend: 'mcp-memory', latencyMs: 5 }, value: { lessons: 377, cited: 231, injected: 1108 } };
+  assertEq(band.bandLine({ costUsd: 1.234, summary }), 'Boss · sessão US$ 1,23 · Token Guard −9 mil tokens na sessão (30d: −111,1 mil) · Brain no ar');
+  assertEq(band.bandLine({ costUsd: null, summary: { ...summary, brain: { connected: false, reason: 'tcp-closed' } } }), 'Boss · Token Guard −9 mil tokens na sessão (30d: −111,1 mil) · Brain fora (tcp-closed)');
+  assertEq(band.bandLine({ costUsd: 2, summary, error: 'GET /hook/boss-summary answered 503: x' }), 'Boss · sessão US$ 2,00 · daemon do Brain sem resposta: GET /hook/boss-summary answered 503: x', 'the error wins over the last numbers');
+  assertEq(band.bandLine({ costUsd: 2 }), 'Boss · sessão US$ 2,00 · consultando o daemon…');
+  const md = band.bossMarkdown({ costUsd: 1.234, summary });
+  assert(md.includes('| Custo desta sessão | US$ 1,23 |') && md.includes('| Token Guard, 30 dias | 111,1 mil tokens (52,5 mil medidos + 58,6 mil estimados) |'), md);
+  assert(md.includes('| Brain | no ar — mcp-memory, 5 ms |') && md.includes('377 lições; 231 memórias citadas de 1.108 injetadas'), md);
+  assert(band.bossMarkdown({ costUsd: 1, error: 'boom' }).includes('Daemon do Brain sem resposta: boom'));
+});
+
+test('boss-summary.summarizeBoss: 30-day savings like the Curation panel, per-session exact savings of the last day, Brain with a reason CODE and no path', () => {
+  const bs = require('./boss-summary.js');
+  const now = Date.now();
+  const rows = [
+    { eventName: 'curation.shaped', ts: now - 1000, sessionId: 'sA', payload: { rawChars: 40000, shownChars: 4000 } },
+    { eventName: 'curation.used', ts: now - 2000, sessionId: 'sA', payload: { scriptId: 't', rawChars: 9000, chars: 1000 } },
+    { eventName: 'curation.shaped', ts: now - 3 * 86400_000, sessionId: 'sOld', payload: { rawChars: 8000, shownChars: 0 } },
+    { eventName: 'lesson.captured', ts: now - 5000, sessionId: 'sA', payload: { type: 'lesson' } },
+    { eventName: 'retrieve.cited', ts: now - 5000, sessionId: 'sA', payload: {} },
+  ];
+  const health = { mode: 'mcp-memory', connected: false, backend: 'mcp-memory', latency: 0, details: { serverUrl: 'http://127.0.0.1:9', reason: 'health-bad:{"x":"C:\\\\secret"}', jarPath: 'C:\\\\Users\\\\x\\\\a.jar' } };
+  const out = bs.summarizeBoss(rows, health, { now });
+  assertEq(out.tokenGuard.savedTokens, bossTokens(36000 + 8000 + 8000));
+  assertEq(out.tokenGuard.exactTokens, bossTokens(52000));
+  assertEq(out.tokenGuard.bySession, { sA: bossTokens(44000) }, 'only sessions of the last day, exact savings');
+  assertEq(out.value, { days: 30, lessons: 1, cited: 1, injected: 0 });
+  assertEq(out.brain, { connected: false, mode: 'mcp-memory', backend: 'mcp-memory', latencyMs: 0, reason: 'health-bad' });
+  assert(!/secret|jar|127\.0\.0\.1|Users/.test(JSON.stringify(out)), `no path, URL or payload of the probe travels: ${JSON.stringify(out.brain)}`);
+  const failed = bs.summarizeBoss([], null, { now, healthError: 'boom' });
+  assertEq(failed.brain.connected, false);
+  assert(failed.brain.reason.includes('boom'), 'a probe that threw says so');
+});
+
+test('http-daemon GET /hook/boss-summary: REAL daemon — token-gated, one cached computation for every session, each session gets its own figure and no other session id', async () => {
+  seedBossMetrics('sid-boss-A');
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-boss-route-'));
+  const { startHttpDaemon } = await import(require('url').pathToFileURL(path.join(ROOT, 'servers', 'brain-server', 'lib', 'http-daemon.js')).href);
+  const savedTok = process.env.BRAIN_HTTP_TOKEN; delete process.env.BRAIN_HTTP_TOKEN;
+  const d = await startHttpDaemon({ pluginRoot: ROOT, dataDir: dir, port: 0 });
+  try {
+    const base = `http://127.0.0.1:${d.httpServer.address().port}`;
+    const token = fs.readFileSync(path.join((await (await fetch(`${base}/health`)).json()).dataDir, 'brain-http.token'), 'utf8').trim();
+    const get = (q, auth = `Bearer ${token}`) => fetch(`${base}/hook/boss-summary${q}`, { headers: auth ? { Authorization: auth } : {} });
+    assertEq((await get('', null)).status, 401, 'no token → 401');
+    assertEq((await get('', 'Bearer wrong')).status, 401, 'wrong token → 401');
+    const a = await get('?session=sid-boss-A');
+    assertEq(a.status, 200);
+    const ra = await a.json();
+    assertEq(ra.tokenGuard.sessionTokens, bossTokens(36000), 'the asking session gets its own savings');
+    assert(ra.tokenGuard.savedTokens >= bossTokens(36000), 'the 30-day total counts it');
+    assert(ra.value.lessons >= 1, 'lessons counted');
+    assertEq(ra.tokenGuard.bySession, undefined, 'never the other sessions\' ids');
+    assertEq(typeof ra.brain.connected, 'boolean');
+    assert(!JSON.stringify(ra).includes(path.basename(dir)), 'no data dir path in the reply');
+    const rb = await (await get('?session=sid-other')).json();
+    assertEq(rb.tokenGuard.sessionTokens, 0, 'a session without savings reads 0');
+    assertEq(rb.generatedAt, ra.generatedAt, 'the second session is served from the same cached computation');
+    assertEq((await fetch(`${base}/hook/boss-summary`, { method: 'POST', headers: { Authorization: `Bearer ${token}` } })).status, 404, 'read-only: GET only');
+  } finally {
+    if (savedTok !== undefined) process.env.BRAIN_HTTP_TOKEN = savedTok;
+    await d.shutdown();
+  }
+});
+
+test('hooks module: hooks.json names ONE entry (the engine refuses a second) and it registers compaction and the Boss band', async () => {
+  const hooksJson = JSON.parse(fs.readFileSync(path.join(ROOT, 'hooks', 'hooks.json'), 'utf8'));
+  assertEq(hooksJson.modules, ['./index.mjs']);
+  const entry = await import(require('url').pathToFileURL(path.join(ROOT, 'hooks', 'index.mjs')).href);
+  const hooks = collectModuleHooks(entry.register);
+  assert(findHook(hooks, 'session.compact'), 'compaction registered');
+  assert(findHook(hooks, 'command.run', { command: 'boss' }) && findHook(hooks, 'ui.render', { component: 'AbovePrompt' }), 'boss registered');
+  // The engine refuses an event registered twice without a matcher in one plugin (claude plugin validate).
+  const unmatched = hooks.filter((x) => !x.matcher).map((x) => x.event);
+  assertEq(unmatched.length, new Set(unmatched).size, `an event twice without a matcher: ${unmatched}`);
+});
+
+test('boss.mjs: REAL daemon end to end — /boss and the band show the session cost, its Token Guard savings and the Brain; polls >= 5 s, interactive only', async () => {
+  seedBossMetrics('sid-boss-mod');
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-boss-mod-'));
+  const { startHttpDaemon } = await import(require('url').pathToFileURL(path.join(ROOT, 'servers', 'brain-server', 'lib', 'http-daemon.js')).href);
+  const savedTok = process.env.BRAIN_HTTP_TOKEN; delete process.env.BRAIN_HTTP_TOKEN;
+  const d = await startHttpDaemon({ pluginRoot: ROOT, dataDir: dir, port: 0 });
+  try {
+    const boss = await import(require('url').pathToFileURL(path.join(ROOT, 'hooks', 'boss.mjs')).href);
+    assert(boss.POLL_MS >= 5000, 'aggregated polling of at least 5 s');
+    const hooks = collectModuleHooks(boss.register);
+    const start = findHook(hooks, 'session.start', { isInteractive: true });
+    assert(start, 'session.start only for interactive sessions (headless draws nothing)');
+    const { $, calls } = fakeBoss$({ sessionId: 'sid-boss-mod', env: { CLAUDE_PLUGIN_DATA: dir, BRAIN_HTTP_PORT: String(d.httpServer.address().port) } });
+    await start.fn($, { isInteractive: true }, async (e) => e);
+    assertEq(calls.commands.map((c) => c.name), ['boss']);
+    assertEq(calls.timers.find((t) => t[0] === 'every')[1], boss.POLL_MS);
+    const run = await findHook(hooks, 'command.run', { command: 'boss' }).fn($, { command: 'boss' }, async () => ({}));
+    assert(run.text.includes('| Custo desta sessão | US$ 1,23 |'), run.text);
+    const { fmtTokens } = await import(require('url').pathToFileURL(path.join(SCRIPTS, 'lib', 'boss-band.mjs')).href);
+    assert(run.text.includes(`| Token Guard nesta sessão | ${fmtTokens(bossTokens(36000))} tokens poupados |`), run.text);
+    const render = findHook(hooks, 'ui.render', { component: 'AbovePrompt' }).fn;
+    const tree = await render($, { component: 'AbovePrompt', props: { hasSurvey: false } }, async () => ({ tag: 'Others' }));
+    assertEq(tree.tag, 'Box');
+    assertEq(tree.children[0].tag, 'Text');
+    assertEq(tree.children[0].props.dimColor, true);
+    assert(/^Boss · sessão US\$ 1,23 · Token Guard −.+ tokens na sessão \(30d: −.+\) · Brain (no ar|fora)/.test(tree.children[0].children[0]), tree.children[0].children[0]);
+    assertEq(tree.children[1], { tag: 'Others' }, 'what the other mods draw in the shared band is kept under the line');
+    const survey = await render($, { component: 'AbovePrompt', props: { hasSurvey: true } }, async () => 'engine');
+    assertEq(survey, 'engine', 'a survey holds the band: the hook yields');
+    assertEq(calls.invalidations, 1, 'redrawn once: the line changed once');
+    assertEq(calls.logs, [], 'nothing failed');
+  } finally {
+    if (savedTok !== undefined) process.env.BRAIN_HTTP_TOKEN = savedTok;
+    await d.shutdown();
+  }
+});
+
+test('boss.mjs: daemon down → the band says so (logged once, not per poll); a reply of {} (switched off in the dashboard) → no band at all', async () => {
+  const boss = await import(require('url').pathToFileURL(path.join(ROOT, 'hooks', 'boss.mjs')).href);
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-boss-down-'));
+  fs.writeFileSync(path.join(dir, 'brain-http.token'), 'tok');
+  const env = { CLAUDE_PLUGIN_DATA: dir, BRAIN_HTTP_PORT: '1' };
+  const down = fakeBoss$({ env, fetchImpl: async () => { throw new Error('connect ECONNREFUSED 127.0.0.1:1'); } });
+  const ctx = {};
+  await boss.refresh(down.$, ctx);
+  await boss.refresh(down.$, ctx);
+  assert(ctx.line.includes('daemon do Brain sem resposta: connect ECONNREFUSED'), ctx.line);
+  assertEq(down.calls.logs.length, 1, 'one log line for one failure');
+  assertEq(down.calls.invalidations, 1);
+  let summaryReply = '{}';
+  const off = fakeBoss$({ env, fetchImpl: async (url, init) => {
+    if (url.endsWith('/health')) return { status: 200, ok: true, text: JSON.stringify({ dataDir: dir }) };
+    assertEq(init.headers.Authorization, 'Bearer tok', 'the local token is sent');
+    return { status: 200, ok: true, text: summaryReply };
+  } });
+  const hooks = collectModuleHooks(boss.register);
+  const command = findHook(hooks, 'command.run', { command: 'boss' }).fn;
+  const render = findHook(hooks, 'ui.render', { component: 'AbovePrompt' }).fn;
+  const answer = await command(off.$, { command: 'boss' }, async () => ({}));
+  assert(answer.text.includes('desligado no dashboard'), answer.text);
+  assertEq(await render(off.$, { component: 'AbovePrompt', props: { hasSurvey: false } }, async () => 'engine'), 'engine', 'switched off → the hook draws nothing');
+  summaryReply = JSON.stringify({ tokenGuard: { days: 30, savedTokens: 10, sessionTokens: 0 }, brain: { connected: true } });
+  await command(off.$, { command: 'boss' }, async () => ({}));
+  const tree = await render(off.$, { component: 'AbovePrompt', props: { hasSurvey: false } }, async () => null);
+  assertEq(tree.children[0].children[0], 'Boss · sessão US$ 1,23 · Token Guard −0 tokens na sessão (30d: −10) · Brain no ar');
 });
 
 test('every shipped skill has a YAML frontmatter that PARSES, with a description (Claude Code skips a broken one)', () => {

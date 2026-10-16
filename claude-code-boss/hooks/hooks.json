@@ -402,5 +402,5 @@
       }
     ]
   },
-  "modules": ["./compaction.mjs"]
+  "modules": ["./index.mjs"]
 }

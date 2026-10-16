@@ -1,5 +1,26 @@
 # Backlog
 
+## Faixa acima do prompt e `/boss` — mod do Desktop, etapa 1 (pedido do orquestrador, 2026-10-16) — em validação pelo dono
+
+Pesquisa: `docs/research/mods-desktop-2026-10-16.md` (local). Feito em `develop`: `hooks/boss.mjs`, `scripts/lib/boss-band.mjs`, `scripts/boss-summary.js`,
+`GET /hook/boss-summary` (`servers/brain-server/lib/http-daemon.js`), `hook_boss_summary` (`scripts/lib/hook-tools.js`), testes em `scripts/test-units.js`.
+
+- [ ] **Validação no Desktop real** (dono): faixa aparecendo depois de `/reload-plugins`, fetch ao 127.0.0.1:38217 de lá, `/boss` respondendo, faixa sumindo com `disableAllHooks`.
+- [ ] **Etapa 2 (pane)**: só se o uso da faixa justificar (decisão do dono).
+- [x] **Achado e corrigido na hora — o engine aceita UM módulo por plugin** (`claude plugin validate`: "hooks.json `modules` names one hooks module per plugin; a second
+  entry is refused") **e um só `on(evento)` sem matcher por evento no plugin inteiro** (o validador segue os imports). Visto ao validar a primeira versão, com
+  `["./compaction.mjs", "./boss.mjs"]`. Correção: entrada única `hooks/index.mjs` que registra os dois; o `session.start` da faixa usa matcher `{ isInteractive: true }`.
+  Teste: `hooks module: hooks.json names ONE entry ...` (falha com duas entradas ou com evento repetido sem matcher).
+- [x] **Achado e corrigido na hora — `compat-check.js` lia só `hooks/compaction.mjs`** para a API de módulos (`scripts/compat-check.js` `dependencies()`): com o resolvedor de
+  daemon movido para `scripts/lib/module-daemon.mjs` e o `boss.mjs` novo, `$.fs.read`, `$.ui.invalidate`, `$.command.register` etc. sairiam da checagem. Agora lê
+  `hooks/*.mjs` e `scripts/lib/*.mjs`. Coberto pelo teste existente de `compat-check` (lista inclui `session.compact`) e pela checagem real contra o binário.
+- [ ] **Fora de escopo — `claude plugin validate` recusa o NOME do plugin**: "Plugin name "claude-code-boss" is reserved: ... cannot start with "claude-"" (Claude Code 2.1.300,
+  `.claude-plugin/plugin.json` e `marketplace.json` `plugins[0].name`). Visto rodando `claude plugin validate claude-code-boss` e `claude plugin validate .` em 2026-10-16. Hoje o
+  plugin instala e carrega (a compactação roda em produção), mas o validador oficial falha e uma regra futura do engine pode passar a barrar a instalação. Proposta: o dono
+  decidir um nome novo (afeta `enabledPlugins`, `CLAUDE_PLUGIN_DATA`, o id `claude-code-boss@...`, servidor MCP `plugin:claude-code-boss:brain-server`, páginas) e planejar a migração.
+- [ ] **Risco aberto — a rota roda na fila pesada do hook worker**: ~0,7 s a cada 30 s com sessão aberta (230 projetos de métricas aqui); um Stop que chegue nesse
+  instante espera até 0,7 s. Proposta se incomodar: ler as métricas de forma incremental (último `id` por projeto) ou subir o cache para 60 s.
+
 ## Brain "fora do ar" com "Invalid JSON generated" (pedido do orquestrador, 2026-10-16) — achado e corrigido na hora, aguardando instalação local
 
 - **Causa** (verificada no `~/.mcp-memory/logs/daemon.log`): `brain_count` e a sonda do `[BRAIN-HEALTH]` chamavam `list_documents` sem filtro (`engine/brain-backend.js` `countMcp`). O servidor mcp-memory 2.51.0 devolve a listagem de TODOS os projetos; desde 2026-10-16 13:59 ela passou de 20 000 000 caracteres e o Jackson recusa (`StreamConstraintsException: String value length (20001630) exceeds the maximum allowed (20000000)`), respondendo "Invalid JSON generated". `brain_store`/`brain_search`/`capture_lesson` não passam por esse caminho e funcionam (provado contra o daemon, projeto `minecraft-aldeoes-llm-4b` incluso); a sonda falhava e o hook anunciava o Brain inteiro como DOWN.
