@@ -1720,6 +1720,23 @@ test('brain-backend saveMcp: entry.projectId → metadata.project_id (scope=user
   }
 });
 
+test('brain-backend countMcp: lists only the current project (unfiltered list_documents outgrew the server JSON limit → "Invalid JSON generated")', async () => {
+  const daemon = await startFakeDaemon({ toolResult: () => ({ content: [{ type: 'text', text: JSON.stringify({ count: 7 }) }] }) });
+  delete require.cache[require.resolve('../engine/brain-backend.js')];
+  const backend = require('../engine/brain-backend.js');
+  backend.__testHooks._injectConfig({ backend: { type: 'mcp-memory', mcpMemory: { transport: 'http', serverUrl: daemon.url } } });
+  try {
+    await backend.init({ project: 'projA' });
+    assertEq(await backend.count(), 7);
+    assertEq(daemon.seen.callArgs.name, 'list_documents');
+    assertEq(daemon.seen.callArgs.arguments.metadata.project_id, 'projA', 'count is scoped to the project, never the whole server');
+    await backend.close();
+  } finally {
+    delete require.cache[require.resolve('../engine/brain-backend.js')];
+    await daemon.close();
+  }
+});
+
 test('brain-backend searchMcp (F2): opts.projectIds → metadata.project_id LIST; coexists with type; omitted otherwise', async () => {
   const daemon = await startFakeDaemon({ toolResult: () => ({ content: [{ type: 'text', text: JSON.stringify({ results: [] }) }] }) });
   delete require.cache[require.resolve('../engine/brain-backend.js')];
