@@ -35,6 +35,10 @@ Pesquisa: `docs/research/mods-desktop-2026-10-16.md` (local). Feito em `develop`
   (`$.command.register` no `session.start`) aparentemente não entra nessa lista. Investigar se é limite do Desktop 2.42304 (reportar) ou se há outro jeito de declarar o comando.
 - [ ] **Fora de escopo — pastas `3.9.0-dev.<sha>` com o código do marketplace ficaram no cache** (`~/.claude/plugins/cache/allansantos-plugins/claude-code-boss/`,
   criadas pelos reloads antes da correção). Não são apagadas porque um processo pode estar rodando delas (`.in_use`). Limpar quando nenhuma sessão as usar.
+- [ ] **Fora de escopo — curadoria sem saída para um script `.ps1` rodado por caminho** (2026-10-16): a assinatura `timeout 100 powershell Bypass 'C:\tmp\...\uia.ps1'`
+  chegou a 4/3. `curation_mark_oneoff` recusa por passar do teto, e `curation_register_shell` recusa o alias por ter "valor de uso único" (o `100` do timeout,
+  depois o caminho do script). A ferramenta sugere o prefixo `powershell Bypass` como passthrough, mas isso redirecionaria todo `powershell -ExecutionPolicy Bypass`
+  do projeto. Proposta: aceitar como alias estável o caminho de um script (`-File <caminho>`), não tratá-lo como valor de uso único, e deixar o `timeout N` fora da assinatura.
 - [x] **Achado e corrigido na hora — o engine aceita UM módulo por plugin** (`claude plugin validate`: "hooks.json `modules` names one hooks module per plugin; a second
   entry is refused") **e um só `on(evento)` sem matcher por evento no plugin inteiro** (o validador segue os imports). Visto ao validar a primeira versão, com
   `["./compaction.mjs", "./boss.mjs"]`. Correção: entrada única `hooks/index.mjs` que registra os dois; o `session.start` da faixa usa matcher `{ isInteractive: true }`.
