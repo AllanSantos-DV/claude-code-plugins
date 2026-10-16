@@ -19,6 +19,8 @@
  *   - a session is live while it reports (turns + a heartbeat from the module); one that stops reporting for
  *     LIVE_MS is dropped, so a crashed session's switch is restored at the next report of anyone (SessionStart of
  *     the next session included) — the "dead owner" sweep runs on every report;
+ *   - the engine's own idle compaction (lib/engine-flags.js) compacts while the cache is still warm but only on the
+ *     1 h TTL: when it is on, no folder is switched — the 5 m TTL would turn it off for the sessions it helps;
  *   - a file we create inside a git repo goes to the repo's `info/exclude` (local, never committed) when git does
  *     not already ignore it.
  * The daemon is the single writer (every module reports through it), so the state needs no cross-process lock.
@@ -140,8 +142,10 @@ function loadState(file) {
 }
 
 /** Bring one folder's file in line with its plan. Mutates the entry; returns what happened. */
-function reconcile(entry, now, { run = hiddenSpawnSync, liveMs = LIVE_MS } = {}) {
+function reconcile(entry, now, { run = hiddenSpawnSync, liveMs = LIVE_MS, stepAside = false } = {}) {
   const plan = planFolder(entry, now, liveMs);
+  const deferred = stepAside && plan.want;
+  if (deferred) plan.want = null;
   for (const id of Object.keys(entry.sessions || {})) if (!plan.live.includes(id)) delete entry.sessions[id];
   let action = 'none';
   let detail = null;
@@ -155,6 +159,7 @@ function reconcile(entry, now, { run = hiddenSpawnSync, liveMs = LIVE_MS } = {})
     detail = r.reason || null;
   }
   if (!plan.want) delete entry.userValue; // judged again the next time every session is past the threshold
+  if (deferred && action === 'none') detail = `the engine's idle compaction is on (${stepAside}): the 1 h TTL stays so it can compact while the cache is warm`;
   return { ...plan, action, detail, ttl: entry.owned ? SWITCHED : null };
 }
 
@@ -164,9 +169,12 @@ function reconcile(entry, now, { run = hiddenSpawnSync, liveMs = LIVE_MS } = {})
  * @param {{now?:number, file?:string, run?:Function, liveMs?:number}} [opts]
  * @returns {{folder:string, live:number, allAbove:boolean, ttl:('5m'|null), action:string, detail:(string|null), swept:Array}}
  */
-function report(r, { now = Date.now(), file = statePath(), run = hiddenSpawnSync, liveMs = LIVE_MS } = {}) {
+function report(r, { now = Date.now(), file = statePath(), run = hiddenSpawnSync, liveMs = LIVE_MS, engineIdle = require('./engine-flags.js').idleCompaction } = {}) {
   if (!r || typeof r.sessionId !== 'string' || !r.sessionId) throw new Error('folder-ttl: sessionId is required');
   const key = folderKey(r.folder);
+  const idle = engineIdle();
+  if (!idle.known) console.error(`[folder-ttl] ${idle.reason}`);
+  const stepAside = idle.active ? idle.reason : false;
   const state = loadState(file);
   const entry = state.folders[key] || (state.folders[key] = { dir: path.resolve(r.folder), sessions: {} });
   if (r.end) delete entry.sessions[r.sessionId];
@@ -176,7 +184,7 @@ function report(r, { now = Date.now(), file = statePath(), run = hiddenSpawnSync
   const errors = [];
   for (const [k, e] of Object.entries(state.folders)) {
     try {
-      const out = reconcile(e, now, { run, liveMs });
+      const out = reconcile(e, now, { run, liveMs, stepAside });
       if (k === key) mine = out;
       else if (out.action !== 'none') swept.push({ folder: e.dir, action: out.action, detail: out.detail });
     } catch (err) {

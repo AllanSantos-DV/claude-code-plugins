@@ -1,5 +1,31 @@
 # Backlog
 
+## Compatibilidade com o Claude Code 2.1.300 e economia (2026-10-16, branch `feat/compat-economia`)
+
+Relatório com fontes: `docs/research/compat-2.1.300/relatorio.md` (local) e `docs/ECONOMY.md`. Verificado contra o binário instalado
+(2.1.300), 648 transcripts reais de 14 dias (91 mil chamadas) e uma sessão isolada real.
+
+- [x] **Achado e corrigido na hora — aviso de heredoc induzia o agente a abandonar heredoc** (sessões minecraft-addon e minecraft-aldeoes-llm).
+  O boss reescreveu o heredoc certo; o erro veio de `/tmp/x` lido por python nativo (Git Bash mapeia /tmp para %TEMP%, o python nativo para
+  `C:\tmp`). O aviso agora diz que o comando roda igual e que a causa de uma falha é outra; novo aviso informativo para `/tmp/` em python/node.
+- [x] **Achado e corrigido na hora — o `folder-ttl` desligaria a compactação ociosa do engine** (2.1.286+, só vale com TTL de 1 h; flag remota
+  `tengu_sunny_locket`, hoje `off` nesta máquina). Agora o boss não troca a pasta para 5 min enquanto a flag compacta. `lib/engine-flags.js`.
+- [x] **Achado e corrigido na hora — modelos sem preço**: Fable 5/5.1, Opus 4.6/4.7, Sonnet 4.6 e Haiku 5.5 saíam do total em dólar
+  (423 + 222 + 24 chamadas em 30 dias); entram com o preço da página oficial (acesso 2026-10-16), Haiku 5.5 com a faixa acima de 100 mil.
+- [x] `scripts/compat-check.js` (54 nomes: env, eventos de hook, API de módulos, settings, campos do transcript — 54/54 presentes na 2.1.300) e
+  `scripts/economy-report.js` + `lib/economy-ledger.js` (custo por sessão, comparação com intervalo, validada com efeito conhecido), com testes.
+- [ ] **Decisão do Allan — grupo de controle (A/B sorteado).** É o único método que prova causa; exige que uma fração das sessões rode sem as
+  economias. Hoje a comparação por sessão inteira é inconclusiva (com × sem boss: −6,6% por tamanho, intervalo −41%…+59%). Sem decisão, não implementar.
+- [ ] **Subagentes têm TTL de cache próprio** (`subagentPromptCacheTtl` / `CLAUDE_CODE_SUBAGENT_PROMPT_CACHE_TTL`; sem valor = 5 min a menos de
+  `ENABLE_PROMPT_CACHING_1H=1`). O boss grava só o TTL da conversa principal. Medir quantas regravações de subagente existem antes de mexer
+  (escrita de 1 h custa 1,6× a de 5 min). Fonte: strings do binário 2.1.300.
+- [ ] **`CLAUDE_CODE_AUTO_COMPACT_WINDOW` (opt-in do boss, desligado) ganha do `/autocompact` do usuário** (a env tem precedência sobre comando, flag e
+  settings; fonte: docs/en/env-vars). Se alguém ligar a opção, o `/autocompact` deixa de valer sem aviso. Avisar no painel ou migrar para `modelSettings`.
+- [ ] **Outro dono (reportado ao orquestrador): hook HTTP `127.0.0.1:8765/hooks/pretool?client=claude` estourou o prazo 76 vezes** (PreToolUse Write/Edit/Bash,
+  9–15/10; 19 em 15/10, já na 2.1.300 — continua); não é do boss (os timeouts do boss nos mesmos transcripts: 6 em 9/10 e 52 em 11/10, nenhum de 12 a 16/10).
+- [ ] **Compactação ociosa e o gate de cache frio**: quando o engine compactar sozinho, o gate do boss deixa de agir nessas sessões (o contexto já
+  cai abaixo do limiar). Remedir `compaction-report` quando a flag ligar: o boss pode ficar redundante nas sessões de 1 h.
+
 ## Check-up do motor (2026-10-15, branch `fix/checkup-engine`) — achados corrigidos na hora e o que ficou
 
 Relatórios: `docs/research/checkup/` (local). Tudo abaixo marcado [x] tem teste e foi commitado na branch; aguarda a validação do Allan

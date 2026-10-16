@@ -2,10 +2,11 @@
 
 Plugin para Claude Code Desktop — **v3.9.0**
 
-**Menos repetição. Mais memória.** Com o claude-code-boss, o seu Claude Code lembra o
-que deu certo e errado em cada projeto, resume a saída barulhenta de comandos que se
-repetem e guarda uma lição toda vez que você o corrige. Tudo roda na sua máquina, sem
-chave de API.
+**Menos custo, menos repetição. Mais memória.** O objetivo do claude-code-boss é gastar menos
+token, dinheiro e limite do plano por tarefa concluída: o seu Claude Code lembra o que deu
+certo e errado em cada projeto, resume a saída barulhenta de comandos que se repetem,
+guarda uma lição toda vez que você o corrige e compacta o contexto na hora que custa menos.
+Tudo roda na sua máquina, sem chave de API.
 
 | Dark | Light |
 | :-: | :-: |
@@ -28,6 +29,10 @@ Nada mais a configurar.
 
 ## O que você ganha
 
+- **Ele economiza, e mostra quanto.** Cache de 1 hora para o contexto não ser regravado a cada pausa,
+  compactação só quando o cache já esfriou, saída de comando resumida e custo fixo por mensagem
+  medido e cortado. `node scripts/economy-report.js` mede o custo das suas sessões (e compara
+  grupos com intervalo de confiança); [como a economia é medida e o que cada medida prova](docs/ECONOMY.md).
 - **Ele lembra.** Cada projeto tem a sua memória. As lições certas entram na conversa
   sozinhas, e um prompt em português encontra uma lição escrita em inglês.
 - **Ele resume.** Um comando que se repete e enche a tela ganha um script que devolve

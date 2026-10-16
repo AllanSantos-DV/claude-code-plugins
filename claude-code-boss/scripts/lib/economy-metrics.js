@@ -36,6 +36,14 @@ const MODELS = Object.freeze({
   'claude-opus-5': { inputUsd: 5, readRatio: 0.1 },
   'claude-opus-4-8': { inputUsd: 5, readRatio: 0.1 },
   'claude-haiku-4-5': { inputUsd: 1, readRatio: 0.1 }, // same page, accessed 2026-10-15
+  // Same page, accessed 2026-10-16: models the transcripts of the last 30 days used that were not priced.
+  'claude-fable-5-1': { inputUsd: 10, readRatio: 0.025 },
+  'claude-fable-5': { inputUsd: 10, readRatio: 0.1 },
+  'claude-opus-4-7': { inputUsd: 5, readRatio: 0.1 },
+  'claude-opus-4-6': { inputUsd: 5, readRatio: 0.1 },
+  'claude-sonnet-4-6': { inputUsd: 3, readRatio: 0.1 },
+  // Haiku 5.5 reprices the WHOLE request above 100k prompt tokens: $0.10 → $0.50 input (every other rate scales by 5).
+  'claude-haiku-5-5': { inputUsd: 0.1, readRatio: 0.1, longContext: { overTokens: 100000, inputUsd: 0.5 } },
 });
 
 /**

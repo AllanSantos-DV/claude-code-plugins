@@ -4,7 +4,22 @@
 
 Check-up do motor (2026-10-15). Cada item tem teste; os números são do dado real desta máquina.
 
+### Added
+- **Economia medida e como objetivo** (`docs/ECONOMY.md`). `node scripts/economy-report.js` reconstrói o custo de cada sessão a partir
+  dos transcripts (a linha de base existe desde o primeiro transcript no disco; `--save` a guarda além da limpeza do Claude Code) e
+  compara dois grupos — com × sem hook do boss, ou antes × depois de uma data — por custo por chamada, estratificado por tamanho da
+  sessão, com intervalo de 95%. O método é validado com sessões sintéticas de efeito conhecido (recupera um corte de 20%, não acusa
+  efeito onde não há, não se deixa enganar por diferença de tamanho) e cada relatório diz o que a comparação prova e o que não prova.
+  Resultado real hoje: sem diferença detectável por sessão inteira (as economias por corte continuam medidas).
+- **`node scripts/compat-check.js`**: confere se o Claude Code instalado ainda contém cada nome do qual o plugin depende (variáveis de
+  ambiente, eventos de hook, API de módulos, chaves de settings, campos do transcript); sai com 2, nunca com sucesso, quando não acha o binário.
+  Roda também na suíte, contra o Claude Code da máquina.
+
 ### Fixed
+- **A compactação ociosa do engine (2.1.286+) não é mais desligada pelo boss.** Quando a flag do engine está ligada, o `folder-ttl` não troca
+  a pasta para o TTL de 5 min (a compactação ociosa só vale com 1 h). Nesta máquina a flag está `off`; vale quando o Claude Code a ligar.
+- **Custo em dólar de Fable 5/5.1, Opus 4.6/4.7, Sonnet 4.6 e Haiku 5.5** (preço da página oficial; o Haiku 5.5 reprecifica o pedido
+  inteiro acima de 100 mil tokens). Antes saíam do total: 423 chamadas de Fable e 222 de Sonnet 4.6 em 30 dias.
 - **Aviso de heredoc não induz mais o agente a abandonar heredoc.** Em sessões reais (minecraft-addon, minecraft-aldeoes-llm) o Boss
   reescreveu o heredoc corretamente, mas o aviso dizia que o Bash "corrompe" o comando; um erro posterior sem relação
   (`/tmp/x` lido por python nativo) foi atribuído ao heredoc e o agente passou a evitá-lo. O aviso agora diz que o comando roda igual
