@@ -28017,6 +28017,15 @@ test('shell-escape: short one-liners and plain commands are left alone; a leftov
   assert(w && !w.command && w.warn, 'mode=warn never rewrites');
 });
 
+test('shell-escape: /tmp/ path in python/node warns (native Windows resolves it to C:\\tmp), never denies, ignores bash-only use', () => {
+  const py = sePlan("python - <<'EOF'\nprint(open('/tmp/novo.txt').read())\nEOF");
+  assert(py && py.command && /C:\\tmp/.test(py.note) && !py.warn, `heredoc python with /tmp: ${JSON.stringify(py)}`);
+  const inline = sePlan("node -e \"require('fs').readFileSync('/tmp/x')\"");
+  assert(inline && !inline.warn && /C:\\tmp/.test(inline.note), `node -e with /tmp: ${JSON.stringify(inline)}`);
+  assert(sePlan('cat /tmp/novo.txt') === null, 'bash-only /tmp use is correct (Git Bash maps it) — silent');
+  assert(sePlan('python script.py ./out/tmp/x') === null, 'a path merely containing /tmp/ is not /tmp');
+});
+
 test('shell-escape: rewritten command runs and prints exactly what the intended script prints', () => {
   const { spawnSync } = require('child_process');
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-se-'));

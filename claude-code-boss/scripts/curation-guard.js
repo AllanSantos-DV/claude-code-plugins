@@ -153,9 +153,10 @@ function escapeFix(event) {
     }
     if (plan.warn) metrics.fire('shell-escape.warned', {}, mctx);
     const done = plan.command
-      ? `[boss] Bash no Windows: o conteúdo de ${[...new Set(plan.kinds)].join('/')} foi movido para arquivo e o comando reescrito, porque o Bash tool do Claude Code corrompe \\\\ e aspas nesse caminho (bug aberto). Próxima vez, grave o script com Write e rode o arquivo.`
+      ? `[boss] Bash no Windows: o conteúdo de ${[...new Set(plan.kinds)].join('/')} foi movido para arquivo e o comando reescrito (o Bash tool do Claude Code corrompe \\\\ e aspas nesse caminho — bug aberto). Ele roda igual ao que você escreveu: se este comando falhar, a causa NÃO é o heredoc/aspas — leia o erro dele. Para script longo, prefira Write + rodar o arquivo.`
       : null;
-    return { command: plan.command, ctx: [done, plan.warn].filter(Boolean).join(' ') || null, deny: null };
+    const ctx = [done, plan.warn, plan.note].filter(Boolean).join(' ') || null;
+    return { command: plan.command, ctx, deny: null };
   } catch (err) {
     hookLog('error', 'curation-guard', `shell-escape fix failed (fail-open): ${err.message}`);
     return null;
