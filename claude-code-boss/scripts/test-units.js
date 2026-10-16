@@ -1737,6 +1737,35 @@ test('brain-backend countMcp: lists only the current project (unfiltered list_do
   }
 });
 
+test('brain-backend mcp-memory 2.52: count reads pagination.total (limit:1); listDocuments/list page by nextOffset, array or object', async () => {
+  const all = Array.from({ length: 5 }, (_, i) => ({ documentId: `d${i}`, content: `c${i}`, metadata: { type: 't' } }));
+  const calls = [];
+  const daemon = await startFakeDaemon({ toolResult: (p) => {
+    const a = p.arguments || {};
+    calls.push(a);
+    const off = a.offset || 0;
+    const lim = a.limit || 2;
+    const page = all.slice(off, off + Math.min(lim, 2)); // server caps pages at 2 here
+    const pagination = { total: all.length, limit: lim, offset: off };
+    if (off + page.length < all.length) pagination.nextOffset = off + page.length;
+    return { content: [{ type: 'text', text: JSON.stringify({ documents: page, pagination, truncated: pagination.nextOffset !== undefined }) }] };
+  } });
+  delete require.cache[require.resolve('../engine/brain-backend.js')];
+  const backend = require('../engine/brain-backend.js');
+  backend.__testHooks._injectConfig({ backend: { type: 'mcp-memory', mcpMemory: { transport: 'http', serverUrl: daemon.url } } });
+  try {
+    await backend.init({ project: 'projA' });
+    assertEq(await backend.count(), 5, 'count = pagination.total, not the first page length');
+    assertEq(calls[calls.length - 1].limit, 1, 'count asks for one document only');
+    assertEq((await backend.listDocuments({ type: 't', projectId: 'projA' })).length, 5, 'all pages followed');
+    assertEq((await backend.list('t')).length, 5, 'unfiltered list follows all pages too');
+    await backend.close();
+  } finally {
+    delete require.cache[require.resolve('../engine/brain-backend.js')];
+    await daemon.close();
+  }
+});
+
 test('brain-backend searchMcp (F2): opts.projectIds → metadata.project_id LIST; coexists with type; omitted otherwise', async () => {
   const daemon = await startFakeDaemon({ toolResult: () => ({ content: [{ type: 'text', text: JSON.stringify({ results: [] }) }] }) });
   delete require.cache[require.resolve('../engine/brain-backend.js')];
