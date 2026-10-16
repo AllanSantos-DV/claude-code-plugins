@@ -161,7 +161,28 @@ function armHitsToFacts(hits, minScore = 0) {
       summary: h.summary || '',
       text: h.summary || '',
       score: h.score || 0,
+      projectId: h.projectId || '', // the project the lesson was written in (a promoted lesson keeps it)
     }));
+}
+
+/**
+ * Where each injected entry came from, relative to the project that asked: `own` (the focus), `ancestor` (its spine),
+ * `other` (another project — a lesson promoted to the user scope that matched here), `home` (the global spine) or `unknown`
+ * (the hit carries no project). Pure. This is what makes cross-project reuse measurable.
+ * @param {Array<{id?:string, projectId?:string, scope?:string}>} entries
+ * @param {{focusId?:string, ancestorIds?:string[]}} ctx
+ * @returns {{counts:Object<string,number>, byId:Object<string,string>}}
+ */
+function injectionOrigins(entries, { focusId = '', ancestorIds = [] } = {}) {
+  const counts = { own: 0, ancestor: 0, other: 0, home: 0, unknown: 0 };
+  const byId = {};
+  for (const e of entries || []) {
+    const p = (e && e.projectId) || '';
+    const kind = !p ? (e && e.scope === 'home' ? 'home' : 'unknown') : p === focusId ? 'own' : ancestorIds.includes(p) ? 'ancestor' : 'other';
+    counts[kind]++;
+    if (e && e.id) byId[e.id] = kind;
+  }
+  return { counts, byId };
 }
 
 /**
@@ -399,7 +420,7 @@ function filterInjectableEntries(entries) {
 }
 
 module.exports = {
-  retrieve, formatContext, filterInjectableEntries, pickInjectable, ANCESTOR_TIMEOUT_MS,
+  retrieve, formatContext, filterInjectableEntries, pickInjectable, injectionOrigins, ANCESTOR_TIMEOUT_MS,
   // F2 test seam: retrieveRemote accepts an injected fake backend/recallHealth via its
   // 3rd `deps` arg; mergeFactsSpine is pure (order/dedup assertions).
   __testHooks: { retrieveRemote, mergeFactsSpine, capQuery, projectArmIds, armHitsToFacts, createArmBreaker, withDeadline, resetCircuit: () => { circuitOpenUntil = 0; armBreakers.compose = createArmBreaker(); armBreakers.project = createArmBreaker(); } },

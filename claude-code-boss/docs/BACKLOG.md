@@ -14,11 +14,17 @@ Relatório com fontes: `docs/research/compat-2.1.300/relatorio.md` (local) e `do
   (423 + 222 + 24 chamadas em 30 dias); entram com o preço da página oficial (acesso 2026-10-16), Haiku 5.5 com a faixa acima de 100 mil.
 - [x] `scripts/compat-check.js` (54 nomes: env, eventos de hook, API de módulos, settings, campos do transcript — 54/54 presentes na 2.1.300) e
   `scripts/economy-report.js` + `lib/economy-ledger.js` (custo por sessão, comparação com intervalo, validada com efeito conhecido), com testes.
-- [ ] **Decisão do Allan — grupo de controle (A/B sorteado).** É o único método que prova causa; exige que uma fração das sessões rode sem as
-  economias. Hoje a comparação por sessão inteira é inconclusiva (com × sem boss: −6,6% por tamanho, intervalo −41%…+59%). Sem decisão, não implementar.
-- [ ] **Subagentes têm TTL de cache próprio** (`subagentPromptCacheTtl` / `CLAUDE_CODE_SUBAGENT_PROMPT_CACHE_TTL`; sem valor = 5 min a menos de
-  `ENABLE_PROMPT_CACHING_1H=1`). O boss grava só o TTL da conversa principal. Medir quantas regravações de subagente existem antes de mexer
-  (escrita de 1 h custa 1,6× a de 5 min). Fonte: strings do binário 2.1.300.
+- [x] **Grupo de controle (A/B sorteado): superado pela orientação do dono (2026-10-16)** — o valor é resultado que cresce com o uso, não custo por sessão;
+  sortear sessões sem as funções as privaria do que cresce. Fica só por função, se o dono quiser provar uma específica (ver `docs/ECONOMY.md`).
+- [ ] **Promoção automática de lição de projeto para usuário não existe** (achado do mapa funcional, `docs/FUNCOES.md` §2.8): o escopo user nasce na captura (tipo/tags),
+  por `scope-bulk-reclassify` ou por move manual no dashboard; a recorrência é contada dentro de um projeto e nada soma a mesma lição em N projetos. Proposta: promover
+  quando a mesma lição (cosseno ≥ 0,9) aparecer em ≥ 2 projetos, ou for citada em ≥ 2 sessões de ≥ 2 projetos, com `prepareForUserScope`; medir pelo `origin` de
+  `retrieve.cited`. Decisão de produto (copia conteúdo entre projetos) — não implementado. Achado junto: `scope-bulk-reclassify` copia `content.files` e tags sem sanitizar.
+- [x] **Subagentes: TTL de 1 h não compensa** (medido: 37 regravações a frio = 5 milhões de tokens contra 63 milhões de escrita; ganho 6 M × custo extra 47 M equivalentes)
+  e **janela de compactação**: o engine corta a ~167 mil (janela de 200 mil de subagente); 7% passam de 150 mil. `subagent-report.js` só recomenda ajuste por tipo.
+- [ ] **Cobertura dos eventos de regra**: só existem desde ~3/10 e a retenção do ruído é de 14 dias; a curva por tempo de uso só fica estável repetindo `outcome-report.js` daqui a semanas.
+  O `lesson.captured` não carrega `session_id`, então lições por sessão não são medidas; usar o limite de carga em massa (40 por projeto-semana) é uma heurística.
+- [x] **Subagentes têm TTL de cache próprio** (`subagentPromptCacheTtl`): medido em 681 execuções — 1 h não compensa (ver o item de subagentes acima). Nada a mudar.
 - [ ] **`CLAUDE_CODE_AUTO_COMPACT_WINDOW` (opt-in do boss, desligado) ganha do `/autocompact` do usuário** (a env tem precedência sobre comando, flag e
   settings; fonte: docs/en/env-vars). Se alguém ligar a opção, o `/autocompact` deixa de valer sem aviso. Avisar no painel ou migrar para `modelSettings`.
 - [ ] **Outro dono (reportado ao orquestrador): hook HTTP `127.0.0.1:8765/hooks/pretool?client=claude` estourou o prazo 76 vezes** (PreToolUse Write/Edit/Bash,

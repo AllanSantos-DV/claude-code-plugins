@@ -3355,6 +3355,25 @@ test('P12 retrieval-feedback: no mcp-memory a citacao vai ao SERVIDOR (signal_me
   }
 });
 
+test('retrieve origins: an injected lesson is classified own / ancestor / other (promoted from another project) / home / unknown, and the feedback hook carries it to the events', () => {
+  const rc = require('../engine/lib/retrieve-core.js');
+  const rf = require('./retrieval-feedback.js');
+  const entries = [
+    { id: 'a', projectId: 'org/app' }, { id: 'b', projectId: 'org' }, { id: 'c', projectId: 'other/proj' },
+    { id: 'd', projectId: '__user__' }, { id: 'e', scope: 'home' }, { id: 'f' },
+  ];
+  const { counts, byId } = rc.injectionOrigins(entries, { focusId: 'org/app', ancestorIds: ['org'] });
+  assertEq(counts, { own: 1, ancestor: 1, other: 2, home: 1, unknown: 1 });
+  assertEq([byId.a, byId.b, byId.c, byId.d, byId.e, byId.f], ['own', 'ancestor', 'other', 'other', 'home', 'unknown']);
+  const hit = rc.__testHooks.armHitsToFacts([{ id: 'x', title: 't', score: 0.9, projectId: 'other/proj' }])[0];
+  assertEq(hit.projectId, 'other/proj', 'the search hit keeps the project the lesson was written in');
+  const journal = [{ injectedOrigins: { own: 1, other: 2 }, originById: { a: 'own', c: 'other' } }, { injectedOrigins: { own: 2 } }, {}];
+  assertEq(rf.originTotals(journal), { own: 3, other: 2 });
+  assertEq([rf.originOf(journal, 'c'), rf.originOf(journal, 'zzz')], ['other', ''], 'unknown id (or a journal from before the field) → empty, never a guess');
+  const src = fs.readFileSync(path.join(__dirname, 'retrieval-feedback.js'), 'utf8');
+  assert(/origins: originTotals\(entries\)/.test(src) && /origin: originOf\(entries, c\.id\)/.test(src), 'retrieve.injected and retrieve.cited carry the origin');
+});
+
 test('metrics-store: recordMetric rejects invalid event names', () => {
   delete require.cache[require.resolve('../engine/lib/metrics-store.js')];
   const prevDataDir = process.env.CLAUDE_PLUGIN_DATA;
@@ -28809,6 +28828,115 @@ test('compat-check: the Claude Code installed on THIS machine contains every nam
   const { version, rows } = cc.check(bin);
   const missing = rows.filter((x) => !x.present).map((x) => `${x.kind} ${x.name}`);
   assertEq(missing, [], `Claude Code ${version} dropped what the plugin depends on`);
+});
+
+// ─── outcome-metrics: results that grow with use, from recorded events (known inputs → known numbers) ─────
+test('outcome-metrics: learning loop — recurrence, user-scope share, recall/citation, origin of recalled lessons, reuse across sessions and projects', () => {
+  const { summarizeOutcomes } = require('./lib/outcome-metrics.js');
+  const D = 86400e3; const t0 = Date.UTC(2026, 9, 5); // a Monday
+  const ev = (eventName, day, payload, sessionId = 's1', project = 'p1') => ({ eventName, ts: t0 + day * D, payload, sessionId, project });
+  const rows = [
+    ev('lesson.captured', 0, { decision: 'admit', scope: 'project' }, null), ev('lesson.captured', 0, { decision: 'admit', scope: 'user' }, null),
+    ev('lesson.captured', 1, { decision: 'merge', scope: 'project' }, null), ev('lesson.captured', 1, { decision: 'admit', scope: 'user' }, null),
+    ev('retrieve.injected', 1, { count: 3, chars: 300, origins: { own: 1, other: 2 } }), ev('retrieve.injected', 2, { count: 1, chars: 100, origins: { own: 1 } }),
+    ev('retrieve.injected', 2, { count: 4, chars: 0 }), // everything filtered: nothing entered the prompt
+    ev('retrieve.cited', 1, { entryId: 'e1', origin: 'other' }, 's1', 'p1'), ev('retrieve.cited', 3, { entryId: 'e1', origin: 'other' }, 's2', 'p2'),
+    ev('retrieve.cited', 3, { entryId: 'e2', origin: 'own' }, 's2', 'p2'), ev('retrieve.cited', 3, { entryId: 'e2', origin: 'own' }, 's2', 'p2'),
+  ];
+  const s = summarizeOutcomes(rows);
+  const l = s.learning;
+  assertEq([l.captured, l.admitted, l.merged, l.imported], [4, 3, 1, 0]);
+  assertEq([l.recurrenceShare, l.userScope, l.userScopeShare], [0.25, 2, 0.5]);
+  assertEq([l.injected, l.cited, l.citationRate], [4, 4, 1], 'a recall whose entries were all filtered injected nothing');
+  assertEq([l.origins.own, l.origins.other, l.crossProjectShare], [2, 2, 0.5]);
+  assertEq(l.citedByOrigin, { other: 2, own: 2 });
+  assertEq(l.reuse, { citedEntries: 2, inSeveralSessions: 1, inSeveralProjects: 1 }, 'e1 served two sessions of two projects; e2 one session twice');
+  assertEq(s.window.sessions, 2, 'a capture carries no session id and creates no session');
+});
+
+test('outcome-metrics: a project-week above the backfill limit is counted apart; an organic week is not', () => {
+  const { summarizeOutcomes, BACKFILL_PER_WEEK } = require('./lib/outcome-metrics.js');
+  const t0 = Date.UTC(2026, 9, 5);
+  const bulk = Array.from({ length: BACKFILL_PER_WEEK + 1 }, (_, i) => ({ eventName: 'lesson.captured', ts: t0 + i, payload: { decision: 'admit', scope: 'auto' }, project: 'bulk' }));
+  const organic = Array.from({ length: 5 }, (_, i) => ({ eventName: 'lesson.captured', ts: t0 + i, payload: { decision: 'admit', scope: 'project' }, project: 'work' }));
+  const l = summarizeOutcomes([...bulk, ...organic]).learning;
+  assertEq([l.captured, l.imported], [5, BACKFILL_PER_WEEK + 1]);
+  assertEq(summarizeOutcomes([...bulk, ...organic], { backfillPerWeek: 1000 }).learning.imported, 0, 'the limit is a parameter');
+});
+
+test('outcome-metrics: decisions by rule vs handed back, and the share starts only at the week the rule events were first recorded', () => {
+  const { summarizeOutcomes } = require('./lib/outcome-metrics.js');
+  const D = 86400e3; const w1 = Date.UTC(2026, 8, 28); const w2 = w1 + 7 * D; const w3 = w2 + 7 * D;
+  const e = (eventName, ts, payload = {}) => ({ eventName, ts, payload, sessionId: 's', project: 'p' });
+  const rows = [
+    e('curation.flagged', w1), e('curation.flagged', w1), e('nudge.emitted', w1), // before any rule event was recorded
+    e('curation.redirected', w2, { shellId: 'a' }), e('curation.redirected', w2, { shellId: 'a' }), e('curation.redirected', w2, { shellId: 'b' }), e('shell-escape.rewritten', w2), e('curation.flagged', w2),
+    e('curation.redirected', w3, { shellId: 'a' }), e('curation.redirected', w3, { shellId: 'a' }), e('curation.redirected', w3, { shellId: 'a' }), e('curation.flagged', w3),
+  ];
+  const s = summarizeOutcomes(rows);
+  assertEq(s.byWeek.map((w) => [w.mechanicalShare, w.curationShare]), [[null, null], [0.8, 0.75], [0.75, 0.75]], 'week 1 has no share (n/a), not 0%');
+  assertEq([s.window.ruleEventsFrom, s.curation.scripts, s.curation.redirected, s.curation.flagged], ['2026-10-05', 2, 6, 4]);
+  assertEq([s.mechanical.mechanical, s.mechanical.handedBack, s.mechanical.byKind['shell-escape.rewritten']], [7, 5, 1]);
+});
+
+test('outcome-metrics: maturity orders a project\'s sessions by start, buckets 1–3 / 4–10 / 11–30 / 31+, and measures only sessions of the chosen window', () => {
+  const { summarizeOutcomes } = require('./lib/outcome-metrics.js');
+  const D = 86400e3; const t0 = Date.UTC(2026, 9, 1);
+  const rows = [];
+  // 12 sessions of one project, one a day; session k holds k redirects (a rule gets used more as the project matures)
+  for (let k = 1; k <= 12; k++) for (let i = 0; i < k; i++) rows.push({ eventName: 'curation.redirected', ts: t0 + k * D + i, payload: { shellId: 'x' }, sessionId: `s${k}`, project: 'p' });
+  const all = summarizeOutcomes(rows, { maturitySince: 0 }).maturity;
+  assertEq(all.map((b) => [b.label, b.sessions, b.mechanicalPerSession]), [['1–3 sessions', 3, 2], ['4–10 sessions', 7, 7], ['11–30 sessions', 2, 11.5]]);
+  const late = summarizeOutcomes(rows, { maturitySince: t0 + 11 * D }).maturity;
+  assertEq(late.map((b) => [b.label, b.sessions]), [['11–30 sessions', 2]], 'earlier sessions still count toward the ordinal but not toward the rates');
+  assertEq(summarizeOutcomes([]).maturity, []);
+});
+
+test('outcome-report CLI: reads every project of an explicit data dir and prints the loops (--json parses, a bad --since fails loud, the real store is never touched)', () => {
+  const { spawnSync } = require('child_process');
+  const data = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-outcome-'));
+  const iso = require('../engine/lib/metrics-store.js');
+  try {
+    // An explicit dataDir on every call: nothing depends on (or can leak into) the machine's real store.
+    if (!iso.init({ project: 'outcome-a', dataDir: data })) return; // no SQLite backend on this runner
+    iso.recordMetric('curation.redirected', { shellId: 'a' }, 'sa');
+    iso.recordMetric('curation.flagged', {}, 'sa');
+    iso.recordMetric('retrieve.injected', { count: 2, chars: 50 }, 'sa');
+    iso.close();
+    const run = (...args) => spawnSync(process.execPath, [path.join(__dirname, 'outcome-report.js'), '--data-dir', data, ...args], { encoding: 'utf8' });
+    const out = run('--json');
+    assert(out.status === 0, `exit ${out.status}: ${out.stderr}`);
+    const s = JSON.parse(out.stdout);
+    assertEq([s.curation.redirected, s.curation.flagged, s.learning.injected, s.window.projects], [1, 1, 2, 1], 'exactly the three events written to the explicit dir');
+    const text = run();
+    assert(/LEARNING LOOP/.test(text.stdout) && /CURATION LOOP/.test(text.stdout) && /DECISIONS TAKEN BY A RULE/.test(text.stdout), text.stdout.slice(0, 200));
+    const bad = run('--since', 'nope');
+    assert(bad.status !== 0 && /not a date/.test(bad.stderr), 'a bad --since fails loud');
+  } finally { iso.close(); fs.rmSync(data, { recursive: true, force: true }); }
+});
+
+// ─── subagent-usage: when a smaller compaction window for ONE agent type is worth setting ──────────────
+test('subagent-usage: advice only for a user-owned type with enough runs and a pattern of big contexts; built-ins, small samples and ordinary contexts get none, with the reason', () => {
+  const { summarizeSubagents } = require('./lib/subagent-usage.js');
+  const runs = (agentType, peaks) => peaks.map((maxContext) => ({ agentType, maxContext, calls: 10, units: 1000, usd: 1, compactions: maxContext > 167000 ? 1 : 0 }));
+  const big = (n, of) => [...Array(n).fill(200000), ...Array(of - n).fill(60000)];
+  const s = summarizeSubagents([
+    ...runs('researcher', big(4, 12)),         // 33% big, own file → set
+    ...runs('general-purpose', big(60, 100)),  // 60% big, but built-in → no file
+    ...runs('reviewer', big(1, 40)),           // 2.5% big → engine cut is enough
+    ...runs('fork', big(5, 5)),                // all big, but 5 runs say nothing
+  ]);
+  const by = Object.fromEntries(s.types.map((t) => [t.agentType, t]));
+  assertEq(by.researcher.advice.action, 'set-autoCompactWindow');
+  assertEq(by.researcher.advice.window, 150000);
+  assert(/frontmatter/.test(by.researcher.advice.why), by.researcher.advice.why);
+  assertEq(by['general-purpose'].advice.action, 'none');
+  assert(/built-in/.test(by['general-purpose'].advice.why), by['general-purpose'].advice.why);
+  assert(/engine's own cut/.test(by.reviewer.advice.why), by.reviewer.advice.why);
+  assert(/fewer than 10/.test(by.fork.advice.why), by.fork.advice.why);
+  assertEq([by.researcher.runs, by.researcher.bigRuns, by.researcher.engineCompactions, by.researcher.peak.max], [12, 4, 4, 200000]);
+  assertEq(s.total.runs, 12 + 100 + 40 + 5);
+  assertEq(summarizeSubagents([]), { total: { runs: 0, calls: 0, units: 0 }, types: [] });
 });
 
 // ─── Runner ──────────────────────────────────────────────────────────────────

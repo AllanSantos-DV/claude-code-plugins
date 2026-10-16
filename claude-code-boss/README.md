@@ -2,11 +2,11 @@
 
 Plugin para Claude Code Desktop — **v3.9.0**
 
-**Menos custo, menos repetição. Mais memória.** O objetivo do claude-code-boss é gastar menos
-token, dinheiro e limite do plano por tarefa concluída: o seu Claude Code lembra o que deu
-certo e errado em cada projeto, resume a saída barulhenta de comandos que se repetem,
-guarda uma lição toda vez que você o corrige e compacta o contexto na hora que custa menos.
-Tudo roda na sua máquina, sem chave de API.
+**Cada sessão rende mais que a anterior.** O claude-code-boss faz o seu Claude Code lembrar o que
+deu certo e errado em cada projeto, resolver por regra o que antes ele decidia no improviso
+(comandos que enchem a tela, erros que se repetem) e compactar o contexto na hora que custa menos.
+O ganho cresce com o uso: numa máquina nova ele só compacta na hora certa; com o tempo, a memória,
+os scripts curados e as decisões mecânicas fazem a diferença. Tudo roda na sua máquina, sem chave de API.
 
 | Dark | Light |
 | :-: | :-: |
@@ -29,10 +29,11 @@ Nada mais a configurar.
 
 ## O que você ganha
 
-- **Ele economiza, e mostra quanto.** Cache de 1 hora para o contexto não ser regravado a cada pausa,
-  compactação só quando o cache já esfriou, saída de comando resumida e custo fixo por mensagem
-  medido e cortado. `node scripts/economy-report.js` mede o custo das suas sessões (e compara
-  grupos com intervalo de confiança); [como a economia é medida e o que cada medida prova](docs/ECONOMY.md).
+- **O valor cresce com o uso, e é medido.** Decisões que o modelo tomava toda vez viram regras do projeto;
+  `node scripts/outcome-report.js` mostra quantas, quantos comandos já são resolvidos por script, quais lições foram
+  lembradas e citadas, e como isso muda conforme o projeto ganha sessões. Também poupa token: cache de 1 hora,
+  compactação só com o cache frio, custo fixo por mensagem cortado. [Como cada ganho é medido](docs/ECONOMY.md) ·
+  [função por função, com os loops de aprendizado e de curadoria](docs/FUNCOES.md).
 - **Ele lembra.** Cada projeto tem a sua memória. As lições certas entram na conversa
   sozinhas, e um prompt em português encontra uma lição escrita em inglês.
 - **Ele resume.** Um comando que se repete e enche a tela ganha um script que devolve

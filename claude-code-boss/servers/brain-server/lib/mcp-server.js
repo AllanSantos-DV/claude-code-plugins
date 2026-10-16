@@ -1167,8 +1167,9 @@ export function createBrainServer({ pluginRoot, mode = 'http', kbWorker, kbLock,
             try {
               const journal = require(path.join(PLUGIN_ROOT, 'scripts', 'lib', 'retrieval-journal.js'));
               const sid = session_id || 'default';
+              const origins = retrieveCore.injectionOrigins(injectable, { focusId: focusId || project, ancestorIds: chain });
               // injectedChars = what really entered the prompt (post-filter, formatted) — the cost of this recall.
-              journal.appendEntry(sid, { retrievalId: journal.newRetrievalId(), ts: Date.now(), sid, tool: 'UserPromptSubmit', project, returnedIds: entries.map(e => e.id), returnedTitles: entries.map(e => e.title), injectedIds: injectable.map(e => e.id), injectedChars: text ? text.length : 0 });
+              journal.appendEntry(sid, { retrievalId: journal.newRetrievalId(), ts: Date.now(), sid, tool: 'UserPromptSubmit', project, returnedIds: entries.map(e => e.id), returnedTitles: entries.map(e => e.title), injectedIds: injectable.map(e => e.id), injectedChars: text ? text.length : 0, injectedOrigins: origins.counts, originById: origins.byId });
             } catch (err) { console.error(`[brain_retrieve_context] journal: ${err.message}`); }
           }
           const payload = text ? JSON.stringify({ hookSpecificOutput: { hookEventName: 'UserPromptSubmit', additionalContext: text } }) : '';
