@@ -5,7 +5,7 @@
  * value is memory, curated commands and decisions made by a rule instead of by the model, and none of it exists
  * on a machine's first day.
  *
- * Four views of the same rows:
+ * Five views of the same rows:
  *   learning   — lessons captured (new vs a known one recurring, user-scope share = promotion), recalled, cited;
  *                where recalled lessons came from (own project / ancestor / another project) and which cited
  *                lessons served several sessions or projects (reuse).
@@ -13,6 +13,8 @@
  *   mechanical — decisions taken by a rule (rewrite, redirect, guard, cut, recall) against the ones handed back to
  *                the model (a nudge, a capture offer, a curation block, a raw output): the mechanical share.
  *   maturity   — the same rates by how many sessions a project has had (1–3, 4–10, 11–30, 31+).
+ *   promotions — lessons copied from one project to the user scope (lesson.promoted / lesson.promotion.reverted), by rule,
+ *                and what their citations show: used in projects that were not a source.
  *
  * Two honesty rules. (1) A project that captures more than BACKFILL_PER_WEEK lessons in one week is backfilling (a bulk
  * extraction from old transcripts, an import): those lessons are counted apart — the agent did not learn them from work
@@ -44,6 +46,8 @@ const HANDED_BACK = Object.freeze({
 const BACKFILL_PER_WEEK = 40;
 const MATURITY_BUCKETS = Object.freeze([[3, '1–3 sessions'], [10, '4–10 sessions'], [30, '11–30 sessions'], [Infinity, '31+ sessions']]);
 
+const { projectIdentity } = require('./lesson-promotion.js');
+
 const num = (v) => (Number.isFinite(Number(v)) ? Number(v) : 0);
 const share = (a, b) => (a + b > 0 ? a / (a + b) : null);
 const round = (v, d = 3) => (v == null ? null : +Number(v).toFixed(d));
@@ -53,6 +57,51 @@ function weekOf(ts) {
   const d = new Date(num(ts));
   const monday = new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate() - ((d.getUTCDay() + 6) % 7)));
   return monday.toISOString().slice(0, 10);
+}
+
+/**
+ * What lesson promotion delivered. Promotions are STATE, not flow: every promotion event counts whatever the window; only the
+ * citations of the promoted copies are windowed by `since`. A "project that was not a source" is judged by projectIdentity
+ * (the promotion's own notion of a distinct project). The rate comparison is an approximation: which entries were injected is
+ * not recorded per entry, so "cited share" is distinct lessons cited over lessons known (promoted: the promotions; the rest:
+ * lessons captured or imported in the window).
+ * @param {Array} rows
+ * @param {{since?:number, universe?:number}} [opts]  universe: lessons known in the window (captured + imported)
+ */
+function summarizePromotions(rows, { since = 0, universe = 0 } = {}) {
+  const promoted = new Map(); const reverted = new Set();
+  for (const r of rows || []) {
+    if (!r || !r.payload) continue;
+    if (r.eventName === 'lesson.promoted' && r.payload.id) promoted.set(r.payload.id, { rule: r.payload.rule, userEntryId: r.payload.userEntryId, sources: new Set((r.payload.projects || []).map(projectIdentity)) });
+    else if (r.eventName === 'lesson.promotion.reverted' && r.payload.id) reverted.add(r.payload.id);
+  }
+  const copies = new Map(); // user entry id -> source identities
+  for (const p of promoted.values()) if (p.userEntryId) copies.set(p.userEntryId, p.sources);
+  const byRule = {};
+  for (const p of promoted.values()) byRule[p.rule || '?'] = (byRule[p.rule || '?'] || 0) + 1;
+  const eff = { citations: 0, reachedCitations: 0, originUnrecorded: 0, reachedProjects: new Set(), citedLessons: new Set(), otherCited: new Set(), otherCitations: 0 };
+  for (const r of rows || []) {
+    if (!r || r.eventName !== 'retrieve.cited' || num(r.ts) < since || !r.payload || !r.payload.entryId) continue;
+    const id = r.payload.entryId;
+    if (!copies.has(id)) { eff.otherCited.add(id); eff.otherCitations++; continue; }
+    eff.citations++; eff.citedLessons.add(id);
+    if (!r.payload.origin) { eff.originUnrecorded++; continue; }
+    const who = projectIdentity(r.project);
+    if (r.payload.origin === 'other' && !copies.get(id).has(who)) { eff.reachedCitations++; eff.reachedProjects.add(who); }
+  }
+  const n = promoted.size;
+  return {
+    promoted: n, byRule, active: n - [...reverted].filter((i) => promoted.has(i)).length, reverted: [...reverted].filter((i) => promoted.has(i)).length,
+    effect: {
+      citations: eff.citations, citedLessons: eff.citedLessons.size, reachedCitations: eff.reachedCitations, reachedProjects: eff.reachedProjects.size, originUnrecorded: eff.originUnrecorded,
+      citedShare: round(n ? eff.citedLessons.size / n : null), otherCitedShare: round(universe ? eff.otherCited.size / universe : null),
+      citationsPerPromoted: round(n ? eff.citations / n : null, 2), citationsPerOther: round(universe ? eff.otherCitations / universe : null, 2),
+    },
+    labels: {
+      proves: 'a promoted lesson was cited in the reply of a project that was not one of its sources (use beyond where it was learned)',
+      notProven: 'that the citation avoided an error; the comparison with other lessons is approximate (no per-entry injection count) and a promoted lesson is chosen for being repeated, so it is not a controlled comparison',
+    },
+  };
 }
 
 /**
@@ -86,6 +135,7 @@ function summarizeOutcomes(rows, { since = 0, maturitySince = since, backfillPer
 
   for (const r of rows || []) {
     if (!r || !r.eventName || num(r.ts) < since) continue;
+    if (r.eventName === 'lesson.promoted' || r.eventName === 'lesson.promotion.reverted') continue; // state of the promotion store, no project or session of work
     const p = r.payload || {}; const n = r.eventName; const w = wk(r.ts);
     projects.add(r.project || '(none)'); if (r.sessionId) sessions.add(`${r.project}|${r.sessionId}`);
     const c = cell(r);
@@ -148,6 +198,7 @@ function summarizeOutcomes(rows, { since = 0, maturitySince = since, backfillPer
       scripts: curation.scripts.size,
     },
     mechanical: { byKind: mechByKind, handedBackByKind: backByKind, mechanical: mechTotal, handedBack: backTotal, share: round(share(mechTotal, backTotal)) },
+    promotions: summarizePromotions(rows, { since, universe: learning.captured + learning.imported }),
     byWeek,
     maturity: buckets.filter((b) => b.sessions).map((b) => ({
       label: b.label, sessions: b.sessions, mechanicalPerSession: round(b.mech / b.sessions, 2), recalledPerSession: round(b.injected / b.sessions, 2),
@@ -163,4 +214,4 @@ function summarizeOutcomes(rows, { since = 0, maturitySince = since, backfillPer
   };
 }
 
-module.exports = { summarizeOutcomes, weekOf, BACKFILL_PER_WEEK, MECHANICAL, HANDED_BACK, MATURITY_BUCKETS };
+module.exports = { summarizeOutcomes, summarizePromotions, weekOf, BACKFILL_PER_WEEK, MECHANICAL, HANDED_BACK, MATURITY_BUCKETS };
