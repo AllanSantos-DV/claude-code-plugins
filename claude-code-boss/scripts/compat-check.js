@@ -5,7 +5,7 @@
  *   node scripts/compat-check.js [--bin <claude executable>] [--json]
  *
  * Collects what the plugin reads, writes or registers — engine env-var names, the hook events of
- * hooks/hooks.json, the module API (`$.ns.method`) hooks/compaction.mjs calls, the settings keys and the
+ * hooks/hooks.json, the module API (`$.ns.method`) the hooks module (hooks/*.mjs, scripts/lib/*.mjs) calls, the settings keys and the
  * transcript/hook fields it parses — and looks for each as a literal string in the engine binary.
  *
  * PROVES: the engine still knows the name (it was not dropped or renamed).
@@ -63,7 +63,11 @@ function dependencies() {
     }
   }
   const mod = new Map();
-  for (const m of fs.readFileSync(path.join(ROOT, 'hooks', 'compaction.mjs'), 'utf8').matchAll(/\$\.([a-z]+)\.([a-zA-Z]+)/g)) mod.set(`${m[1]}.${m[2]}`, 'hooks/compaction.mjs');
+  // Every file of the hooks module: hooks/*.mjs and the module-side libs they import (scripts/lib/*.mjs).
+  const modFiles = [['hooks'], ['scripts', 'lib']].flatMap((d) => fs.readdirSync(path.join(ROOT, ...d)).filter((f) => f.endsWith('.mjs')).map((f) => [...d, f].join('/')));
+  for (const rel of modFiles) {
+    for (const m of fs.readFileSync(path.join(ROOT, rel), 'utf8').matchAll(/\$\.([a-z]+)\.([a-zA-Z]+)/g)) if (!mod.has(`${m[1]}.${m[2]}`)) mod.set(`${m[1]}.${m[2]}`, rel);
+  }
   const events = Object.keys(JSON.parse(fs.readFileSync(path.join(ROOT, 'hooks', 'hooks.json'), 'utf8')).hooks);
   return [
     ...[...env].sort().map(([name, why]) => ({ kind: 'env', name, why })),

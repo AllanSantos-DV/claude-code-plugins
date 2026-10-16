@@ -244,9 +244,9 @@ prazo interno de `timeout − 1 s`.
 
 ## Compactação controlada
 
-Módulo de *function hook* do Claude Code (`hooks/compaction.mjs`, declarado em `modules` no
-`hooks.json`; exige Claude Code 2.1.274+). Decisões puras em `scripts/lib/compaction-core.mjs`
-(ESM, usado pelo módulo e pelo Node).
+Módulo de *function hook* do Claude Code (`hooks/compaction.mjs`, registrado pela entrada única
+`hooks/index.mjs` declarada em `modules` no `hooks.json`; exige Claude Code 2.1.274+). Decisões puras em
+`scripts/lib/compaction-core.mjs` (ESM, usado pelo módulo e pelo Node).
 
 - **Quando**: nunca sozinho e **nunca com o cache quente**. No `prompt.submit` de uma pessoa com a
   sessão ociosa, se o contexto passou do limiar **e** o cache do provedor já expirou, o prompt é
@@ -308,6 +308,21 @@ Módulo de *function hook* do Claude Code (`hooks/compaction.mjs`, declarado em 
   versões anteriores volta ao valor de antes); tudo volta com `costTuning.enabled: false` ou no perfil `free`.
   Um valor que você mudar depois ou um valor seu (TTL, Tool Search `false`/`auto`) ficam como estão. Config: `cacheTtl`
   (`1h` ou `null`), `toolSearch` (padrão `true`), `autoCompactWindow` (100000–1000000, ou `null`). Vale a partir da próxima sessão.
+
+## Faixa acima do prompt e `/boss`
+
+Mod do Claude Code (`hooks/boss.mjs`, registrado pela mesma entrada `hooks/index.mjs`; exige Claude Code / Desktop
+2.1.286+). Vem com o plugin, nada a instalar à parte; numa sessão já aberta, vale depois de `/reload-plugins`.
+
+- **Faixa de 1 linha** acima do prompt (CLI e aba Code do Desktop, onde a `statusLine` nativa não aparece): custo da
+  sessão, tokens que o Token Guard poupou nesta sessão e em 30 dias, Brain no ar ou fora. Se o daemon do Brain não
+  responde, a faixa mostra o motivo no lugar dos números.
+- **`/boss`**: os mesmos números em tabela, mais o aprendizado de 30 dias (lições, memórias citadas/injetadas).
+- **Dados**: o custo vem da própria sessão; o resto, de `GET /hook/boss-summary` no daemon do Brain (porta 38217,
+  mesmo token local do `/mcp`, só leitura, sem caminho nem URL na resposta). Cada sessão lê a cada 10 s; o daemon
+  guarda a resposta por 30 s, então N sessões custam um cálculo (`scripts/boss-summary.js`, ~0,7 s sobre 230 projetos).
+- **Desligar**: `disableAllHooks` (ou `allowManagedModsOnly`) desliga a faixa com os outros mods; só ela, com
+  `hook_boss_summary` em `disabledHooks` (`<globalDir>/hooks/user-config.json`; resposta vazia → nenhuma faixa). Sessões `-p`/SDK não desenham nem consultam nada.
 
 ## Brain KB
 

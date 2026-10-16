@@ -27,7 +27,7 @@
     "engine/lib/kb-row.js": "703b9a348eb37e0e984c573255fb203e2619eb3ccdc73807528ae8a56aababcf",
     "engine/lib/log-rotate.js": "203dbb482fe09df3b18e950e8b62e41374a7b46f8ae90edc7389c6542708066e",
     "engine/lib/metrics-project.js": "326374a271ca2e246ad63263c6ba14e6cfd04c8c5ae79b46ad5634ee9701adc7",
-    "engine/lib/metrics-store.js": "5f14b2aea27276d69fda695b006b1a3810d06d48155b015ee21b1b72c63355d5",
+    "engine/lib/metrics-store.js": "1f40a68ad82ade5e0fd32cfb5d37533530106dca38cfd796b2ea71eb028c586e",
     "engine/lib/metrics.js": "33d78495fd60a51ebd132f9da1dfb81a285727faa275360d14d2ed73ca482367",
     "engine/lib/policy-store.js": "5276a70b4f7437a292b5750a5fa595bdcada0c7ac4b89b069f2c0fa343a01380",
     "engine/lib/powershell-compat.js": "087c373327f335295c10d4b3fb15273c1c6621a21b210d964597bf4e81af814b",

@@ -34,6 +34,8 @@ const MAX_SESSIONS = 50; // limite de sessões simultâneas para evitar exaustã
 // Under the Stop hook's 29s worker deadline: a hook already running when a swap or a
 // backend switch shuts the daemon down gets its answer instead of "Connection closed".
 const SHUTDOWN_DRAIN_MS = 25_000;
+// How long a module read route's answer is reused (~0.7 s over 230 projects' metrics, measured).
+const READ_CACHE_MS = 30_000;
 
 async function readJsonBody(req) {
   const chunks = [];
@@ -52,7 +54,7 @@ async function readJsonBody(req) {
  * @returns {Promise<{ httpServer, sessions:Map, shutdown:()=>Promise<void>, port:number }>}
  *   Rejects with an Error whose `.code === 'EADDRINUSE'` if the port is taken.
  */
-export async function startHttpDaemon({ pluginRoot, dataDir, port, host = '127.0.0.1', version = '2.0.0', sseKeepaliveMs = SSE_KEEPALIVE_MS, sessionIdleMs = SESSION_IDLE_MS, reapIntervalMs = 60_000, shutdownDrainMs = SHUTDOWN_DRAIN_MS }) {
+export async function startHttpDaemon({ pluginRoot, dataDir, port, host = '127.0.0.1', version = '2.0.0', sseKeepaliveMs = SSE_KEEPALIVE_MS, sessionIdleMs = SESSION_IDLE_MS, reapIntervalMs = 60_000, shutdownDrainMs = SHUTDOWN_DRAIN_MS, readCacheMs = READ_CACHE_MS }) {
   const sessions = new Map(); // sessionId -> { server, transport, lastSeen }
   let _shuttingDown = false;
   // Requests awaiting an answer — everything but /health, /shutdown and the long-lived
@@ -140,6 +142,25 @@ export async function startHttpDaemon({ pluginRoot, dataDir, port, host = '127.0
     return moduleHookTools;
   };
   const MODULE_HOOK_ROUTES = { '/hook/compaction-event': 'hook_compaction_event' };
+  // Read-only GET routes for modules (hooks/boss.mjs polls one from every open session):
+  // the answer is cached and a computation in flight is shared, so N sessions cost one.
+  const MODULE_READ_ROUTES = { '/hook/boss-summary': 'hook_boss_summary' };
+  const readCache = new Map(); // route → { at, value } | { pending }
+  const readCached = (url) => {
+    const hit = readCache.get(url);
+    if (hit && hit.pending) return hit.pending;
+    if (hit && Date.now() - hit.at < readCacheMs) return Promise.resolve(hit.value);
+    const pending = getModuleHookTools().handle(MODULE_READ_ROUTES[url], {}).then((out) => {
+      const text = (out && out.content && out.content[0] && out.content[0].text) || '{}';
+      const value = JSON.parse(text);
+      // A degraded hook is an error, never cached: the next poll tries again.
+      if (value && value.systemMessage) throw new Error(value.systemMessage);
+      readCache.set(url, { at: Date.now(), value });
+      return value;
+    }).catch((err) => { readCache.delete(url); throw err; });
+    readCache.set(url, { pending });
+    return pending;
+  };
 
   const httpServer = http.createServer(async (req, res) => {
     try {
@@ -201,6 +222,31 @@ export async function startHttpDaemon({ pluginRoot, dataDir, port, host = '127.0
         const out = await tools.handle(MODULE_HOOK_ROUTES[url], args);
         res.writeHead(200, { 'Content-Type': 'application/json' });
         res.end((out && out.content && out.content[0] && out.content[0].text) || '{}');
+        return;
+      }
+
+      if (req.method === 'GET' && Object.prototype.hasOwnProperty.call(MODULE_READ_ROUTES, url)) {
+        const gate = requestAllowed(req, token, dataDir);
+        if (!gate.ok) {
+          res.writeHead(gate.code, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ error: gate.error }));
+          return;
+        }
+        let value;
+        try { value = await readCached(url); } catch (err) {
+          console.error(`[brain-http] ${url}: ${err.message}`);
+          res.writeHead(503, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ error: err.message }));
+          return;
+        }
+        // Per-session figures: the asking session gets its own, never the other sessions' ids.
+        const sid = new URL(req.url, 'http://127.0.0.1').searchParams.get('session') || '';
+        const tg = value && value.tokenGuard;
+        const out = tg && tg.bySession
+          ? { ...value, tokenGuard: { ...Object.fromEntries(Object.entries(tg).filter(([k]) => k !== 'bySession')), sessionTokens: (sid && tg.bySession[sid]) || 0 } }
+          : value;
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify(out));
         return;
       }
 
