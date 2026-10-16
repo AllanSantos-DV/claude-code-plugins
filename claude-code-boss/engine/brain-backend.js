@@ -443,8 +443,9 @@ async function deleteMcp(id) {
   await _mcp.callTool('delete_document', { documentId: id });
 }
 
-async function listMcp(type, _project) {
-  const docs = await listAllMcp(type ? { metadata: { type } } : {});
+async function listMcp(type, project) {
+  // Explicit project filter: unfiltered, list_documents spans every project on the server.
+  const docs = await listAllMcp({ metadata: { ...(type ? { type } : {}), project_id: project || _project } });
   return docs.map(item => normalizeSearchItem(item));
 }
 

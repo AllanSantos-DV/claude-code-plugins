@@ -1758,7 +1758,10 @@ test('brain-backend mcp-memory 2.52: count reads pagination.total (limit:1); lis
     assertEq(await backend.count(), 5, 'count = pagination.total, not the first page length');
     assertEq(calls[calls.length - 1].limit, 1, 'count asks for one document only');
     assertEq((await backend.listDocuments({ type: 't', projectId: 'projA' })).length, 5, 'all pages followed');
-    assertEq((await backend.list('t')).length, 5, 'unfiltered list follows all pages too');
+    assertEq((await backend.list('t')).length, 5, 'list follows all pages too');
+    assertEq(calls[calls.length - 1].metadata.project_id, 'projA', 'list defaults to the current project, never the whole server');
+    await backend.list('t', 'projB');
+    assertEq(calls[calls.length - 1].metadata.project_id, 'projB', 'explicit project wins');
     await backend.close();
   } finally {
     delete require.cache[require.resolve('../engine/brain-backend.js')];
