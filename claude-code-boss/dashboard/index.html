@@ -1432,6 +1432,7 @@ const I18N = {
     'plugin.available': 'Update available: {v}',
     'plugin.updating': 'Downloading + installing… (may take a minute)',
     'plugin.updated': 'Updated {f} → {t}. Run /reload-plugins in Claude Code.',
+    'plugin.updatedRestart': 'Updated {f} → {t}. Close and reopen your Claude Code sessions (a /reload-plugins would load an older copy).',
     'plugin.confirmUpdate': 'Download the latest release and install it over the current plugin? Claude Code will need /reload-plugins afterwards.',
     'plugin.updateHint': 'External plugin (local marketplace): Claude\'s /plugin does not auto-update it. After updating, run /reload-plugins.',
     'router.saving': 'Saving...',
@@ -1665,6 +1666,7 @@ const I18N = {
     'plugin.available': 'Atualização disponível: {v}',
     'plugin.updating': 'Baixando + instalando… (pode levar um minuto)',
     'plugin.updated': 'Atualizado {f} → {t}. Rode /reload-plugins no Claude Code.',
+    'plugin.updatedRestart': 'Atualizado {f} → {t}. Feche e abra as sessões do Claude Code (um /reload-plugins carregaria uma cópia antiga).',
     'plugin.confirmUpdate': 'Baixar a última release e instalar por cima do plugin atual? O Claude Code vai precisar de /reload-plugins depois.',
     'plugin.updateHint': 'Plugin externo (marketplace local): o /plugin do Claude não atualiza sozinho. Após atualizar, rode /reload-plugins.',
     'router.saving': 'Salvando...',
@@ -2134,7 +2136,7 @@ async function doPluginUpdate() {
   try {
     const r = await api('POST', '/api/plugin/update');
     if (r && r.updated) {
-      if (prog) prog.innerHTML = '<span style="color:var(--success,#3fb950)">✓ ' + t('plugin.updated').replace('{f}', 'v' + r.from).replace('{t}', 'v' + r.to) + '</span>';
+      if (prog) prog.innerHTML = '<span style="color:var(--success,#3fb950)">✓ ' + t(r.reloadable === false ? 'plugin.updatedRestart' : 'plugin.updated').replace('{f}', 'v' + r.from).replace('{t}', 'v' + r.to) + '</span>';
       await loadPluginVersion();
       await checkPluginUpdate(true);
     } else if (r && r.error) {

@@ -38,6 +38,9 @@ Check-up do motor (2026-10-15). Cada item tem teste; os números são do dado re
   Roda também na suíte, contra o Claude Code da máquina.
 
 ### Fixed
+- **"Atualizar agora" do dashboard seguido de `/reload-plugins` carregava uma cópia antiga.** No reload o Claude Code lê a pasta do cache com o nome
+  da versão; o atualizador gravava a pasta com o nome do commit, e o Claude Code criava a da versão a partir do marketplace, que pode estar numa
+  release anterior. Agora a pasta tem o nome da versão; se ela já existir, o painel pede para reabrir as sessões em vez do `/reload-plugins`.
 - **A compactação ociosa do engine (2.1.286+) não é mais desligada pelo boss.** Quando a flag do engine está ligada, o `folder-ttl` não troca
   a pasta para o TTL de 5 min (a compactação ociosa só vale com 1 h). Nesta máquina a flag está `off`; vale quando o Claude Code a ligar.
 - **Custo em dólar de Fable 5/5.1, Opus 4.6/4.7, Sonnet 4.6 e Haiku 5.5** (preço da página oficial; o Haiku 5.5 reprecifica o pedido
