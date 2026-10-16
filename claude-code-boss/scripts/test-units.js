@@ -28165,7 +28165,7 @@ test('hooks module: hooks.json names ONE entry (the engine refuses a second) and
   assertEq(unmatched.length, new Set(unmatched).size, `an event twice without a matcher: ${unmatched}`);
 });
 
-test('boss.mjs: REAL daemon end to end — /boss and the band show the session cost, its Token Guard savings and the Brain; polls >= 5 s, interactive only', async () => {
+test('boss.mjs: REAL daemon end to end — /boss and the band show the session cost, its Token Guard savings and the Brain; polls >= 5 s from the first draw', async () => {
   seedBossMetrics('sid-boss-mod');
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-boss-mod-'));
   const { startHttpDaemon } = await import(require('url').pathToFileURL(path.join(ROOT, 'servers', 'brain-server', 'lib', 'http-daemon.js')).href);
@@ -28176,17 +28176,17 @@ test('boss.mjs: REAL daemon end to end — /boss and the band show the session c
     assert(boss.POLL_MS >= 5000, 'aggregated polling of at least 5 s');
     const hooks = collectModuleHooks(boss.register);
     const start = findHook(hooks, 'session.start', { isInteractive: true });
-    assert(start, 'session.start only for interactive sessions (headless draws nothing)');
+    assert(start, 'session.start for interactive sessions');
     const { $, calls } = fakeBoss$({ sessionId: 'sid-boss-mod', env: { CLAUDE_PLUGIN_DATA: dir, BRAIN_HTTP_PORT: String(d.httpServer.address().port) } });
     await start.fn($, { isInteractive: true }, async (e) => e);
     assertEq(calls.commands.map((c) => c.name), ['boss']);
-    assertEq(calls.timers.find((t) => t[0] === 'every')[1], boss.POLL_MS);
     const run = await findHook(hooks, 'command.run', { command: 'boss' }).fn($, { command: 'boss' }, async () => ({}));
     assert(run.text.includes('| Custo desta sessão | US$ 1,23 |'), run.text);
     const { fmtTokens } = await import(require('url').pathToFileURL(path.join(SCRIPTS, 'lib', 'boss-band.mjs')).href);
     assert(run.text.includes(`| Token Guard nesta sessão | ${fmtTokens(bossTokens(36000))} tokens poupados |`), run.text);
     const render = findHook(hooks, 'ui.render', { component: 'AbovePrompt' }).fn;
     const tree = await render($, { component: 'AbovePrompt', props: { hasSurvey: false } }, async () => ({ tag: 'Others' }));
+    assertEq(calls.timers.find((t) => t[0] === 'every')[1], boss.POLL_MS, 'the first draw starts the polling');
     assertEq(tree.tag, 'Box');
     assertEq(tree.children[0].tag, 'Text');
     assertEq(tree.children[0].props.dimColor, true);
@@ -28200,6 +28200,45 @@ test('boss.mjs: REAL daemon end to end — /boss and the band show the session c
     if (savedTok !== undefined) process.env.BRAIN_HTTP_TOKEN = savedTok;
     await d.shutdown();
   }
+});
+
+// Claude Code Desktop runs its Code tab sessions through the SDK (claude.exe --input-format
+// stream-json): session.start arrives with isInteractive: false there, yet the Desktop draws the
+// band (surface 'desktop'). Gating /boss and the polling on isInteractive: true left the Desktop
+// with no command and an empty band — the mod never showed up (seen 2026-10-16, engine 2.1.299).
+test('boss.mjs: Desktop (SDK session, isInteractive false) gets /boss, and the band polls from its first draw; a headless run that draws nothing polls nothing', async () => {
+  const boss = await import(require('url').pathToFileURL(path.join(ROOT, 'hooks', 'boss.mjs')).href);
+  const hooks = collectModuleHooks(boss.register);
+  const start = findHook(hooks, 'session.start', { isInteractive: false });
+  assert(start, 'session.start also for SDK-hosted sessions (the Desktop)');
+  const summary = JSON.stringify({ tokenGuard: { days: 30, savedTokens: 10, sessionTokens: 0 }, brain: { connected: true } });
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-boss-desk-'));
+  fs.writeFileSync(path.join(dir, 'brain-http.token'), 'tok');
+  const desk = fakeBoss$({ sessionId: 'sid-desk', env: { CLAUDE_PLUGIN_DATA: dir, BRAIN_HTTP_PORT: '1' }, fetchImpl: async (url) => {
+    if (url.endsWith('/health')) return { status: 200, ok: true, text: JSON.stringify({ dataDir: dir }) };
+    assert(url.includes('session=sid-desk'), url);
+    return { status: 200, ok: true, text: summary };
+  } });
+  await start.fn(desk.$, { isInteractive: false }, async (e) => e);
+  assertEq(desk.calls.commands.map((c) => c.name), ['boss'], '/boss registered in the Desktop');
+  assertEq(desk.calls.timers, [], 'no polling before a surface draws the band');
+  const render = findHook(hooks, 'ui.render', { component: 'AbovePrompt' }).fn;
+  const ev = { component: 'AbovePrompt', surface: 'desktop', props: { hasSurvey: false } };
+  await render(desk.$, ev, async () => null);
+  assertEq(desk.calls.timers.filter((t) => t[0] === 'every').map((t) => t[1]), [boss.POLL_MS], 'the first draw starts the polling');
+  await render(desk.$, ev, async () => null);
+  assertEq(desk.calls.timers.filter((t) => t[0] === 'every').length, 1, 'once per session, not per draw');
+  await findHook(hooks, 'command.run', { command: 'boss' }).fn(desk.$, { command: 'boss' }, async () => ({}));
+  const tree = await render(desk.$, ev, async () => null);
+  assertEq(tree.children[0].children[0], 'Boss · sessão US$ 1,23 · Token Guard −0 tokens na sessão (30d: −10) · Brain no ar');
+  // /clear or a reload: session.start again drops the timer; the next draw starts a new one.
+  await start.fn(desk.$, { isInteractive: false }, async (e) => e);
+  await render(desk.$, ev, async () => null);
+  assertEq(desk.calls.timers.filter((t) => t[0] === 'every').length, 2, 'restarted after session.start');
+  const headless = fakeBoss$();
+  const h2 = collectModuleHooks(boss.register);
+  await findHook(h2, 'session.start', { isInteractive: false }).fn(headless.$, { isInteractive: false }, async (e) => e);
+  assertEq(headless.calls.timers, [], 'claude -p: no band drawn, no polling');
 });
 
 test('boss.mjs: daemon down → the band says so (logged once, not per poll); a reply of {} (switched off in the dashboard) → no band at all', async () => {

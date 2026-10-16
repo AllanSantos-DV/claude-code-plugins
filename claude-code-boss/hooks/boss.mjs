@@ -6,7 +6,7 @@
 // (Claude Code Desktop), this is the boss's status line.
 // WHERE THE NUMBERS COME FROM: the cost from the session itself ($.session.usage()); the rest
 // from the brain daemon, GET /hook/boss-summary (token-gated, read-only; tool hook_boss_summary
-// → scripts/boss-summary.js). Polled every POLL_MS from each interactive session; the daemon
+// → scripts/boss-summary.js). Polled every POLL_MS from each session that draws the band; the daemon
 // caches its answer, so N open sessions cost one computation.
 // FAILURES are shown, not hidden: a daemon that does not answer puts its reason in the band and
 // in /boss instead of stale numbers. A reply of {} means hook_boss_summary was switched off in
@@ -74,23 +74,35 @@ export async function refresh($, ctx) {
   }
 }
 
+/** Starts the polling once per session; the first read right away. */
+function startPolling($, ctx) {
+  if (ctx.timer) return;
+  ctx.timer = $.clock.every(POLL_MS, () => { void refresh($, ctx); });
+  $.clock.after(1, () => { void refresh($, ctx); });
+}
+
+/** session.start: /boss, the session's id, and the polling dropped until the next draw starts it. */
+async function onSessionStart($, ctx) {
+  await $.command.register({
+    name: 'boss',
+    description: 'Claude Code Boss: custo da sessão, economia do Token Guard e estado do Brain',
+    immediate: true,
+  });
+  ctx.sessionId = await $.session.id();
+  if (ctx.timer) ctx.timer.cancel();
+  ctx.timer = null;
+}
+
 export const register = (on) => {
   const ctx = newCtx();
 
-  // Interactive sessions only (a matcher: compaction.mjs holds the plugin's one unmatched session.start).
-  // Headless (-p, SDK) draws nothing, so it polls nothing. Fires again after /clear and on a reload.
-  on('session.start', { isInteractive: true }, async ($, e, next) => {
-    await $.command.register({
-      name: 'boss',
-      description: 'Claude Code Boss: custo da sessão, economia do Token Guard e estado do Brain',
-      immediate: true,
-    });
-    ctx.sessionId = await $.session.id();
-    $.clock.after(1, () => { void refresh($, ctx); });
-    if (ctx.timer) ctx.timer.cancel();
-    ctx.timer = $.clock.every(POLL_MS, () => { void refresh($, ctx); });
-    return next(e);
-  });
+  // /boss in every session. The polling starts with the first draw of the band, not here: the
+  // Desktop hosts its sessions through the SDK (session.start says isInteractive: false there) and
+  // still draws the band, while a headless run (-p, SDK without a surface) draws nothing and so
+  // polls nothing. Fires again after /clear and on a reload: the next draw starts it again.
+  // Two matched hooks (compaction.mjs holds the plugin's one unmatched session.start).
+  on('session.start', { isInteractive: true }, async ($, e, next) => { await onSessionStart($, ctx); return next(e); });
+  on('session.start', { isInteractive: false }, async ($, e, next) => { await onSessionStart($, ctx); return next(e); });
 
   on('command.run', { command: 'boss' }, async ($) => {
     await refresh($, ctx);
@@ -99,6 +111,7 @@ export const register = (on) => {
 
   // One line, and what the plugins after this one draw kept under it (the band is shared).
   on('ui.render', { component: 'AbovePrompt' }, async ($, e, next) => {
+    startPolling($, ctx);
     if (e.props.hasSurvey || !ctx.line) return next(e);
     const { Box, Text } = $.ui.resolve(e);
     const below = await next(e);
