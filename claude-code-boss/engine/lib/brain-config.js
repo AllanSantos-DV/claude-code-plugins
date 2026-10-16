@@ -176,6 +176,32 @@ function getSkillPromotion() {
 }
 
 /**
+ * Lesson promotion (project scope → user scope) thresholds (scripts/lesson-promote.js). Config: kb.promotion, read
+ * through load() — shipped ⊕ the user override. An invalid value falls back to its conservative default and says so.
+ * @returns {{enabled:boolean, mode:'apply'|'dry-run', cosine:number, minProjects:number, minCitedSessions:number,
+ *   minCitedProjects:number, maxPerRun:number, intervalDays:number, types:string[], minConfidence:number}}
+ */
+function getLessonPromotion() {
+  const p = (load().kb && load().kb.promotion) || {};
+  const d = { enabled: true, mode: 'apply', cosine: 0.9, minProjects: 2, minCitedSessions: 2, minCitedProjects: 2, maxPerRun: 5, intervalDays: 7, types: ['lesson', 'pattern'], minConfidence: 0.7 };
+  const bad = (k) => { console.error(`[brain-config] kb.promotion.${k} is invalid (${JSON.stringify(p[k])}) — using ${JSON.stringify(d[k])}`); return d[k]; };
+  const int = (k, min) => (p[k] === undefined ? d[k] : (Number.isInteger(p[k]) && p[k] >= min ? p[k] : bad(k)));
+  const frac = (k, lo) => (p[k] === undefined ? d[k] : (typeof p[k] === 'number' && p[k] >= lo && p[k] <= 1 ? p[k] : bad(k)));
+  return {
+    enabled: p.enabled === undefined ? d.enabled : (typeof p.enabled === 'boolean' ? p.enabled : bad('enabled')),
+    mode: p.mode === undefined ? d.mode : (p.mode === 'apply' || p.mode === 'dry-run' ? p.mode : 'dry-run'),
+    cosine: frac('cosine', 0.5),
+    minProjects: int('minProjects', 2),
+    minCitedSessions: int('minCitedSessions', 2),
+    minCitedProjects: int('minCitedProjects', 2),
+    maxPerRun: int('maxPerRun', 1),
+    intervalDays: int('intervalDays', 1),
+    types: p.types === undefined ? d.types : (Array.isArray(p.types) && p.types.length && p.types.every((t) => typeof t === 'string' && t) ? p.types : bad('types')),
+    minConfidence: frac('minConfidence', 0),
+  };
+}
+
+/**
  * Conversation ingestion setting (backend.ingestion). Opt-in: when enabled AND
  * the backend is the external mcp-memory server, the Stop hook ships each turn's
  * conversation to the daemon for server-side curation. Default OFF (privacy).
@@ -333,6 +359,7 @@ module.exports = {
   getContextExcludeTypes,
   getCuration,
   getSkillPromotion,
+  getLessonPromotion,
   getIngestion,
   getRecallCompose,
   getBackendType,
