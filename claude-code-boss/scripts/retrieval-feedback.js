@@ -164,6 +164,19 @@ function findCitations(journalEntries, replyText) {
   return out;
 }
 
+/** Sum of the journalled `injectedOrigins` (own / ancestor / other / home / unknown) — entries from before the field add nothing. */
+function originTotals(journalEntries) {
+  const t = {};
+  for (const e of journalEntries || []) for (const [k, n] of Object.entries(e.injectedOrigins || {})) t[k] = (t[k] || 0) + (Number(n) || 0);
+  return t;
+}
+
+/** Where an entry came from, per the journalled recalls of the turn ('' when the journal predates the field). */
+function originOf(journalEntries, id) {
+  for (const e of journalEntries || []) if (e.originById && e.originById[id]) return e.originById[id];
+  return '';
+}
+
 /** Chars the journalled recalls really put in the prompt (entries from before this field count 0). */
 function injectedChars(journalEntries) {
   let n = 0;
@@ -198,7 +211,7 @@ async function run(event) {
     try {
       const store = require('../engine/brain-store.js');
       const metrics = require('../engine/lib/metrics.js');
-      if (injectedIds.size && injectedChars(entries) > 0) metrics.fire('retrieve.injected', { count: injectedIds.size, chars: injectedChars(entries) }, mctx);
+      if (injectedIds.size && injectedChars(entries) > 0) metrics.fire('retrieve.injected', { count: injectedIds.size, chars: injectedChars(entries), origins: originTotals(entries) }, mctx);
       else if (returnedCount) metrics.fire('retrieve.empty', { returned: returnedCount, reason: 'filtered' }, mctx);
       // KB citations go to the scope each entry was retrieved from. It used to be
       // basename(cwd): the UPDATE then hit a shard without the entry and silently
@@ -225,7 +238,7 @@ async function run(event) {
         await store.init({ project: scope });
         for (const id of ids) store.recordCitation(id);
       }
-      for (const c of cited) metrics.fire('retrieve.cited', { entryId: c.id }, mctx);
+      for (const c of cited) metrics.fire('retrieve.cited', { entryId: c.id, origin: originOf(entries, c.id) }, mctx);
     } catch (err) {
       console.error(`[retrieval-feedback] recordCitation failed: ${err.message}`);
     }
@@ -246,6 +259,8 @@ module.exports = {
   findCitations,
   injectedPairs,
   injectedChars,
+  originTotals,
+  originOf,
   readLastAssistantText,
   extractAssistantText,
   readLastUserText,

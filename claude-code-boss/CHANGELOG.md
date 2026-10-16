@@ -5,7 +5,16 @@
 Check-up do motor (2026-10-15). Cada item tem teste; os números são do dado real desta máquina.
 
 ### Added
-- **Economia medida e como objetivo** (`docs/ECONOMY.md`). `node scripts/economy-report.js` reconstrói o custo de cada sessão a partir
+- **Resultados que crescem com o uso** (`node scripts/outcome-report.js`, `docs/ECONOMY.md`, `docs/FUNCOES.md`). Mede, dos eventos já gravados em todos os
+  projetos: a participação das decisões tomadas por regra (redirect de curadoria, reescritas, guards, cortes de contexto) contra as devolvidas
+  ao modelo; comandos já resolvidos por script contra os que entraram crus; lições novas, recorrentes e de escopo usuário, lembradas e citadas; lições
+  citadas em mais de uma sessão ou projeto; e tudo isso por semana e por número de sessões do projeto. Capturas em carga em massa entram à parte e
+  semanas sem registro dos eventos de regra mostram n/a, não 0%. `FUNCOES.md` descreve cada função e os dois loops (aprendizado e curadoria).
+- **Origem do recall** gravada em `retrieve.injected` e `retrieve.cited` (`own`, `ancestor`, `other`, `home`): permite medir quanto do que é lembrado
+  veio de outro projeto e o efeito das lições de escopo usuário.
+- **`node scripts/subagent-report.js`**: tamanho do contexto dos subagentes por tipo de agente e, só quando 25% das execuções (de pelo menos 10) passam
+  de 150 mil tokens num agente do usuário, a recomendação de `autoCompactWindow` no arquivo dele. Hoje: 683 execuções, nada a ajustar além do `researcher`.
+- **Economia medida** (`docs/ECONOMY.md`). `node scripts/economy-report.js` reconstrói o custo de cada sessão a partir
   dos transcripts (a linha de base existe desde o primeiro transcript no disco; `--save` a guarda além da limpeza do Claude Code) e
   compara dois grupos — com × sem hook do boss, ou antes × depois de uma data — por custo por chamada, estratificado por tamanho da
   sessão, com intervalo de 95%. O método é validado com sessões sintéticas de efeito conhecido (recupera um corte de 20%, não acusa
