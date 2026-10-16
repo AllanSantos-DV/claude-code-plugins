@@ -46,7 +46,8 @@ function turnCostUsd(p) {
   const w5 = num(p.write5m); const w1 = num(p.write1h);
   const write = (w5 || w1) ? w5 * LIMIT_WEIGHTS.write5m + w1 * LIMIT_WEIGHTS.write1h : num(p.write) * LIMIT_WEIGHTS.write5m;
   const eq = num(p.input) + num(p.read) * m.readRatio + write + num(p.output) * LIMIT_WEIGHTS.output;
-  return (eq * m.inputUsd) / 1e6;
+  const long = m.longContext && ctxOf(p) > m.longContext.overTokens;
+  return (eq * (long ? m.longContext.inputUsd : m.inputUsd)) / 1e6;
 }
 
 /** A row's payload as an object: rows from the store may carry it as a JSON string; unparseable → {}. */

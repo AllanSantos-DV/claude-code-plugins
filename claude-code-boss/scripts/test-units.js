@@ -27353,6 +27353,9 @@ test('compaction hook: with folderTtl off the session still leaves its folder on
 
 // ─── folder TTL (lib/folder-ttl.js): 1h → 5m while EVERY live session of the launch folder is past the threshold ──
 
+// The engine's idle-compaction flag lives in this machine's .claude.json: pin it off so these tests do not depend on it.
+const ENGINE_IDLE_OFF = () => ({ active: false, mode: 'off', known: true, reason: 'pinned off for the test' });
+
 function folderTtlSandbox() {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-folder-ttl-'));
   const state = path.join(root, 'state.json');
@@ -27390,7 +27393,7 @@ test('folder-ttl.report: switch when all are past it, restore after the cut, oth
     fs.mkdirSync(path.join(big, '.claude'), { recursive: true }); fs.mkdirSync(sub, { recursive: true });
     fs.writeFileSync(sb.local(big), JSON.stringify({ permissions: { allow: ['Bash(ls)'] }, env: { FOO: '1' } }));
     const run = () => ({ status: 128, stdout: '', stderr: '' }); // not a git repo
-    const opts = (now) => ({ now, file: sb.state, run });
+    const opts = (now) => ({ now, file: sb.state, run, engineIdle: ENGINE_IDLE_OFF });
     // Two sessions in `big`, one in `sub`.
     let r = ft.report({ sessionId: 'A', folder: big, above: true }, opts(1000));
     assertEq([r.ttl, r.action, r.live], ['5m', 'switched', 1], 'alone and past it → 5m');
@@ -27426,19 +27429,19 @@ test('folder-ttl.report: a file we create is removed on restore (and its .claude
     const p = path.join(sb.root, 'p'); const q = path.join(sb.root, 'q');
     fs.mkdirSync(p); fs.mkdirSync(q);
     const run = () => ({ status: 128, stdout: '', stderr: '' });
-    ft.report({ sessionId: 'A', folder: p, above: true }, { now: 1000, file: sb.state, run });
+    ft.report({ sessionId: 'A', folder: p, above: true }, { now: 1000, file: sb.state, run, engineIdle: ENGINE_IDLE_OFF });
     assertEq(sb.read(p), { env: { CLAUDE_CODE_PROMPT_CACHE_TTL: '5m' } }, 'created');
-    let r = ft.report({ sessionId: 'A', folder: p, end: true }, { now: 2000, file: sb.state, run });
+    let r = ft.report({ sessionId: 'A', folder: p, end: true }, { now: 2000, file: sb.state, run, engineIdle: ENGINE_IDLE_OFF });
     assertEq(r.action, 'restored');
     assert(!fs.existsSync(path.join(p, '.claude')), 'our file and our .claude dir are gone');
     // A crashes (no end); B in another folder reports after LIVE_MS → A's folder restored.
-    ft.report({ sessionId: 'A', folder: p, above: true }, { now: 10000, file: sb.state, run });
-    r = ft.report({ sessionId: 'B', folder: q, above: false }, { now: 10000 + ft.LIVE_MS + 1, file: sb.state, run });
+    ft.report({ sessionId: 'A', folder: p, above: true }, { now: 10000, file: sb.state, run, engineIdle: ENGINE_IDLE_OFF });
+    r = ft.report({ sessionId: 'B', folder: q, above: false }, { now: 10000 + ft.LIVE_MS + 1, file: sb.state, run, engineIdle: ENGINE_IDLE_OFF });
     assertEq(r.swept.map((s) => s.action), ['restored'], 'the dead owner\'s switch is swept');
     assert(!fs.existsSync(sb.local(p)), 'restored');
     // Unparsable user file: never touched, the error is reported (fail-loud).
     fs.mkdirSync(path.join(q, '.claude')); fs.writeFileSync(sb.local(q), '{ broken');
-    r = ft.report({ sessionId: 'B', folder: q, above: true }, { now: 20000, file: sb.state, run });
+    r = ft.report({ sessionId: 'B', folder: q, above: true }, { now: 20000, file: sb.state, run, engineIdle: ENGINE_IDLE_OFF });
     assertEq(r.action, 'error');
     assertEq(fs.readFileSync(sb.local(q), 'utf8'), '{ broken', 'the broken file is left as it was');
   } finally { sb.done(); }
@@ -27462,6 +27465,47 @@ test('folder-ttl.excludeFromGit: a file we create inside a git repo goes to info
     ft.report({ sessionId: 'A', folder: sub, above: true }, { now: 3000, file: sb.state });
     const ex2 = fs.readFileSync(path.join(repo, '.git', 'info', 'exclude'), 'utf8');
     assertEq(ex2.split(/\r?\n/).filter((l) => l === '/pkg/.claude/settings.local.json').length, 1, 'added once');
+  } finally { sb.done(); }
+});
+
+test('engine-flags.idleCompaction: on only for a remote mode that compacts; off for settings/env switches; an unreadable cache is "unknown", never a guess', () => {
+  const ef = require('./lib/engine-flags.js');
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-flags-'));
+  try {
+    fs.mkdirSync(path.join(home, '.claude'));
+    const cache = (mode) => fs.writeFileSync(path.join(home, '.claude.json'), JSON.stringify({ cachedGrowthBookFeatures: { tengu_sunny_locket: mode === undefined ? undefined : { mode } } }));
+    const at = (env = {}) => ef.idleCompaction({ env, home });
+    cache('off'); assertEq([at().active, at().mode, at().known], [false, 'off', true]);
+    cache('log'); assertEq(at().active, false, 'log only records, never compacts');
+    cache('compact'); assertEq([at().active, at().mode], [true, 'compact']);
+    cache('compact_on_return'); assertEq(at().active, true);
+    assertEq(at({ DISABLE_AUTO_COMPACT: '1' }).active, false, 'engine compaction disabled by env');
+    fs.writeFileSync(path.join(home, '.claude', 'settings.json'), JSON.stringify({ idleCompaction: false }));
+    assertEq(at().active, false, 'the user turned idle compaction off');
+    fs.writeFileSync(path.join(home, '.claude', 'settings.json'), '{}');
+    fs.writeFileSync(path.join(home, '.claude.json'), '{ broken');
+    const bad = at();
+    assert(bad.active === false && bad.known === false && /could not read/.test(bad.reason), JSON.stringify(bad));
+    fs.rmSync(path.join(home, '.claude.json'));
+    assertEq([at().active, at().known], [false, true], 'no cache file: the engine has no flag → off');
+  } finally { fs.rmSync(home, { recursive: true, force: true }); }
+});
+
+test('folder-ttl.report: while the engine compacts idle sessions itself the folder is NOT switched to 5m (and a 5m we wrote is restored)', () => {
+  const ft = require('./lib/folder-ttl.js');
+  const sb = folderTtlSandbox();
+  try {
+    const dir = path.join(sb.root, 'proj'); fs.mkdirSync(dir);
+    const run = () => ({ status: 128, stdout: '', stderr: '' });
+    const on = () => ({ active: true, mode: 'compact', known: true, reason: 'engine flag tengu_sunny_locket mode=compact' });
+    let r = ft.report({ sessionId: 'A', folder: dir, above: true }, { now: 1000, file: sb.state, run, engineIdle: ENGINE_IDLE_OFF });
+    assertEq([r.ttl, r.action], ['5m', 'switched'], 'engine flag off → the plugin switches as before');
+    r = ft.report({ sessionId: 'A', folder: dir, above: true }, { now: 2000, file: sb.state, run, engineIdle: on });
+    assertEq([r.ttl, r.action], [null, 'restored'], 'the flag came on: the 5m we wrote is taken back');
+    r = ft.report({ sessionId: 'A', folder: dir, above: true }, { now: 3000, file: sb.state, run, engineIdle: on });
+    assertEq([r.ttl, r.action], [null, 'none']);
+    assert(/idle compaction is on/.test(r.detail), r.detail);
+    assertEq(sb.read(dir), null, 'nothing left in the folder');
   } finally { sb.done(); }
 });
 
@@ -28612,6 +28656,159 @@ test('plugin-setup.warnNodeVersion: Node 25 gets the Node 24 LTS warning, 24 sta
   assertEq(warnNodeVersion('v25.2.1', (s) => { out += s; }), true);
   assert(/Node 24 LTS/.test(out), out);
   assertEq(warnNodeVersion('v24.14.1', () => { throw new Error('must not write'); }), false);
+});
+
+// ─── economy-ledger: session cost from the transcript, and a comparison whose answer is KNOWN ───────
+// The method is validated on synthetic sessions where the true effect is set by construction: it must
+// recover a real effect, report nothing when there is none, and not be fooled by a size imbalance.
+
+const ecoLines = (id, { calls = 3, model = 'claude-sonnet-5-5', ctx = 1000, boss = false } = {}) => {
+  const out = [];
+  for (let i = 0; i < calls; i++) {
+    out.push(JSON.stringify({ type: 'assistant', sessionId: id, version: '2.1.300', timestamp: `2026-10-16T10:00:0${i}.000Z`, uuid: `u${i}`,
+      message: { id: `msg_${id}_${i}`, model, usage: { input_tokens: 1, cache_read_input_tokens: ctx, cache_creation_input_tokens: 100, output_tokens: 10, cache_creation: { ephemeral_1h_input_tokens: 100, ephemeral_5m_input_tokens: 0 } } } }));
+  }
+  if (boss) out.push(JSON.stringify({ type: 'attachment', sessionId: id, attachment: { type: 'hook_success', hookName: 'PreToolUse:Bash', command: 'plugin:claude-code-boss:brain-server/hook_curation_guard' } }));
+  return out;
+};
+
+test('economy-ledger.sessionRecord: a response written as several lines is billed once, sub-agent calls count, a half-written last line is ignored', () => {
+  const { sessionRecord } = require('./lib/economy-ledger.js');
+  const lines = ecoLines('s1', { calls: 2, boss: true });
+  lines.push(lines[0]); // the same message.id again (multi-block response)
+  lines.push(JSON.stringify({ type: 'assistant', isSidechain: true, sessionId: 's1', message: { id: 'msg_side', model: 'claude-haiku-4-5', usage: { input_tokens: 5, output_tokens: 5 } } }));
+  lines.push('{"type":"assistant","message":{"id":"msg_cut'); // being written
+  const r = sessionRecord(lines);
+  assertEq(r.calls, 3, 'two distinct main calls + one sub-agent call');
+  assertEq(r.bossActive, true);
+  assertEq(r.write1h, 200, 'the duplicated line did not double the write');
+  assert(r.units > 0 && r.usd > 0 && r.hitRatio > 0.8, JSON.stringify(r));
+  assertEq(sessionRecord(['{"type":"user"}']), null, 'no billed call → no record');
+});
+
+test('economy-ledger.sessionRecord: a model without a price is named, not folded into the USD total', () => {
+  const { sessionRecord } = require('./lib/economy-ledger.js');
+  const r = sessionRecord(ecoLines('s2', { calls: 2, model: 'gemini-3-flash' }));
+  assertEq(r.usd, 0);
+  assertEq(r.unpricedModels, { 'gemini-3-flash': 2 });
+  assert(r.units > 0, 'the input-equivalent cost needs no price table');
+});
+
+test('economy-metrics: Fable, Opus 4.7/4.6, Sonnet 4.6 are priced; Haiku 5.5 reprices the whole request above 100k tokens', () => {
+  const { priceOf } = require('./lib/economy-metrics.js');
+  const { turnCostUsd } = require('./lib/compaction-episodes.js');
+  for (const m of ['claude-fable-5', 'claude-fable-5-1', 'claude-opus-4-7', 'claude-sonnet-4-6', 'vertex_ai.anthropic.claude-fable-5-1', 'claude-haiku-5-5']) assert(priceOf(m), `${m} must be priced`);
+  const short = turnCostUsd({ model: 'claude-haiku-5-5', input: 50000, read: 0, write: 0, output: 0 });
+  assert(Math.abs(short - 0.005) < 1e-9, `50k input at $0.10/M = ${short}`);
+  const long = turnCostUsd({ model: 'claude-haiku-5-5', input: 200000, read: 0, write: 0, output: 0 });
+  assert(Math.abs(long - 0.1) < 1e-9, `200k input over 100k at $0.50/M = ${long}`);
+});
+
+/** `n` synthetic sessions: per-call cost = base × (1+effect) × lognormal-ish spread, in the size stratum given. */
+function ecoCohort(rand, n, { effect = 0, sizes = [30000], base = 20000 } = {}) {
+  const out = [];
+  for (let i = 0; i < n; i++) {
+    const size = sizes[Math.floor(rand() * sizes.length)];
+    const calls = 20 + Math.floor(rand() * 80);
+    const spread = Math.exp((rand() - 0.5) * 0.8);
+    const perCall = base * (size / 30000) * (1 + effect) * spread;
+    out.push({ units: perCall * calls, calls, maxContext: size });
+  }
+  return out;
+}
+
+test('economy compareGroups: a real 20% saving is recovered — change near -20%, interval excludes 0', () => {
+  const { compareGroups, rng } = require('./lib/economy-ledger.js');
+  const r = rng(7);
+  const a = ecoCohort(r, 60); const b = ecoCohort(r, 60, { effect: -0.2 });
+  const c = compareGroups(a, b, { randomized: true });
+  assert(c.ok && Math.abs(c.change + 0.2) < 0.06, `change ${c.change}`);
+  assert(c.significant && c.ci[1] < 0 && c.ci[0] < -0.2 && c.ci[1] > -0.2, `ci ${c.ci}`);
+  assert(/attributable/.test(c.claim), 'a randomized comparison may claim the cause');
+});
+
+test('economy compareGroups: with no effect the 95% interval covers 0 about 95% of the time (100 repetitions ≥ 88)', () => {
+  const { compareGroups, rng } = require('./lib/economy-ledger.js');
+  let covered = 0;
+  for (let s = 1; s <= 100; s++) {
+    const r = rng(1000 + s);
+    const c = compareGroups(ecoCohort(r, 30), ecoCohort(r, 30), { seed: s, resamples: 500 });
+    if (c.ci[0] <= 0 && c.ci[1] >= 0) covered++;
+  }
+  assert(covered >= 88, `coverage ${covered}/100`);
+});
+
+test('economy compareGroups: a size imbalance with NO effect fakes a saving in the raw number, not in the size-stratified one', () => {
+  const { compareGroups, rng } = require('./lib/economy-ledger.js');
+  const r = rng(11);
+  const a = ecoCohort(r, 80, { sizes: [30000, 300000] });                        // half big sessions
+  const b = ecoCohort(r, 80, { sizes: [30000, 30000, 30000, 30000, 30000, 30000, 30000, 30000, 30000, 300000] }); // 10% big, same cost per size
+  const c = compareGroups(a, b);
+  assert(c.change < -0.3, `raw looks like a big saving: ${c.change}`);
+  assert(Math.abs(c.stratified) < 0.12, `stratified removes it: ${c.stratified}`);
+  assert(c.ci[0] <= 0 && c.ci[1] >= 0, `interval covers 0: ${c.ci}`);
+  assert(/does not establish the cause/.test(c.claim) && c.caveats.some((x) => /observational/.test(x)), 'an observational split says it proves nothing about cause');
+});
+
+test('economy compareGroups: too few sessions → ok:false with the reason, never a number', () => {
+  const { compareGroups, rng } = require('./lib/economy-ledger.js');
+  const r = rng(3);
+  const c = compareGroups(ecoCohort(r, 4), ecoCohort(r, 30));
+  assertEq(c.ok, false);
+  assert(/at least 8/.test(c.reason) && c.change === undefined, JSON.stringify(c));
+});
+
+test('economy-report CLI: reads a transcript folder, splits by Boss hooks, saves one record per session', () => {
+  const { spawnSync } = require('child_process');
+  const cfg = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-eco-'));
+  const dir = path.join(cfg, 'projects', 'p'); fs.mkdirSync(dir, { recursive: true });
+  const data = path.join(cfg, 'data'); fs.mkdirSync(data);
+  for (let i = 0; i < 10; i++) {
+    fs.writeFileSync(path.join(dir, `a${i}.jsonl`), ecoLines(`a${i}`, { calls: 4, ctx: 100000 }).join('\n') + '\n');
+    fs.writeFileSync(path.join(dir, `b${i}.jsonl`), ecoLines(`b${i}`, { calls: 4, ctx: 60000, boss: true }).join('\n') + '\n');
+  }
+  const env = { ...process.env, CLAUDE_CONFIG_DIR: cfg, CLAUDE_PLUGIN_DATA: data };
+  const run = spawnSync(process.execPath, [path.join(__dirname, 'economy-report.js'), '--days', '2', '--split', 'boss', '--save', '--json'], { encoding: 'utf8', env });
+  assert(run.status === 0, `exit ${run.status}: ${run.stderr}`);
+  const out = JSON.parse(run.stdout);
+  assertEq(out.total.sessions, 20);
+  assertEq(out.cmp.n, { a: 10, b: 10 });
+  assert(out.cmp.change < 0, `Boss-hook group was built cheaper: ${out.cmp.change}`);
+  assertEq(out.saved.sessions, 20);
+  const again = spawnSync(process.execPath, [path.join(__dirname, 'economy-report.js'), '--days', '2', '--save', '--json'], { encoding: 'utf8', env });
+  assertEq(JSON.parse(again.stdout).saved.sessions, 20, 'saving twice keeps one record per session');
+  const bad = spawnSync(process.execPath, [path.join(__dirname, 'economy-report.js'), '--split', 'nope'], { encoding: 'utf8', env });
+  assert(bad.status !== 0 && /unknown --split/.test(bad.stderr), 'an unknown split fails loud');
+  fs.rmSync(cfg, { recursive: true, force: true });
+});
+
+// ─── compat-check: the installed Claude Code still knows every name the plugin depends on ──────────
+test('compat-check: a binary missing one name is reported (exit 1, the name listed); an unfindable binary is exit 2, never a pass', () => {
+  const { spawnSync } = require('child_process');
+  const cc = require('./compat-check.js');
+  const deps = cc.dependencies();
+  assert(deps.some((d) => d.kind === 'hook-event' && d.name === 'PreToolUse') && deps.some((d) => d.kind === 'mod-api' && d.name === 'session.compact') && deps.some((d) => d.kind === 'env' && d.name === 'CLAUDE_CODE_PROMPT_CACHE_TTL'), 'collects hook events, module API and engine env names from the source');
+  assert(!deps.some((d) => d.name.startsWith('CLAUDE_CODE_BOSS_')), 'the plugin\'s own switches are not engine names');
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-compat-'));
+  const fake = path.join(dir, 'claude.exe');
+  fs.writeFileSync(fake, deps.filter((d) => d.name !== 'session.compact').map((d) => d.name).join('\n'));
+  const r = spawnSync(process.execPath, [path.join(__dirname, 'compat-check.js'), '--bin', fake], { encoding: 'utf8' });
+  assertEq(r.status, 1);
+  assert(/MISSING mod-api\s+session\.compact/.test(r.stdout) && /1 missing/.test(r.stdout), r.stdout.slice(-300));
+  fs.writeFileSync(fake, deps.map((d) => d.name).join('\n'));
+  assertEq(spawnSync(process.execPath, [path.join(__dirname, 'compat-check.js'), '--bin', fake], { encoding: 'utf8' }).status, 0);
+  const none = spawnSync(process.execPath, [path.join(__dirname, 'compat-check.js'), '--bin', path.join(dir, 'absent.exe')], { encoding: 'utf8' });
+  assert(none.status === 2 && /nothing was checked/.test(none.stderr), `exit ${none.status}: ${none.stderr}`);
+  fs.rmSync(dir, { recursive: true, force: true });
+});
+
+test('compat-check: the Claude Code installed on THIS machine contains every name (skipped, loudly, where none is installed)', () => {
+  const cc = require('./compat-check.js');
+  const bin = cc.findBinary(null);
+  if (!bin) { console.log('      (skipped: no Claude Code binary on this machine)'); return; }
+  const { version, rows } = cc.check(bin);
+  const missing = rows.filter((x) => !x.present).map((x) => `${x.kind} ${x.name}`);
+  assertEq(missing, [], `Claude Code ${version} dropped what the plugin depends on`);
 });
 
 // ─── Runner ──────────────────────────────────────────────────────────────────
