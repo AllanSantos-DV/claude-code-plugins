@@ -23,7 +23,13 @@ Pesquisa: `docs/research/mods-desktop-2026-10-16.md` (local). Feito em `develop`
   (reproduzido pelo protocolo SDK nos engines 2.1.299 e 2.1.300: depois do `reload_plugins`, `hooked:false, drawn_by:[]`). Correções: `install-local.mjs` nomeia
   a pasta pela versão gravada (local, fora do git); `scripts/lib/plugin-updater.js` (o "Atualizar agora" do dashboard, mesma classe, caminho do usuário) nomeia
   a pasta pela versão nova e, se ela já existe, diz para reabrir as sessões em vez de `/reload-plugins` (`reloadable`). Testes: `plugin-updater.performUpdate:
-  the cache dir is named after the recorded version ...` e o de pasta ocupada.
+  the cache dir is named after the recorded version ...` e o de pasta ocupada. Verificado depois da instalação local (`3.9.0-dev.770910f3a258`): pelo
+  protocolo SDK, `reload_plugins` mantém `/boss` e a faixa; no Desktop, o reload automático das duas sessões vivas (main.log: 113 e 114 comandos, eram 112)
+  devolveu a faixa à sessão aberta do dono sem reiniciar (texto `Boss · sessão US$ ...` acima do prompt, na árvore de acessibilidade da janela).
+- [ ] **Fora de escopo — `install-local.mjs` perde a corrida da subida do daemon** (passo 5c, 2026-10-16): depois de matar o daemon antigo, o `brain-daemon-ensure`
+  de uma sessão aberta pegou o lock de spawn e subiu o daemon da pasta ANTIGA (`/health` → `pluginRoot` `...\f1d1c21f6e96`); o script saiu com
+  "brain daemon did not come up cleanly ... another process holds the spawn lock" depois de já ter gravado o registry. Proposta: no 5c, esperar o lock e,
+  se o daemon que subiu não for desta instalação, pará-lo e subir de novo (o mesmo `if` que já existe antes do ensure), em vez de falhar.
 - [ ] **Fora de escopo — o Desktop mostra "/boss não é um comando aqui." e executa o `/boss` mesmo assim** (captura da sessão nova, 2026-10-16). O aviso vem
   do próprio Desktop, que monta a lista de comandos numa consulta temporária (`[CCD] temporary query` no main.log). Comando registrado por módulo
   (`$.command.register` no `session.start`) aparentemente não entra nessa lista. Investigar se é limite do Desktop 2.42304 (reportar) ou se há outro jeito de declarar o comando.
