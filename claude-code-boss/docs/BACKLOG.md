@@ -1,5 +1,11 @@
 # Backlog
 
+## Brain "fora do ar" com "Invalid JSON generated" (pedido do orquestrador, 2026-10-16) — achado e corrigido na hora, aguardando instalação local
+
+- **Causa** (verificada no `~/.mcp-memory/logs/daemon.log`): `brain_count` e a sonda do `[BRAIN-HEALTH]` chamavam `list_documents` sem filtro (`engine/brain-backend.js` `countMcp`). O servidor mcp-memory 2.51.0 devolve a listagem de TODOS os projetos; desde 2026-10-16 13:59 ela passou de 20 000 000 caracteres e o Jackson recusa (`StreamConstraintsException: String value length (20001630) exceeds the maximum allowed (20000000)`), respondendo "Invalid JSON generated". `brain_store`/`brain_search`/`capture_lesson` não passam por esse caminho e funcionam (provado contra o daemon, projeto `minecraft-aldeoes-llm-4b` incluso); a sonda falhava e o hook anunciava o Brain inteiro como DOWN.
+- **Correção**: `countMcp` lista só o projeto atual (`metadata.project_id`), como `listDocumentsMcp` já fazia. Teste em `scripts/test-units.js`; `ENGINE-MANIFEST.json` re-carimbado.
+- **Fora de escopo, registrado**: (1) o servidor mcp-memory deveria elevar `StreamReadConstraints.maxStringLength` ou paginar `list_documents` — dono é o projeto native-java; (2) `listMcp(type)` ainda lista sem filtro de projeto (hoje sem chamador em modo servidor; o dashboard usa `listDocuments`).
+
 ## Compatibilidade com o Claude Code 2.1.300 e economia (2026-10-16, branch `feat/compat-economia`)
 
 Relatório com fontes: `docs/research/compat-2.1.300/relatorio.md` (local) e `docs/ECONOMY.md`. Verificado contra o binário instalado

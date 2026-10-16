@@ -442,8 +442,10 @@ async function listProjectsMcp() {
 }
 
 async function countMcp() {
-  // No dedicated count tool — list (scoped by the session projectId) and count.
-  const result = await _mcp.callTool('list_documents', {});
+  // No dedicated count tool — list the current project's documents and count. The filter is explicit:
+  // unfiltered, list_documents spans every project, and once the server holds ~20 MB of them its JSON
+  // writer refuses the reply ("Invalid JSON generated") — brain_count and the health probe went DOWN.
+  const result = await _mcp.callTool('list_documents', { metadata: { project_id: _project } });
   const data = parseResult(result);
   if (data && typeof data.count === 'number') return data.count;
   if (data && typeof data.totalDocuments === 'number') return data.totalDocuments;
