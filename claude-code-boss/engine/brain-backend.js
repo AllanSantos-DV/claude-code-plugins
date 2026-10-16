@@ -125,6 +125,27 @@ function parseListResults(result) {
   return data.documents || data.results || data.items || [];
 }
 
+/** list_documents page size — mcp-memory 2.52 truncates an unpaged reply past 4M characters. */
+const LIST_PAGE_SIZE = 200;
+
+/** Every document of a list_documents query, paged by `pagination.nextOffset` (array replies = old server, one page). */
+async function listAllMcp(args) {
+  const out = [];
+  let offset = 0;
+  for (;;) {
+    const result = await _mcp.callTool('list_documents', { ...args, limit: LIST_PAGE_SIZE, offset });
+    const data = parseResult(result);
+    const page = parseListResults(result);
+    out.push(...page);
+    const pg = data && !Array.isArray(data) && data.pagination;
+    if (!pg || !page.length) return out;
+    const next = typeof pg.nextOffset === 'number' ? pg.nextOffset : offset + page.length;
+    const more = typeof pg.nextOffset === 'number' || data.truncated === true || (typeof pg.total === 'number' && next < pg.total);
+    if (!more || next <= offset) return out;
+    offset = next;
+  }
+}
+
 /** add_document returns plain text "Document added with ID: <uuid>" (not JSON). */
 function parseAddedId(result) {
   if (!result || !result.text) return '';
@@ -414,8 +435,8 @@ async function patchMetadataMcp(id, patch) {
  */
 async function listDocumentsMcp({ type, projectId }) {
   if (!projectId) throw new Error('listDocuments needs a projectId (an unfiltered listing spans every project)');
-  const result = await _mcp.callTool('list_documents', { metadata: { ...(type ? { type } : {}), project_id: projectId } });
-  return parseListResults(result).map((item) => normalizeEntry({ ...item, documentId: item.documentId || item.id }));
+  const docs = await listAllMcp({ metadata: { ...(type ? { type } : {}), project_id: projectId } });
+  return docs.map((item) => normalizeEntry({ ...item, documentId: item.documentId || item.id }));
 }
 
 async function deleteMcp(id) {
@@ -423,10 +444,8 @@ async function deleteMcp(id) {
 }
 
 async function listMcp(type, _project) {
-  const result = await _mcp.callTool('list_documents', {
-    ...(type ? { metadata: { type } } : {}),
-  });
-  return parseListResults(result).map(item => normalizeSearchItem(item));
+  const docs = await listAllMcp(type ? { metadata: { type } } : {});
+  return docs.map(item => normalizeSearchItem(item));
 }
 
 /**
@@ -445,8 +464,10 @@ async function countMcp() {
   // No dedicated count tool — list the current project's documents and count. The filter is explicit:
   // unfiltered, list_documents spans every project, and once the server holds ~20 MB of them its JSON
   // writer refuses the reply ("Invalid JSON generated") — brain_count and the health probe went DOWN.
-  const result = await _mcp.callTool('list_documents', { metadata: { project_id: _project } });
+  // limit:1 + pagination.total (mcp-memory ≥ 2.52) keeps the reply tiny; older servers answer an array/count.
+  const result = await _mcp.callTool('list_documents', { metadata: { project_id: _project }, limit: 1, offset: 0 });
   const data = parseResult(result);
+  if (data && data.pagination && typeof data.pagination.total === 'number') return data.pagination.total;
   if (data && typeof data.count === 'number') return data.count;
   if (data && typeof data.totalDocuments === 'number') return data.totalDocuments;
   return parseListResults(result).length;
