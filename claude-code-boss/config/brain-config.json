@@ -59,6 +59,19 @@
       "minConfidence": 0.8,
       "types": ["lesson", "pattern"]
     },
+    "promotion": {
+      "enabled": true,
+      "mode": "apply",
+      "cosine": 0.9,
+      "minProjects": 2,
+      "minCitedSessions": 2,
+      "minCitedProjects": 2,
+      "maxPerRun": 5,
+      "intervalDays": 7,
+      "types": ["lesson", "pattern"],
+      "minConfidence": 0.7,
+      "_comment_promotion": "Promoção automática de lição de projeto para o escopo do usuário (scripts/lesson-promote.js, semanal em segundo plano). Regra R1: a mesma lição (cosseno >= cosine, mesmo tipo) em >= minProjects projetos; regra R2: citada em >= minCitedSessions sessões de >= minCitedProjects projetos. COPIA (nunca move), reversível com `undo`. mode 'dry-run' só grava o plano em promotions/last-scan.json. Ajuste por usuário em user-config.json sob kb.promotion."
+    },
     "capture": {
       "maxBlockAttempts": 5,
       "turns": 3,
