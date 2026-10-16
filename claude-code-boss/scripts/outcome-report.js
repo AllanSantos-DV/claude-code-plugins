@@ -37,6 +37,16 @@ function render(s) {
   L.push(`  recall origin: ${Object.keys(l.origins).length ? Object.entries(l.origins).map(([k, v]) => `${k} ${v}`).join(', ') + ` (another project: ${pct(l.crossProjectShare)})` : 'not recorded yet (starts with this build)'}`);
   L.push(`  reuse: ${l.reuse.citedEntries} distinct lessons cited; ${l.reuse.inSeveralSessions} in more than one session, ${l.reuse.inSeveralProjects} in more than one project`);
   L.push('');
+  L.push('PROMOTIONS (a lesson copied from a project to the user scope)');
+  const pm = s.promotions; const pe = pm.effect;
+  L.push(`  ${pm.promoted} promoted (${Object.entries(pm.byRule).map(([k, v]) => `${k} ${v}`).join(', ') || 'none yet'}); ${pm.active} active, ${pm.reverted} reverted`);
+  if (pm.promoted) {
+    L.push(`  effect: ${pe.citations} citation(s) of promoted lessons, ${pe.citedLessons} of ${pm.promoted} lesson(s) cited (${pct(pe.citedShare)} vs ${pct(pe.otherCitedShare)} of the other lessons)`);
+    L.push(`  reach: ${pe.reachedCitations} citation(s) in ${pe.reachedProjects} project(s) that were NOT a source${pe.originUnrecorded ? `; ${pe.originUnrecorded} without a recorded origin` : ''}`);
+    L.push(`  proves: ${pm.labels.proves}`);
+    L.push(`  does not prove: ${pm.labels.notProven}`);
+  }
+  L.push('');
   L.push('CURATION LOOP');
   L.push(`  ${c.scripts} curated scripts in use; ${c.redirected} commands handled by a script vs ${c.flagged} whose raw output entered the context → ${pct(c.share)} handled mechanically; ${c.uncovered} noisy commands without a script yet`);
   L.push('');

@@ -106,6 +106,22 @@ async function run(event) {
       }
     } catch (e) { void e; }
 
+    // Weekly lesson promotion (project → user scope): one background run per data dir per kb.promotion.intervalDays, same
+    // pattern as the consolidation above. It reads every project, so the stamp is global; only the mcp-memory backend can.
+    try {
+      const bc = require('../engine/lib/brain-config.js');
+      const pcfg = bc.getLessonPromotion();
+      const preg = require('./lib/promotion-registry.js');
+      const root = process.env.CLAUDE_PLUGIN_ROOT;
+      if (pcfg.enabled && bc.getBackendType() === 'mcp-memory' && root && !root.includes('${') && preg.promotionDue(DATA_DIR, Date.now(), pcfg.intervalDays)) {
+        preg.markPromotionRun(DATA_DIR, Date.now());
+        const { spawn } = require('child_process');
+        const child = spawn(process.execPath, [path.join(root, 'scripts', 'lesson-promote.js'), 'apply', '--auto'],
+          { detached: true, stdio: 'ignore', windowsHide: true, env: process.env });
+        child.unref();
+      }
+    } catch (e) { console.error(`[curation-session] lesson promotion trigger: ${e.message}`); }
+
     const { oneHits } = oneoff.summary(DATA_DIR, projectKey);
 
     let curated = 0;
@@ -120,6 +136,10 @@ async function run(event) {
     const pending = pendingSkillsSummary(DATA_DIR);
 
     const lines = [];
+    try {
+      const promoted = require('./lib/promotion-registry.js').takeNotice(DATA_DIR);
+      if (promoted) lines.push(promoted);
+    } catch (e) { console.error(`[curation-session] promotion notice: ${e.message}`); }
     if (migration) lines.push(...migrationLines(migration));
     if (oneHits > 0 || curated > 0) {
       lines.push(`[CURATION] This project tracks ${curated} curated script(s) and ${oneHits} one-hit command(s). Prefer existing curated scripts; mark genuine single-use commands with curation_mark_oneoff instead of re-curating.`);

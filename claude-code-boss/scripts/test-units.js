@@ -28939,6 +28939,303 @@ test('subagent-usage: advice only for a user-owned type with enough runs and a p
   assertEq(summarizeSubagents([]), { total: { runs: 0, calls: 0, units: 0 }, types: [] });
 });
 
+// ─── lesson promotion: project scope → user scope when a lesson proved useful in more than one place ──────────
+// Vectors are 2-D unit vectors at a chosen angle, so cosine = cos(angle) is exact and the thresholds are testable.
+const promoVec = (deg) => [Math.cos(deg * Math.PI / 180), Math.sin(deg * Math.PI / 180)];
+const promoCos = (a, b) => a[0] * b[0] + a[1] * b[1];
+const promoEntry = (id, project, deg, extra = {}) => ({ id, project, type: 'lesson', title: `title ${id}`, summary: `summary ${id}`, recurrence: 1, confidence: 0.8, createdAt: '2026-10-01T00:00:00Z', tags: [], vector: promoVec(deg), ...extra });
+
+test('lesson-promotion R1: the same lesson in >= 2 distinct projects is a candidate — one project, one repo under two ids, another type or a low confidence are not', () => {
+  const { planPromotions } = require('./lib/lesson-promotion.js');
+  const plan = (entries, cfg) => planPromotions({ entries, userEntries: [], cites: [], registry: {}, cfg, simFn: promoCos });
+  const ok = plan([promoEntry('a', 'org/alpha', 0, { recurrence: 2, confidence: 0.75 }), promoEntry('b', 'org/beta', 10, { recurrence: 3, confidence: 0.9 }), promoEntry('c', 'org/gamma', 80)]);
+  assertEq(ok.candidates.length, 1);
+  const c = ok.candidates[0];
+  assertEq([c.rule, c.sources.map((s) => s.id).sort(), c.recurrence, c.confidence], ['R1', ['a', 'b'], 5, 0.9], 'recurrence is the sum of the sources, confidence the maximum');
+  assertEq(c.rep.id, 'b', 'the strongest source (highest recurrence) is the representative');
+  assertEq(c.evidence.cosines.map((x) => [x.entryId, x.cosine]).sort(), [['a', 0.985], ['b', 1]], 'the evidence carries each source cosine');
+  assertEq(plan([promoEntry('a', 'org/alpha', 0), promoEntry('b', 'org/alpha', 5)]).candidates.length, 0, 'two lessons of ONE project are not evidence of reuse');
+  assertEq(plan([promoEntry('a', 'org/alpha', 0), promoEntry('b', 'alpha', 5)]).candidates.length, 0, 'org/alpha and the legacy id alpha are one repo');
+  assertEq(plan([promoEntry('a', 'org/alpha', 0), promoEntry('b', 'org/beta', 5, { type: 'pattern' })]).candidates.length, 0, 'same text, another type: not the same lesson');
+  assertEq(plan([promoEntry('a', 'org/alpha', 0), promoEntry('b', 'org/beta', 5, { confidence: 0.5 })]).candidates.length, 0, 'a low-confidence copy does not count as evidence');
+  assertEq(plan([promoEntry('a', 'org/alpha', 0), promoEntry('b', 'org/beta', 30)]).candidates.length, 0, 'cosine 0.87 < 0.9');
+  assertEq(plan([promoEntry('a', 'org/alpha', 0), promoEntry('b', 'org/beta', 30)], { cosine: 0.85 }).candidates.length, 1, 'the threshold is configurable');
+  assertEq(plan([promoEntry('a', 'org/alpha', 0), promoEntry('b', 'org/beta', 5)], { minProjects: 3 }).candidates.length, 0, 'minProjects is configurable');
+  // seed-anchored: a~b and b~c in band, but a~c is not → c is never glued to a's group
+  const chain = plan([promoEntry('a', 'org/alpha', 0, { recurrence: 3 }), promoEntry('b', 'org/beta', 20), promoEntry('c', 'org/gamma', 40)]);
+  assertEq(chain.candidates.length, 1);
+  assertEq(chain.candidates[0].sources.map((s) => s.id).sort(), ['a', 'b']);
+});
+
+test('lesson-promotion R2: cited in >= 2 sessions of >= 2 distinct projects; events with no session or a single project do not qualify', () => {
+  const { planPromotions } = require('./lib/lesson-promotion.js');
+  const e = [promoEntry('x', 'org/alpha', 0, { recurrence: 2 })];
+  const cite = (project, sessionId) => ({ entryId: 'x', project, sessionId });
+  const plan = (cites, cfg) => planPromotions({ entries: e, userEntries: [], cites, registry: {}, cfg, simFn: promoCos });
+  const ok = plan([cite('org__alpha', 's1'), cite('org__beta', 's2')]);
+  assertEq([ok.candidates.length, ok.candidates[0].rule, ok.candidates[0].recurrence], [1, 'R2', 2]);
+  assertEq(ok.candidates[0].evidence.citedSessions, ['org__alpha|s1', 'org__beta|s2']);
+  assertEq(plan([cite('org__alpha', 's1'), cite('org__alpha', 's2')]).candidates.length, 0, 'two sessions of one project');
+  assertEq(plan([cite('org__alpha', 's1'), cite('org__beta', 's1'), cite('org__alpha', 's1')], { minCitedSessions: 3 }).candidates.length, 0, 'minCitedSessions is configurable');
+  assertEq(plan([cite('org__alpha', ''), cite('org__beta', '')]).candidates.length, 0, 'no session id: cannot prove distinct sessions');
+  assertEq(plan([cite('alpha', 's1'), cite('org__alpha', 's2')]).candidates.length, 0, 'the same repo under two keys is one project');
+  assertEq(plan([cite('org__alpha', 's1'), cite('org__beta', 's2')], { minCitedProjects: 3 }).candidates.length, 0, 'minCitedProjects is configurable');
+  // an entry grouped by R1 is not listed twice
+  const both = planPromotions({ entries: [promoEntry('a', 'org/alpha', 0), promoEntry('b', 'org/beta', 3)], userEntries: [], cites: [{ entryId: 'a', project: 'p1', sessionId: 's' }, { entryId: 'a', project: 'p2', sessionId: 't' }], registry: {}, simFn: promoCos });
+  assertEq(both.candidates.map((c) => c.rule), ['R1']);
+});
+
+test('lesson-promotion: never re-promotes — an active promotion, one the owner reverted, a sanitizer rejection, or a near copy already in the user scope is skipped with the reason', () => {
+  const { planPromotions } = require('./lib/lesson-promotion.js');
+  const entries = [promoEntry('a', 'org/alpha', 0), promoEntry('b', 'org/beta', 5)];
+  const run = (registry, userEntries = []) => planPromotions({ entries, userEntries, cites: [], registry, simFn: promoCos });
+  assertEq(run({}).candidates.length, 1);
+  const src = [{ project: 'org/alpha', entryId: 'a' }];
+  assert(/already promoted/.test(run({ promotions: [{ status: 'active', sources: src }] }).skipped[0].reason));
+  assert(/reverted by the owner/.test(run({ promotions: [{ status: 'reverted', sources: src }] }).skipped[0].reason));
+  assert(/rejected earlier/.test(run({ rejected: [{ entryId: 'b' }] }).skipped[0].reason));
+  const dup = run({}, [{ id: 'u1', type: 'lesson', title: 'known', vector: promoVec(8) }]);
+  assertEq(dup.candidates.length, 0);
+  assert(/already in the user scope.*"known"/.test(dup.skipped[0].reason), dup.skipped[0].reason);
+  assertEq(run({}, [{ id: 'u2', type: 'pattern', title: 'other type', vector: promoVec(0) }]).candidates.length, 1, 'a user entry of another type does not block');
+  assertEq(run({}, [{ id: 'u3', type: 'lesson', title: 'far', vector: promoVec(60) }]).candidates.length, 1);
+});
+
+test('lesson-promotion: the user entry copies title/summary/detail only, scrubbed — secrets reject, no files/source, tags that name a project are dropped, maxPerRun skips rejected ones without spending a slot', async () => {
+  const { planPromotions, buildUserEntry, prepareBatch } = require('./lib/lesson-promotion.js');
+  const a = promoEntry('a', 'org/alpha-service', 0, { tags: ['workflow', 'alpha-service-bug', 'shared', 'http'], recurrence: 2 });
+  const b = promoEntry('b', 'org/beta-service', 5, { tags: ['shared', 'beta-service-only', 'C:\\Users\\allan\\x'] });
+  const { candidates } = planPromotions({ entries: [a, b], userEntries: [], cites: [], registry: {}, simFn: promoCos });
+  const full = { title: 'Fix in org/alpha-service', summary: 'see C:\\Users\\allan\\repo and mail me@x.io; beta-service does the same', detail: 'detail for alpha-service' };
+  const built = buildUserEntry(candidates[0], full, 'prom-1');
+  assert(built.entry, JSON.stringify(built));
+  const e = built.entry;
+  assertEq(e.title, 'Fix in <project>');
+  assert(!/allan|me@x\.io|beta-service|alpha-service/.test(`${e.summary} ${e.detail || e.content.detail}`), `scrubbed: ${e.summary}`);
+  assertEq([e.scope, e.projectId, e.source, e.content, e.baseMetadata, e.type], ['user', '__user__', {}, { detail: e.content.detail }, { promotionId: 'prom-1' }, 'lesson'], 'no files, no source, only the promotion id travels');
+  assertEq(e.tags, ['shared', 'workflow'], 'a user-level hint and a tag shared by the sources stay; project names, paths and single-source tags go');
+  assertEq([e.recurrence, e.confidence], [candidates[0].recurrence, candidates[0].confidence]);
+  const secret = buildUserEntry(candidates[0], { ...full, detail: 'token sk-abcdefghijklmnopqrstuvwxyz0123' }, 'prom-2');
+  assertEq([secret.rejected, /secret/.test(secret.reason)], [true, true]);
+  // batch: cand0 has a secret (no slot), then 2 accepted (max 2), the 4th is deferred
+  const mk = (id, pr) => ({ ...candidates[0], rep: { ...candidates[0].rep, id, project: pr }, sources: [{ ...candidates[0].sources[0], id, project: pr }, { ...candidates[0].sources[1], project: 'org/other' }] });
+  const cs = [mk('c0', 'org/p0'), mk('c1', 'org/p1'), mk('c2', 'org/p2'), mk('c3', 'org/p3')];
+  let n = 0;
+  const batch = await prepareBatch(cs, { maxPerRun: 2, newId: () => `id${n++}`, getFull: async (c) => ({ ...full, detail: c.rep.id === 'c0' ? 'ghp_abcdefghijklmnopqrstuvwxyz0123456789' : 'ok' }) });
+  assertEq([batch.accepted.map((x) => x.cand.rep.id), batch.rejected.map((x) => x.cand.rep.id), batch.deferred.map((x) => x.rep.id)], [['c1', 'c2'], ['c0'], ['c3']]);
+});
+
+test('lesson-promote: scan writes nothing; apply copies once (originals untouched) and records everything; a second apply is idempotent; undo deletes the copy; a reverted lesson is not promoted again', async () => {
+  const lp = require('./lesson-promote.js');
+  const registry = require('./lib/promotion-registry.js');
+  const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-promo-'));
+  try {
+    const store = { 'org/alpha': [], 'org/beta': [], 'org/gamma': [], __user__: [] };
+    const doc = (id, project, title, extra = {}) => ({ id, project, title, summary: `sum ${title}`, type: 'lesson', recurrence: 1, confidence: 0.8, created_at: '2026-10-01', tags: [], bossWritten: true, content: { detail: `detail ${title}` }, ...extra });
+    store['org/alpha'].push(doc('a1', 'org/alpha', 'same lesson', { recurrence: 2 }), doc('a2', 'org/alpha', 'unrelated'));
+    store['org/beta'].push(doc('b1', 'org/beta', 'same lesson, reworded'));
+    store['org/gamma'].push(doc('g1', 'org/gamma', 'something else'));
+    const angle = { 'same lesson': 0, 'same lesson, reworded': 6, unrelated: 90, 'something else': 150 };
+    const calls = { save: [], del: [], init: 0 };
+    const backend = {
+      peekMode: () => 'mcp-memory', init: async () => { calls.init++; }, close: async () => {},
+      listProjects: async () => Object.keys(store),
+      listDocuments: async ({ projectId }) => store[projectId].map((d) => ({ ...d })),
+      get: async (id) => Object.values(store).flat().find((d) => d.id === id) || null,
+      save: async (entry) => { const id = `u${calls.save.length + 1}`; calls.save.push(entry); store.__user__.push(doc(id, '__user__', entry.title, { summary: entry.summary, recurrence: entry.recurrence, confidence: entry.confidence, tags: entry.tags })); return id; },
+      delete: async (id) => { calls.del.push(id); for (const k of Object.keys(store)) store[k] = store[k].filter((d) => d.id !== id); },
+    };
+    const embedder = { init: async () => {}, getStatus: () => ({ ready: true }), embed: async (text) => promoVec(angle[text.split('. ')[0]] ?? 0) };
+    const events = [];
+    const deps = { dataDir, cfg: { ...require('./lib/lesson-promotion.js').DEFAULTS }, now: () => 1760000000000, backend, embedder, simFn: promoCos, readCites: async () => [], recordEvent: (n, p) => events.push([n, p]) };
+
+    const scan = await lp.runCommand('scan', {}, deps);
+    assertEq([scan.code, calls.save.length, events.length, fs.existsSync(registry.registryPath(dataDir))], [0, 0, 0, false], 'scan is read-only');
+    assert(/\[R1\] lesson "same lesson"/.test(scan.out) && /org\/alpha \(cos 1\)/.test(scan.out) && /org\/beta \(cos 0\.995\)/.test(scan.out), scan.out);
+
+    const applied = await lp.runCommand('apply', {}, deps);
+    assertEq([applied.code, calls.save.length, calls.del.length], [0, 1, 0]);
+    const reg = registry.load(dataDir);
+    assertEq(reg.promotions.length, 1);
+    const p = reg.promotions[0];
+    assertEq([p.status, p.rule, p.userEntryId, p.ts, p.sources.map((s) => s.entryId).sort(), p.sources[0].title !== undefined], ['active', 'R1', 'u1', 1760000000000, ['a1', 'b1'], true]);
+    assertEq([p.thresholds.cosine, p.thresholds.minProjects, p.thresholds.minCitedSessions, p.thresholds.minConfidence], [0.9, 2, 2, 0.7], 'the thresholds used are recorded');
+    assert(p.evidence.cosines.length === 2 && /the same lesson exists in 2 projects/.test(p.reason), p.reason);
+    assertEq([calls.save[0].recurrence, calls.save[0].scope, calls.save[0].projectId], [3, 'user', '__user__'], 'recurrence summed');
+    assertEq(events.map((e) => e[0]), ['lesson.promoted']);
+    assertEq([events[0][1].rule, events[0][1].projects.sort(), events[0][1].userEntryId], ['R1', ['org/alpha', 'org/beta'], 'u1']);
+    assert(store['org/alpha'].some((d) => d.id === 'a1') && store['org/beta'].some((d) => d.id === 'b1'), 'originals are untouched');
+
+    await lp.runCommand('apply', {}, deps);
+    assertEq([calls.save.length, registry.load(dataDir).promotions.length], [1, 1], 'idempotent: nothing promoted twice');
+
+    const undone = await lp.runCommand('undo', { ids: [p.id] }, deps);
+    assertEq([undone.code, calls.del], [0, ['u1']], 'only the copy is deleted');
+    assertEq(registry.load(dataDir).promotions[0].status, 'reverted');
+    assert(registry.load(dataDir).promotions[0].revertedAt === 1760000000000);
+    assertEq(events.map((e) => e[0]), ['lesson.promoted', 'lesson.promotion.reverted']);
+    assert(store['org/alpha'].some((d) => d.id === 'a1'), 'originals still untouched after undo');
+    await lp.runCommand('apply', {}, deps);
+    assertEq(calls.save.length, 1, 'the owner reverted it: not promoted again');
+    assertEq((await lp.runCommand('undo', { ids: ['nope'] }, deps)).code, 1, 'an unknown id fails loud');
+    assertEq((await lp.runCommand('undo', { ids: [] }, deps)).code, 2);
+    assert(/reverted/.test((await lp.runCommand('list', {}, deps)).out));
+  } finally { fs.rmSync(dataDir, { recursive: true, force: true }); }
+});
+
+test('lesson-promote: a secret rejects the lesson and is recorded; a failed registry write takes the copy back; the weekly run honours enabled/mode/backend and leaves the one-line notice', async () => {
+  const lp = require('./lesson-promote.js');
+  const registry = require('./lib/promotion-registry.js');
+  const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-promo-'));
+  try {
+    const mkDoc = (id, title, detail) => ({ id, title, summary: `sum ${title}`, type: 'lesson', recurrence: 1, confidence: 0.9, created_at: '2026-10-01', tags: [], bossWritten: true, content: { detail } });
+    const store = { 'org/alpha': [mkDoc('a1', 'one', 'password is sk-abcdefghijklmnopqrstuvwxyz0123'), mkDoc('a2', 'two', 'fine')], 'org/beta': [mkDoc('b1', 'one', 'x'), mkDoc('b2', 'two', 'y')], __user__: [] };
+    const saved = []; const deleted = [];
+    const backend = {
+      peekMode: () => 'mcp-memory', init: async () => {}, close: async () => {}, listProjects: async () => Object.keys(store),
+      listDocuments: async ({ projectId }) => store[projectId], get: async (id) => Object.values(store).flat().find((d) => d.id === id) || null,
+      save: async (e) => { saved.push(e); const id = `u${saved.length}`; store.__user__.push({ ...mkDoc(id, e.title, ''), summary: e.summary }); return id; },
+      delete: async (id) => { deleted.push(id); store.__user__ = store.__user__.filter((d) => d.id !== id); },
+    };
+    const embedder = { init: async () => {}, getStatus: () => ({ ready: true }), embed: async (t) => promoVec(t.startsWith('one') ? 0 : 90) };
+    const base = { dataDir, now: () => Date.now(), backend, embedder, simFn: promoCos, readCites: async () => [], recordEvent: () => {} };
+    const cfg = { ...require('./lib/lesson-promotion.js').DEFAULTS };
+
+    // 'one' (a1 has a secret): the representative is rejected → recorded, not copied; 'two' is promoted
+    const r1 = await lp.runCommand('apply', {}, { ...base, cfg });
+    assertEq([saved.length, saved[0].title], [1, 'two']);
+    assertEq(registry.load(dataDir).rejected.map((x) => [x.entryId, /secret/.test(x.reason)]), [['a1', true]]);
+    assert(/REJECTED BY THE SANITIZER \(1\)/.test(r1.out), r1.out);
+    const r2 = await lp.runCommand('scan', {}, { ...base, cfg });
+    assert(/rejected earlier/.test(r2.out), 'the next scan says why it is skipped');
+
+    // the registry cannot be written → the copy is removed, the failure is reported
+    store['org/alpha'].push(mkDoc('a3', 'three', 'z')); store['org/beta'].push(mkDoc('b3', 'three', 'w'));
+    const emb3 = { ...embedder, embed: async (t) => promoVec(t.startsWith('one') ? 0 : t.startsWith('two') ? 90 : 180) };
+    const orig = registry.addPromotion;
+    registry.addPromotion = () => { throw new Error('disk full'); };
+    let r3;
+    try { r3 = await lp.runCommand('apply', {}, { ...base, embedder: emb3, cfg }); } finally { registry.addPromotion = orig; }
+    assertEq(r3.code, 1);
+    assert(/registry write failed, copy removed/.test(r3.out), r3.out);
+    assertEq(deleted, ['u2'], 'the copy nobody can undo is taken back');
+
+    // weekly run: disabled / wrong backend / dry-run / apply
+    const before = saved.length;
+    assertEq((await lp.runCommand('apply', { auto: true }, { ...base, embedder: emb3, cfg: { ...cfg, enabled: false } })).data.skipped, 'disabled');
+    assertEq((await lp.runCommand('apply', { auto: true }, { ...base, backend: { ...backend, peekMode: () => 'local' }, cfg })).data.skipped, 'backend-not-mcp-memory');
+    const dry = await lp.runCommand('apply', { auto: true }, { ...base, embedder: emb3, cfg: { ...cfg, mode: 'dry-run' } });
+    assertEq([saved.length, dry.data.mode, dry.data.wouldPromote], [before, 'dry-run', 1], 'dry-run promotes nothing');
+    assert(fs.existsSync(path.join(dataDir, 'promotions', 'last-scan.json')), 'the plan of a dry-run is kept for the owner to read');
+    assertEq(registry.takeNotice(dataDir), null, 'a dry-run leaves no notice');
+    const live = await lp.runCommand('apply', { auto: true }, { ...base, embedder: emb3, cfg });
+    assertEq([saved.length, live.code], [before + 1, 0]);
+    const id = registry.load(dataDir).promotions.at(-1).id;
+    assertEq(registry.takeNotice(dataDir), `[BRAIN] 1 lição(ões) promovida(s) ao escopo do usuário — desfazer: node scripts/lesson-promote.js undo ${id}`);
+    assertEq(registry.takeNotice(dataDir), null, 'the notice is shown once');
+  } finally { fs.rmSync(dataDir, { recursive: true, force: true }); }
+});
+
+test('promotion-registry: the weekly stamp, the notice leaves out reverted promotions, a corrupt registry fails loud', () => {
+  const registry = require('./lib/promotion-registry.js');
+  const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-promo-'));
+  try {
+    const DAY = 86400000;
+    assert(registry.promotionDue(dataDir, 1000, 7), 'no stamp: due');
+    registry.markPromotionRun(dataDir, 1000);
+    assert(!registry.promotionDue(dataDir, 1000 + 6 * DAY, 7) && registry.promotionDue(dataDir, 1000 + 7 * DAY, 7), 'due again after intervalDays');
+    registry.unmarkPromotionRun(dataDir);
+    assert(registry.promotionDue(dataDir, 1001, 7), 'a failed run gives the interval back');
+    registry.addPromotion(dataDir, { id: 'p1', status: 'active', sources: [] });
+    registry.addPromotion(dataDir, { id: 'p2', status: 'active', sources: [] });
+    registry.writeNotice(dataDir, ['p1', 'p2']);
+    registry.markReverted(dataDir, 'p2', 5);
+    assert(/ 1 lição.*undo p1$/.test(registry.takeNotice(dataDir)), 'the reverted one is not announced');
+    fs.writeFileSync(registry.registryPath(dataDir), '{nope');
+    let msg = ''; try { registry.load(dataDir); } catch (err) { msg = err.message; }
+    assert(/not valid JSON/.test(msg), 'a corrupt registry is an error, never an empty one');
+  } finally { fs.rmSync(dataDir, { recursive: true, force: true }); }
+});
+
+test('brain-config.getLessonPromotion: conservative defaults, the user override wins, an invalid value falls back and says so', () => {
+  const bc = require('../engine/lib/brain-config.js');
+  const file = path.join(require('../engine/lib/data-dir.js').globalDir(), 'user-config.json');
+  assert(file.startsWith(process.env.USERPROFILE), `the suite's temp HOME, never the real one (${file})`);
+  const prev = fs.existsSync(file) ? fs.readFileSync(file, 'utf8') : null;
+  const errs = []; const origErr = console.error; console.error = (m) => errs.push(String(m));
+  try {
+    bc._resetCache();
+    assertEq(bc.getLessonPromotion(), { enabled: true, mode: 'apply', cosine: 0.9, minProjects: 2, minCitedSessions: 2, minCitedProjects: 2, maxPerRun: 5, intervalDays: 7, types: ['lesson', 'pattern'], minConfidence: 0.7 });
+    const cur = prev ? JSON.parse(prev) : {};
+    cur.kb = { ...(cur.kb || {}), promotion: { mode: 'dry-run', maxPerRun: 1, cosine: 7, minProjects: 1, types: [] } };
+    fs.mkdirSync(path.dirname(file), { recursive: true });
+    fs.writeFileSync(file, JSON.stringify(cur));
+    bc._resetCache();
+    const c = bc.getLessonPromotion();
+    assertEq([c.mode, c.maxPerRun, c.cosine, c.minProjects, c.types], ['dry-run', 1, 0.9, 2, ['lesson', 'pattern']], 'valid override wins; cosine 7, minProjects 1 and empty types fall back');
+    assert(errs.some((e) => /kb\.promotion\.cosine is invalid/.test(e)) && errs.some((e) => /minProjects is invalid/.test(e)), errs.join('|'));
+    cur.kb.promotion = { mode: 'yolo' };
+    fs.writeFileSync(file, JSON.stringify(cur));
+    bc._resetCache();
+    assertEq(bc.getLessonPromotion().mode, 'dry-run', 'an unknown mode falls to the SAFE one');
+  } finally {
+    console.error = origErr;
+    if (prev == null) { try { fs.unlinkSync(file); } catch (err) { void err; } } else fs.writeFileSync(file, prev);
+    bc._resetCache();
+  }
+});
+
+test('outcome-metrics promotions: counts by rule, active vs reverted, and the reach of promoted lessons measured by citations in projects that were not a source', () => {
+  const { summarizeOutcomes } = require('./lib/outcome-metrics.js');
+  const T = Date.UTC(2026, 9, 12);
+  const ev = (eventName, payload, project, sessionId) => ({ eventName, ts: T, payload, project, sessionId });
+  const rows = [
+    ev('lesson.promoted', { id: 'p1', rule: 'R1', projects: ['org/alpha', 'org/beta'], userEntryId: 'U1' }, 'promotion'),
+    ev('lesson.promoted', { id: 'p2', rule: 'R2', projects: ['org/alpha'], userEntryId: 'U2' }, 'promotion'),
+    ev('lesson.promotion.reverted', { id: 'p2', userEntryId: 'U2' }, 'promotion'),
+    ev('retrieve.cited', { entryId: 'U1', origin: 'other' }, 'org__alpha', 's1'),   // inside a source: not reach
+    ev('retrieve.cited', { entryId: 'U1', origin: 'other' }, 'org__gamma', 's2'),   // reach
+    ev('retrieve.cited', { entryId: 'U1', origin: 'other' }, 'org__gamma', 's3'),   // reach, same project
+    ev('retrieve.cited', { entryId: 'U1', origin: 'other' }, 'delta', 's4'),        // reach, another project
+    ev('retrieve.cited', { entryId: 'U1' }, 'org__zeta', 's5'),                      // origin not recorded: not claimed
+    ev('retrieve.cited', { entryId: 'E9', origin: 'own' }, 'org__alpha', 's1'),     // a lesson that was never promoted
+    ev('lesson.captured', { decision: 'admit', scope: 'project' }, 'org__alpha'),
+    ev('lesson.captured', { decision: 'admit', scope: 'project' }, 'org__alpha'),
+    ev('lesson.captured', { decision: 'admit', scope: 'project' }, 'org__alpha'),
+    ev('lesson.captured', { decision: 'admit', scope: 'project' }, 'org__alpha'),
+  ];
+  const s = summarizeOutcomes(rows);
+  const pm = s.promotions;
+  assertEq([pm.promoted, pm.byRule, pm.active, pm.reverted], [2, { R1: 1, R2: 1 }, 1, 1]);
+  assertEq([pm.effect.citations, pm.effect.citedLessons, pm.effect.reachedCitations, pm.effect.reachedProjects, pm.effect.originUnrecorded], [5, 1, 3, 2, 1]);
+  assertEq([pm.effect.citedShare, pm.effect.otherCitedShare], [0.5, 0.25], 'cited lessons over promotions / non-promoted cited over lessons known');
+  assert(/does not prove|avoided an error/.test(pm.labels.notProven) && /not one of its sources/.test(pm.labels.proves), 'the section says what it proves and what it does not');
+  assertEq(s.window.projects, 4, 'the promotion store is not a project of work (alpha, gamma, delta, zeta)');
+  // promotions are state: a window that starts after them still counts them, only the citations are windowed
+  const later = summarizeOutcomes(rows, { since: T + 1 });
+  assertEq([later.promotions.promoted, later.promotions.effect.citations], [2, 0]);
+  assertEq(summarizeOutcomes([]).promotions.promoted, 0);
+  const { render } = require('./outcome-report.js');
+  const text = render(s);
+  assert(/PROMOTIONS/.test(text) && /R1 1, R2 1/.test(text) && /1 active, 1 reverted/.test(text) && /3 citation\(s\) in 2 project\(s\) that were NOT a source/.test(text) && /does not prove/.test(text), text);
+});
+
+// ─── lesson promotion: the SessionStart side ─────────────────────────────────────────────────────────────────
+test('curation-session: SessionStart announces what the weekly promotion copied, once, and does not start a promotion run on a non-mcp-memory backend', async () => {
+  const registry = require('./lib/promotion-registry.js');
+  const dd = require('../engine/lib/data-dir.js').dataDir();
+  assert(dd.startsWith(os.tmpdir()), `the suite's temp data dir, never the real one (${dd})`);
+  const cs = require('./curation-session.js');
+  try {
+    registry.addPromotion(dd, { id: 'prom-t1', status: 'active', sources: [] });
+    registry.writeNotice(dd, ['prom-t1']);
+    const first = await cs.run({ cwd: process.env.CLAUDE_PLUGIN_DATA });
+    assert(/\[BRAIN\] 1 lição\(ões\) promovida\(s\) ao escopo do usuário — desfazer: node scripts\/lesson-promote\.js undo prom-t1/.test(first || ''), String(first));
+    assert(!/promovida/.test((await cs.run({ cwd: process.env.CLAUDE_PLUGIN_DATA })) || ''), 'shown once');
+    assert(!fs.existsSync(path.join(dd, '.runtime', 'lesson-promote-last.json')), 'no stamp, no run: this backend is not mcp-memory');
+  } finally { fs.rmSync(path.join(dd, 'promotions'), { recursive: true, force: true }); }
+});
+
 // ─── Runner ──────────────────────────────────────────────────────────────────
 (async () => {
   // A suíte mexe em singletons de módulo, process.env e servidores HTTP locais.
