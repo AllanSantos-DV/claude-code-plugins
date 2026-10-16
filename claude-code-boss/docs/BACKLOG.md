@@ -14,6 +14,21 @@ Pesquisa: `docs/research/mods-desktop-2026-10-16.md` (local). Feito em `develop`
   o nome recusado pelo validador não impede o carregamento. Correção (`hooks/boss.mjs`): `/boss` em toda sessão (dois `session.start` com matcher) e o polling
   começa no primeiro desenho da faixa — só onde uma superfície a desenha; `-p` continua sem polling. Teste: `boss.mjs: Desktop (SDK session, isInteractive false) ...`
   (falha com o `boss.mjs` anterior).
+- [x] **Achado e corrigido na hora — a faixa sumia de toda sessão viva depois de um reload** (pedido 507 do dono, 2026-10-16: "só aparece no CLI"). O Desktop
+  desenha a faixa: sessão nova na aba Code, faixa pintada acima do prompt (captura da janela) e `ui.render AbovePrompt` com `surface: "desktop"` no rastro.
+  Ela sumia no reload — o `/reload-plugins` e o que o Desktop roda sozinho ao mudar o `installed_plugins.json` (`[CCD] reload_plugins broadcast` no main.log).
+  No reload o engine resolve o plugin por `cache/<mkt>/<plugin>/<version>` (debug: `Using versioned cached plugin ... \3.9.0-dev.f1d1c21f6e96`), não pelo
+  `installPath`. O `.claude/scripts/install-local.mjs` gravava a pasta `<sha>` com `version: 3.9.0-dev.<sha>`; sem essa pasta, o Claude Code a criava copiando
+  o clone do marketplace (`main`, 3.9.0 publicada, `modules: ["./compaction.mjs"]`) e a sessão passava a rodar o código publicado: sem `/boss` e sem faixa
+  (reproduzido pelo protocolo SDK nos engines 2.1.299 e 2.1.300: depois do `reload_plugins`, `hooked:false, drawn_by:[]`). Correções: `install-local.mjs` nomeia
+  a pasta pela versão gravada (local, fora do git); `scripts/lib/plugin-updater.js` (o "Atualizar agora" do dashboard, mesma classe, caminho do usuário) nomeia
+  a pasta pela versão nova e, se ela já existe, diz para reabrir as sessões em vez de `/reload-plugins` (`reloadable`). Testes: `plugin-updater.performUpdate:
+  the cache dir is named after the recorded version ...` e o de pasta ocupada.
+- [ ] **Fora de escopo — o Desktop mostra "/boss não é um comando aqui." e executa o `/boss` mesmo assim** (captura da sessão nova, 2026-10-16). O aviso vem
+  do próprio Desktop, que monta a lista de comandos numa consulta temporária (`[CCD] temporary query` no main.log). Comando registrado por módulo
+  (`$.command.register` no `session.start`) aparentemente não entra nessa lista. Investigar se é limite do Desktop 2.42304 (reportar) ou se há outro jeito de declarar o comando.
+- [ ] **Fora de escopo — pastas `3.9.0-dev.<sha>` com o código do marketplace ficaram no cache** (`~/.claude/plugins/cache/allansantos-plugins/claude-code-boss/`,
+  criadas pelos reloads antes da correção). Não são apagadas porque um processo pode estar rodando delas (`.in_use`). Limpar quando nenhuma sessão as usar.
 - [x] **Achado e corrigido na hora — o engine aceita UM módulo por plugin** (`claude plugin validate`: "hooks.json `modules` names one hooks module per plugin; a second
   entry is refused") **e um só `on(evento)` sem matcher por evento no plugin inteiro** (o validador segue os imports). Visto ao validar a primeira versão, com
   `["./compaction.mjs", "./boss.mjs"]`. Correção: entrada única `hooks/index.mjs` que registra os dois; o `session.start` da faixa usa matcher `{ isInteractive: true }`.

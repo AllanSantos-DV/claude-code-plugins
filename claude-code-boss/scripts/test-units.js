@@ -9128,9 +9128,32 @@ test('plugin-updater.performUpdate: NO digest + allowUnsignedLegacy → escape h
   assert(threw && /UNZIP_REACHED/.test(threw.message), `escape hatch should pass gate to unzip, got ${threw && threw.message}`);
 });
 
+function _updIo(extra) {
+  return {
+    fetchRelease: async () => _updRel,
+    resolveSha: async () => 'abc123def456',
+    download: async (url, dest) => { fs.writeFileSync(dest, url.endsWith('.sha256') ? 'a'.repeat(64) : 'fakezip'); return dest; },
+    sha256File: () => 'a'.repeat(64),
+    unzip: (_zip, dir) => { fs.mkdirSync(dir, { recursive: true }); fs.writeFileSync(path.join(dir, 'package.json'), JSON.stringify({ version: '2.0.0' })); },
+    killStale: () => {},
+    ...extra,
+  };
+}
+
+test('plugin-updater.performUpdate: the cache dir is named after the recorded version — a reload reads <cache>/<version> (else Claude Code fills it from the stale marketplace checkout)', async () => {
+  const base = path.join(os.homedir(), '.claude', 'plugins', 'cache', 'allansantos-plugins', 'claude-code-boss');
+  fs.rmSync(path.join(base, '2.0.0'), { recursive: true, force: true });
+  const r = await pu.performUpdate(_updRoot(), { io: _updIo(), skipInstall: true });
+  assertEq(r.installPath, path.join(base, '2.0.0'), 'installPath must be the dir a reload resolves from the version');
+  const reg = JSON.parse(fs.readFileSync(path.join(os.homedir(), '.claude', 'plugins', 'installed_plugins.json'), 'utf8'));
+  assertEq(path.basename(reg.plugins['claude-code-boss@allansantos-plugins'][0].installPath), reg.plugins['claude-code-boss@allansantos-plugins'][0].version);
+  assertEq(r.reloadable, true);
+  assert(/\/reload-plugins/.test(r.reloadHint), r.reloadHint);
+});
+
 test('plugin-updater.performUpdate: registry records the SEMVER version (what Claude Code computes) and never deletes an existing cache dir', async () => {
   const base = path.join(os.homedir(), '.claude', 'plugins', 'cache', 'allansantos-plugins', 'claude-code-boss');
-  const occupied = path.join(base, 'abc123def456');
+  const occupied = path.join(base, '2.0.0');
   fs.mkdirSync(occupied, { recursive: true });
   fs.writeFileSync(path.join(occupied, 'daemon-is-running-here'), 'x');
   let keep = null;
@@ -9145,12 +9168,15 @@ test('plugin-updater.performUpdate: registry records the SEMVER version (what Cl
   const r = await pu.performUpdate(_updRoot(), { io, skipInstall: true });
   assertEq(r.updated, true);
   assertEq(fs.existsSync(path.join(occupied, 'daemon-is-running-here')), true, 'the dir a running daemon may load from survives the re-install');
-  assert(r.installPath !== occupied && path.basename(r.installPath).startsWith('abc123def456-'), `fresh dir expected, got ${r.installPath}`);
+  assert(r.installPath !== occupied && path.basename(r.installPath).startsWith('2.0.0-'), `fresh dir expected, got ${r.installPath}`);
   const reg = JSON.parse(fs.readFileSync(path.join(os.homedir(), '.claude', 'plugins', 'installed_plugins.json'), 'utf8'));
   const e = reg.plugins['claude-code-boss@allansantos-plugins'][0];
   assertEq(e.version, '2.0.0', 'Claude Code computes the plugin.json version: recording the SHA made it re-fetch the same release');
   assertEq(e.gitCommitSha, 'abc123def456');
   assertEq(keep, path.basename(r.installPath), 'stale-process cleanup keeps the dir actually installed');
+  // A reload would read the occupied <cache>/2.0.0, not this install: the result says to restart instead.
+  assertEq(r.reloadable, false);
+  assert(!/^Rode \/reload-plugins/.test(r.reloadHint) && r.reloadHint.includes(occupied), r.reloadHint);
 });
 
 test('plugin-updater.performUpdate: o registro installed_plugins.json e gravado de forma ATOMICA (nunca truncado se o processo cair no meio)', () => {

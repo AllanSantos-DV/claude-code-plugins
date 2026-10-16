@@ -497,7 +497,13 @@ async function performUpdate(root, opts = {}) {
 
     // Never delete an existing cache dir: the shared brain daemon may be running from it
     // (removing one crashed the daemon on 2026-10-05) — a re-install goes to a fresh dir.
-    const destDir = freshCacheDir(path.join(os.homedir(), '.claude', 'plugins', 'cache', MARKETPLACE, PLUGIN), sha);
+    // Named after the version the registry records: a reload (/reload-plugins, or the one the
+    // Desktop runs by itself when installed_plugins.json changes) reads `<cache>/<version>`, and
+    // where that dir is missing Claude Code fills it from the marketplace checkout — an older
+    // release running under the new version's name.
+    const cacheBase = path.join(os.homedir(), '.claude', 'plugins', 'cache', MARKETPLACE, PLUGIN);
+    const destDir = freshCacheDir(cacheBase, newVersion);
+    const versionDir = path.join(cacheBase, newVersion);
     fs.mkdirSync(destDir, { recursive: true });
     fs.cpSync(extractDir, destDir, { recursive: true });
 
@@ -557,7 +563,10 @@ async function performUpdate(root, opts = {}) {
       to: newVersion,
       sha,
       installPath: destDir,
-      reloadHint: 'Rode /reload-plugins no Claude Code Desktop para carregar a nova versão.',
+      reloadable: destDir === versionDir,
+      reloadHint: destDir === versionDir
+        ? 'Rode /reload-plugins no Claude Code Desktop para carregar a nova versão.'
+        : `Feche e abra as sessões do Claude Code para carregar a nova versão: ${versionDir} já existia, e um /reload-plugins carregaria aquela pasta, não esta instalação.`,
     };
   } finally {
     try {
