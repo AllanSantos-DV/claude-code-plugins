@@ -46,7 +46,8 @@ const DECOR_SEGMENT = /^(?:echo|printf)\b/;
 // Leading `VAR=val ` env assignment(s) — stripped from the front of a segment.
 const ENV_ASSIGN = /^[A-Za-z_][A-Za-z0-9_]*=\S*\s+/;
 // Simple command-prefixing wrappers that precede the real command.
-const WRAPPER_PREFIX = /^(?:env|time|nice|sudo|command|builtin|exec)\b\s+/;
+// `timeout [-k D] [-s SIG] DURATION cmd` is one: the limit is not part of what runs.
+const WRAPPER_PREFIX = /^(?:(?:env|time|nice|sudo|command|builtin|exec)\b\s+|timeout\s+(?:-[-\w=]+\s+(?:\d[\w.]*\s+|[A-Z]+\s+)?)*\d[\w.]*[smhd]?\s+)/;
 // A backslash before a newline JOINS the two lines -- it is not a separator.
 const LINE_CONT = /\\\r?\n/g;
 // Placeholder a folded heredoc leaves in its segment (`<<@0`). Starts with `<`, so
