@@ -436,10 +436,39 @@ async function searchIsolated(project, queryVector, opts = {}) {
   }
 }
 
+/**
+ * Text mode of searchByKeywords (opts.text): a keyword counts when it occurs in the entry's title,
+ * summary or tags — not only as a whole tag. Tags are a handful of canonical concept words, so a prompt's
+ * words almost never equal one; this is what lets a keyword fallback find a lesson by what it says.
+ * Hits carry matchCount/score like the tag mode; ordered by matches, then confidence.
+ */
+function rankTextMatches(rows, keywords, topK) {
+  const out = [];
+  for (const r of rows) {
+    const hay = `${r.title || ''} ${r.summary || ''} ${typeof r.tags === 'string' ? r.tags : JSON.stringify(r.tags || [])}`.toLowerCase();
+    const matchCount = keywords.filter(k => hay.includes(k)).length;
+    if (matchCount > 0) {
+      out.push({
+        id: r.id, title: r.title, summary: r.summary, type: r.type, confidence: r.confidence,
+        createdAt: r.created_at, score: matchCount / Math.max(keywords.length, 1), matchCount,
+      });
+    }
+  }
+  return out.sort((a, b) => b.matchCount - a.matchCount || (b.confidence || 0) - (a.confidence || 0)).slice(0, topK);
+}
+
 async function searchByKeywordsSqlite(keywords, opts = {}) {
   const topK = opts.topK || 5;
   const type = opts.type || null;
   const project = opts.project || _project;
+
+  if (opts.text) {
+    const rows = _db.prepare(`
+      SELECT id, title, summary, type, confidence, created_at, tags
+      FROM entries WHERE project = ? ${type ? 'AND type = ?' : ''}
+    `).all(...[project, type].filter(Boolean));
+    return rankTextMatches(rows, keywords, topK);
+  }
 
   const placeholders = keywords.map(() => '?').join(',');
   const params = keywords.map(k => k.toLowerCase());
@@ -449,7 +478,7 @@ async function searchByKeywordsSqlite(keywords, opts = {}) {
   // Scope to the active project — mirrors searchSqlite's `WHERE e.project = ?`.
   // Without it, keyword matches leak across every project's entries.
   const rows = _db.prepare(`
-    SELECT e.id, e.title, e.summary, e.type, e.confidence,
+    SELECT e.id, e.title, e.summary, e.type, e.confidence, e.created_at,
            COUNT(k.keyword) AS match_count
     FROM keywords k
     JOIN entries e ON e.id = k.entry_id
@@ -467,6 +496,7 @@ async function searchByKeywordsSqlite(keywords, opts = {}) {
     summary: r.summary,
     type: r.type,
     confidence: r.confidence,
+    createdAt: r.created_at,
     score: r.match_count / Math.max(keywords.length, 1),
     matchCount: r.match_count,
   }));
@@ -662,6 +692,14 @@ async function searchJson(queryVector, opts = {}) {
 async function searchByKeywordsJson(keywords, opts = {}) {
   const topK = opts.topK || 5;
   const dir = getProjectDir();
+  if (opts.text) {
+    const project = opts.project || _project;
+    const rows = fs.readdirSync(path.join(dir, 'entries')).filter(f => f.endsWith('.json')).map(f => {
+      try { return JSON.parse(fs.readFileSync(path.join(dir, 'entries', f), 'utf-8')); }
+      catch (err) { console.error(`[BRAIN-STORE] text search skipped ${f}: ${err.message}`); return null; }
+    }).filter(e => e && e.project === project && (!opts.type || e.type === opts.type));
+    return rankTextMatches(rows, keywords, topK);
+  }
   const matchCounts = {};
 
   for (const kw of keywords) {
@@ -682,7 +720,7 @@ async function searchByKeywordsJson(keywords, opts = {}) {
     const e = JSON.parse(fs.readFileSync(path.join(dir, 'entries', `${id}.json`), 'utf-8'));
     return {
       id: e.id, title: e.title, summary: e.summary,
-      type: e.type, confidence: e.confidence,
+      type: e.type, confidence: e.confidence, createdAt: e.created_at,
       score: count / Math.max(keywords.length, 1), matchCount: count,
     };
   });

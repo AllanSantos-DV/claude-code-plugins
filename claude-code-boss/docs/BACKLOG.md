@@ -1,5 +1,22 @@
 # Backlog
 
+## Recuperação de contexto do Brain para o orquestrador (pedido do orquestrador, 2026-10-17) — em `develop`, sem release
+
+Origem: `docs/research/compreensao-de-intencao-2026-10-17.md` (projeto orchestrador, §6.2). Testes em `scripts/test-units.js` (bloco "Orchestrator request").
+
+- [x] **Fallback lexical marcado como degradado** (`engine/lib/retrieve-core.js`, caminho local): busca semântica que falha (embedder, store), sem embedder ou vazia agora tenta
+  `searchByKeywords` em modo texto (`opts.text`, novo em `engine/brain-store.js`: palavra no título/resumo/tags, não só tag inteira — as tags são conceitos canônicos e o prompt
+  nunca as iguala) e devolve `degraded:true` + `degradedReason`; cada item vem com `lexical:true` e o texto injetado diz "degraded: matched by keyword". Piso: ≥ 2 palavras do prompt casam,
+  senão uma palavra comum injetaria memória sem relação toda vez que a semântica calasse. Erro semântico sem acerto lexical segue lançando (o handler grava no recall-health, como antes).
+  Caminho remoto (mcp-memory): o servidor não expõe busca lexical separada (`searchByKeywords` lá é a própria busca híbrida), então ali só há a marca: `degraded` quando compose/braço falham.
+- [x] **Turnos do orquestrador e espelhos de WhatsApp não viram lição** (`scripts/lib/prompt-kind.js` `isOrchestratorOrMirrorTurn`): filtrado em `capture-queue.ingest` (fila de captura) e em
+  `conversation-ingest.selectChunk` (transcrição enviada ao mcp-memory; o turno e as respostas até o próximo turno humano saem, janela só com eles avança o offset). Marcadores:
+  `<cross-session-message from-name="…orquestrador|orchestrator|jarvis…">`, `<channel source="…whatsapp…">`, `<whatsapp-mirror>`, `[mirror]` no início — conferidos só contra o formato desta sessão.
+- [x] **`brain_retrieve_context` aceita `kinds` e `details`**: filtro por tipo (case-insensitive, antes do corte topK; sem ponteiros de capability) e resposta JSON `{items:[{id,title,type,score,ageDays,createdAt,summary,lexical?}], degraded, degradedReason?, reason?, hookSpecificOutput?}`.
+  Sem os dois parâmetros a resposta é a de antes (só o payload do hook; vazio e falha seguem string vazia). `ageDays` é `null` quando o item não tem `createdAt` (fatos do compose), não uma idade inventada.
+- [ ] **Confirmar os marcadores reais do orquestrador/WhatsApp** com um transcript do próprio orquestrador (o filtro é por padrão de texto; um formato diferente passa e vira lição).
+- [ ] **Remoto sem piso lexical**: com o mcp-memory fora, o recall continua vazio (agora marcado `degraded`). Um piso local exigiria um índice local do que está no servidor.
+
 ## Faixa acima do prompt e `/boss` — mod do Desktop, etapa 1 (pedido do orquestrador, 2026-10-16) — em validação pelo dono
 
 Pesquisa: `docs/research/mods-desktop-2026-10-16.md` (local). Feito em `develop`: `hooks/boss.mjs`, `scripts/lib/boss-band.mjs`, `scripts/boss-summary.js`,

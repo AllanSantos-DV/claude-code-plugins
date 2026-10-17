@@ -21,6 +21,7 @@ const { sanitizeSessionId } = require('../../engine/lib/session-id.js');
 const { dataDir } = require('../../engine/lib/data-dir.js');
 const { packCycles } = require('./transcript-block.js');
 const { readLastTurns } = require('./transcript-turns.js');
+const { isOrchestratorOrMirrorTurn } = require('./prompt-kind.js');
 const { writeFileAtomic } = require('../../engine/lib/atomic-write.js');
 
 const SEEN_CAP = 5000;
@@ -100,6 +101,8 @@ function ingest(project, sid, transcriptPath, redactFn, opts = {}) {
   let added = 0;
   let changed = false;
   for (const c of cycles) {
+    // The orchestrator's delegations and WhatsApp mirrors are not lessons this session received.
+    if (isOrchestratorOrMirrorTurn(c.user)) continue;
     const user = redact(c.user || '');
     const assistant = redact(c.assistant || '');
     const thinking = c.thinking ? redact(c.thinking) : '';

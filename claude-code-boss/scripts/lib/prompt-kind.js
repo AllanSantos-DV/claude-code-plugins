@@ -17,4 +17,23 @@ function isSyntheticPrompt(prompt) {
   return SYNTHETIC_PREFIXES.some(prefix => p.startsWith(prefix));
 }
 
-module.exports = { isSyntheticPrompt, SYNTHETIC_PREFIXES };
+// Turns a lesson must not be learned from: the orchestrator delegating work to a session
+// (`<cross-session-message from-name="…orquestrador…">`) and the WhatsApp channel/mirror
+// envelopes. They carry the orchestrator's instructions and the owner's relayed chat, not a
+// correction this session received — captured as lessons they only pollute recall.
+// Matched in the head of the turn (the envelope tag leads it, after at most a one-line preface).
+const NON_LESSON_HEAD_CHARS = 600;
+const NON_LESSON_PATTERNS = [
+  /<cross-session-message\b[^>]*\bfrom-name="[^"]*(?:orquestrador|orchestrator|jarvis)/i,
+  /<channel\b[^>]*\bsource="[^"]*whatsapp/i,
+  /<whatsapp[-_ ]?mirror\b/i,
+  /^\s*\[(?:whatsapp[-_ ])?mirror\]/i,
+];
+
+/** @param {string} text a user turn @returns {boolean} true when it is an orchestrator turn or a WhatsApp mirror/channel envelope */
+function isOrchestratorOrMirrorTurn(text) {
+  const head = String(text || '').slice(0, NON_LESSON_HEAD_CHARS);
+  return NON_LESSON_PATTERNS.some(re => re.test(head));
+}
+
+module.exports = { isSyntheticPrompt, SYNTHETIC_PREFIXES, isOrchestratorOrMirrorTurn };
