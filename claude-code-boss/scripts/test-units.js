@@ -22533,10 +22533,13 @@ test('retrieveRemote: degraded reasons are flagged; kinds filters facts and drop
   retrieveCore.__testHooks.resetCircuit();
   const fake = fakeComposeBackend({
     onCompose: async () => ({ facts: [{ id: 'f1', title: 'F1', type: 'knowledge', scope: 'projB', summary: 'k', score: 0.9 }], capabilities: [{ name: 'cap', description: 'd' }] }),
-    onSearch: async () => [{ id: 'd2', title: 'A1', type: 'lesson', summary: 'anc', score: 0.7, createdAt: '2026-10-01T00:00:00Z' }],
+    // mcp-memory hits carry no type: they come back as 'memory' unless the server filtered by type.
+    onSearch: async (_q, o) => { seenTypes.push(o.type); return [{ id: 'd2-' + o.type, title: 'A1 ' + o.type, type: 'memory', summary: 'anc', score: 0.7 }]; },
   });
-  const ok = await retrieveCore.__testHooks.retrieveRemote('a real prompt here', { project: 'projB', ancestorIds: [], topK: 5, keywords: ['x'], kinds: new Set(['lesson']) }, { backend: fake, recallHealth: { record() {} } });
-  assertEq(ok.entries.map(e => [e.id, e.createdAt]), [['d2', '2026-10-01T00:00:00Z']]);
+  const seenTypes = [];
+  const ok = await retrieveCore.__testHooks.retrieveRemote('a real prompt here', { project: 'projB', ancestorIds: [], topK: 5, keywords: ['x'], kinds: new Set(['lesson', 'decision']) }, { backend: fake, recallHealth: { record() {} } });
+  assertEq(seenTypes.sort(), ['decision', 'lesson'], 'kinds are pushed to the server, one scalar type filter each');
+  assertEq(ok.entries.map(e => [e.id, e.type]).sort(), [['d2-decision', 'decision'], ['d2-lesson', 'lesson']], 'hits are tagged with the kind that matched; the compose knowledge fact is filtered out');
   assertEq(ok.capabilities, []);
   assertEq(ok.degraded, undefined);
   retrieveCore.__testHooks.resetCircuit();
