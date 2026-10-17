@@ -22647,6 +22647,19 @@ test('capture-queue.ingest: orchestrator and WhatsApp-mirror turns are never que
   } finally { q.reset(project, sid); }
 });
 
+test('conversation-ingest: isMeta lines (skill expansion, hook feedback) are system text — not a turn in textRole, not in the chunk sent; typed prompts still go', () => {
+  const meta = (uuid, text) => JSON.stringify({ type: 'user', isMeta: true, sourceToolUseID: 't', uuid, message: { role: 'user', content: [{ type: 'text', text }] } });
+  assertEq(convIngest.textRole(meta('m', 'Base directory for this skill: x')), null);
+  assertEq(convIngest.textRole(_ingL.user('u', 'typed')), 'user');
+  const buf = _ingBuf([_ingL.user('u1', 'use Read, not cat'), _ingL.toolUse('t1'), meta('m1', 'Base directory for this skill: C:\\x\\skills\\pedido-voz'), _ingL.asst('a1', 'ok'), meta('m2', 'hook feedback: capture the lesson')]);
+  const c = convIngest.selectChunk(buf, 0);
+  assertEq(c.raw, _ingBuf([_ingL.user('u1', 'use Read, not cat'), _ingL.toolUse('t1'), _ingL.asst('a1', 'ok')]).toString('utf-8'));
+  const sysOnly = convIngest.selectChunk(_ingBuf([meta('m1', 'Base directory for this skill: x'), _ingL.asst('a1', 'ok')]), 0);
+  assertEq(sysOnly.raw, null, 'a system line is not the user half of a pair');
+  const orq = _ingL.userStr('o1', '<cross-session-message from-name="Jarvis-orquestrador">PEDIDO 9</cross-session-message>');
+  assertEq(convIngest.dropNonLessonTurns([{ text: orq }, { text: meta('m3', 'Base directory…') }, { text: _ingL.asst('a2', 'delegated') }]).length, 0, 'an isMeta line inside an orchestrator turn does not end the skipping');
+});
+
 test('conversation-ingest.selectChunk: drops orchestrator/mirror turns with their replies; keeps the rest verbatim; an all-skipped window advances the offset', () => {
   const orq = _ingL.userStr('u1', '<cross-session-message from-name="Jarvis-orquestrador">PEDIDO 9</cross-session-message>');
   const mix = _ingBuf([orq, _ingL.toolUse('t1'), _ingL.toolResult('r1'), _ingL.asst('a1', 'delegated work'),
