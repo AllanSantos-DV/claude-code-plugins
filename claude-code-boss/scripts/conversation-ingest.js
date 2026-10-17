@@ -67,11 +67,15 @@ function backoffMs(failures) {
   return Math.min(BACKOFF_BASE_MS * 2 ** Math.max(0, failures - 1), BACKOFF_MAX_MS);
 }
 
-/** 'user' | 'assistant' when the line is a message of that role carrying text, else null. */
+/**
+ * 'user' | 'assistant' when the line is a message of that role carrying text, else null.
+ * An `isMeta` line (skill expansion, hook feedback) is the system talking, never a turn.
+ */
 function textRole(line) {
   if (!line.includes('"role"')) return null;
   let o;
   try { o = JSON.parse(line); } catch (err) { void err; return null; } // torn/non-JSON line: not a message
+  if (o && o.isMeta === true) return null;
   const m = o && o.message;
   if (!m || (m.role !== 'user' && m.role !== 'assistant')) return null;
   const c = m.content;
@@ -94,11 +98,21 @@ function userLineText(line) {
   return c.filter((b) => b && b.type === 'text' && typeof b.text === 'string').map((b) => b.text).join('\n');
 }
 
-/** Remove orchestrator/WhatsApp-mirror user turns and the lines that follow them until the next human turn. */
+/** True for an `isMeta` envelope: written by the harness (skill expansion, hook feedback), not by the owner. */
+function isMetaLine(line) {
+  if (!line.includes('"isMeta":true')) return false;
+  try { return JSON.parse(line).isMeta === true; } catch (err) { void err; return false; }
+}
+
+/**
+ * Remove what must not reach the server's curation: `isMeta` envelopes, and orchestrator/WhatsApp-bridge
+ * user turns together with the lines that follow them until the next human turn.
+ */
 function dropNonLessonTurns(lines) {
   const out = [];
   let skipping = false;
   for (const l of lines) {
+    if (isMetaLine(l.text)) continue; // harness text: dropped without ending an orchestrator turn it sits inside
     const text = userLineText(l.text);
     if (text != null) skipping = isOrchestratorOrMirrorTurn(text);
     if (!skipping) out.push(l);
@@ -125,11 +139,9 @@ function selectChunk(buf, base, { cutHead = false, maxPayloadBytes = MAX_PAYLOAD
     lines.push({ at, text: buf.toString('utf-8', at, nl) });
     at = nl + 1;
   }
-  // The orchestrator's delegations and WhatsApp mirrors never reach the server's curation:
-  // drop each such user turn and everything up to the next human turn (its replies/tool returns).
   const total = lines.length;
   lines = dropNonLessonTurns(lines);
-  if (lines.length === 0 && total > 0) return { raw: null, reason: 'only orchestrator/mirror turns', skipTo: base + end };
+  if (lines.length === 0 && total > 0) return { raw: null, reason: 'only system/orchestrator turns', skipTo: base + end };
   // Newest lines first until the escaped payload would overflow.
   let first = lines.length;
   for (let budget = maxPayloadBytes; first > 0; first--) {
