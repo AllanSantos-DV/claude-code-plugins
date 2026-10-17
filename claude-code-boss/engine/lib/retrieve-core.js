@@ -161,6 +161,7 @@ function armHitsToFacts(hits, minScore = 0) {
       summary: h.summary || '',
       text: h.summary || '',
       score: h.score || 0,
+      createdAt: h.createdAt || '',
       projectId: h.projectId || '', // the project the lesson was written in (a promoted lesson keeps it)
     }));
 }
@@ -230,7 +231,7 @@ function mergeFactsSpine(composeFacts, armFacts) {
  * `deps` is a test seam (inject a fake backend/recallHealth); production passes none.
  * @returns {Promise<{entries:object[], capabilities:object[], keywords:string[], project:string, reason?:string}>}
  */
-async function retrieveRemote(prompt, { project, ancestorIds, topK, keywords }, deps = {}) {
+async function retrieveRemote(prompt, { project, ancestorIds, topK, keywords, kinds = null }, deps = {}) {
   const backendRef = deps.backend || backend;
   const healthRef = deps.recallHealth || recallHealth;
   const cc = brainConfig.getRecallCompose();
@@ -242,7 +243,7 @@ async function retrieveRemote(prompt, { project, ancestorIds, topK, keywords }, 
   // also short-circuits this per-turn recall, not just a prior compose timeout.
   if (Date.now() < circuitOpenUntil || (backendRef.circuitOpen && backendRef.circuitOpen())) {
     healthRef.record('circuit-open');
-    return { entries: [], capabilities: [], keywords, project, reason: 'circuit-open' };
+    return { entries: [], capabilities: [], keywords, project, reason: 'circuit-open', degraded: true, degradedReason: 'circuit-open' };
   }
   try {
     await backendRef.init({ project, skipEmbedder: true });
@@ -282,7 +283,7 @@ async function retrieveRemote(prompt, { project, ancestorIds, topK, keywords }, 
       !backendRef.search
         ? Promise.resolve([])
         : runArm
-          ? timed('project', withDeadline((signal) => backendRef.search(query, { projectIds: armIds, includeHome: false, topK: topK + 4, signal }), ANCESTOR_TIMEOUT_MS || cc.timeoutMs, 'project arm'))
+          ? timed('project', withDeadline((signal) => backendRef.search(query, { projectIds: armIds, includeHome: false, topK: (topK + 4) * (kinds ? 4 : 1), signal }), ANCESTOR_TIMEOUT_MS || cc.timeoutMs, 'project arm'))
           : skipped('project-arm-skipped'),
     ]);
     if (runCompose) breakers.compose.result(composeRes.status === 'fulfilled');
@@ -302,8 +303,9 @@ async function retrieveRemote(prompt, { project, ancestorIds, topK, keywords }, 
       armReason = (armRes.reason && armRes.reason.reason) || (isTimeout(armRes.reason) ? 'project-arm-timeout' : 'project-arm-error');
       console.error(`[retrieve-core] project arm failed (${armReason}): ${armRes.reason && armRes.reason.message}`);
     }
-    const merged = mergeFactsSpine(composed.facts, armFacts);
-    const { facts, capabilities } = pickInjectable(merged, composed.capabilities, {
+    const merged = filterKinds(mergeFactsSpine(composed.facts, armFacts), kinds);
+    // Capability pointers are skills, not memory kinds: a kinds filter drops them.
+    const { facts, capabilities } = pickInjectable(merged, kinds ? [] : composed.capabilities, {
       topK, maxChars: cc.maxInjectChars, includeHomeSpine: cc.includeHomeSpine,
     });
     // One record per turn: a failed compose outranks a failed arm, which outranks an honest miss.
@@ -322,20 +324,77 @@ async function retrieveRemote(prompt, { project, ancestorIds, topK, keywords }, 
       circuitOpenUntil = 0;
       if (backendRef.reportMcpSuccess) backendRef.reportMcpSuccess();
     }
-    return { entries: facts, capabilities, keywords, project, reason: facts.length && !composeReason ? undefined : reason };
+    // A failed arm/compose means the recall is partial or empty because it could not look, not because nothing matched.
+    const degraded = healthRef.isDegraded ? healthRef.isDegraded(reason) : recallHealth.isDegraded(reason);
+    return { entries: facts, capabilities, keywords, project, reason: facts.length && !composeReason ? undefined : reason, ...(degraded ? { degraded: true, degradedReason: reason } : {}) };
   } catch (err) {
     const reason = isTimeout(err) ? 'timeout' : 'remote-error';
     console.error(`[retrieve-core] remote retrieve failed (${reason}): ${err.message}`);
     healthRef.record(reason, undefined, Date.now() - startedAt);
     circuitOpenUntil = Date.now() + CIRCUIT_COOLDOWN_MS;
     if (backendRef.reportMcpFailure) backendRef.reportMcpFailure(err);
-    return { entries: [], capabilities: [], keywords, project, reason };
+    return { entries: [], capabilities: [], keywords, project, reason, degraded: true, degradedReason: reason };
+  }
+}
+
+/**
+ * `kinds` filter (memory types: lesson, pattern, decision, policy, …): a lowercase Set, or null when
+ * the caller asked for none (null = no filtering, the historical behavior).
+ */
+function normalizeKinds(kinds) {
+  const list = (Array.isArray(kinds) ? kinds : typeof kinds === 'string' ? [kinds] : [])
+    .map((k) => String(k || '').trim().toLowerCase()).filter(Boolean);
+  return list.length ? new Set(list) : null;
+}
+
+function filterKinds(entries, kinds) {
+  if (!kinds) return entries;
+  return (entries || []).filter((e) => kinds.has(String((e && e.type) || '').toLowerCase()));
+}
+
+/** Dedup by title (the KB can hold duplicate-title entries that would waste topK slots) and cap to topK. */
+function dedupTitles(raw, topK) {
+  const seenTitles = new Set();
+  const entries = [];
+  for (const e of raw) {
+    const t = (e.title || '').trim().toLowerCase();
+    if (t && seenTitles.has(t)) continue;
+    seenTitles.add(t);
+    entries.push(e);
+    if (entries.length >= topK) break;
+  }
+  return entries;
+}
+
+/**
+ * A lexical hit counts only when this many of the prompt's keywords match: a single shared word
+ * ("project", "config") would inject unrelated memory every time the semantic search fell silent.
+ */
+const LEXICAL_MIN_MATCHES = 2;
+
+/**
+ * Keyword fallback for when the semantic search failed or came back empty. Same project scope as the
+ * vector search; each hit is flagged `lexical` so the caller can tell it from a semantic one. Never
+ * throws — a failing fallback is the original "no memory" again, with the reason logged.
+ */
+async function lexicalFallback(storeRef, keywords, { project, topK, kinds }) {
+  if (!storeRef || typeof storeRef.searchByKeywords !== 'function' || !keywords.length) return [];
+  try {
+    const hits = await storeRef.searchByKeywords(keywords, { project, text: true, topK: (topK + 4) * (kinds ? 4 : 1) });
+    const strong = (Array.isArray(hits) ? hits : []).filter((h) => {
+      const matches = h.matchCount != null ? h.matchCount : Math.round((h.score || 0) * keywords.length);
+      return matches >= Math.min(LEXICAL_MIN_MATCHES, keywords.length);
+    });
+    return dedupTitles(filterKinds(strong, kinds), topK).map((h) => ({ ...h, lexical: true }));
+  } catch (err) {
+    console.error(`[retrieve-core] lexical fallback failed: ${err.message}`);
+    return [];
   }
 }
 
 /**
  * @param {string} prompt
- * @param {{project?:string, ancestorIds?:string[]}} opts
+ * @param {{project?:string, ancestorIds?:string[], kinds?:string[]}} opts
  *   ancestorIds (F2, mcp-memory only) — the ancestor-spine project_ids (DEEPEST→shallow,
  *   focus first). retrieveRemote's project arm searches them together with `__user__`.
  * @param {{store?:object, backend?:object, recallHealth?:object}} deps
@@ -346,10 +405,14 @@ async function retrieveRemote(prompt, { project, ancestorIds, topK, keywords }, 
  *   exists to fix). Defaults to the direct require (stdio mode / tests, no shared daemon).
  * @returns {Promise<{entries:object[], keywords:string[], project:string, reason?:string}>}
  *   reason (when entries is empty): 'short' | 'no-embedder' | 'no-match' | 'remote-error'.
+ *   degraded (+ degradedReason): the semantic search failed or was unavailable — an empty result then
+ *   means "could not look", not "nothing relevant"; entries found by keyword instead carry `lexical:true`.
+ *   opts.kinds — keep only entries of these memory types (and no capability pointers).
  */
 async function retrieve(prompt, opts = {}, deps = {}) {
   const project = opts.project || 'default';
   const ancestorIds = Array.isArray(opts.ancestorIds) ? opts.ancestorIds : [];
+  const kinds = normalizeKinds(opts.kinds);
   const keywords = extractKeywords(prompt || '', { minLen: 4, maxTokens: 15 });
   // Cheap pre-filter: skip trivial/short prompts (don't even touch the model).
   if (keywords.length < 3) return { entries: [], keywords, project, reason: 'short' };
@@ -358,31 +421,44 @@ async function retrieve(prompt, opts = {}, deps = {}) {
 
   // Remote backend → the external daemon owns embeddings + search.
   if (backend.peekMode() === 'mcp-memory') {
-    return retrieveRemote(prompt, { project, ancestorIds, topK, keywords }, deps);
+    return retrieveRemote(prompt, { project, ancestorIds, topK, keywords, kinds }, deps);
   }
 
   const storeRef = deps.store || store;
-  await storeRef.init({ project });
-  if (!embedder.getStatus().ready) await embedder.init();
-  const vector = await embedder.embed(prompt);
-  if (!vector) return { entries: [], keywords, project, reason: 'no-embedder' };
-
-  // minScore is applied to RAW cosine (relevance gate) before rerank.
-  // Over-fetch + dedup by title: the KB can hold duplicate-title entries that
-  // would otherwise waste topK slots.
-  // Federate project + __user__ scopes (parity with brain_search) so global
-  // lessons (workflow/preferences) are retrievable, not just project-local ones.
-  const raw = await searchTwoPass(storeRef, project, vector, { topK: topK + 4, minScore });
-  const seenTitles = new Set();
-  const entries = [];
-  for (const e of raw) {
-    const t = (e.title || '').trim().toLowerCase();
-    if (t && seenTitles.has(t)) continue;
-    seenTitles.add(t);
-    entries.push(e);
-    if (entries.length >= topK) break;
+  let entries = [];
+  let degradedReason;
+  let semanticError = null;
+  try {
+    await storeRef.init({ project });
+    if (!embedder.getStatus().ready) await embedder.init();
+    const vector = await embedder.embed(prompt);
+    if (!vector) degradedReason = 'no-embedder';
+    else {
+      // minScore is applied to RAW cosine (relevance gate) before rerank.
+      // Over-fetch + dedup by title: the KB can hold duplicate-title entries that
+      // would otherwise waste topK slots (and, with a kinds filter, other types do too).
+      // Federate project + __user__ scopes (parity with brain_search) so global
+      // lessons (workflow/preferences) are retrievable, not just project-local ones.
+      const raw = await searchTwoPass(storeRef, project, vector, { topK: (topK + 4) * (kinds ? 4 : 1), minScore });
+      entries = dedupTitles(filterKinds(raw, kinds), topK);
+      if (!entries.length) degradedReason = 'semantic-empty';
+    }
+  } catch (err) {
+    semanticError = err;
+    degradedReason = 'semantic-error';
+    console.error(`[retrieve-core] semantic search failed — trying the lexical fallback: ${err.message}`);
   }
-  return { entries, keywords, project, reason: entries.length ? undefined : 'no-match' };
+  if (entries.length) return { entries, keywords, project };
+
+  // Semantic search failed, was unavailable or found nothing: look by keyword instead of going silent.
+  const lexical = await lexicalFallback(storeRef, keywords, { project, topK, kinds });
+  if (lexical.length) {
+    return { entries: lexical, keywords, project, degraded: true, degradedReason: degradedReason === 'semantic-empty' ? 'lexical-fallback' : degradedReason };
+  }
+  // Nothing by keyword either: an error keeps its old path (the handler records it and fails open).
+  if (semanticError) throw semanticError;
+  if (degradedReason === 'no-embedder') return { entries: [], keywords, project, reason: 'no-embedder', degraded: true, degradedReason };
+  return { entries: [], keywords, project, reason: 'no-match' };
 }
 
 /**
@@ -391,13 +467,14 @@ async function retrieve(prompt, opts = {}, deps = {}) {
  * ② CAPABILITIES are name/description pointers (progressive disclosure). The flat
  * local path passes only `entries` → just the facts section (label unchanged).
  */
-function formatContext(entries, capabilities) {
+function formatContext(entries, capabilities, { degraded = false } = {}) {
   const facts = entries || [];
   const caps = capabilities || [];
   const parts = [];
   if (facts.length) {
     const lines = facts.map((e, i) => `${i + 1}. "${e.title}" (${e.type}) — ${e.summary}`);
-    parts.push(`[BRAIN] ${facts.length} relevant lesson(s):\n${lines.join('\n')}`);
+    const note = degraded ? ' (degraded: matched by keyword, semantic search unavailable)' : '';
+    parts.push(`[BRAIN] ${facts.length} relevant lesson(s)${note}:\n${lines.join('\n')}`);
   }
   if (caps.length) {
     const lines = caps.map((c) => `- ${c.name}${c.description ? ' — ' + c.description : ''}`);
@@ -419,9 +496,29 @@ function filterInjectableEntries(entries) {
   return entries.filter((e) => !ex.has(String((e && e.type) || '').toLowerCase()));
 }
 
+/**
+ * Per-item view for callers that rank on their own: score (rounded) and age in days (from `createdAt`;
+ * null when the entry has none — e.g. a compose fact — rather than a made-up age).
+ */
+function describeItems(entries, nowMs = Date.now()) {
+  return (entries || []).map((e) => {
+    const created = e.createdAt ? Date.parse(e.createdAt) : NaN;
+    return {
+      id: e.id || '',
+      title: e.title || '',
+      type: e.type || '',
+      score: Math.round((Number(e.score) || 0) * 1000) / 1000,
+      ageDays: Number.isFinite(created) ? Math.max(0, Math.round(((nowMs - created) / 86400000) * 10) / 10) : null,
+      createdAt: e.createdAt || null,
+      summary: e.summary || '',
+      ...(e.lexical ? { lexical: true } : {}),
+    };
+  });
+}
+
 module.exports = {
-  retrieve, formatContext, filterInjectableEntries, pickInjectable, injectionOrigins, ANCESTOR_TIMEOUT_MS,
+  retrieve, formatContext, describeItems, filterInjectableEntries, pickInjectable, injectionOrigins, ANCESTOR_TIMEOUT_MS,
   // F2 test seam: retrieveRemote accepts an injected fake backend/recallHealth via its
   // 3rd `deps` arg; mergeFactsSpine is pure (order/dedup assertions).
-  __testHooks: { retrieveRemote, mergeFactsSpine, capQuery, projectArmIds, armHitsToFacts, createArmBreaker, withDeadline, resetCircuit: () => { circuitOpenUntil = 0; armBreakers.compose = createArmBreaker(); armBreakers.project = createArmBreaker(); } },
+  __testHooks: { retrieveRemote, mergeFactsSpine, lexicalFallback, normalizeKinds, capQuery, projectArmIds, armHitsToFacts, createArmBreaker, withDeadline, resetCircuit: () => { circuitOpenUntil = 0; armBreakers.compose = createArmBreaker(); armBreakers.project = createArmBreaker(); } },
 };

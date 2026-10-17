@@ -46,6 +46,7 @@ const brainBackend = require('../engine/brain-backend.js');
 
 const { dataDir } = require('../engine/lib/data-dir.js');
 const { readRange } = require('./lib/transcript-tail.js');
+const { isOrchestratorOrMirrorTurn } = require('./lib/prompt-kind.js');
 const STATE = path.join(dataDir(), '.runtime', 'ingest-state.json');
 
 const CONSUMER_ID = 'claude-code-boss';
@@ -80,6 +81,31 @@ function textRole(line) {
   return hasText ? m.role : null;
 }
 
+/** Text of a user line (string content or joined text blocks); null for non-user / tool-return lines. */
+function userLineText(line) {
+  if (!line.includes('"role"')) return null;
+  let o;
+  try { o = JSON.parse(line); } catch (err) { void err; return null; }
+  const m = o && o.message;
+  if (!m || m.role !== 'user') return null;
+  const c = m.content;
+  if (typeof c === 'string') return c;
+  if (!Array.isArray(c) || c.some((b) => b && b.type === 'tool_result')) return null;
+  return c.filter((b) => b && b.type === 'text' && typeof b.text === 'string').map((b) => b.text).join('\n');
+}
+
+/** Remove orchestrator/WhatsApp-mirror user turns and the lines that follow them until the next human turn. */
+function dropNonLessonTurns(lines) {
+  const out = [];
+  let skipping = false;
+  for (const l of lines) {
+    const text = userLineText(l.text);
+    if (text != null) skipping = isOrchestratorOrMirrorTurn(text);
+    if (!skipping) out.push(l);
+  }
+  return out;
+}
+
 /**
  * Pick the chunk of `buf` (file bytes starting at absolute offset `base`) to send.
  * Pure: `{ raw, nextOffset }`, or `{ raw: null, reason }` when nothing should go.
@@ -93,12 +119,17 @@ function selectChunk(buf, base, { cutHead = false, maxPayloadBytes = MAX_PAYLOAD
     start = buf.indexOf(0x0a) + 1;
     if (start >= end) return { raw: null, reason: 'no complete line' };
   }
-  const lines = [];
+  let lines = [];
   for (let at = start; at < end;) {
     const nl = buf.indexOf(0x0a, at);
     lines.push({ at, text: buf.toString('utf-8', at, nl) });
     at = nl + 1;
   }
+  // The orchestrator's delegations and WhatsApp mirrors never reach the server's curation:
+  // drop each such user turn and everything up to the next human turn (its replies/tool returns).
+  const total = lines.length;
+  lines = dropNonLessonTurns(lines);
+  if (lines.length === 0 && total > 0) return { raw: null, reason: 'only orchestrator/mirror turns', skipTo: base + end };
   // Newest lines first until the escaped payload would overflow.
   let first = lines.length;
   for (let budget = maxPayloadBytes; first > 0; first--) {
@@ -117,7 +148,8 @@ function selectChunk(buf, base, { cutHead = false, maxPayloadBytes = MAX_PAYLOAD
   });
   if (lastUser < 0 || !anyAssistant) return { raw: null, reason: 'no user+assistant text pair yet' };
   return {
-    raw: buf.toString('utf-8', kept[0].at, end),
+    // Joined from the kept lines (not sliced from kept[0].at): dropped turns may sit between them.
+    raw: `${kept.map((l) => l.text).join('\n')}\n`,
     nextOffset: base + (assistantAfterUser ? end : kept[lastUser].at),
   };
 }
@@ -283,7 +315,14 @@ async function run(event, deps = {}) {
   if (from >= size) return {};
   const windowStart = Math.max(from, size - MAX_PAYLOAD_BYTES);
   const chunk = selectChunk(readRange(transcriptPath, windowStart, size), windowStart, { cutHead: windowStart > from });
-  if (!chunk.raw) return {};
+  if (!chunk.raw) {
+    // Nothing but orchestrator/mirror turns here: move past them so the next Stop does not re-read them.
+    if (chunk.skipTo != null) {
+      state.sessions[sid] = { ...(prev && prev.path === transcriptPath ? prev : {}), path: transcriptPath, offset: chunk.skipTo, at: now };
+      writeState(statePath, state);
+    }
+    return {};
+  }
 
   const notices = [];
   try {
@@ -315,4 +354,4 @@ if (require.main === module) {
   runStopDetectorCli(run, 'conversation-ingest');
 }
 
-module.exports = { run, selectChunk, textRole, curationStalled, backoffMs, MAX_PAYLOAD_BYTES };
+module.exports = { run, selectChunk, dropNonLessonTurns, textRole, curationStalled, backoffMs, MAX_PAYLOAD_BYTES };

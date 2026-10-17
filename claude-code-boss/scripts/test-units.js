@@ -3045,6 +3045,21 @@ test('O1: retrieval-feedback records the citation in the KB scope the entry was 
   assertEq(journal.readEntries(sid).length, 0, 'journal cleared');
 });
 
+test('brain-store.searchByKeywords: text mode finds a lesson by what its title/summary SAY (tags are concept words a prompt never equals); tag mode unchanged; both carry createdAt', async () => {
+  const store = require('../engine/brain-store.js');
+  const scope = `ccb-kwtext/kb-${Date.now()}`;
+  await store.init({ project: scope });
+  if (store.getStorageType() !== 'sqlite') return; // JSON backend has its own text path, exercised by the same ranking helper
+  await store.save({ id: 'kw1', type: 'lesson', title: 'Delegation briefs need a done criterion', summary: 'the orchestrator brief must carry the router goal', content: { text: 'x' }, tags: ['delegation-brief'], confidence: 0.6 });
+  await store.save({ id: 'kw2', type: 'decision', title: 'Unrelated storage choice', summary: 'sqlite over json', content: { text: 'x' }, tags: ['storage'], confidence: 0.9 });
+  const text = await store.searchByKeywords(['delegation', 'router', 'brief'], { project: scope, topK: 5, text: true });
+  assertEq(text.map(h => [h.id, h.matchCount]), [['kw1', 3]]);
+  assert(text[0].createdAt, 'text hits carry createdAt');
+  assertEq(await store.searchByKeywords(['delegation', 'router'], { project: scope, topK: 5 }), [], 'tag mode: no whole-tag match, as before');
+  const tagHit = await store.searchByKeywords(['storage'], { project: scope, topK: 5 });
+  assertEq([tagHit[0].id, !!tagHit[0].createdAt], ['kw2', true]);
+});
+
 test('retrieval-feedback: injectedChars sums what the journalled recalls really injected (old entries without the field count 0)', () => {
   assertEq(rfeedback.injectedChars([{ injectedChars: 1200 }, { injectedChars: 300 }, { returnedIds: ['a'] }]), 1500);
   assertEq(rfeedback.injectedChars([]), 0);
@@ -22414,6 +22429,204 @@ test('U6: brain_retrieve_context does not run a recall over a task-notification'
   } finally {
     rc.retrieve = originalRetrieve;
   }
+});
+
+// ─── Orchestrator request: degraded recall fallback, kinds filter + score/age, orchestrator/mirror turns ──────
+// Local-path retrieve() with the embedder and backend mode faked (no model load), and a fake store.
+// Earlier tests reload modules on purpose, so the top-level `retrieveCore` may be bound to a stale
+// embedder/backend: load a retrieve-core bound to the CURRENT ones (the ones patched here), then put the cache back.
+async function _withLocalRetrieve({ vector, embedThrows }, fn) {
+  const rcPath = require.resolve('../engine/lib/retrieve-core.js');
+  const rcCached = require.cache[rcPath];
+  delete require.cache[rcPath];
+  const rc = require('../engine/lib/retrieve-core.js');
+  const embedder = require('../engine/brain-embedder.js');
+  const backend = require('../engine/brain-backend.js');
+  const saved = { getStatus: embedder.getStatus, init: embedder.init, embed: embedder.embed, peekMode: backend.peekMode };
+  embedder.getStatus = () => ({ ready: true });
+  embedder.init = async () => {};
+  embedder.embed = async () => { if (embedThrows) throw new Error('embedder blew up'); return vector; };
+  backend.peekMode = () => 'local';
+  try { return await fn(rc); } finally {
+    Object.assign(embedder, { getStatus: saved.getStatus, init: saved.init, embed: saved.embed });
+    backend.peekMode = saved.peekMode;
+    if (rcCached) require.cache[rcPath] = rcCached; else delete require.cache[rcPath];
+  }
+}
+function _fakeRetrieveStore({ semantic = [], lexical = [], lexicalThrows = false }) {
+  const calls = { search: 0, keywords: 0, kwOpts: null };
+  return {
+    calls,
+    init: async () => {},
+    search: async () => { calls.search++; return semantic; },
+    searchIsolated: async () => [],
+    searchByKeywords: async (kw, o) => { calls.keywords++; calls.kwOpts = o; if (lexicalThrows) throw new Error('kw down'); return lexical; },
+  };
+}
+const _LEX_PROMPT = 'orchestrator delegation project memory retrieval question';
+const _lexHit = (id, title, type, matchCount, createdAt) => ({ id, title, summary: `${title} body`, type, matchCount, score: matchCount / 6, createdAt });
+
+test('retrieve (local): semantic hit → unchanged shape, no lexical lookup, not degraded', async () => {
+  const store = _fakeRetrieveStore({ semantic: [{ id: 'a', title: 'A', summary: 's', type: 'lesson', score: 0.8, createdAt: '2026-10-01T00:00:00Z' }] });
+  const out = await _withLocalRetrieve({ vector: [1, 0] }, (rc) => rc.retrieve(_LEX_PROMPT, { project: 'p' }, { store }));
+  assertEq(out.entries.map(e => e.id), ['a']);
+  assertEq(out.degraded, undefined);
+  assertEq(store.calls.keywords, 0, 'no fallback when the semantic search answered');
+});
+
+test('retrieve (local): semantic search FAILS → lexical fallback, entries flagged lexical, result marked degraded', async () => {
+  const store = _fakeRetrieveStore({ lexical: [_lexHit('l1', 'Lex one', 'lesson', 4), _lexHit('l2', 'Weak', 'lesson', 1)] });
+  const out = await _withLocalRetrieve({ embedThrows: true }, (rc) => rc.retrieve(_LEX_PROMPT, { project: 'p' }, { store }));
+  assertEq(out.degraded, true);
+  assertEq(out.degradedReason, 'semantic-error');
+  assertEq(out.entries.map(e => [e.id, e.lexical]), [['l1', true]], 'a single shared keyword is not a match');
+  assertEq(store.calls.kwOpts.project, 'p', 'same project scope as the vector search');
+});
+
+test('retrieve (local): semantic EMPTY → lexical fallback marked degraded; both empty → honest no-match, NOT degraded', async () => {
+  const withLex = _fakeRetrieveStore({ semantic: [], lexical: [_lexHit('l1', 'Lex one', 'lesson', 3)] });
+  const a = await _withLocalRetrieve({ vector: [1, 0] }, (rc) => rc.retrieve(_LEX_PROMPT, { project: 'p' }, { store: withLex }));
+  assertEq([a.degraded, a.degradedReason, a.entries.length], [true, 'lexical-fallback', 1]);
+  const none = _fakeRetrieveStore({});
+  const b = await _withLocalRetrieve({ vector: [1, 0] }, (rc) => rc.retrieve(_LEX_PROMPT, { project: 'p' }, { store: none }));
+  assertEq([b.entries.length, b.reason, b.degraded], [0, 'no-match', undefined]);
+});
+
+test('retrieve (local): no embedder → lexical fallback or an explicit degraded empty; a failing search with no lexical hit still throws (handler records it)', async () => {
+  const lex = _fakeRetrieveStore({ lexical: [_lexHit('l1', 'Lex one', 'lesson', 3)] });
+  const a = await _withLocalRetrieve({ vector: null }, (rc) => rc.retrieve(_LEX_PROMPT, { project: 'p' }, { store: lex }));
+  assertEq([a.degraded, a.degradedReason, a.entries.length], [true, 'no-embedder', 1]);
+  const b = await _withLocalRetrieve({ vector: null }, (rc) => rc.retrieve(_LEX_PROMPT, { project: 'p' }, { store: _fakeRetrieveStore({}) }));
+  assertEq([b.entries.length, b.reason, b.degraded, b.degradedReason], [0, 'no-embedder', true, 'no-embedder']);
+  let err = null;
+  try { await _withLocalRetrieve({ embedThrows: true }, (rc) => rc.retrieve(_LEX_PROMPT, { project: 'p' }, { store: _fakeRetrieveStore({ lexicalThrows: true }) })); } catch (e) { err = e; }
+  assert(err && /embedder blew up/.test(err.message), 'the ORIGINAL semantic error surfaces, not a swallowed one');
+});
+
+test('retrieve (local): kinds keeps only those types (over-fetching so other types do not eat topK) in the semantic and the lexical path', async () => {
+  const mixed = [
+    { id: 'l1', title: 'L1', summary: 's', type: 'lesson', score: 0.95 }, { id: 'p1', title: 'P1', summary: 's', type: 'Policy', score: 0.9 },
+    { id: 'd1', title: 'D1', summary: 's', type: 'decision', score: 0.8 }, { id: 'p2', title: 'P2', summary: 's', type: 'policy', score: 0.7 },
+  ];
+  // The configured fastTopK may be 1: the top hit is a lesson, so a surviving policy proves the filter ran before the cap.
+  const out = await _withLocalRetrieve({ vector: [1, 0] }, (rc) => rc.retrieve(_LEX_PROMPT, { project: 'p', kinds: ['policy'] }, { store: _fakeRetrieveStore({ semantic: mixed }) }));
+  assert(out.entries.length >= 1 && out.entries.every(e => e.type.toLowerCase() === 'policy') && out.entries[0].id === 'p1', `only policies, best first: ${JSON.stringify(out.entries.map(e => e.id))}`);
+  const lex = await _withLocalRetrieve({ embedThrows: true }, (rc) => rc.retrieve(_LEX_PROMPT, { project: 'p', kinds: ['decision'] }, { store: _fakeRetrieveStore({ lexical: [_lexHit('l1', 'L', 'lesson', 5), _lexHit('d1', 'D', 'decision', 5)] }) }));
+  assertEq(lex.entries.map(e => e.id), ['d1']);
+  const all = await _withLocalRetrieve({ vector: [1, 0] }, (rc) => rc.retrieve(_LEX_PROMPT, { project: 'p' }, { store: _fakeRetrieveStore({ semantic: mixed }) }));
+  assertEq(all.entries[0].id, 'l1', 'without kinds nothing is filtered (current behavior)');
+});
+
+test('retrieve-core.describeItems: score rounded, age in days from createdAt, null (not invented) when there is none; formatContext marks degraded only when asked', () => {
+  const now = Date.parse('2026-10-17T12:00:00Z');
+  const items = retrieveCore.describeItems([
+    { id: 'a', title: 'A', type: 'lesson', score: 0.78349, createdAt: '2026-10-15T12:00:00Z', summary: 's', lexical: true },
+    { id: 'b', title: 'B', type: 'knowledge', score: 0.5 },
+  ], now);
+  assertEq([items[0].score, items[0].ageDays, items[0].lexical], [0.783, 2, true]);
+  assertEq([items[1].ageDays, items[1].createdAt, items[1].lexical], [null, null, undefined]);
+  assert(!/degraded/.test(retrieveCore.formatContext([{ title: 'T', type: 'lesson', summary: 's' }])), 'default header unchanged');
+  assert(/degraded: matched by keyword/.test(retrieveCore.formatContext([{ title: 'T', type: 'lesson', summary: 's' }], [], { degraded: true })));
+});
+
+test('retrieveRemote: degraded reasons are flagged; kinds filters facts and drops capability pointers', async () => {
+  retrieveCore.__testHooks.resetCircuit();
+  const fake = fakeComposeBackend({
+    onCompose: async () => ({ facts: [{ id: 'f1', title: 'F1', type: 'knowledge', scope: 'projB', summary: 'k', score: 0.9 }], capabilities: [{ name: 'cap', description: 'd' }] }),
+    onSearch: async () => [{ id: 'd2', title: 'A1', type: 'lesson', summary: 'anc', score: 0.7, createdAt: '2026-10-01T00:00:00Z' }],
+  });
+  const ok = await retrieveCore.__testHooks.retrieveRemote('a real prompt here', { project: 'projB', ancestorIds: [], topK: 5, keywords: ['x'], kinds: new Set(['lesson']) }, { backend: fake, recallHealth: { record() {} } });
+  assertEq(ok.entries.map(e => [e.id, e.createdAt]), [['d2', '2026-10-01T00:00:00Z']]);
+  assertEq(ok.capabilities, []);
+  assertEq(ok.degraded, undefined);
+  retrieveCore.__testHooks.resetCircuit();
+  const down = fakeComposeBackend({ onCompose: async () => { throw new Error('boom'); }, onSearch: async () => { throw new Error('boom'); } });
+  const bad = await retrieveCore.__testHooks.retrieveRemote('a real prompt here', { project: 'projB', ancestorIds: [], topK: 5, keywords: ['x'] }, { backend: down, recallHealth: { record() {} } });
+  assertEq([bad.entries.length, bad.degraded, bad.degradedReason], [0, true, 'remote-error']);
+  retrieveCore.__testHooks.resetCircuit();
+});
+
+test('brain_retrieve_context: kinds/details switch the reply to JSON with score + age + degraded; without them the reply is byte-identical to before', async () => {
+  const url = require('url');
+  const R = process.env.CLAUDE_PLUGIN_ROOT;
+  const mod = await import(url.pathToFileURL(path.join(R, 'servers', 'brain-server', 'lib', 'mcp-server.js')).href);
+  const rc = require(path.join(R, 'engine', 'lib', 'retrieve-core.js'));
+  const originalRetrieve = rc.retrieve;
+  let seenOpts = null;
+  const entry = { id: 'e1', title: 'Rule', type: 'policy', summary: 'obey', score: 0.71234, createdAt: new Date(Date.now() - 3 * 86400000).toISOString() };
+  rc.retrieve = async (_p, opts) => { seenOpts = opts; return { entries: [entry], capabilities: [], degraded: true, degradedReason: 'semantic-error' }; };
+  try {
+    const server = mod.createBrainServer({ pluginRoot: R, mode: 'http' });
+    const plain = await server.handleTool('brain_retrieve_context', { prompt: 'does this keep the old reply shape', cwd: R });
+    const plainObj = JSON.parse(plain.content[0].text);
+    assertEq(Object.keys(plainObj), ['hookSpecificOutput'], 'default reply: only the hook payload');
+    assert(/relevant lesson\(s\) \(degraded: matched by keyword/.test(plainObj.hookSpecificOutput.additionalContext), 'the injected text says it is degraded');
+    assertEq(seenOpts.kinds, [], 'no kinds asked → empty filter');
+    const res = await server.handleTool('brain_retrieve_context', { prompt: 'does this return structured items', cwd: R, kinds: ['policy'] });
+    const obj = JSON.parse(res.content[0].text);
+    assertEq(seenOpts.kinds, ['policy']);
+    assertEq([obj.degraded, obj.degradedReason, obj.items.length], [true, 'semantic-error', 1]);
+    assertEq([obj.items[0].id, obj.items[0].type, obj.items[0].score, obj.items[0].ageDays], ['e1', 'policy', 0.712, 3]);
+    assert(obj.hookSpecificOutput && obj.hookSpecificOutput.additionalContext, 'hook payload still present for injection');
+    rc.retrieve = async () => ({ entries: [], capabilities: [], reason: 'no-match' });
+    const empty = await server.handleTool('brain_retrieve_context', { prompt: 'nothing will match here at all', cwd: R, details: true });
+    assertEq(JSON.parse(empty.content[0].text), { items: [], degraded: false, reason: 'no-match' }, 'an empty structured reply is explicit, not a blank string');
+    rc.retrieve = async () => { throw new Error('store exploded'); };
+    const failed = await server.handleTool('brain_retrieve_context', { prompt: 'this one makes the store explode', cwd: R, kinds: ['lesson'] });
+    const f = JSON.parse(failed.content[0].text);
+    assertEq([f.degraded, f.degradedReason, f.error], [true, 'retrieve-error', 'store exploded']);
+    const failedPlain = await server.handleTool('brain_retrieve_context', { prompt: 'this one makes the store explode', cwd: R });
+    assertEq(failedPlain.content[0].text, '', 'without the new params a failure stays the fail-open empty string');
+  } finally {
+    rc.retrieve = originalRetrieve;
+  }
+});
+
+test('prompt-kind.isOrchestratorOrMirrorTurn: orchestrator delegations and WhatsApp channel/mirror envelopes yes; a normal prompt, or the marker deep in the body, no', () => {
+  const pk = require('./lib/prompt-kind.js');
+  const delegation = 'Another Claude session sent a message:\n<cross-session-message from="uds:\\\\.\\pipe\\x" from-name="Jarvis-orquestrador" from-mode="bypass">\nPEDIDO 12 …';
+  assert(pk.isOrchestratorOrMirrorTurn(delegation));
+  assert(pk.isOrchestratorOrMirrorTurn('<cross-session-message from-name="orchestrator-main">x'));
+  assert(pk.isOrchestratorOrMirrorTurn('<channel source="whatsapp-bridge" chat="x">oi</channel>'));
+  assert(pk.isOrchestratorOrMirrorTurn('[mirror] resposta enviada ao WhatsApp'));
+  assert(!pk.isOrchestratorOrMirrorTurn('<cross-session-message from-name="other-worker">peer note'), 'a peer that is not the orchestrator');
+  assert(!pk.isOrchestratorOrMirrorTurn('isso está errado, não era assim'));
+  assert(!pk.isOrchestratorOrMirrorTurn(`${'x'.repeat(700)} <channel source="whatsapp-bridge">`), 'marker past the head is quoted text, not the envelope');
+  assert(!pk.isOrchestratorOrMirrorTurn(''));
+  assert(!pk.isOrchestratorOrMirrorTurn(null));
+});
+
+test('capture-queue.ingest: orchestrator and WhatsApp-mirror turns are never queued as lesson cycles; the user\'s own turns still are', () => {
+  const q = require('./lib/capture-queue.js');
+  const project = 'orq-skip-' + Date.now();
+  const sid = 'orq-skip-s-' + Date.now();
+  const line = (type, promptId, content) => JSON.stringify({ type, promptId, message: { role: type, content } });
+  const f = _tailTmp('orq.jsonl', [
+    line('user', 'p1', 'Another Claude session sent a message:\n<cross-session-message from-name="Jarvis-orquestrador">PEDIDO 1: faça X</cross-session-message>'),
+    line('assistant', 'p1', [{ type: 'text', text: 'feito X' }]),
+    line('user', 'p2', '<channel source="whatsapp-bridge" chat="allan">manda o relatório</channel>'),
+    line('assistant', 'p2', [{ type: 'text', text: 'enviado' }]),
+    line('user', 'p3', 'não era assim, use Read em vez de cat'),
+    line('assistant', 'p3', [{ type: 'text', text: 'entendido' }]),
+  ].join('\n') + '\n');
+  q.reset(project, sid);
+  try {
+    assertEq(q.ingest(project, sid, f, s => s, { turns: 10 }).added, 1);
+    assertEq(q.getState(project, sid).queue.map(c => c.promptId), ['p3']);
+  } finally { q.reset(project, sid); }
+});
+
+test('conversation-ingest.selectChunk: drops orchestrator/mirror turns with their replies; keeps the rest verbatim; an all-skipped window advances the offset', () => {
+  const orq = _ingL.userStr('u1', '<cross-session-message from-name="Jarvis-orquestrador">PEDIDO 9</cross-session-message>');
+  const mix = _ingBuf([orq, _ingL.toolUse('t1'), _ingL.toolResult('r1'), _ingL.asst('a1', 'delegated work'),
+    _ingL.user('u2', 'a real question'), _ingL.asst('a2', 'a real answer')]);
+  const c = convIngest.selectChunk(mix, 10);
+  assertEq(c.raw, _ingBuf([_ingL.user('u2', 'a real question'), _ingL.asst('a2', 'a real answer')]).toString('utf-8'));
+  assertEq(c.nextOffset, 10 + mix.length);
+  const only = _ingBuf([orq, _ingL.asst('a1', 'delegated work')]);
+  const o = convIngest.selectChunk(only, 5);
+  assertEq([o.raw, o.skipTo], [null, 5 + only.length]);
+  assertEq(convIngest.dropNonLessonTurns([{ text: _ingL.sys() }]).length, 1, 'non-message lines before any turn are kept');
 });
 
 test('capture_lesson: getKB() routes index/graph through kbWorker.indexClient/graphClient when kbWorker is present (not a direct require of brain-index.js/brain-graph.js)', async () => {

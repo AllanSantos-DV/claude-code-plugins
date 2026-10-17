@@ -778,7 +778,7 @@ export function createBrainServer({ pluginRoot, mode = 'http', kbWorker, kbLock,
     {
       name: 'brain_retrieve_context',
       description: 'Internal — adaptive KB retrieval for the UserPromptSubmit hook (runs with the embedder warm in this server). Embeds the prompt, vector-searches the project KB behind a relevance gate, and returns a short formatted context block (or empty). Prefer brain_search for explicit lookups.',
-      inputSchema: { type: 'object', properties: { prompt: { type: 'string', description: 'The user prompt text' }, cwd: { type: 'string', description: 'Working directory (project = its strict project id; no id → empty result, memory is off there); also the base for F2 ancestor-spine chain resolution' }, sessionRoot: { type: 'string', description: 'Session root dir (CLAUDE_PROJECT_DIR) — the F2 chain-walk CEILING; recall unions project_ids from cwd up to here. Optional; falls back to git toplevel/cap.' }, session_id: { type: 'string', description: 'Session id (for the retrieval journal)' } }, required: ['prompt'] },
+      inputSchema: { type: 'object', properties: { prompt: { type: 'string', description: 'The user prompt text' }, cwd: { type: 'string', description: 'Working directory (project = its strict project id; no id → empty result, memory is off there); also the base for F2 ancestor-spine chain resolution' }, sessionRoot: { type: 'string', description: 'Session root dir (CLAUDE_PROJECT_DIR) — the F2 chain-walk CEILING; recall unions project_ids from cwd up to here. Optional; falls back to git toplevel/cap.' }, session_id: { type: 'string', description: 'Session id (for the retrieval journal)' }, kinds: { type: 'array', items: { type: 'string' }, description: 'Optional filter by memory type (e.g. ["lesson","policy","intent-trace"]): only entries of these types come back. Giving it switches the reply to JSON: {items:[{id,title,type,score,ageDays,createdAt,summary,lexical?}], degraded, degradedReason?, reason?} (plus hookSpecificOutput when there is text to inject).' }, details: { type: 'boolean', description: 'true = the same structured JSON reply (items with score and age, degraded flag) without a kinds filter.' } }, required: ['prompt'] },
     },
     {
       name: 'curation_mark_oneoff',
@@ -1138,9 +1138,14 @@ export function createBrainServer({ pluginRoot, mode = 'http', kbWorker, kbLock,
         };
         try {
           const { prompt, session_id } = args || {};
+          // `kinds` / `details` switch the reply to structured JSON (items with score + age, degraded flag)
+          // for callers that do their own ranking; without them the reply is the hook payload, unchanged.
+          const kinds = Array.isArray(args && args.kinds) ? args.kinds.map((k) => String(k || '').trim()).filter(Boolean) : [];
+          const structured = kinds.length > 0 || (args && args.details === true);
+          const emptyReply = (extra) => ({ content: [{ type: 'text', text: structured ? JSON.stringify({ items: [], degraded: false, ...extra }) : '' }] });
           // A background agent's result (<task-notification>) is not a user prompt:
           // recall over the agent's report only injected unrelated lessons.
-          if (require(path.join(PLUGIN_ROOT, 'scripts', 'lib', 'prompt-kind.js')).isSyntheticPrompt(prompt)) return { content: [{ type: 'text', text: '' }] };
+          if (require(path.join(PLUGIN_ROOT, 'scripts', 'lib', 'prompt-kind.js')).isSyntheticPrompt(prompt)) return emptyReply({ reason: 'synthetic-prompt' });
           // F2 — resolve the ancestor-spine against the REAL user cwd (the daemon lives
           // elsewhere, but resolveProjectChain's git/fs probes are {cwd:args.cwd}-scoped).
           // Non-throwing by contract → safe inside the outer fail-open try/catch. focusId
@@ -1149,20 +1154,21 @@ export function createBrainServer({ pluginRoot, mode = 'http', kbWorker, kbLock,
           // 2.29.1 strict gate: a cwd WITHOUT project id gets NO recall — memory is off
           // there (the SessionStart/Stop notices ask for the id). Explicit: an explicit
           // `project` no longer re-scopes the recall of an id-less folder.
-          if (args && args.cwd && !focusId) return { content: [{ type: 'text', text: '' }] };
+          if (args && args.cwd && !focusId) return emptyReply({ reason: 'no-project-id' });
           const project = resolveProject(args);
           const retrieveCore = require(path.join(PLUGIN_ROOT, 'engine', 'lib', 'retrieve-core.js'));
           // Same rationale as getKB()/recordLessonMetric() above: the LOCAL (non
           // mcp-memory) search path inside retrieve() runs synchronous better-sqlite3
           // work — route it through kbWorker in 'http' mode so brain_retrieve_context
           // (fires on every UserPromptSubmit) can't block /health for other sessions.
-          const { entries, capabilities } = await retrieveCore.retrieve(prompt || '', { project: focusId || project, ancestorIds: chain }, kbWorker ? { store: kbWorker.clientsFor(focusId || project).storeClient } : {});
+          const { entries, capabilities, degraded, degradedReason, reason } = await retrieveCore.retrieve(prompt || '', { project: focusId || project, ancestorIds: chain, kinds }, kbWorker ? { store: kbWorker.clientsFor(focusId || project).storeClient } : {});
           // mcp_tool hooks on UserPromptSubmit only inject when the tool returns a
           // JSON output with hookSpecificOutput.additionalContext; empty → no inject.
           // The journal measures the REAL retrieval (full entries); injection
-          // respects the config-driven exclude filter (e.g. drop lessons).
-          const injectable = retrieveCore.filterInjectableEntries(entries);
-          const text = retrieveCore.formatContext(injectable, capabilities);
+          // respects the config-driven exclude filter (e.g. drop lessons) — except for an
+          // explicit `kinds` ask: the caller named the types it wants.
+          const injectable = kinds.length ? entries : retrieveCore.filterInjectableEntries(entries);
+          const text = retrieveCore.formatContext(injectable, capabilities, { degraded: !!degraded });
           if (entries.length) {
             try {
               const journal = require(path.join(PLUGIN_ROOT, 'scripts', 'lib', 'retrieval-journal.js'));
@@ -1172,8 +1178,11 @@ export function createBrainServer({ pluginRoot, mode = 'http', kbWorker, kbLock,
               journal.appendEntry(sid, { retrievalId: journal.newRetrievalId(), ts: Date.now(), sid, tool: 'UserPromptSubmit', project, returnedIds: entries.map(e => e.id), returnedTitles: entries.map(e => e.title), injectedIds: injectable.map(e => e.id), injectedChars: text ? text.length : 0, injectedOrigins: origins.counts, originById: origins.byId });
             } catch (err) { console.error(`[brain_retrieve_context] journal: ${err.message}`); }
           }
-          const payload = text ? JSON.stringify({ hookSpecificOutput: { hookEventName: 'UserPromptSubmit', additionalContext: text } }) : '';
-          timed('ok');
+          const hookOutput = text ? { hookSpecificOutput: { hookEventName: 'UserPromptSubmit', additionalContext: text } } : null;
+          const payload = structured
+            ? JSON.stringify({ ...(hookOutput || {}), items: retrieveCore.describeItems(injectable), degraded: !!degraded, ...(degradedReason ? { degradedReason } : {}), ...(reason ? { reason } : {}) })
+            : (hookOutput ? JSON.stringify(hookOutput) : '');
+          timed(degraded ? 'degraded' : 'ok');
           return { content: [{ type: 'text', text: payload }] };
         } catch (err) {
           timed('degraded');
@@ -1182,7 +1191,10 @@ export function createBrainServer({ pluginRoot, mode = 'http', kbWorker, kbLock,
           // and the dashboard (the daemon's stderr is kept nowhere).
           try { require(path.join(PLUGIN_ROOT, 'engine', 'lib', 'recall-health.js')).record('retrieve-error', err.message); }
           catch (e) { console.error(`[brain_retrieve_context] recall-health: ${e.message}`); }
-          return { content: [{ type: 'text', text: '' }] }; // fail-open: never break the prompt
+          // fail-open: never break the prompt. A structured caller gets the failure spelled out, not an empty string.
+          const sa = args || {};
+          const asked = (Array.isArray(sa.kinds) && sa.kinds.length > 0) || sa.details === true;
+          return { content: [{ type: 'text', text: asked ? JSON.stringify({ items: [], degraded: true, degradedReason: 'retrieve-error', error: err.message }) : '' }] };
         }
       }
 
