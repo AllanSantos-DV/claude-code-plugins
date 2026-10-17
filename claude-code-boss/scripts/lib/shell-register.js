@@ -37,6 +37,23 @@ const { isGenericAlias, canonicalSig } = require('../../engine/lib/command-signa
  * @param {string} alias
  * @returns {{token:string, prefix:string}|null}
  */
+/**
+ * A path under a temp root is a one-run value when the file sits directly in it (`/tmp/out.log`,
+ * `...\Temp\run.mjs`) or in a randomly named dir (`mktemp -d`: `tmp.Ab12Cd`, `run-1792193853`).
+ * A script in a NAMED subdirectory (`C:\tmp\diag-scripts\probe.ps1`) is a stable address: the same
+ * command runs again, so its alias can match. Pure.
+ * @param {string} token
+ * @returns {boolean}
+ */
+function tempPathIsVolatile(token) {
+  const parts = String(token).replace(/^['"]|['"]$/g, '').split(/[\\/]+/).filter(Boolean);
+  const root = parts.findIndex((p) => /^(tmp|temp)$/i.test(p));
+  if (root < 0) return true; // matched by the Local\Temp pattern without a bare tmp/temp segment
+  const dirs = parts.slice(root + 1, -1);
+  if (dirs.length === 0) return true;
+  return dirs.some((d) => /\d{4,}|[0-9a-f]{8,}|^tmp\./i.test(d));
+}
+
 function volatileLiteral(alias) {
   let toks;
   try { toks = canonicalSig(alias).split(' ').filter(Boolean); } catch (err) { void err; return null; }
@@ -46,7 +63,7 @@ function volatileLiteral(alias) {
       || (/^[0-9a-f]{7,40}$/i.test(t) && /\d/.test(t) && /[a-f]/i.test(t))
       || /^\d+(,\d+)?p$/.test(t)
       || /[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-/i.test(t)
-      || /(^|[\\/])(tmp|temp)[\\/]|appdata[\\/]local[\\/]temp/i.test(t);
+      || (/(^|[\\/])(tmp|temp)[\\/]|appdata[\\/]local[\\/]temp/i.test(t) && tempPathIsVolatile(t));
     if (volatile) return { token: t, prefix: toks.slice(0, i).join(' ') };
   }
   return null;

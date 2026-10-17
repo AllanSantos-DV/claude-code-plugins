@@ -38,6 +38,9 @@ Check-up do motor (2026-10-15). Cada item tem teste; os números são do dado re
   Roda também na suíte, contra o Claude Code da máquina.
 
 ### Fixed
+- **Curadoria de comando com `timeout N` ou de script numa pasta temporária nomeada ficava sem saída.** `timeout [opções] N` passa a ser tratado como
+  wrapper na assinatura do comando (o limite não faz parte do que roda), e um script dentro de uma pasta com nome (`C:\tmp\diag\x.ps1`) deixa de ser
+  recusado como "valor de uso único" — só o arquivo direto na raiz do temp ou numa pasta de nome aleatório continua sendo.
 - **"Atualizar agora" do dashboard seguido de `/reload-plugins` carregava uma cópia antiga.** No reload o Claude Code lê a pasta do cache com o nome
   da versão; o atualizador gravava a pasta com o nome do commit, e o Claude Code criava a da versão a partir do marketplace, que pode estar numa
   release anterior. Agora a pasta tem o nome da versão; se ela já existir, o painel pede para reabrir as sessões em vez do `/reload-plugins`.

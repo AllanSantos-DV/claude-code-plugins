@@ -7050,6 +7050,12 @@ test('command-signature: strips leading env assignment', () => {
 test('command-signature: strips wrapper (env/sudo)', () => {
   assertEq(cmdSig.canonicalSig('env FOO=bar sudo npm ci'), 'npm ci');
 });
+test('command-signature: `timeout [flags] DURATION` is a wrapper — the limit is not part of what runs', () => {
+  assertEq(cmdSig.canonicalSig("timeout 100 powershell -NoProfile -ExecutionPolicy Bypass -File 'C:\\tmp\\d\\uia.ps1' -List"), cmdSig.canonicalSig("powershell -NoProfile -ExecutionPolicy Bypass -File 'C:\\tmp\\d\\uia.ps1' -List"));
+  assertEq(cmdSig.canonicalSig('timeout -k 5 30s npm test'), 'npm test');
+  assertEq(cmdSig.canonicalSig('timeout --preserve-status 10 npm ci'), 'npm ci');
+  assertEq(cmdSig.canonicalSig('timeoutx 10 npm ci'), 'timeoutx 10 npm ci');
+});
 test('command-signature: pipe is NOT a separator', () => {
   assertEq(cmdSig.canonicalSig('git log | head'), 'git log');
 });
@@ -8156,6 +8162,9 @@ test('shell-register: an alias with a one-off value (PR number, hash, sed range,
   assert(r.isError && /one-off value \(`38`\)/.test(JSON.stringify(r)) && /stable prefix \(\\"gh pr view\\"\)/.test(JSON.stringify(r)) && /passthrough/.test(JSON.stringify(r)), JSON.stringify(r));
   const { volatileLiteral } = shellRegister;
   for (const a of ['git show 1a2b3c4d', 'sed -n 1452,1620p big.txt', 'node C:/Users/x/AppData/Local/Temp/run.mjs', 'cat /tmp/out.log', 'jq . 9531d7eb-58bf-46ce-a0fb-685443771999.jsonl']) assert(volatileLiteral(a), `volatile: ${a}`);
+  // A script in a NAMED dir under a temp root is a stable address (the same command runs again); a random dir is not.
+  for (const a of ["powershell -ExecutionPolicy Bypass -File 'C:\\tmp\\diag-scripts\\uia.ps1'", 'node /tmp/tools/probe.mjs']) assertEq(volatileLiteral(a), null, `stable temp script: ${a}`);
+  for (const a of ['node /tmp/tmp.Ab12Cd/x.js', 'node /tmp/run-1792193853/x.js']) assert(volatileLiteral(a), `random temp dir: ${a}`);
   for (const a of ['gh pr view', 'git log --oneline -20', 'mvn test -Dtest=Foo', 'node scripts/test-units.js 2>&1 | tail -40', 'npm run build', 'python -m rf_engine.mcp_server', 'git diff HEAD --']) assertEq(volatileLiteral(a), null, `stable: ${a}`);
 });
 

@@ -35,7 +35,11 @@ Pesquisa: `docs/research/mods-desktop-2026-10-16.md` (local). Feito em `develop`
   (`$.command.register` no `session.start`) aparentemente não entra nessa lista. Investigar se é limite do Desktop 2.42304 (reportar) ou se há outro jeito de declarar o comando.
 - [ ] **Fora de escopo — pastas `3.9.0-dev.<sha>` com o código do marketplace ficaram no cache** (`~/.claude/plugins/cache/allansantos-plugins/claude-code-boss/`,
   criadas pelos reloads antes da correção). Não são apagadas porque um processo pode estar rodando delas (`.in_use`). Limpar quando nenhuma sessão as usar.
-- [ ] **Fora de escopo — curadoria sem saída para um script `.ps1` rodado por caminho** (2026-10-16): a assinatura `timeout 100 powershell Bypass 'C:\tmp\...\uia.ps1'`
+- [x] **RESOLVIDO em 2026-10-17 — curadoria sem saída para um script `.ps1` rodado por caminho.** Duas causas: `timeout N` não era wrapper na assinatura
+  (`engine/lib/command-signature.js` `WRAPPER_PREFIX`), então o `100` entrava no alias e era recusado como valor único; e o caminho de um script numa pasta
+  NOMEADA sob um temp (`C:\tmp\diag-scripts\x.ps1`) era tratado como arquivo temporário (`scripts/lib/shell-register.js` `tempPathIsVolatile`: agora só é volátil
+  o arquivo direto na raiz do temp ou numa pasta de nome aleatório). Testes: `command-signature: timeout ... is a wrapper` e a ampliação de `volatileLiteral`.
+  Registro original: a assinatura `timeout 100 powershell Bypass 'C:\tmp\...\uia.ps1'`
   chegou a 4/3. `curation_mark_oneoff` recusa por passar do teto, e `curation_register_shell` recusa o alias por ter "valor de uso único" (o `100` do timeout,
   depois o caminho do script). A ferramenta sugere o prefixo `powershell Bypass` como passthrough, mas isso redirecionaria todo `powershell -ExecutionPolicy Bypass`
   do projeto. Proposta: aceitar como alias estável o caminho de um script (`-File <caminho>`), não tratá-lo como valor de uso único, e deixar o `timeout N` fora da assinatura.
