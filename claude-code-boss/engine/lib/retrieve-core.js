@@ -272,6 +272,11 @@ async function retrieveRemote(prompt, { project, ancestorIds, topK, keywords, ki
       );
     };
     const skipped = (reason) => Promise.reject(Object.assign(new Error(`${reason} (breaker open: recent calls failed)`), { reason }));
+    // mcp-memory search hits carry no type, so a `kinds` filter is pushed to the server (one query per
+    // kind, scalar equality) and each hit is tagged with the kind it matched.
+    const armSearch = (q, o) => (!kinds
+      ? backendRef.search(q, o)
+      : Promise.all([...kinds].map(async (k) => (await backendRef.search(q, { ...o, type: k })).map((h) => ({ ...h, type: k })))).then((r) => r.flat()));
     const runCompose = hasCompose && breakers.compose.allow();
     const runArm = !!backendRef.search && breakers.project.allow();
     const [composeRes, armRes] = await Promise.allSettled([
@@ -283,7 +288,7 @@ async function retrieveRemote(prompt, { project, ancestorIds, topK, keywords, ki
       !backendRef.search
         ? Promise.resolve([])
         : runArm
-          ? timed('project', withDeadline((signal) => backendRef.search(query, { projectIds: armIds, includeHome: false, topK: (topK + 4) * (kinds ? 4 : 1), signal }), ANCESTOR_TIMEOUT_MS || cc.timeoutMs, 'project arm'))
+          ? timed('project', withDeadline((signal) => armSearch(query, { projectIds: armIds, includeHome: false, topK: topK + 4, signal }), ANCESTOR_TIMEOUT_MS || cc.timeoutMs, 'project arm'))
           : skipped('project-arm-skipped'),
     ]);
     if (runCompose) breakers.compose.result(composeRes.status === 'fulfilled');
