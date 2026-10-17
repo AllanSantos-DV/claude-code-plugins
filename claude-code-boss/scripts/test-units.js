@@ -20841,6 +20841,21 @@ test('G10: readLastTurns reads the tail of a big session, not the whole file', (
   assert(bytes < size / 4, `read ${bytes} of ${size} bytes`);
 });
 
+test('transcript-block: a skill-expansion envelope (isMeta, sourceToolUseID — the real shape) never joins a cycle, neither as its own turn nor appended to the typed prompt', () => {
+  const tb = require('./lib/transcript-block.js');
+  const expansion = (promptId) => JSON.stringify({ type: 'user', isMeta: true, sourceToolUseID: 'toolu_x', promptId, message: { role: 'user', content: [{ type: 'text', text: 'Base directory for this skill: C:\\Users\\x\\.claude\\skills\\pedido-voz\n\n# PEDIDO N (voice)' }] } });
+  const lines = [
+    JSON.stringify({ type: 'user', promptId: 'p1', message: { role: 'user', content: 'use Read, not cat' } }),
+    JSON.stringify({ type: 'assistant', message: { role: 'assistant', content: [{ type: 'text', text: 'ok' }] } }),
+    expansion('p1'),
+    expansion('p2'), // the busy orchestrator window: the expansion is the first user line of its prompt
+    JSON.stringify({ type: 'assistant', message: { role: 'assistant', content: [{ type: 'text', text: 'done' }] } }),
+  ];
+  const cycles = tb.extractCycles(lines);
+  assertEq(cycles.map(c => c.user), ['use Read, not cat']);
+  assert(!tb.isHumanTurn(JSON.parse(expansion('p3'))), 'not a human turn');
+});
+
 test('G10: capture-queue.ingest queues only the last N turns of a long session; a re-read is idempotent; a grown turn is refreshed, not duplicated', () => {
   const q = require('./lib/capture-queue.js');
   const project = 'g10-' + Date.now();
