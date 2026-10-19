@@ -204,12 +204,36 @@ function noTrackedIgnored() {
   };
 }
 
+// ── Check 6: the Claude Code copy of each project agent matches the Copilot one ──
+// Claude Code reads project agents only from .claude/agents/; Copilot from .github/agents/*.agent.md. A user-level agent
+// of the same name (a different vitrine in ~/.claude/agents, with Copilot-style tool names) shadows a missing project
+// one and then fails to spawn ("zero tools"). The two copies are byte-identical; this keeps them so.
+function claudeAgentsSynced() {
+  const src = path.join(REPO_ROOT, '.github', 'agents');
+  const dst = path.join(REPO_ROOT, '.claude', 'agents');
+  let names;
+  try { names = fs.readdirSync(src).filter((f) => f.endsWith('.agent.md')); }
+  catch (err) { return { ok: false, details: [`cannot read .github/agents: ${err.message}`] }; }
+  const problems = [];
+  for (const f of names) {
+    const copy = path.join(dst, f.replace(/\.agent\.md$/, '.md'));
+    let a, b;
+    try { a = fs.readFileSync(path.join(src, f), 'utf8'); } catch (err) { problems.push(`${f}: cannot read (${err.message})`); continue; }
+    try { b = fs.readFileSync(copy, 'utf8'); } catch (err) { problems.push(`${f}: no copy at .claude/agents/${path.basename(copy)} (${err.code || err.message})`); continue; }
+    if (a.replace(/\r\n/g, '\n') !== b.replace(/\r\n/g, '\n')) problems.push(`${f}: .claude/agents/${path.basename(copy)} differs — copy it again`);
+  }
+  return problems.length
+    ? { ok: false, details: problems.map((p) => `    ${p}`) }
+    : { ok: true, details: [`${names.length} agent(s) identical in .github/agents and .claude/agents`] };
+}
+
 const CHECKS = [
   { name: 'hooks-doc-drift', run: hooksDocumented },
   { name: 'changelog-current', run: changelogCurrent },
   { name: 'no-conflict-marks', run: noConflictMarkers },
   { name: 'index-version-current', run: indexVersionCurrent },
   { name: 'no-tracked-ignored', run: noTrackedIgnored },
+  { name: 'claude-agents-synced', run: claudeAgentsSynced },
 ];
 
 function runAll() {
