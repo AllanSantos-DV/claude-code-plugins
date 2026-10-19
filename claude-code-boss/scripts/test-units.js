@@ -24741,6 +24741,11 @@ function makeFakeDaemon({ pluginRoot, port, pid = process.pid, dataDir, onHealth
     server.once('error', reject);
     server.listen(port, '127.0.0.1', () => {
       server.off('error', reject);
+      // A real daemon writes its lock on boot; the supervisor's swap asks for it as proof of identity.
+      if (dataDir && typeof pid !== 'function') {
+        fs.mkdirSync(dataDir, { recursive: true });
+        fs.writeFileSync(path.join(dataDir, 'brain-http.lock.json'), JSON.stringify({ pid, port, pluginRoot, dataDir }));
+      }
       resolve();
     });
   });
@@ -29915,6 +29920,68 @@ test('lesson-promote: a secret rejects the lesson and is recorded; a failed regi
     assertEq(registry.takeNotice(dataDir), `[BRAIN] 1 lição(ões) promovida(s) ao escopo do usuário — desfazer: node scripts/lesson-promote.js undo ${id}`);
     assertEq(registry.takeNotice(dataDir), null, 'the notice is shown once');
   } finally { fs.rmSync(dataDir, { recursive: true, force: true }); }
+});
+
+test('promotion-registry: three processes writing at once lose no promotion (the registry read-modify-write is locked)', async () => {
+  const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-reg-lock-'));
+  const regPath = path.join(__dirname, 'lib', 'promotion-registry.js');
+  const child = (tag) => new Promise((resolve) => {
+    const code = `const r=require(${JSON.stringify(regPath)});for(let i=0;i<15;i++)r.addPromotion(${JSON.stringify(dataDir)},{id:${JSON.stringify(tag)}+i,status:'active'});`;
+    const c = require('child_process').spawn(process.execPath, ['-e', code], { windowsHide: true, stdio: ['ignore', 'ignore', 'pipe'] });
+    let err = '';
+    c.stderr.on('data', (d) => { err += d; });
+    c.on('close', (status) => resolve({ status, err }));
+  });
+  const res = await Promise.all(['a', 'b', 'c'].map(child));
+  for (const r of res) assertEq(r.status, 0, `writer failed: ${r.err}`);
+  const ids = require('./lib/promotion-registry.js').load(dataDir).promotions.map((p) => p.id);
+  assertEq(ids.length, 45, `lost ${45 - ids.length} promotion(s) to a concurrent write`);
+  assertEq(new Set(ids).size, 45);
+  assert(!fs.existsSync(path.join(dataDir, 'promotions', 'registry.lock')), 'lock released');
+  fs.rmSync(dataDir, { recursive: true, force: true });
+});
+
+test('promotion-registry: a lock held by a live process fails loud instead of writing over it; a dead owner\'s lock is reclaimed', () => {
+  const registry = require('./lib/promotion-registry.js');
+  const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-reg-lock2-'));
+  const lockPath = path.join(dataDir, 'promotions', 'registry.lock');
+  fs.mkdirSync(path.dirname(lockPath), { recursive: true });
+  const dead = require('child_process').spawnSync(process.execPath, ['-e', '0']).pid;
+  fs.writeFileSync(lockPath, JSON.stringify({ pid: dead, token: 'x', createdAt: 0 }));
+  registry.addPromotion(dataDir, { id: 'p1', status: 'active' });
+  assertEq(registry.load(dataDir).promotions.length, 1, 'dead owner reclaimed');
+  fs.writeFileSync(lockPath, JSON.stringify({ pid: process.pid, token: 'live', createdAt: Date.now() }));
+  let msg = '';
+  const realNow = Date.now; let t = realNow();
+  Date.now = () => (t += 4000);
+  try { registry.addPromotion(dataDir, { id: 'p2', status: 'active' }); } catch (err) { msg = err.message; } finally { Date.now = realNow; }
+  assert(/held by another process/.test(msg), `must fail loud, got: ${msg}`);
+  assertEq(registry.load(dataDir).promotions.length, 1, 'nothing written over a live lock');
+  fs.rmSync(dataDir, { recursive: true, force: true });
+});
+
+test('daemon supervisor swap: a /health claim without the daemon\'s own lock gets neither the token nor a signal', async () => {
+  const { ensureDaemon } = await import(SUPERVISOR_URL);
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-impostor-'));
+  const dataDir = path.join(tmp, 'data');
+  fs.mkdirSync(dataDir, { recursive: true });
+  const oldRoot = path.join(tmp, 'install-A');
+  const p = await waitFreePort();
+  let shutdownCalls = 0;
+  const fake = makeFakeDaemon({ pluginRoot: oldRoot, port: p, dataDir, onShutdown: () => { shutdownCalls++; } });
+  await fake.ready;
+  // The impostor answers a plausible /health, but no daemon booted here: its lock names another pid.
+  fs.writeFileSync(path.join(dataDir, 'brain-http.lock.json'), JSON.stringify({ pid: process.pid + 1, port: p, pluginRoot: oldRoot, dataDir }));
+  const res = await ensureDaemon({ pluginRoot: path.join(tmp, 'install-B'), dataDir, env: { BRAIN_HTTP_PORT: String(p), HOME: tmp, USERPROFILE: tmp } });
+  assertEq(res.status, 'error', `must refuse, got ${res.status}`);
+  assert(/refusing to send it the token/.test(res.error), res.error);
+  assertEq(shutdownCalls, 0, 'no /shutdown (and its bearer token) sent to the impostor');
+  fs.rmSync(path.join(dataDir, 'brain-http.lock.json'));
+  const res2 = await ensureDaemon({ pluginRoot: path.join(tmp, 'install-B'), dataDir, env: { BRAIN_HTTP_PORT: String(p), HOME: tmp, USERPROFILE: tmp } });
+  assertEq(res2.status, 'error', 'no lock at all is refused too');
+  assertEq(shutdownCalls, 0);
+  fake.server.close();
+  fs.rmSync(tmp, { recursive: true, force: true });
 });
 
 test('promotion-registry: the weekly stamp, the notice leaves out reverted promotions, a corrupt registry fails loud', () => {

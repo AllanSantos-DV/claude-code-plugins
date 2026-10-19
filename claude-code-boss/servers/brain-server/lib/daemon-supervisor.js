@@ -380,6 +380,16 @@ function releaseSpawnLock(dataDir) {
 async function swapDaemon({ port, health, dataDir, env = process.env, waitMs = 5000 }) {
   const currentBefore = await probePort(port, 300);
   if (currentBefore.kind !== 'daemon' || !sameIdentity(currentBefore.health, health)) return;
+  // /health is open: anything on the port can claim a pid and a dataDir. Shutdown carries the
+  // bearer token and the fallback signals the claimed pid, so both wait for the daemon's own
+  // proof — the lock file only a daemon that booted on this dataDir writes, naming the same pid.
+  const lock = dataDir ? readLock(dataDir) : null;
+  if (!lock || !lockMatchesHealth(lock, health) || lock.pid == null) {
+    throw new Error(
+      `the process on port ${port} claims to be the brain daemon (pid ${health.pid}) but ${lock ? 'its claim does not match' : 'there is no'} lock file of dataDir ${JSON.stringify(dataDir)} — ` +
+      'refusing to send it the token or signal it. If it really is a stale daemon, stop that process yourself and retry.',
+    );
+  }
   await postShutdown(port, dataDir, env);
   if (!(await waitGone(port, waitMs))) {
     const current = await probePort(port, 300);
