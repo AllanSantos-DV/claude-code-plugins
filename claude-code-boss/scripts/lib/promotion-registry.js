@@ -10,6 +10,7 @@
 const fs = require('fs');
 const path = require('path');
 const { writeJsonAtomic } = require('../../engine/lib/atomic-write.js');
+const { acquireFileLock, releaseFileLock } = require('../../engine/lib/process-lock.js');
 
 const dirOf = (dataDir) => path.join(dataDir, 'promotions');
 const registryPath = (dataDir) => path.join(dirOf(dataDir), 'registry.json');
@@ -25,6 +26,27 @@ function readJson(file, fallback) {
   try { return JSON.parse(raw); } catch (err) { throw new Error(`${file} is not valid JSON (${err.message}) — fix or remove it; promotion will not guess over it`); }
 }
 
+const LOCK_WAIT_MS = 10000;
+const sleepSync = (ms) => Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
+
+/**
+ * Run a read-modify-write of the registry (or the notice) under the one lock all its writers share: two processes —
+ * the weekly background run and a manual `undo` — would otherwise each load the same file and the second save would
+ * drop the first's change. A dead owner's lock is reclaimed; a live one is waited for, then it fails loud.
+ */
+function withLock(dataDir, fn) {
+  fs.mkdirSync(dirOf(dataDir), { recursive: true });
+  const lockPath = path.join(dirOf(dataDir), 'registry.lock');
+  const deadline = Date.now() + LOCK_WAIT_MS;
+  let got = acquireFileLock(lockPath);
+  while (!got.acquired) {
+    if (Date.now() >= deadline) throw new Error(`${lockPath} held by another process for ${LOCK_WAIT_MS}ms (${got.reason}) — promotion registry not written`);
+    sleepSync(25);
+    got = acquireFileLock(lockPath);
+  }
+  try { return fn(); } finally { releaseFileLock(lockPath, got.owner); }
+}
+
 function load(dataDir) {
   const r = readJson(registryPath(dataDir), null);
   if (!r) return { version: 1, promotions: [], rejected: [] };
@@ -38,26 +60,32 @@ function save(dataDir, registry) {
 
 /** Append one promotion (read-modify-write, atomic file). */
 function addPromotion(dataDir, promotion) {
-  const r = load(dataDir);
-  r.promotions.push(promotion);
-  save(dataDir, r);
+  withLock(dataDir, () => {
+    const r = load(dataDir);
+    r.promotions.push(promotion);
+    save(dataDir, r);
+  });
 }
 
 function addRejection(dataDir, rejection) {
-  const r = load(dataDir);
-  if (!r.rejected.some((x) => x.entryId === rejection.entryId)) r.rejected.push(rejection);
-  save(dataDir, r);
+  withLock(dataDir, () => {
+    const r = load(dataDir);
+    if (!r.rejected.some((x) => x.entryId === rejection.entryId)) r.rejected.push(rejection);
+    save(dataDir, r);
+  });
 }
 
 /** Mark a promotion reverted. @returns {object|null} the updated promotion, null when the id is unknown */
 function markReverted(dataDir, id, ts) {
-  const r = load(dataDir);
-  const p = r.promotions.find((x) => x.id === id);
-  if (!p) return null;
-  p.status = 'reverted';
-  p.revertedAt = ts;
-  save(dataDir, r);
-  return p;
+  return withLock(dataDir, () => {
+    const r = load(dataDir);
+    const p = r.promotions.find((x) => x.id === id);
+    if (!p) return null;
+    p.status = 'reverted';
+    p.revertedAt = ts;
+    save(dataDir, r);
+    return p;
+  });
 }
 
 // ── weekly stamp (global, not per project: the promotion reads every project) ──
@@ -77,9 +105,10 @@ function unmarkPromotionRun(dataDir) {
 
 // ── SessionStart notice ──
 function writeNotice(dataDir, ids) {
-  fs.mkdirSync(dirOf(dataDir), { recursive: true });
-  const prev = (() => { try { return readJson(noticePath(dataDir), { ids: [] }).ids; } catch (err) { console.error(`[lesson-promote] notice: ${err.message}`); return []; } })();
-  writeJsonAtomic(noticePath(dataDir), { ts: Date.now(), ids: [...new Set([...prev, ...ids])] });
+  withLock(dataDir, () => {
+    const prev = (() => { try { return readJson(noticePath(dataDir), { ids: [] }).ids; } catch (err) { console.error(`[lesson-promote] notice: ${err.message}`); return []; } })();
+    writeJsonAtomic(noticePath(dataDir), { ts: Date.now(), ids: [...new Set([...prev, ...ids])] });
+  });
 }
 
 /**
