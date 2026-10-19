@@ -416,3 +416,53 @@ export function buildBrief(messages, options = {}) {
 export function estimateTokens(messages) {
   return Math.round(JSON.stringify(messages || []).length / 4);
 }
+
+// ── Phase restart (opt-in): one notice to start a new session with a minimal handoff ──────────────────────────────
+// Measured (docs/research/fases-handoff): with a warm cache, re-reading a delivered task's context every turn costs
+// more than a handoff + a fresh session after ~3–9 turns at 400k. Off by default; turning it on runs a read-only
+// measurement of this machine's transcripts first (scripts/lib/phase-restart-measure.js).
+export const PHASE_RESTART_TOKENS = 400000;
+export const PHASE_RESTART_NOTICE_MAX_TOKENS = 80;
+const COMMIT_RE = /\bgit\s+(?:-\S+(?:\s+[^-\s]\S*)?\s+)*commit\b/; // options (and their values) before the subcommand
+
+/**
+ * Did the last finished turn deliver a task? The turn = everything after the last person message (a user message
+ * with text and no tool results); delivered = it ran a `git commit` (the same task boundary the measurement uses).
+ * @param {Array<{role:string, text?:string, toolUses?:Array<{name:string, input?:object}>, toolResults?:Array}>} messages
+ */
+export function lastTurnDelivered(messages) {
+  const list = Array.isArray(messages) ? messages : [];
+  for (let i = list.length - 1; i >= 0; i--) {
+    const m = list[i];
+    if (m.role === 'user' && m.text && !(m.toolResults && m.toolResults.length)) return false;
+    if (m.role !== 'assistant') continue;
+    for (const u of m.toolUses || []) {
+      if (u && u.name === 'Bash' && COMMIT_RE.test(String((u.input && u.input.command) || ''))) return true;
+    }
+  }
+  return false;
+}
+
+/**
+ * Whether this person prompt gets the phase-restart notice: the option on, the context at or past the threshold,
+ * the cache warm (a cold one is the cold cut's), the last turn delivered, and not already said for this crossing
+ * (`notified` drops back to false once the context is below the threshold again — a compaction or a new session).
+ * @returns {{notify: boolean, reason: string}}
+ */
+export function decidePhaseRestart(s, options = {}) {
+  if (options.phaseRestart !== true) return { notify: false, reason: 'off' };
+  const thr = Number(options.phaseRestartTokens) > 0 ? Number(options.phaseRestartTokens) : PHASE_RESTART_TOKENS;
+  if (s.tokens == null) return { notify: false, reason: 'no-reading' };
+  if (s.tokens < thr) return { notify: false, reason: 'below-threshold' };
+  if (s.notified) return { notify: false, reason: 'already-notified' };
+  if (!s.warm) return { notify: false, reason: 'cache-cold' };
+  if (!s.delivered) return { notify: false, reason: 'no-task-boundary' };
+  return { notify: true, reason: 'phase-boundary' };
+}
+
+/** The ≤ 80-token context block the model gets with the person's prompt. */
+export function phaseRestartNotice(tokens) {
+  const k = Math.round((Number(tokens) || 0) / 1000);
+  return `[boss] Phase restart: context ~${k}k tokens, cache warm, last task committed. If this request starts a new phase, `
+    + 'write a short handoff (goal, state, next step, key files) to a file and suggest the person continue in a new session from it. Otherwise carry on.';
+}

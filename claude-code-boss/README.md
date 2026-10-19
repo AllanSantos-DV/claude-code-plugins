@@ -285,6 +285,14 @@ Módulo de *function hook* do Claude Code (`hooks/compaction.mjs`, registrado pe
   ou frio. Motivo, medido nas transcrições reais (2026-10-11): depois de uma poda (que mantinha
   60–95%) as chamadas seguintes liam ~600k de contexto e custavam US$0,50 cada; depois de um resumo,
   ~110k e US$0,075. A primeira chamada: US$2,99 contra US$0,25.
+- **Reinício em fases** (opcional, **desligado por padrão**): passado `phaseRestartTokens` (400 mil), com o cache
+  quente e no primeiro prompt seu depois de um turno que fez `git commit`, a sessão recebe **um** aviso (menos de 80
+  tokens) sugerindo escrever um handoff curto e seguir a próxima fase numa sessão nova, e você vê um toast. Um aviso
+  por cruzamento do limiar: volta a valer só depois que o contexto desce (compactação ou sessão nova). O texto do seu
+  prompt não muda. Para ligar (painel **Compaction & cache** → *Phase restart*), o boss primeiro mede as transcrições
+  desta máquina, só leitura (`node scripts/phase-restart-measure.js`): replay das chamadas reais dos últimos 30 dias,
+  preço oficial por modelo, contra o que o boss já faz. Com ganho medido, liga e mostra quanto; sem ganho, fica
+  desligado e oferece *ligar mesmo assim*. O replay não mede qualidade de resposta, só dólares.
 - **Retomada** (`--resume`, `-c`): depois de uma compactação feita por hook o engine recarrega o
   histórico original com as cópias intercaladas (a API passava a ver cada tool_use duas vezes e
   rejeitava o thinking). O primeiro prompt detecta as cópias e compacta antes de qualquer envio (o resumo também as remove).

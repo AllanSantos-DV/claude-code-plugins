@@ -28024,6 +28024,204 @@ test('hooks-config compaction: getCompaction clamps; saveCompaction writes the U
   }
 });
 
+// ─── phase restart (opt-in notice + read-only measurement: lib/phase-restart-measure.js, hooks/compaction.mjs) ──
+
+// A synthetic transcript: `steps` = [{ ctx, gapMin, person?, commit?, out? }] → JSONL lines (one API call per step).
+function phaseTranscript(steps, t0 = Date.now() - 3 * 3600000) {
+  const lines = [];
+  let t = t0, n = 0;
+  for (const s of steps) {
+    t += (s.gapMin || 1) * 60000;
+    const ts = new Date(t).toISOString();
+    if (s.person) lines.push(JSON.stringify({ type: 'user', timestamp: ts, message: { role: 'user', content: s.person } }));
+    const content = s.commit ? [{ type: 'tool_use', id: `tu${n}`, name: 'Bash', input: { command: 'git commit -m "done"' } }] : [{ type: 'text', text: 'ok' }];
+    lines.push(JSON.stringify({ type: 'assistant', timestamp: ts, message: { id: `msg_${n++}`, model: 'claude-opus-5-5', content, usage: { input_tokens: 10, cache_read_input_tokens: s.ctx - 1010, cache_creation_input_tokens: 1000, output_tokens: s.out || 200 } } }));
+    if (s.commit) lines.push(JSON.stringify({ type: 'user', timestamp: ts, message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: `tu${n - 1}`, content: 'committed' }] } }));
+  }
+  return lines;
+}
+// A heavy session: past 400k, a task is committed, the next person prompt starts a new phase that runs 60 warm calls.
+const HEAVY_STEPS = [
+  { ctx: 380000, person: 'build it' }, { ctx: 420000 }, { ctx: 450000, commit: true },
+  { ctx: 455000, person: 'now the next phase' },
+  ...Array.from({ length: 60 }, (_, i) => ({ ctx: 456000 + i * 500 })),
+];
+const LIGHT_STEPS = [{ ctx: 50000, person: 'hi' }, { ctx: 60000, commit: true }, { ctx: 61000, person: 'next' }, { ctx: 65000 }];
+
+test('phase-restart core: notice only past the threshold, warm, after a committed turn, once per crossing; off by default; ≤ 80 tokens', () => {
+  const on = { phaseRestart: true, phaseRestartTokens: 400000 };
+  const base = { tokens: 450000, warm: true, delivered: true, notified: false };
+  assertEq(cmpCore.decidePhaseRestart(base, {}), { notify: false, reason: 'off' }, 'off unless set to true');
+  assertEq(cmpCore.decidePhaseRestart(base, { phaseRestart: 'yes' }).reason, 'off', 'only a real true turns it on');
+  assertEq(cmpCore.decidePhaseRestart(base, on), { notify: true, reason: 'phase-boundary' });
+  assertEq(cmpCore.decidePhaseRestart({ ...base, tokens: 399999 }, on).reason, 'below-threshold');
+  assertEq(cmpCore.decidePhaseRestart({ ...base, warm: false }, on).reason, 'cache-cold', 'a cold cache is the cold cut\'s');
+  assertEq(cmpCore.decidePhaseRestart({ ...base, delivered: false }, on).reason, 'no-task-boundary');
+  assertEq(cmpCore.decidePhaseRestart({ ...base, notified: true }, on).reason, 'already-notified');
+  assertEq(cmpCore.decidePhaseRestart({ ...base, tokens: null }, on).reason, 'no-reading');
+  assertEq(cmpCore.decidePhaseRestart({ ...base, tokens: 450000 }, { phaseRestart: true }).notify, true, 'default threshold 400k');
+  const msgs = (turn) => [{ role: 'user', text: 'first' }, { role: 'assistant', text: '', toolUses: [{ name: 'Bash', input: { command: 'git commit -m a' } }] }, ...turn];
+  assertEq(cmpCore.lastTurnDelivered(msgs([])), true, 'the last turn ran git commit');
+  assertEq(cmpCore.lastTurnDelivered(msgs([{ role: 'user', text: '', toolResults: [{ text: 'ok' }] }, { role: 'assistant', text: 'done', toolUses: [] }])), true, 'tool results do not end the turn');
+  assertEq(cmpCore.lastTurnDelivered(msgs([{ role: 'user', text: 'another ask' }, { role: 'assistant', text: 'ok', toolUses: [] }])), false, 'a later person turn without a commit');
+  assertEq(cmpCore.lastTurnDelivered([{ role: 'assistant', toolUses: [{ name: 'Bash', input: { command: 'git -C x commit -am y' } }] }]), true, 'git options before commit');
+  assertEq(cmpCore.lastTurnDelivered([{ role: 'assistant', toolUses: [{ name: 'Bash', input: { command: 'git log --grep commit' } }] }]), false, 'not a commit');
+  assertEq(cmpCore.lastTurnDelivered(null), false);
+  const notice = cmpCore.phaseRestartNotice(912345);
+  assert(notice.includes('~912k tokens') && /handoff/.test(notice) && /new session/.test(notice), notice);
+  assert(cmpCore.estimateTokens([notice]) <= cmpCore.PHASE_RESTART_NOTICE_MAX_TOKENS, `notice ≤ 80 tokens (${cmpCore.estimateTokens([notice])})`);
+});
+
+// The compaction module run for real against a fake engine: what the prompt gate hands down.
+async function phaseGateRun({ config, tokens, messages, coldMs = 0, prompts = 1 }) {
+  const cmp = await import(require('url').pathToFileURL(path.join(ROOT, 'hooks', 'compaction.mjs')).href);
+  const hooks = collectModuleHooks(cmp.register);
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-phase-gate-'));
+  fs.writeFileSync(path.join(dir, 'brain-http.token'), 'tok');
+  const calls = { messages: 0, toasts: [], events: [], logs: [], downstream: [] };
+  let now = 1_000_000_000;
+  const env = { CLAUDE_PLUGIN_DATA: dir, BRAIN_HTTP_PORT: '1' };
+  const $ = {
+    env: { get: async (k) => env[k] },
+    fs: { read: async (p) => fs.readFileSync(p, 'utf8') },
+    http: { fetch: async (url, init) => {
+      if (url.endsWith('/health')) return { status: 200, ok: true, text: JSON.stringify({ dataDir: dir }) };
+      const payload = JSON.parse(JSON.parse(init.body).payload);
+      calls.events.push(payload);
+      return { status: 200, ok: true, text: JSON.stringify(payload.kind === 'hello' ? { config } : {}) };
+    } },
+    session: {
+      id: async () => 'sid-phase', cwd: async () => dir, root: async () => dir, authorize: async () => null,
+      usage: async () => ({ context: { tokens, window: 1000000, breakdown: { rawMaxTokens: 1000000, autoCompactThreshold: 967000 } } }),
+      messages: async () => { calls.messages++; return messages; },
+    },
+    clock: { now: async () => now, after: () => {} },
+    ui: { log: (t) => calls.logs.push(t), toast: (t) => calls.toasts.push(t) },
+    command: { run: async () => { throw new Error('no compaction expected in these runs'); } },
+    prompt: { submit: async () => { throw new Error('no re-send expected'); } },
+  };
+  await findHook(hooks, 'session.start').fn($, { isInteractive: true }, async (e) => e);
+  if (coldMs) {
+    await findHook(hooks, 'turn.complete').fn($, {}, async () => ({}));
+    now += coldMs;
+  }
+  const submit = findHook(hooks, 'prompt.submit').fn;
+  for (let i = 0; i < prompts; i++) {
+    const out = await submit($, { text: `p${i}`, origin: { kind: 'composer' }, context: ['ctx-in'] }, async (e) => { calls.downstream.push(e); return e; });
+    assert(!out.drop, `prompt not held: ${out.drop}`);
+  }
+  fs.rmSync(dir, { recursive: true, force: true });
+  return calls;
+}
+const PHASE_CFG = { enabled: true, thresholdPercent: 80, minIntervalMs: 600000, folderTtl: false, phaseRestartTokens: 400000 };
+const COMMITTED = [{ role: 'user', text: 'do it' }, { role: 'assistant', text: '', toolUses: [{ name: 'Bash', input: { command: 'git commit -m x' } }] }];
+
+test('compaction hook phase restart (default off): the prompt goes down unchanged, no toast, the history is never read', async () => {
+  for (const config of [PHASE_CFG, { ...PHASE_CFG, phaseRestart: false }]) {
+    const r = await phaseGateRun({ config, tokens: 500000, messages: COMMITTED });
+    assertEq(r.downstream.map((e) => e.context), [['ctx-in']], 'context untouched');
+    assertEq([r.toasts.length, r.messages], [0, 0], 'no toast, no $.session.messages()');
+    assert(!r.events.some((e) => e.action === 'phase-restart-notice'), 'no notice event');
+  }
+});
+
+test('compaction hook phase restart (on): one ≤80-token notice past 400k, warm, after a commit — once per crossing; cold, below or no commit → nothing', async () => {
+  const config = { ...PHASE_CFG, phaseRestart: true };
+  const r = await phaseGateRun({ config, tokens: 500000, messages: COMMITTED, prompts: 2 });
+  assertEq(r.downstream[0].context.length, 2, 'the notice is added after the incoming context');
+  assertEq(r.downstream[0].context[0], 'ctx-in');
+  assert(r.downstream[0].context[1].startsWith('[boss] Phase restart: context ~500k tokens'), r.downstream[0].context[1]);
+  assertEq(r.downstream[0].text, 'p0', 'the person text itself is never changed');
+  assertEq(r.downstream[1].context, ['ctx-in'], 'the second prompt of the same crossing: nothing');
+  assertEq(r.toasts.length, 1, 'one toast for the person');
+  assertEq(r.events.filter((e) => e.action === 'phase-restart-notice').length, 1, 'recorded once');
+  const cold = await phaseGateRun({ config, tokens: 500000, messages: COMMITTED, coldMs: 2 * 3600000 });
+  assertEq([cold.downstream[0].context, cold.toasts.length], [['ctx-in'], 0], 'cold cache: nothing');
+  const below = await phaseGateRun({ config, tokens: 399000, messages: COMMITTED });
+  assertEq([below.downstream[0].context, below.messages], [['ctx-in'], 0], 'below the threshold: nothing, history not read');
+  const noCommit = await phaseGateRun({ config, tokens: 500000, messages: [{ role: 'user', text: 'x' }, { role: 'assistant', text: 'y', toolUses: [] }] });
+  assertEq([noCommit.downstream[0].context, noCommit.toasts.length], [['ctx-in'], 0], 'no task boundary: nothing');
+  const off = await phaseGateRun({ config: { ...config, enabled: false }, tokens: 500000, messages: COMMITTED });
+  assertEq(off.downstream[0].context, ['ctx-in'], 'compaction off (free profile) turns the notice off too');
+});
+
+test('phase-restart-measure: series flags person prompts after a commit; a heavy session shows a gain, a light one none; the replay is pure', () => {
+  const m = require('./lib/phase-restart-measure.js');
+  const calls = m.seriesFromLines(phaseTranscript(HEAVY_STEPS));
+  assertEq(calls.length, HEAVY_STEPS.length, 'one call per step');
+  assertEq(calls.filter((c) => c.person).length, 2);
+  assertEq(calls.filter((c) => c.delivered).map((c) => c.ctx), [455000], 'the prompt right after the committed turn');
+  assertEq(m.seriesFromLines(['{"torn', '', JSON.stringify({ type: 'assistant', message: { id: 'a', usage: { input_tokens: 0 } }, timestamp: new Date().toISOString() })]), [], 'torn lines and zeroed copies skipped');
+  const heavy = m.measureSessions([{ id: 'h', calls }], { thresholdTokens: 400000 });
+  assertEq([heavy.verdict, heavy.notices, heavy.crossings], ['gain', 1, 1], JSON.stringify(heavy));
+  assert(heavy.savingUsd > 1 && heavy.savingUsd < heavy.baseUsd, `saving ${heavy.savingUsd} of ${heavy.baseUsd}`);
+  const light = m.measureSessions([{ id: 'l', calls: m.seriesFromLines(phaseTranscript(LIGHT_STEPS)) }]);
+  assertEq([light.verdict, light.notices, light.savingUsd], ['no-gain', 0, 0]);
+  const high = m.measureSessions([{ id: 'h', calls }], { thresholdTokens: 900000 });
+  assertEq([high.verdict, high.crossings], ['no-gain', 0], 'a threshold nobody reaches: no gain');
+  assertEq(m.simulate(calls).cost, m.simulate(calls).cost, 'deterministic');
+  assert(m.priceFor('claude-opus-5-5').read === 0.2 && m.priceFor('nope') === null, 'official prices from economy-metrics');
+});
+
+test('phase-restart-measure: reads the transcripts READ-ONLY (bytes and mtime unchanged), only top-level files in the window, sub-agent folders skipped', () => {
+  const m = require('./lib/phase-restart-measure.js');
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-phase-root-'));
+  try {
+    const proj = path.join(root, 'C--proj');
+    fs.mkdirSync(path.join(proj, 'sid1', 'subagents'), { recursive: true });
+    const main = path.join(proj, 'sid1.jsonl');
+    fs.writeFileSync(main, phaseTranscript(HEAVY_STEPS).join('\n') + '\n');
+    fs.writeFileSync(path.join(proj, 'sid1', 'subagents', 'agent-x.jsonl'), phaseTranscript(HEAVY_STEPS).join('\n'));
+    const old = path.join(proj, 'old.jsonl');
+    fs.writeFileSync(old, phaseTranscript(HEAVY_STEPS, Date.now() - 90 * 86400000).join('\n'));
+    fs.utimesSync(old, new Date(Date.now() - 90 * 86400000), new Date(Date.now() - 90 * 86400000));
+    const before = [main, old].map((f) => [fs.readFileSync(f, 'utf8'), fs.statSync(f).mtimeMs]);
+    const r = m.measure({ root, days: 30 });
+    assertEq([r.files, r.sessions, r.notices, r.verdict], [1, 1, 1, 'gain'], JSON.stringify(r));
+    assertEq([main, old].map((f) => [fs.readFileSync(f, 'utf8'), fs.statSync(f).mtimeMs]), before, 'transcripts untouched');
+    assertEq(m.measure({ root: path.join(root, 'none'), days: 30 }).sessions, 0, 'no transcripts folder: an empty measurement');
+  } finally { fs.rmSync(root, { recursive: true, force: true }); }
+});
+
+test('dashboard PUT /api/compaction/config {phaseRestart:true}: runs the measurement first; gain → on; no gain → left off until forced; off needs no measurement', async () => {
+  const { Readable } = require('stream');
+  delete require.cache[require.resolve('./dashboard.js')];
+  const dash = require('./dashboard.js');
+  const hc = require('./lib/hooks-config.js');
+  const call = async (fn, body) => { let status = 200; let out = null; await fn(Readable.from([JSON.stringify(body)]), { writeHead: (c) => { status = c; }, end: (t) => { out = JSON.parse(t); } }); return { status, body: out }; };
+  const cfgFile = hc.userConfigPath();
+  const prevCfg = fs.existsSync(cfgFile) ? fs.readFileSync(cfgFile, 'utf8') : null;
+  const prevDir = process.env.CLAUDE_CONFIG_DIR;
+  const cfgDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-phase-cfg-'));
+  const proj = path.join(cfgDir, 'projects', 'C--proj');
+  fs.mkdirSync(proj, { recursive: true });
+  process.env.CLAUDE_CONFIG_DIR = cfgDir;
+  try {
+    hc._resetCache();
+    assertEq(hc.getCompaction().phaseRestart, false, 'off by default');
+    fs.writeFileSync(path.join(proj, 'light.jsonl'), phaseTranscript(LIGHT_STEPS).join('\n'));
+    const noGain = await call(dash.saveCompactionConfig, { phaseRestart: true });
+    assertEq([noGain.status, noGain.body.needsConfirm, noGain.body.config.phaseRestart, noGain.body.measure.verdict], [200, true, false, 'no-gain'], JSON.stringify(noGain.body));
+    const forced = await call(dash.saveCompactionConfig, { phaseRestart: true, force: true });
+    assertEq([forced.body.config.phaseRestart, forced.body.measure.verdict], [true, 'no-gain'], 'forced after seeing the numbers');
+    const off = await call(dash.saveCompactionConfig, { phaseRestart: false });
+    assertEq([off.body.config.phaseRestart, off.body.measure], [false, undefined], 'turning off measures nothing');
+    fs.writeFileSync(path.join(proj, 'heavy.jsonl'), phaseTranscript(HEAVY_STEPS).join('\n'));
+    const gain = await call(dash.saveCompactionConfig, { phaseRestart: true });
+    assertEq([gain.body.config.phaseRestart, gain.body.measure.verdict, gain.body.needsConfirm], [true, 'gain', undefined], JSON.stringify(gain.body));
+    assertEq(JSON.parse(fs.readFileSync(cfgFile, 'utf8')).compaction.phaseRestart, true, 'saved UPDATE-SAFE');
+    const last = await call((req, res) => dash.getPhaseRestartMeasure(req, res), {});
+    assertEq(last.body.measure.verdict, 'gain', 'the last measurement is kept for the panel');
+    const ui = fs.readFileSync(path.join(ROOT, 'dashboard', 'index.html'), 'utf8');
+    assert(/onchange="savePhaseRestart\(this\.checked\)"/.test(ui) && /savePhaseRestart\(true, true\)/.test(ui), 'the panel switch measures, and offers "turn on anyway" when there is no gain');
+  } finally {
+    if (prevDir === undefined) delete process.env.CLAUDE_CONFIG_DIR; else process.env.CLAUDE_CONFIG_DIR = prevDir;
+    if (prevCfg == null) { try { fs.unlinkSync(cfgFile); } catch (err) { void err; } } else fs.writeFileSync(cfgFile, prevCfg);
+    hc._resetCache();
+    fs.rmSync(cfgDir, { recursive: true, force: true });
+  }
+});
+
 test('hooks-config saveOverrides (dashboard PUT /api/hooks/config): only the changes go to the UPDATE-SAFE user-config, never the shipped file (Q38)', () => {
   const hc = require('./lib/hooks-config.js');
   const file = hc.userConfigPath();
