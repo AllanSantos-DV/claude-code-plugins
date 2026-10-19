@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [3.10.0] - 2026-10-19
+
 Check-up do motor (2026-10-15). Cada item tem teste; os números são do dado real desta máquina.
 
 ### Added
