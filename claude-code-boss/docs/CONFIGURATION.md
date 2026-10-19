@@ -224,6 +224,8 @@ Shipped em `claude-code-boss/config/hooks-config.json`; override do usuário em 
 | `compaction.thresholdPercent` | `30` | % (10–80) da janela que o engine aplica (limite do modelo ou `CLAUDE_CODE_AUTO_COMPACT_WINDOW`); acima, compacta no próximo prompt **só com o cache do provedor já expirado** — nunca com ele quente. Slider no dashboard (`PUT /api/compaction/config`, gravado aqui) |
 | `compaction.minIntervalMinutes` | `10` | Intervalo mínimo (1–60) entre duas compactações do gate |
 | `compaction.preserveRecentMessages` | `6` | Mensagens mais novas que a poda nunca toca |
+| `compaction.phaseRestart` | `false` | Reinício em fases: um aviso (< 80 tokens) para seguir a próxima fase numa sessão nova com um handoff curto, passado `phaseRestartTokens`, com cache quente, depois de um turno com `git commit`. Ligar pelo painel mede antes as transcrições (só leitura) e só liga direto se houver ganho |
+| `compaction.phaseRestartTokens` | `400000` | Limiar do aviso (100 mil–900 mil tokens) |
 
 Trocar perfil: `/dashboard` → aba Hooks, ou `/boss-profile <standard|dev|free>`.
 

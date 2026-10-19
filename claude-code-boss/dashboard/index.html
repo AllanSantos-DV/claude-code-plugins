@@ -2890,6 +2890,12 @@ async function loadCompactionPanel() {
     + `<label>Min interval <input id="cmp-iv" type="number" min="${ivr[0]}" max="${ivr[1]}" value="${Math.round((cfg.minIntervalMs || 600000) / 60000)}" style="width:4rem"> min</label>`
     + `<button class="btn-sm" onclick="saveCompactionConfig()">Save</button><span id="cmp-save-msg" class="text-muted"></span></div>`
     + `<p class="text-muted" style="font-size:.78rem;margin:0 0 .5rem 0" id="cmp-wins">${winRows}</p>`;
+  const prK = Math.round((cfg.phaseRestartTokens || 400000) / 1000);
+  html += `<div style="display:flex;gap:.6rem;align-items:center;flex-wrap:wrap;font-size:.82rem;margin:0 0 .5rem 0">`
+    + `<label><input id="cmp-pr" type="checkbox" ${cfg.phaseRestart ? 'checked' : ''} onchange="savePhaseRestart(this.checked)"> Phase restart</label>`
+    + `<span class="tip" data-tip="Off by default. Past ${prK}k tokens, with the cache warm and right after a task was committed, the session gets one short notice (under 80 tokens) suggesting a short handoff and a new session for the next phase. Turning it on first measures this machine's transcripts (read-only) and shows whether it saves money here.">i</span>`
+    + `<span class="text-muted">notice at ${prK}k tokens · ${c.phaseRestartNotices || 0} notices in 30 days</span>`
+    + `<span id="cmp-pr-msg" class="text-muted"></span></div>`;
   html += '<div class="grid">'
     + stat(String(r.total), 'Compactions', `${r.pruned} pruned · ${r.nativeSummary} built-in summary`, r.total ? 'badge-green' : 'badge-yellow')
     + stat(fmt(c.cut.charsCut) + ' chars', 'Cut by pruning (exact)', c.cut.avgRatio != null ? `avg ${Math.round(c.cut.avgRatio * 100)}% smaller` : 'no pruning yet', c.cut.charsCut ? 'badge-green' : 'badge-yellow')
@@ -2954,6 +2960,30 @@ async function saveCompactionConfig() {
     if (r && r.error) { msg.textContent = 'Not saved: ' + r.error; return; }
     msg.textContent = `Saved: ${r.config.thresholdPercent}% · ${Math.round(r.config.minIntervalMs / 60000)} min (open sessions: from their next answered turn)`;
   } catch (e) { msg.textContent = 'Not saved: ' + (e && e.message ? e.message : e); }
+}
+
+function phaseRestartLine(m) {
+  if (!m) return '';
+  const head = m.verdict === 'gain'
+    ? `Measured gain here: US$ ${m.savingUsd} in ${m.activeDays} active days (${m.savingPct}% of US$ ${m.baseUsd}; US$ ${m.savingUsdPerDay}/day, US$ ${m.savingPerNoticeUsd}/notice)`
+    : `No measured gain here: ${m.notices} notices would have fired in ${m.activeDays} active days (saving US$ ${m.savingUsd})`;
+  return `${head} · ${m.sessions} sessions, median ${m.sessionsPerDay.median}/day (p90 ${m.sessionsPerDay.p90}) · ${m.crossings} crossings of ${Math.round(m.thresholdTokens / 1000)}k`;
+}
+
+async function savePhaseRestart(on, force) {
+  const msg = document.getElementById('cmp-pr-msg');
+  const box = document.getElementById('cmp-pr');
+  msg.textContent = on ? 'Measuring this machine\'s transcripts (read-only)…' : '';
+  try {
+    const r = await api('PUT', '/api/compaction/config', on ? { phaseRestart: true, force: force === true } : { phaseRestart: false });
+    if (r && r.error) { msg.textContent = 'Not saved: ' + r.error; box.checked = !on; return; }
+    box.checked = r.config.phaseRestart === true;
+    if (r.needsConfirm) {
+      msg.innerHTML = escapeHtml(phaseRestartLine(r.measure)) + ' — left off. <button class="btn-sm" onclick="savePhaseRestart(true, true)">Turn on anyway</button>';
+      return;
+    }
+    msg.textContent = r.config.phaseRestart ? `On. ${phaseRestartLine(r.measure)}` : 'Off.';
+  } catch (e) { msg.textContent = 'Not saved: ' + (e && e.message ? e.message : e); box.checked = !on; }
 }
 
 async function pruneUnusedScripts() {

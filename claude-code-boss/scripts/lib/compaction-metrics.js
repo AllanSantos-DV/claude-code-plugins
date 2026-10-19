@@ -36,6 +36,7 @@ function summarizeCompaction(rows, { timeline = 20 } = {}) {
   const s = {
     sessions: 0,
     gate: { total: 0, byAction: {}, byReason: {}, held: 0, attachmentsPassed: 0 },
+    phaseRestartNotices: 0, // the opt-in phase-restart notice (a second gate event on a prompt already counted)
     runs: { total: 0, pruned: 0, nativeSummary: 0, byTrigger: {}, byReason: {}, prunedByKind: {} },
     // duplicatesDropped: the engine's copies removed from a resumed history (hook-compaction resume defect).
     cut: { charsBefore: 0, charsAfter: 0, charsCut: 0, avgRatio: null, prunedResults: 0, duplicatesDropped: 0, verbatimBroken: 0 },
@@ -60,6 +61,7 @@ function summarizeCompaction(rows, { timeline = 20 } = {}) {
     switch (name) {
       case 'compaction.session': s.sessions++; break;
       case 'compaction.gate':
+        if (p.action === 'phase-restart-notice') { s.phaseRestartNotices++; break; }
         if (Number(p.windowTokens) > 0) {
           const wk = `${p.windowTokens}|${p.windowSource || '?'}`;
           const prev = windowsSeen.get(wk);

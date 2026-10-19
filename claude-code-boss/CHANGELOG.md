@@ -5,6 +5,13 @@
 Check-up do motor (2026-10-15). Cada item tem teste; os números são do dado real desta máquina.
 
 ### Added
+- **Reinício em fases, desligado por padrão** (`compaction.phaseRestart`, README › Compactação controlada). Passado
+  `phaseRestartTokens` (400 mil), com o cache quente e no primeiro prompt da pessoa depois de um turno com `git commit`,
+  o módulo de compactação junta ao prompt um aviso de menos de 80 tokens (sugere um handoff curto e uma sessão nova para a
+  próxima fase) e mostra um toast; uma vez por cruzamento do limiar, sem mudar o texto do prompt. Ligar pelo painel roda
+  antes `scripts/phase-restart-measure.js`, um replay só leitura das transcrições dos últimos 30 dias com preço oficial
+  por modelo: com ganho liga e mostra o valor; sem ganho fica desligado e oferece ligar mesmo assim. O painel conta os
+  avisos dados em 30 dias.
 - **Faixa acima do prompt e `/boss`** (`hooks/boss.mjs`, README › Faixa acima do prompt). Mod que vem com o plugin: uma linha com o
   custo da sessão, a economia do Token Guard na sessão e em 30 dias e o Brain no ar ou fora — também no Desktop, onde a `statusLine`
   não aparece — e `/boss` com os mesmos números em tabela. Lê `GET /hook/boss-summary` (rota nova, só leitura, com o token local, em

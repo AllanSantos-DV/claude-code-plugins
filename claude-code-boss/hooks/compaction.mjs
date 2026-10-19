@@ -26,7 +26,7 @@
 // daemon (POST /hook/compaction-event → tool hook_compaction_event → scripts/compaction-event.js).
 
 import { daemon as sharedDaemon } from '../scripts/lib/module-daemon.mjs';
-import { planCompaction, buildBrief, decideTiming, decideTurnEnd, classifyResume, estimateTokens, thresholdFor, chooseCompaction, isCacheWarm, isMechanicalCut, resumedAnswerAt, DEFAULTS } from '../scripts/lib/compaction-core.mjs';
+import { planCompaction, buildBrief, decideTiming, decideTurnEnd, classifyResume, estimateTokens, thresholdFor, chooseCompaction, isCacheWarm, isMechanicalCut, resumedAnswerAt, decidePhaseRestart, lastTurnDelivered, phaseRestartNotice, DEFAULTS } from '../scripts/lib/compaction-core.mjs';
 
 const PERSON_ORIGINS = new Set(['composer', 'bridge', 'sdk']);
 // Folder TTL (scripts/lib/folder-ttl.js): the daemon drops a session that stops reporting for 5 min; this keeps an
@@ -61,6 +61,7 @@ function newCtx() {
     // A compaction ran and no API call has been seen since: every size reading is still the pre-cut one (E2E 14/10:
     // the gate compacted the just-cut session again from it). No new compaction until a real call is observed.
     awaitCallAfterCut: false,
+    phaseNotified: false,    // the phase-restart notice was given for the current crossing of its threshold
   };
 }
 
@@ -350,7 +351,7 @@ async function gate($, ctx, e, next) {
     engineAutoCompactAt, thresholdAboveEngine: thr.aboveEngine,
   });
 
-  if (d.action !== 'compact') return next(e);
+  if (d.action !== 'compact') return phaseRestart($, ctx, e, next, { tokens, now, ttlMs });
   if (e.attachments && e.attachments.length) {
     emit($, ctx, 'gate', { action: 'pass', reason: 'attachments-would-be-lost', tokens: tokens ?? null, idleMs, ttlMs, ttlSource });
     return next(e);
@@ -363,6 +364,26 @@ async function gate($, ctx, e, next) {
   const text = e.text;
   $.clock.after(1, () => scheduleCompactThenResend($, ctx, text, d.reason));
   return { drop: 'compacting first: the cache went cold and the context is past the threshold — your prompt follows right after' };
+}
+
+/**
+ * Phase restart (opt-in, `phaseRestart` in the compaction config): past its threshold, with a warm cache, on the first
+ * person prompt after a turn that committed, the model gets one ≤ 80-token block suggesting a handoff + new session,
+ * and the person a toast. Once per crossing: said again only after the context went below the threshold.
+ */
+async function phaseRestart($, ctx, e, next, { tokens, now, ttlMs }) {
+  if (ctx.config.phaseRestart !== true) return next(e);
+  const warm = isCacheWarm({ now, lastAnswerAt: ctx.lastAnswerAt, ttlMs });
+  const s = { tokens: tokens ?? null, warm, notified: ctx.phaseNotified, delivered: true };
+  let d = decidePhaseRestart(s, ctx.config);
+  if (d.reason === 'below-threshold') ctx.phaseNotified = false;
+  if (!d.notify) return next(e);
+  d = decidePhaseRestart({ ...s, delivered: lastTurnDelivered(await $.session.messages()) }, ctx.config);
+  if (!d.notify) return next(e);
+  ctx.phaseNotified = true;
+  emit($, ctx, 'gate', { action: 'phase-restart-notice', reason: d.reason, tokens: tokens ?? null, thresholdTokens: ctx.config.phaseRestartTokens ?? null });
+  $.ui.toast(`Boss: context at ~${Math.round(tokens / 1000)}k tokens after a committed task — a new session from a short handoff is cheaper for the next phase`);
+  return next({ ...e, context: [...(e.context || []), phaseRestartNotice(tokens)] });
 }
 
 async function gateFailed($, e, next) {

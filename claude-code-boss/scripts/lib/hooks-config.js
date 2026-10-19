@@ -364,6 +364,12 @@ function clampInterval(v) {
   if (!Number.isFinite(n)) return 10;
   return Math.min(MIN_INTERVAL_RANGE[1], Math.max(MIN_INTERVAL_RANGE[0], Math.round(n)));
 }
+const PHASE_TOKENS_RANGE = [100000, 900000];
+function clampPhaseTokens(v) {
+  const n = Number(v);
+  if (!Number.isFinite(n)) return 400000;
+  return Math.min(PHASE_TOKENS_RANGE[1], Math.max(PHASE_TOKENS_RANGE[0], Math.round(n)));
+}
 function getCompaction() {
   const c = _resolved().compaction || {};
   const core = require('./compaction-core.mjs');
@@ -379,6 +385,11 @@ function getCompaction() {
     mechanicalCut: c.mechanicalCut !== false,
     briefTailTokens: Number.isFinite(Number(c.briefTailTokens)) ? Math.min(20000, Math.max(0, Math.round(Number(c.briefTailTokens)))) : core.DEFAULTS.briefTailTokens,
     folderTtl: c.folderTtl !== false,
+    // Phase restart (opt-in): one notice to continue in a new session from a short handoff, past phaseRestartTokens
+    // with a warm cache after a committed task. Off unless set to true (the dashboard measures this machine first).
+    phaseRestart: c.phaseRestart === true,
+    phaseRestartTokens: clampPhaseTokens(c.phaseRestartTokens ?? core.PHASE_RESTART_TOKENS),
+    phaseRestartRange: PHASE_TOKENS_RANGE,
   };
 }
 
@@ -407,7 +418,7 @@ function getFixedCost() {
  * Persist the user's compaction choice (the dashboard slider) to the UPDATE-SAFE
  * globalDir()/hooks/user-config.json — never the shipped file (BACKLOG Q38). Only the
  * given keys change; values are clamped. Returns the effective config.
- * @param {{thresholdPercent?: number, minIntervalMinutes?: number, enabled?: boolean}} patch
+ * @param {{thresholdPercent?: number, minIntervalMinutes?: number, enabled?: boolean, phaseRestart?: boolean, phaseRestartTokens?: number}} patch
  */
 function saveCompaction(patch) {
   const p = patch && typeof patch === 'object' ? patch : {};
@@ -422,7 +433,12 @@ function saveCompaction(patch) {
     next.minIntervalMinutes = clampInterval(p.minIntervalMinutes);
   }
   if (p.enabled !== undefined) next.enabled = p.enabled === true;
-  if (!Object.keys(next).length) throw new Error('nothing to save (thresholdPercent, minIntervalMinutes or enabled)');
+  if (p.phaseRestart !== undefined) next.phaseRestart = p.phaseRestart === true;
+  if (p.phaseRestartTokens !== undefined) {
+    if (!Number.isFinite(Number(p.phaseRestartTokens))) throw new Error('phaseRestartTokens must be a number');
+    next.phaseRestartTokens = clampPhaseTokens(p.phaseRestartTokens);
+  }
+  if (!Object.keys(next).length) throw new Error('nothing to save (thresholdPercent, minIntervalMinutes, enabled, phaseRestart or phaseRestartTokens)');
   const file = userConfigPath();
   const current = readUserConfigForWrite(file);
   current.compaction = { ...(isPlainObject(current.compaction) ? current.compaction : {}), ...next };
