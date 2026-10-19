@@ -34,8 +34,9 @@ claude-code-boss/docs/plans/
 claude-code-boss/docs/research/
 claude-code-boss/docs/maps/
 
-# Claude Code local config
-.claude/
+# Claude Code local config (agents are shared: Claude Code reads project agents only from .claude/agents/)
+.claude/*
+!.claude/agents/
 
 # MCP runtime data
 .mcp-memory/

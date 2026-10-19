@@ -9,7 +9,8 @@ This is a **strict convention**. Violating it pollutes the public repo with deve
 ### In git (versioned, shared)
 - `claude-code-boss/` — the plugin itself (source, tests, configs)
 - `.claude-plugin/marketplace.json` — marketplace metadata
-- `.github/` — CI/release workflows, issue templates
+- `.github/` — CI/release workflows, issue templates, and the project agents (`.github/agents/*.agent.md`, read by Copilot)
+- `.claude/agents/` — the same agents for Claude Code, which reads project agents only from here (byte-identical copies, checked by `release-audit` → `claude-agents-synced`; without them a user-level agent of the same name shadows the project one)
 - `README.md`, `LICENSE`, `AGENTS.md`, `.gitignore`
 - Anything required for CI, publishing, or other contributors to build/test the plugin
 
