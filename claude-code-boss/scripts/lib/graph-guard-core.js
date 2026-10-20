@@ -7,7 +7,7 @@
  * measured on a 135k-node graph), and returns the NARROW paths where a symbol
  * lives — so a broad recursive text search (native Grep/Glob, or bash
  * grep -r/rg/find at the repo root) should first ask the graph WHERE to look,
- * then re-run the text search SCOPED to that subtree. The guard enforces that
+ * then the agent uses the Smart Tool (smart_search) instead of narrowing the search. The guard enforces that
  * ordering with a DENY-ONCE: the first broad search is denied with the exact
  * two-step instruction; retrying the identical call passes (per-session sig
  * stamp), so there is never a deadlock and free-text searches lose at most one
@@ -148,8 +148,8 @@ function buildRedirectReason({ kind, pattern, tokens }) {
   const t = tokens && tokens.length ? tokens.join(' ') : (pattern || '<term>');
   return [
     `[graph-guard] Broad recursive search noticed (${kind}). The Session Graph is READY for this repo — it answers structural queries in ~300ms with no filesystem walk.`,
-    `1. Call \`graph_search({ query: "${t}" })\` (or \`graph_symbols\`) to get the NARROW file paths where this lives.`,
-    `2. Re-run the text search SCOPED to those paths (Grep \`path:\`/\`glob:\`, or \`grep -r <dir>\`), only if you still need raw text matches.`,
+    `1. Use the Smart Tool: call \`smart_search\` with identifier terms like "${t}" — it searches the whole project index and returns related code, tests and docs ranked.`,
+    '2. For callers, dependents and affected tests of a symbol, call `project_manage` with action=graph (symbol) — the dependency map.',
     'The search was NOT blocked; this note shows once per unique search.',
   ].join('\n');
 }
@@ -165,7 +165,7 @@ function buildNotIndexedReason({ pattern, tokens }) {
   return [
     '[graph-guard] Broad recursive search noticed, and this repo\'s Session Graph is NOT indexed yet. Indexing is a ONE-TIME cost; a broad grep re-walks the whole tree on EVERY call — so index once, then every later symbol search is the cheap structural path.',
     '1. Call `graph_analyze` to build the graph (async — seconds on small repos, minutes on large ones; it returns immediately).',
-    `2. Once ready, \`graph_search({ query: "${t}" })\` gives the NARROW paths — then re-run the text search SCOPED to them.`,
+    `2. Meanwhile, use the Smart Tool: \`smart_search\` with terms like "${t}" searches the whole project index and returns related code with its dependency map.`,
     'The search was NOT blocked: it runs now, without waiting for the index.',
   ].join('\n');
 }

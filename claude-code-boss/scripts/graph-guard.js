@@ -4,9 +4,9 @@
  *
  * On the mcp-memory backend with a READY Session Graph, a BROAD recursive
  * search (no path/glob/type scoping) gets an ADVISORY (additionalContext, never a
- * deny) once per unique search: graph_search/graph_symbols first (structural,
- * embedding-free, ~300ms measured on a 135k-node graph) to get the narrow paths,
- * then the text search SCOPED. The search itself always runs.
+ * deny) once per unique search: pointing to the Smart Tool
+ * (smart_search, project_manage graph: wide index, correlations, dependency map).
+ * The search itself always runs.
  *
  * NEVER waits for indexing (minutes on large repos, measured): not_indexed →
  * the search passes with a one-shot advisory suggesting graph_analyze.
