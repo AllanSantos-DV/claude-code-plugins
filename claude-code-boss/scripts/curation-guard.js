@@ -316,7 +316,7 @@ async function cascadeSteps(event, notes) {
     // 2.5 Graph-guard (Bash surface): a BROAD recursive search (grep -r/rg/find
     // at the repo root) on the mcp-memory backend with a READY Session Graph is
     // advised ONCE (additionalContext, never a deny — a deny here beat the Smart
-    // Tool transparent redirect) with the graph_search→scoped-grep two-step. Lives here (not a separate hook) so every Bash call keeps
+    // Tool transparent redirect) with the smart_search pointer. Lives here (not a separate hook) so every Bash call keeps
     // paying exactly ONE guard spawn. Fully fail-open: any error falls through
     // to the normal cascade below.
     try {

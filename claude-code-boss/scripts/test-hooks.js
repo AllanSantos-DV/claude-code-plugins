@@ -1022,7 +1022,8 @@ const TESTS = [
       if (out.permissionDecision) return `broad Grep with READY graph must NOT carry a permission decision (advisory only), got: ${out.permissionDecision}`;
       const ctx = out.additionalContext || '';
       if (!ctx.includes('[graph-guard]')) return `advisory must be tagged [graph-guard], got: ${ctx}`;
-      if (!ctx.includes('graph_search')) return `advisory must teach graph_search, got: ${ctx}`;
+      if (!/smart_search/.test(ctx) || /SCOPED|path:|glob:/i.test(ctx)) return `advisory must point to smart_search and never suggest a scoped/path/glob search, got: ${ctx}`;
+      if (!ctx.includes('smart_search')) return `advisory must teach smart_search, got: ${ctx}`;
       return null;
     },
   },
@@ -1118,6 +1119,7 @@ const TESTS = [
       const out = r.parsed?.hookSpecificOutput || {};
       if (out.permissionDecision === 'deny') return `broad bash grep with READY graph must NOT be denied (it beat the Smart Tool redirect), got deny (ctx: ${out.additionalContext})`;
       if (!(out.additionalContext || '').includes('[graph-guard]')) return `advisory must be tagged [graph-guard], got: ${out.additionalContext}`;
+      if (!/smart_search/.test((out.additionalContext || '')) || /SCOPED|path:|glob:/i.test((out.additionalContext || ''))) return `advisory must point to smart_search and never suggest a scoped/path/glob search, got: ${out.additionalContext}`;
       return null;
     },
   },

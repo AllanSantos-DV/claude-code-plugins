@@ -24423,11 +24423,18 @@ test('graph-guard: bash heuristics flag only the machine-hurting shapes', () => 
   assert(ggCore.matchBroadBashSearch('grep -rn "a\\|b" . | head'), 'still broad at . with a quoted alternation');
 });
 
-test('graph-guard: redirect reason teaches the graph→scoped-grep two-step + the escape hatch', () => {
-  const reason = ggCore.buildRedirectReason({ kind: 'native-grep', pattern: 'resolveProjectId', tokens: ggCore.extractQueryTokens('resolveProjectId') });
-  assert(/graph_search/.test(reason), 'names graph_search');
-  assert(/SCOPED/i.test(reason), 'instructs the scoped re-run');
-  assert(/deny-once|passes through/.test(reason), 'names the escape hatch');
+test('graph-guard: advisories point to smart_search and never suggest a path/glob-scoped re-search', () => {
+  const tokens = ggCore.extractQueryTokens('resolveProjectId');
+  const texts = [
+    ggCore.buildRedirectReason({ kind: 'native-grep', pattern: 'resolveProjectId', tokens }),
+    ggCore.buildNotIndexedReason({ pattern: 'resolveProjectId', tokens }),
+  ];
+  for (const t of texts) {
+    assert(/smart_search/.test(t), 'names smart_search: ' + t);
+    assert(!/SCOPED|scoped|path:|glob:|grep -r <dir>|re-run the text search/i.test(t), 'must not suggest a scoped/path/glob re-search: ' + t);
+  }
+  assert(/project_manage/.test(texts[0]), 'ready advisory names project_manage graph');
+  assert(/NOT blocked/.test(texts[0]), 'still advisory only');
 });
 
 test('graph-guard: readiness cache TTL round-trip (state+nodes); stale/corrupt → null', () => {
@@ -24443,7 +24450,7 @@ test('graph-guard: readiness cache TTL round-trip (state+nodes); stale/corrupt �
   assertEq(ggCore.readReadyCache(path.join(dir, 'absent.json'), 5000), null, 'absent → null');
 });
 
-test('graph-guard ladder: READY (with nodes) → deny once with reason, identical retry passes', async () => {
+test('graph-guard ladder: READY (with nodes) → advise once with reason, identical retry passes', async () => {
   const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-ggladder-'));
   const args = {
     kind: 'native-grep', raw: 'Grep resolveProjectId', pattern: 'resolveProjectId',
@@ -24451,33 +24458,33 @@ test('graph-guard ladder: READY (with nodes) → deny once with reason, identica
     cfg: { cacheTtlMs: 60000 }, probe: async () => ({ state: 'ready', nodes: 1834 }),
   };
   const first = await ggCore.decideBroadSearch(args);
-  assertEq(first.action, 'deny');
-  assert(/graph_search/.test(first.reason), 'deny carries the redirect');
+  assertEq(first.action, 'advise');
+  assert(/smart_search/.test(first.reason), 'advisory carries the Smart Tool pointer');
   const second = await ggCore.decideBroadSearch(args);
-  assertEq(second.action, 'allow', 'identical retry passes (deny-once)');
+  assertEq(second.action, 'allow', 'identical retry passes (advise-once)');
   const other = await ggCore.decideBroadSearch({ ...args, raw: 'Grep otherThing', pattern: 'otherThing' });
-  assertEq(other.action, 'deny', 'a DIFFERENT broad search is denied once too');
+  assertEq(other.action, 'advise', 'a DIFFERENT broad search is advised once too');
 });
 
-test('graph-guard ladder: deny-once is PER-REPO — the SAME broad search in a DIFFERENT repo denies again (no cross-repo stamp bleed)', async () => {
+test('graph-guard ladder: advise-once is PER-REPO — the SAME broad search in a DIFFERENT repo advises again (no cross-repo stamp bleed)', async () => {
   const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-ggxrepo-'));
   const base = {
     kind: 'native-grep', raw: 'Grep sharedSymbol', pattern: 'sharedSymbol',
     sid: 'sid-xrepo', dataDir, cfg: { cacheTtlMs: 60000 },
     probe: async () => ({ state: 'ready', nodes: 500 }),
   };
-  // Repo A: first broad search denied once, identical retry passes.
-  assertEq((await ggCore.decideBroadSearch({ ...base, projectRoot: 'C:/repoA' })).action, 'deny', 'repoA first → deny');
+  // Repo A: first broad search advised once, identical retry passes.
+  assertEq((await ggCore.decideBroadSearch({ ...base, projectRoot: 'C:/repoA' })).action, 'advise', 'repoA first → advise');
   assertEq((await ggCore.decideBroadSearch({ ...base, projectRoot: 'C:/repoA' })).action, 'allow', 'repoA retry → allow');
-  // Repo B — SAME session, SAME command, DIFFERENT repo root: must deny ONCE too.
+  // Repo B — SAME session, SAME command, DIFFERENT repo root: must advise ONCE too.
   // The per-session stamp must be keyed by repo root, or repoA's stamp would
   // wrongly release repoB's very first broad search (the cross-repo bleed the
   // guard checked cwd's graph for but stamped globally).
-  assertEq((await ggCore.decideBroadSearch({ ...base, projectRoot: 'C:/repoB' })).action, 'deny', 'repoB first → deny (per-repo deny-once, no bleed from repoA)');
+  assertEq((await ggCore.decideBroadSearch({ ...base, projectRoot: 'C:/repoB' })).action, 'advise', 'repoB first → advise (per-repo advise-once, no bleed from repoA)');
   assertEq((await ggCore.decideBroadSearch({ ...base, projectRoot: 'C:/repoB' })).action, 'allow', 'repoB retry → allow');
 });
 
-test('graph-guard ladder: not_indexed → DENY-once with the index-now redirect; retry passes (economics: one-time index vs per-query walk)', async () => {
+test('graph-guard ladder: not_indexed → ADVISE-once with the index-now redirect; retry passes (economics: one-time index vs per-query walk)', async () => {
   const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-ggni-'));
   let probes = 0;
   const args = {
@@ -24485,9 +24492,9 @@ test('graph-guard ladder: not_indexed → DENY-once with the index-now redirect;
     cfg: { cacheTtlMs: 60000 }, probe: async () => { probes++; return { state: 'not_indexed', nodes: 0 }; },
   };
   const first = await ggCore.decideBroadSearch(args);
-  assertEq(first.action, 'deny', 'not_indexed now DENIES once (was allow+advisory)');
+  assertEq(first.action, 'advise', 'not_indexed advises once');
   assert(/graph_analyze/.test(first.reason), 'reason pushes graph_analyze');
-  assert(/deny-once|passes through NOW/.test(first.reason), 'reason states the escape hatch');
+  assert(/NOT blocked/.test(first.reason), 'reason states the search is not blocked');
   const second = await ggCore.decideBroadSearch(args);
   assertEq(second.action, 'allow', 'identical retry passes — never blocked waiting for the async index');
   assertEq(probes, 1, 'state cached — probe not repeated within TTL');
@@ -24530,7 +24537,7 @@ test('graph-guard ladder: a bare-string probe result still works (back-compat)',
     kind: 'native-grep', raw: 'Grep y', pattern: 'y', projectRoot: 'C:/bc', sid: 's', dataDir,
     cfg: { cacheTtlMs: 60000 }, probe: async () => 'not_indexed', // legacy shape → nodes defaults 0
   };
-  assertEq((await ggCore.decideBroadSearch(args)).action, 'deny', 'string "not_indexed" still denies once');
+  assertEq((await ggCore.decideBroadSearch(args)).action, 'advise', 'string "not_indexed" still advises once');
 });
 
 test('graph-warm: cooldown round-trip — within window blocks, expired/absent allows', () => {
