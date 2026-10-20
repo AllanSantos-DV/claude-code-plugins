@@ -3,11 +3,10 @@
  * graph-guard.js — PreToolUse hook for the native Grep|Glob tools.
  *
  * On the mcp-memory backend with a READY Session Graph, a BROAD recursive
- * search (no path/glob/type scoping) is denied ONCE with the two-step redirect:
- * graph_search/graph_symbols first (structural, embedding-free, ~300ms measured
- * on a 135k-node graph) to get the narrow paths, then re-run the text search
- * SCOPED. Retrying the identical call passes (per-session sig stamp) — never a
- * deadlock, and free-text searches lose at most one round-trip.
+ * search (no path/glob/type scoping) gets an ADVISORY (additionalContext, never a
+ * deny) once per unique search: graph_search/graph_symbols first (structural,
+ * embedding-free, ~300ms measured on a 135k-node graph) to get the narrow paths,
+ * then the text search SCOPED. The search itself always runs.
  *
  * NEVER waits for indexing (minutes on large repos, measured): not_indexed →
  * the search passes with a one-shot advisory suggesting graph_analyze.
@@ -79,11 +78,12 @@ async function run(event) {
       probe: core.makeGraphStateProbe({ cwd, timeoutMs: cfg.probeTimeoutMs }),
     });
 
-    if (res.action === 'deny') {
+    if (res.action === 'advise') {
       try {
         require('../engine/lib/metrics.js').fire('graph-guard.fired', { kind }, { sessionId: sid, cwd });
       } catch (e) { void e; /* metrics are best-effort */ }
-      return decision('deny', { additionalContext: res.reason, permissionDecisionReason: res.reason });
+      // Context only, no permissionDecision: the user's permission flow is untouched.
+      return JSON.stringify({ hookSpecificOutput: { hookEventName: 'PreToolUse', additionalContext: res.reason } });
     }
     return PASS;
   } catch (err) {

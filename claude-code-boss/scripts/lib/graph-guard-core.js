@@ -140,33 +140,33 @@ function extractQueryTokens(pattern) {
 }
 
 /**
- * The deny reason IS the product: it must teach the exact two-step and make the
- * escape hatch explicit (retry passes / scope the search).
+ * The advisory IS the product: it must teach the exact two-step. It is context
+ * only — the search still runs (a deny here beat the Smart Tool transparent
+ * redirect and blocked the agent).
  */
 function buildRedirectReason({ kind, pattern, tokens }) {
   const t = tokens && tokens.length ? tokens.join(' ') : (pattern || '<term>');
   return [
-    `[graph-guard] Broad recursive search intercepted (${kind}). The Session Graph is READY for this repo — it answers structural queries in ~300ms with no filesystem walk.`,
+    `[graph-guard] Broad recursive search noticed (${kind}). The Session Graph is READY for this repo — it answers structural queries in ~300ms with no filesystem walk.`,
     `1. Call \`graph_search({ query: "${t}" })\` (or \`graph_symbols\`) to get the NARROW file paths where this lives.`,
     `2. Re-run the text search SCOPED to those paths (Grep \`path:\`/\`glob:\`, or \`grep -r <dir>\`), only if you still need raw text matches.`,
-    'Retrying this exact same call passes through (deny-once).',
+    'The search was NOT blocked; this note shows once per unique search.',
   ].join('\n');
 }
 
 /**
- * not_indexed deny-once reason. The economics (owner's call): indexing is a
- * ONE-TIME cost, a broad grep is a PER-QUERY cost (re-walks the fs every time),
- * so the first broad search is denied to push the agent to index NOW — but
- * deny-once means the retry passes, so nothing is ever blocked waiting for the
- * (async) index to finish.
+ * not_indexed advisory. The economics (owner's call): indexing is a ONE-TIME
+ * cost, a broad grep is a PER-QUERY cost (re-walks the fs every time), so the
+ * first broad search carries a push to index NOW — advisory only, nothing is
+ * ever blocked waiting for the (async) index to finish.
  */
 function buildNotIndexedReason({ pattern, tokens }) {
   const t = tokens && tokens.length ? tokens.join(' ') : (pattern || '<term>');
   return [
-    '[graph-guard] Broad recursive search intercepted, and this repo\'s Session Graph is NOT indexed yet. Indexing is a ONE-TIME cost; a broad grep re-walks the whole tree on EVERY call — so index once, then every later symbol search is the cheap structural path.',
+    '[graph-guard] Broad recursive search noticed, and this repo\'s Session Graph is NOT indexed yet. Indexing is a ONE-TIME cost; a broad grep re-walks the whole tree on EVERY call — so index once, then every later symbol search is the cheap structural path.',
     '1. Call `graph_analyze` to build the graph (async — seconds on small repos, minutes on large ones; it returns immediately).',
     `2. Once ready, \`graph_search({ query: "${t}" })\` gives the NARROW paths — then re-run the text search SCOPED to them.`,
-    'Retrying this exact same call passes through NOW (deny-once) if you need the raw text search before the index is ready.',
+    'The search was NOT blocked: it runs now, without waiting for the index.',
   ].join('\n');
 }
 
@@ -239,7 +239,7 @@ function searchSig(kind, raw, root) {
  * @param {() => Promise<{state:'ready'|'not_indexed'|'indexing'|'offline', nodes:number}>} a.probe
  *        resolves graph state + node count (short timeout, caller-provided);
  *        ONLY called on a stale cache.
- * @returns {Promise<{action:'allow'|'deny', reason?:string}>}
+ * @returns {Promise<{action:'allow'|'advise', reason?:string}>}
  */
 async function decideBroadSearch({ kind, raw, pattern, projectRoot, sid, dataDir, cfg, probe }) {
   try {
@@ -262,9 +262,9 @@ async function decideBroadSearch({ kind, raw, pattern, projectRoot, sid, dataDir
       return { action: 'allow' };
     }
 
-    // not_indexed → DENY-ONCE with the "index now" redirect (owner's economics:
-    // one-time index vs per-query fs walk). deny-once → the retry passes, so the
-    // agent is NEVER blocked waiting for the async index to finish. indexing /
+    // not_indexed → ADVISE-ONCE with the "index now" push (owner's economics:
+    // one-time index vs per-query fs walk). Advisory only — the search is never
+    // blocked, so the agent never waits for the async index to finish. indexing /
     // offline → silent pass (don't punish an already-triggered index / fail-open).
     if (cached.state === 'not_indexed') {
       const sFile = stampPath(dataDir, sid);
@@ -273,7 +273,7 @@ async function decideBroadSearch({ kind, raw, pattern, projectRoot, sid, dataDir
       if (stamp.sigs.includes(sig)) return { action: 'allow' };
       writeStamp(sFile, { ...stamp, sigs: [...stamp.sigs, sig] });
       return {
-        action: 'deny',
+        action: 'advise',
         reason: buildNotIndexedReason({ pattern, tokens: extractQueryTokens(pattern) }),
       };
     }
@@ -282,14 +282,14 @@ async function decideBroadSearch({ kind, raw, pattern, projectRoot, sid, dataDir
       return { action: 'allow' }; // indexing / offline → pass
     }
 
-    // Graph READY (with nodes) → deny-once per unique search per session.
+    // Graph READY (with nodes) → advise once per unique search per session.
     const sFile = stampPath(dataDir, sid);
     const stamp = readStamp(sFile);
     const sig = searchSig(kind, raw, projectRoot);
     if (stamp.sigs.includes(sig)) return { action: 'allow' };
     writeStamp(sFile, { ...stamp, sigs: [...stamp.sigs, sig] });
     return {
-      action: 'deny',
+      action: 'advise',
       reason: buildRedirectReason({ kind, pattern, tokens: extractQueryTokens(pattern) }),
     };
   } catch (e) {
