@@ -1007,7 +1007,7 @@ const TESTS = [
 
   // ── PreToolUse / Grep|Glob + Bash — graph-guard (broad-search → graph redirect) ─
   {
-    name: 'graph-guard       [Grep broad + mcp-memory + graph READY → deny-once with redirect]',
+    name: 'graph-guard       [Grep broad + mcp-memory + graph READY → advisory once (never a deny)]',
     script: 'graph-guard.js',
     payload: {
       tool_name: 'Grep',
@@ -1019,17 +1019,16 @@ const TESTS = [
     extraEnv: () => ({ CLAUDE_PLUGIN_ROOT: _gg.root, CLAUDE_PLUGIN_DATA: _gg.dataDir }),
     validate: r => {
       const out = r.parsed?.hookSpecificOutput || {};
-      if (out.permissionDecision !== 'deny') return `broad Grep with READY graph must DENY once, got: ${out.permissionDecision}`;
+      if (out.permissionDecision) return `broad Grep with READY graph must NOT carry a permission decision (advisory only), got: ${out.permissionDecision}`;
       const ctx = out.additionalContext || '';
-      if (!ctx.includes('[graph-guard]')) return `deny reason must be tagged [graph-guard], got: ${ctx}`;
-      if (!ctx.includes('graph_search')) return `deny reason must teach graph_search, got: ${ctx}`;
-      if (out.permissionDecisionReason !== ctx) return 'permissionDecisionReason must mirror the reason';
+      if (!ctx.includes('[graph-guard]')) return `advisory must be tagged [graph-guard], got: ${ctx}`;
+      if (!ctx.includes('graph_search')) return `advisory must teach graph_search, got: ${ctx}`;
       return null;
     },
   },
   {
-    // SAME payload, SAME session/dataDir as above — the deny-once stamp must release it.
-    name: 'graph-guard       [identical retry →abstain (deny-once stamp)]',
+    // SAME payload, SAME session/dataDir as above — the advise-once stamp keeps it silent.
+    name: 'graph-guard       [identical retry →abstain (advise-once stamp)]',
     script: 'graph-guard.js',
     payload: {
       tool_name: 'Grep',
@@ -1040,7 +1039,7 @@ const TESTS = [
     expect: { noError: true },
     extraEnv: () => ({ CLAUDE_PLUGIN_ROOT: _gg.root, CLAUDE_PLUGIN_DATA: _gg.dataDir }),
     validate: r => abstained(r)
-      ? null : `identical retry must pass (deny-once), got: ${r.parsed?.hookSpecificOutput?.permissionDecision}`,
+      ? null : `identical retry must be silent (advise-once), got: ${r.parsed?.hookSpecificOutput?.permissionDecision}`,
   },
   {
     name: 'graph-guard       [scoped Grep (path) →abstain, no interception]',
@@ -1057,7 +1056,7 @@ const TESTS = [
       ? null : `scoped Grep must never be intercepted, got: ${r.parsed?.hookSpecificOutput?.permissionDecision}`,
   },
   {
-    name: 'graph-guard       [not_indexed + mcp-memory → deny-once, pushes graph_analyze]',
+    name: 'graph-guard       [not_indexed + mcp-memory → advisory once, pushes graph_analyze]',
     script: 'graph-guard.js',
     payload: {
       tool_name: 'Grep',
@@ -1069,8 +1068,8 @@ const TESTS = [
     extraEnv: () => ({ CLAUDE_PLUGIN_ROOT: _gg.root, CLAUDE_PLUGIN_DATA: _gg.dataDir }),
     validate: r => {
       const out = r.parsed?.hookSpecificOutput || {};
-      if (out.permissionDecision !== 'deny') return `not_indexed must DENY once (economics: index once vs per-query walk), got: ${out.permissionDecision}`;
-      if (!/graph_analyze/.test(out.additionalContext || '')) return `deny reason must push graph_analyze, got: ${out.additionalContext}`;
+      if (out.permissionDecision) return `not_indexed must only ADVISE (never block), got: ${out.permissionDecision}`;
+      if (!/graph_analyze/.test(out.additionalContext || '')) return `advisory must push graph_analyze, got: ${out.additionalContext}`;
       return null;
     },
   },
@@ -1104,8 +1103,8 @@ const TESTS = [
   },
   {
     // The Bash surface rides curation-guard (no extra spawn): broad grep -r at
-    // the repo root with READY graph → the SAME deny-once redirect.
-    name: 'graph-guard       [Bash grep -r broad via curation-guard → deny with redirect]',
+    // the repo root with READY graph → the SAME advise-once note.
+    name: 'graph-guard       [Bash grep -r broad via curation-guard → advisory, no deny]',
     script: 'curation-guard.js',
     payload: {
       tool_name: 'Bash',
@@ -1117,8 +1116,8 @@ const TESTS = [
     extraEnv: () => ({ CLAUDE_PLUGIN_ROOT: _gg.root, CLAUDE_PLUGIN_DATA: _gg.dataDir }),
     validate: r => {
       const out = r.parsed?.hookSpecificOutput || {};
-      if (out.permissionDecision !== 'deny') return `broad bash grep with READY graph must DENY once, got: ${out.permissionDecision} (ctx: ${out.additionalContext})`;
-      if (!(out.additionalContext || '').includes('[graph-guard]')) return `reason must be tagged [graph-guard], got: ${out.additionalContext}`;
+      if (out.permissionDecision === 'deny') return `broad bash grep with READY graph must NOT be denied (it beat the Smart Tool redirect), got deny (ctx: ${out.additionalContext})`;
+      if (!(out.additionalContext || '').includes('[graph-guard]')) return `advisory must be tagged [graph-guard], got: ${out.additionalContext}`;
       return null;
     },
   },

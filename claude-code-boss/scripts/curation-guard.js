@@ -231,8 +231,25 @@ async function run(event) {
   return { hookSpecificOutput: { hookEventName: 'PreToolUse', additionalContext: fix.ctx } };
 }
 
-/** The curation cascade (header steps 1–4) over the — possibly escape-fixed — event. */
+/**
+ * The curation cascade (header steps 1–4) over the — possibly escape-fixed — event.
+ * Advisory notes (graph-guard) collected on the way are merged into whatever the
+ * cascade decides, so an advisory never replaces a decision nor blocks a call.
+ */
 async function cascade(event) {
+  const notes = [];
+  const out = await cascadeSteps(event, notes);
+  if (!notes.length) return out;
+  const note = notes.join(' ');
+  const hso = out && out.hookSpecificOutput;
+  if (hso) {
+    hso.additionalContext = [hso.additionalContext, note].filter(Boolean).join(' ');
+    return out;
+  }
+  return { hookSpecificOutput: { hookEventName: 'PreToolUse', additionalContext: note } };
+}
+
+async function cascadeSteps(event, notes) {
   try {
     if (!event || event.tool_name !== 'Bash') {
       return PASS;
@@ -298,8 +315,8 @@ async function cascade(event) {
 
     // 2.5 Graph-guard (Bash surface): a BROAD recursive search (grep -r/rg/find
     // at the repo root) on the mcp-memory backend with a READY Session Graph is
-    // denied ONCE with the graph_search→scoped-grep two-step; the identical
-    // retry passes. Lives here (not a separate hook) so every Bash call keeps
+    // advised ONCE (additionalContext, never a deny — a deny here beat the Smart
+    // Tool transparent redirect) with the graph_search→scoped-grep two-step. Lives here (not a separate hook) so every Bash call keeps
     // paying exactly ONE guard spawn. Fully fail-open: any error falls through
     // to the normal cascade below.
     try {
@@ -322,11 +339,11 @@ async function cascade(event) {
               cfg: ggCfg,
               probe: core.makeGraphStateProbe({ cwd, timeoutMs: ggCfg.probeTimeoutMs }),
             });
-            if (res.action === 'deny') {
+            if (res.action === 'advise') {
               try {
                 require('../engine/lib/metrics.js').fire('graph-guard.fired', { kind: 'bash', tool: broad.tool }, { sessionId: sid, cwd });
               } catch (e) { void e; /* metrics are best-effort */ }
-              return decision('deny', { additionalContext: res.reason, permissionDecisionReason: res.reason });
+              notes.push(res.reason);
             }
           }
         }
