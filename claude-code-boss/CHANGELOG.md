@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [3.10.1] - 2026-10-22
+
 ### Changed
 - **graph-guard avisa em vez de bloquear** (`graph-guard-core.js`, `graph-guard.js`, `curation-guard.js`): a busca ampla (`grep -r`/`rg` no Bash, Grep/Glob nativos) deixou de ser negada na primeira vez; vira `additionalContext` (uma vez por busca única e sessão), sem `permissionDecision`. O `deny` vencia o redirecionamento transparente do Smart Tool 0.9.23 e travava o agente. No Bash o aviso é somado à decisão do restante da curadoria.
 - **Aviso do graph-guard manda usar `smart_search`** (`graph-guard-core.js`): o texto deixou de orientar refazer a busca com `path:`/`glob:` (estreitar para escapar); agora aponta o Smart Tool (`smart_search` e `project_manage` graph: índice amplo, correlações, mapa de dependência). Continua só avisando, sem negar. Teste falha com o texto antigo.

@@ -3,13 +3,13 @@
 <head>
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
-<title>claude-code-boss v3.10.0 — changelog</title>
+<title>claude-code-boss v3.10.1 — changelog</title>
 <meta name="description" content="O que mudou em cada versão do claude-code-boss, da mais recente para a mais antiga." />
 <link rel="canonical" href="https://allansantos-dv.github.io/claude-code-plugins/claude-code-boss/changelog.html">
 <meta property="og:type" content="website">
 <meta property="og:site_name" content="allansantos-plugins">
 <meta property="og:locale" content="pt_BR">
-<meta property="og:title" content="claude-code-boss v3.10.0 — changelog">
+<meta property="og:title" content="claude-code-boss v3.10.1 — changelog">
 <meta property="og:description" content="O que mudou em cada versão do claude-code-boss, da mais recente para a mais antiga.">
 <meta property="og:url" content="https://allansantos-dv.github.io/claude-code-plugins/claude-code-boss/changelog.html">
 <meta property="og:image" content="https://allansantos-dv.github.io/claude-code-plugins/claude-code-boss/og-card.jpg">
@@ -17,7 +17,7 @@
 <meta property="og:image:height" content="630">
 <meta property="og:image:alt" content="claude-code-boss: Menos repetição. Mais memória.">
 <meta name="twitter:card" content="summary_large_image">
-<meta name="twitter:title" content="claude-code-boss v3.10.0 — changelog">
+<meta name="twitter:title" content="claude-code-boss v3.10.1 — changelog">
 <meta name="twitter:description" content="O que mudou em cada versão do claude-code-boss, da mais recente para a mais antiga.">
 <meta name="twitter:image" content="https://allansantos-dv.github.io/claude-code-plugins/claude-code-boss/og-card.jpg">
 <script data-ccb-theme-script>
@@ -274,14 +274,14 @@ html{scroll-behavior:auto}
   <nav class="nav-links">
     <a href="index.html">← Apresentação</a>
     <a href="tech.html">Detalhes técnicos</a>
-    <a href="#top" class="ver">v3.10.0</a>
+    <a href="#top" class="ver">v3.10.1</a>
   </nav>
 <div class="ccb-theme" role="group" aria-label="Tema"><button type="button" data-ccb-theme="dark" aria-pressed="true">Dark</button><button type="button" data-ccb-theme="light" aria-pressed="false">Light</button></div>
 </header>
 
 <main class="wrap" id="top">
   <div class="page-head">
-    <p class="kick">changelog · v3.10.0</p>
+    <p class="kick">changelog · v3.10.1</p>
     <h1>O que mudou em cada versão</h1>
     <p class="intro">Histórico do claude-code-boss, da versão mais recente para a mais antiga. O registro completo, com cada correção, está no <a href="https://github.com/AllanSantos-DV/claude-code-plugins/blob/main/claude-code-boss/CHANGELOG.md">CHANGELOG.md</a>.</p>
     <div class="toc">
@@ -292,6 +292,7 @@ html{scroll-behavior:auto}
 
   <section id="resumo">
     <h2>Em linguagem simples</h2>
+    <p><b>3.10.1</b> (2026-10-22) · Correção: depois que a pasta passava para cache de 5 minutos, a compactação ainda esperava a janela de 1 hora e o corte não vinha, regravando o contexto inteiro. Agora o corte vem quando o cache de 5 minutos esfria. O aviso de busca ampla passou a apontar o Smart Tool.</p>
     <p><b>3.10.0</b> (2026-10-19) · Reinício em fases, desligado por padrão: passado o limiar de contexto, com o cache quente e no primeiro prompt depois de um turno com commit, a sessão recebe um aviso curto sugerindo seguir a próxima fase numa sessão nova a partir de um handoff. Ligar pelo painel mede antes as conversas dos últimos 30 dias (só leitura) e mostra se há economia. Também: faixa acima do prompt e <code>/boss</code> com custo da sessão, economia do Token Guard e estado do Brain.</p>
     <p><b>3.9.0</b> · Retomada de sessão grande conta como cache frio: o primeiro pedido de uma sessão retomada regrava o histórico inteiro, e o gate achava o cache quente e não cortava. Agora, com o contexto acima do limite, o primeiro prompt da retomada passa pelo corte a frio. Medido em 14 dias: 5 de 5 retomadas grandes regravaram 88–100% do histórico, cerca de US$ 3–7 cada.</p>
     <p><b>3.9.0</b> · Contagem de compactações: cada corte vira um registro, por sessão e por modelo|janela, com quando, modelo, janela, contexto antes e depois, % da janela no disparo, quem cortou (boss automático, boss manual ou o engine) e o custo do turno de reescrita. O indicador “compacta demais” acende com mais de 5 cortes por 100 chamadas ou mais de 2 por hora. A sugestão de teto é um modelo de custo, não uma medição: só sai com 5 ou mais cortes medidos e diz o que falta. O padrão de 30% não muda. Onde ver: painel Home, <code>doctor --cost</code> (<code>compaction-rate</code>), <code>node scripts/compaction-report.js [dias] [--json]</code> e <code>/api/metrics/compaction</code>.</p>
@@ -310,11 +311,12 @@ html{scroll-behavior:auto}
 
   <section id="versoes">
     <h2>Destaques por versão <span class="tag">98 releases</span></h2>
-    <p class="lead">O changelog completo (v1.0.0 → v3.10.0) vive no <a href="https://github.com/AllanSantos-DV/claude-code-plugins/blob/main/claude-code-boss/CHANGELOG.md">CHANGELOG.md</a>. Destaques recentes:</p>
+    <p class="lead">O changelog completo (v1.0.0 → v3.10.1) vive no <a href="https://github.com/AllanSantos-DV/claude-code-plugins/blob/main/claude-code-boss/CHANGELOG.md">CHANGELOG.md</a>. Destaques recentes:</p>
     <div class="table-scroll">
       <table>
         <thead><tr><th>Versão</th><th>Destaque</th></tr></thead>
         <tbody>
+          <tr><td><b>v3.10.1</b></td><td>O corte da compactação volta a vir depois da troca do cache da pasta para 5 minutos; o aviso de busca ampla aponta o Smart Tool.</td></tr>
           <tr><td><b>v3.10.0</b></td><td>Reinício em fases (desligado por padrão, com medição das conversas dos últimos 30 dias antes de ligar), faixa acima do prompt e <code>/boss</code> com custo da sessão, economia do Token Guard e estado do Brain.</td></tr>
           <tr><td><b>v3.9.0</b></td><td>CLI para instalar/atualizar o servidor de memória fora do Claude Code (<code>scripts/mcp-memory-bootstrap.js</code>: <code>status</code> · <code>ensure</code> · <code>update</code>), pedido do whatsapp-bridge. Reusa <code>lib/mcp-bootstrap/</code> (Java, download verificado, launcher) e o restart do auto-update. Silencioso (sem janela), uma linha JSON no stdout, código de saída 0/1/2/3 (3 = falta Java). Versão mínima oficial declarada em um lugar só (<code>lib/mcp-min-version.js</code>, <b>2.49.0</b>); falha alto se a última release publicada for menor.</td></tr>
           <tr><td><b>v3.6.0</b></td><td>Falha de hook diz de quem é. O Claude Code rotula um hook com erro só pelo evento, sem o plugin dono (anthropics/claude-code#86368). (A) Os 5 hooks de comando do boss prefixam todo stderr com <code>[claude-code-boss:&lt;hook&gt;]</code> (<code>lib/hook-prefix.js</code>). (B) <code>lib/hook-owner.js</code>, melhor esforço: no prompt seguinte lê do transcript as falhas (<code>hook_non_blocking_error</code>) e timeouts (<code>hook_cancelled</code>) novos da sessão e mostra "Hook X falhou (saída N) → dono: plugin Y" pelo <code>systemMessage</code>. Comando de hook = casamento exato contra os <code>hooks.json</code> dos plugins instalados e os settings; <code>mcp_tool</code> não grava comando, então sai "dono provável"/"candidatos: A, B", nunca certeza inventada. Cada falha é avisada uma vez; máximo de 3 por prompt. Correção: o 401 "missing/invalid token" agora nomeia o daemon que respondeu (pid, raiz do plugin, porta).</td></tr>
@@ -362,7 +364,7 @@ html{scroll-behavior:auto}
       <a href="https://github.com/AllanSantos-DV/claude-code-plugins/blob/main/claude-code-boss/README.md">README</a>
       <a href="https://github.com/AllanSantos-DV/claude-code-plugins">GitHub</a>
     </div>
-    <div class="legal">MIT · Allan Santos · claude-code-boss v3.10.0</div>
+    <div class="legal">MIT · Allan Santos · claude-code-boss v3.10.1</div>
   </div>
 </footer>
 
