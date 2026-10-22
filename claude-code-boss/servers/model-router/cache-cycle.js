@@ -40,7 +40,9 @@ function coldBoundaryMs(config) {
 //   creation > 0 → 'miss' (houve rebuild — só conta como miss se NÃO houve read)
 //   nada         → 'unknown' (ausência de sinal NÃO é sinal — nunca inventar)
 // ttlMs só é preenchido quando a resposta revela a janela CONTRATADA no write
-// (ephemeral_1h / ephemeral_5m). Um hit não revela nada: devolve null.
+// (ephemeral_1h / ephemeral_5m) — num hit também: um hit com write parcial diz a
+// janela do que acabou de gravar (com o TTL do cliente trocado para 5min, toda
+// resposta lê o prefixo de 1h e regrava o resto em 5min). Hit sem write: null.
 function parseCacheUsage(usage) {
   const u = usage || {};
   const read = num(u.cache_read_input_tokens);
@@ -55,7 +57,7 @@ function parseCacheUsage(usage) {
 
   // read DOMINA creation: um write parcial sobre um prefixo lido ainda é cache
   // quente — tratar isso como miss jogaria fora um cache vivo.
-  if (read > 0) return { state: 'hit', ttlMs: null, read, creation };
+  if (read > 0) return { state: 'hit', ttlMs, read, creation };
   if (creation > 0) return { state: 'miss', ttlMs, read, creation };
   return { state: 'unknown', ttlMs: null, read: 0, creation: 0 };
 }
@@ -95,7 +97,8 @@ function isColdBoundary(state, now, config, globalTtlMs) {
 //
 // Duas invariantes que protegem contra o parser de stream falhar:
 //  - `unknown` (não conseguimos ler o usage) NÃO apaga o estado anterior;
-//  - o TTL observado só SOBE, nunca é rebaixado por uma leitura vazia.
+//  - uma leitura sem write não mexe no TTL; o write mais recente manda (o cliente
+//    pode trocar 1h → 5min no meio da sessão, e o cache novo vive pela janela nova).
 // Todo request desliza a janela (lastRequestTs = now): um hit refresca o TTL do
 // lado da Anthropic sem custo, então adiar a fronteira é o comportamento real.
 //
@@ -114,7 +117,7 @@ function observeUsage(state, usage, now, config, globalTtlMs) {
   const prevTtl = Number.isFinite(prev.ttlMs) && prev.ttlMs > 0 ? prev.ttlMs : 0;
   const seenTtl = Number.isFinite(parsed.ttlMs) && parsed.ttlMs > 0 ? parsed.ttlMs : 0;
   const fallbackTtl = Number.isFinite(globalTtlMs) && globalTtlMs > 0 ? globalTtlMs : coldBoundaryMs(config);
-  const ttlMs = Math.max(prevTtl, seenTtl) || fallbackTtl;
+  const ttlMs = seenTtl || prevTtl || fallbackTtl;
 
   return {
     ...prev,

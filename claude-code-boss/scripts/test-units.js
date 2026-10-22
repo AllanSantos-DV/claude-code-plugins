@@ -11202,7 +11202,24 @@ const cacheCycle = require('../servers/model-router/cache-cycle.js');
 test('parseCacheUsage: read>0 → hit (o prefixo veio do cache, está QUENTE)', () => {
   const r = cacheCycle.parseCacheUsage({ cache_read_input_tokens: 74000 });
   assertEq(r.state, 'hit');
-  assertEq(r.ttlMs, null, 'um hit não refina o TTL (só o write revela a janela contratada)');
+  assertEq(r.ttlMs, null, 'um hit sem write não refina o TTL (só o write revela a janela contratada)');
+});
+
+test('parseCacheUsage: hit COM write revela a janela do write (TTL do cliente trocado para 5min: lê o prefixo 1h, regrava o resto em 5min)', () => {
+  const r = cacheCycle.parseCacheUsage({ cache_read_input_tokens: 17753, cache_creation_input_tokens: 380829, cache_creation: { ephemeral_5m_input_tokens: 380829, ephemeral_1h_input_tokens: 0 } });
+  assertEq(r.state, 'hit', 'read domina: continua hit');
+  assertEq(r.ttlMs, 300000);
+  assertEq(cacheCycle.parseCacheUsage({ cache_read_input_tokens: 10, cache_creation_input_tokens: 5, cache_creation: { ephemeral_1h_input_tokens: 5 } }).ttlMs, 3600000);
+});
+
+test('observeUsage: troca 1h → 5min no meio da sessão — o write mais recente manda e a fronteira fria volta a 5min', () => {
+  const h1 = { cache_creation_input_tokens: 299000, cache_creation: { ephemeral_1h_input_tokens: 299000 } };
+  const m5hit = { cache_read_input_tokens: 17753, cache_creation_input_tokens: 380829, cache_creation: { ephemeral_5m_input_tokens: 380829 } };
+  const st = cacheCycle.observeUsage(cacheCycle.observeUsage(null, h1, 0, {}), m5hit, 1000, {});
+  assertEq(st.ttlMs, 300000, 'o cache que acabou de ser gravado vive pela janela nova');
+  const b = cacheCycle.isColdBoundary(st, 1000 + 6 * 60000, {});
+  assertEq([b.cold, b.reason], [true, 'gap-expired'], '6 min depois o prefixo está frio (antes: julgado quente por 1h)');
+  assertEq(cacheCycle.observeUsage(st, { cache_read_input_tokens: 400000 }, 2000, {}).ttlMs, 300000, 'leitura sem write não muda o TTL');
 });
 
 test('parseCacheUsage: creation>0 sem read → miss (houve rebuild do prefixo)', () => {
