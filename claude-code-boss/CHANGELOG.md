@@ -8,6 +8,7 @@
 
 ### Fixed
 - **Cache de 5 min por pasta sem o corte** (`scripts/compaction-event.js`, `hooks/compaction.mjs`): depois da troca do TTL da pasta para 5 min, toda chamada lê o prefixo de sistema ainda em 1 h (~18 mil tokens) e regrava o resto em 5 min. O registro tratava isso como acerto de cache e não lia a janela, então a sessão seguia julgando pelo TTL de 1 h: esperava a hora, a pessoa voltava depois de 5 a 10 min e o contexto inteiro era regravado frio, sem compactação. Nos 6 dias medidos, 46 de 48 sessões que trocaram para 5 min nunca foram compactadas (241 regravações a frio, 121 milhões de tokens). Agora a janela vem da gravação da chamada, com ou sem leitura, e o corte vem na primeira volta depois de 5 min. A revisão no fim de um turno autônomo, marcada pela janela de 1 h antes de a chamada de 5 min chegar ao transcript, é refeita pelo heartbeat assim que ela chega.
+- **Roteador: fronteira fria depois da troca do TTL** (`servers/model-router/cache-cycle.js`): um acerto de cache com gravação passa a informar a janela dessa gravação, e a janela da sessão segue a gravação mais recente em vez de só subir. Antes, depois de uma troca de 1 h para 5 min, o roteador continuava julgando o cache quente por 1 h e perdia a fronteira fria. A compactação usa o mesmo leitor.
 
 ## [3.10.0] - 2026-10-19
 

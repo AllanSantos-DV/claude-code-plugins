@@ -12,9 +12,6 @@ Origem: `orchestrador/docs/research/cache-1h-e-contexto-2026-10-18.md` (46 de 48
 - [x] **Achado e corrigido na hora — revisão de fim de turno armada pela janela de 1 h** (`hooks/compaction.mjs`, `turnEndWaitTtlMs` + heartbeat): num turno autônomo cuja
   chamada de 5 min chega ao transcript depois do `turn.complete`, a revisão ficava marcada para 1 h e a próxima mensagem regravava frio. O heartbeat (2 min) refaz a decisão
   quando a janela observada encolhe. Teste: `compaction hook: a turn-end re-check armed by the 1h window is re-armed…`.
-- [ ] **Fora do escopo — o roteador também ignora a janela num acerto** (`servers/model-router/cache-cycle.js:58` `parseCacheUsage`, `:117` `observeUsage` "o TTL só sobe"):
-  com o TTL trocado para 5 min o roteador continua julgando o prefixo quente por 1 h. Efeito: perde a fronteira fria (não reescreve/reclassifica quando poderia), não gera
-  custo novo. Roteador é opcional e está desligado nesta máquina. Proposta: `observeUsage` usar a janela da última gravação (como o compaction-event agora) em vez do máximo.
 
 ## Recuperação de contexto do Brain para o orquestrador (pedido do orquestrador, 2026-10-17) — em `develop`, sem release
 

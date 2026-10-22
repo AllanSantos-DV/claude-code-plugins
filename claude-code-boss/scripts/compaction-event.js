@@ -163,10 +163,7 @@ async function run(ev) {
         write5m,
         write1h,
         cacheState: parsed.state,
-        // The window this call WROTE, hit or miss. parseCacheUsage leaves it null on a hit, but after the folder TTL
-        // switches to 5m every call is a "hit" on the 1h system prefix (~18k read) that re-writes the rest at 5m:
-        // with null the session kept judging by 1h, waited, and never cut (a91f3364: 62 cold re-writes, no cut).
-        ttlMs: write1h > 0 ? cacheCycle().TTL_1H : (write5m > 0 ? cacheCycle().TTL_5M : null),
+        ttlMs: parsed.ttlMs, // the window this call WROTE, hit or miss (after a 5m folder switch every call is a hit)
         afterCompaction: c.afterCompaction,
       };
       await metrics.record('cache.turn', observed, ctx);
