@@ -71,20 +71,31 @@ which.
 
 ## Release flow
 
-**Owner validation gate (Allan, 2026-10-14, amended 2026-10-15 — standing rule,
-overrides anything below):** no release of claude-code-boss — merge into `main`,
-`git tag`, GitHub Release, any publication — without Allan's validation, given
-after he has seen the change running on his own machine. Work stays on a
-`fix/`/`feat/` branch cut from `develop`, tested and installed locally
-(`.claude/scripts/install-local.mjs`) for him to validate. Publish only on
-Allan's release order. His order counts when it comes from him directly **or**
-when the Jarvis orchestrator relays it with his literal words recorded in the
-orchestrator's ledger (a PEDIDO or the WhatsApp message) and the delegation
-carries the owner-validation flag (`validacaoAllan`) — the orchestrator controls
-this session and its delegations are the owner's requests, so a relayed order is
-accepted and must not be re-asked. What is still not an order: an agent
-(subagent, another tool, a peer session) inferring or volunteering a release on
-its own, or a relay with no recorded owner words.
+**Owner validation gate (Allan, 2026-10-14, amended 2026-10-15, amended again
+2026-10-22 — standing rule, overrides anything below):** Allan's validation is
+required **only for NEW functionality that changes how the product behaves**
+(something he never asked for or never tested). In that case: no release of
+claude-code-boss — merge into `main`, `git tag`, GitHub Release, any
+publication — without his validation, given after he has seen the change
+running on his own machine. The orchestrator prepares the whole test
+environment (install, setup, steps); Allan runs no command and no setup.
+Publish only on Allan's release order: from him directly **or** relayed by the
+Jarvis orchestrator with his literal words recorded in its ledger and the
+delegation carrying `validacaoAllan`.
+
+**Bug fixes, and functionality Allan already asked for and tested himself, are
+NOT subject to his validation (Allan, 2026-10-22: "quem testa é você").** The
+orchestrator tests and publishes them, with the delegation carrying
+`tipoRelease: correcao` plus the test evidence (`evidenciaTeste`); the session
+runs the suites, installs and verifies, and releases by the normal process. An
+agent (subagent, another tool, a peer session) inferring or volunteering a
+release on its own is still not an order.
+
+**Tags only from `main` (every release, both cases):** `develop` is
+fast-forwarded into `main` with the gate clean and the suites green, and only
+then the tag is made, while the current branch is `main`. Never a tag from
+`develop`. A tag already made from `develop` in the past is accepted; every new
+tag comes from `main`.
 
 Use the slash command **`/release`** (defined in `.claude/commands/release.md`). It enforces:
 1. Version bump committed
