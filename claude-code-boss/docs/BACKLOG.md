@@ -1,6 +1,6 @@
 # Backlog
 
-## Cache de 5 min por pasta sem o corte (pedido do orquestrador, 2026-10-22) — em `develop`, sem release
+## Cache de 5 min por pasta sem o corte (pedido do orquestrador, 2026-10-22) — publicado na v3.10.1 (tag a partir da main; smoke interativo real no HEAD fadc224: troca para 5m, gate compact cache-cold, poda 97.753 → 32.813 tokens)
 
 Origem: `orchestrador/docs/research/cache-1h-e-contexto-2026-10-18.md` (46 de 48 sessões trocadas para 5 min nunca compactadas). Nota: `docs/research/folder-ttl-sem-corte-2026-10-22.md`.
 
