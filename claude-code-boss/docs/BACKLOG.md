@@ -1,5 +1,21 @@
 # Backlog
 
+## Cache de 5 min por pasta sem o corte (pedido do orquestrador, 2026-10-22) — em `develop`, sem release
+
+Origem: `orchestrador/docs/research/cache-1h-e-contexto-2026-10-18.md` (46 de 48 sessões trocadas para 5 min nunca compactadas). Nota: `docs/research/folder-ttl-sem-corte-2026-10-22.md`.
+
+- [x] **Achado e corrigido na hora — a janela de 5 min nunca chegava à decisão** (`scripts/compaction-event.js`, `observed.ttlMs`): `parseCacheUsage` devolve `ttlMs: null`
+  em todo acerto (`read > 0`), e depois da troca toda chamada é acerto no prefixo de sistema em 1 h (17.753 lidos) com o resto regravado em `ephemeral_5m`. Visto na
+  `a91f3364` (security-check, métricas do boss): 162 decisões do gate, todas com `ttlMs` 3.600.000 (155 `host` = veredito `mixed` → 1 h; 2 `session`), `wait cache-warm`
+  com pausas de 367 a 618 s, e cada uma seguida de leitura 17.753 + gravação 5 min de 380 a 594 mil. Correção: a janela é a da gravação da chamada, acerto ou não.
+  Teste: `compaction-event.run turn: a hit that WRITES at 5m…` e o ponta a ponta `compaction hook + compaction-event: after the 5m folder switch…` (falham antes, passam depois).
+- [x] **Achado e corrigido na hora — revisão de fim de turno armada pela janela de 1 h** (`hooks/compaction.mjs`, `turnEndWaitTtlMs` + heartbeat): num turno autônomo cuja
+  chamada de 5 min chega ao transcript depois do `turn.complete`, a revisão ficava marcada para 1 h e a próxima mensagem regravava frio. O heartbeat (2 min) refaz a decisão
+  quando a janela observada encolhe. Teste: `compaction hook: a turn-end re-check armed by the 1h window is re-armed…`.
+- [ ] **Fora do escopo — o roteador também ignora a janela num acerto** (`servers/model-router/cache-cycle.js:58` `parseCacheUsage`, `:117` `observeUsage` "o TTL só sobe"):
+  com o TTL trocado para 5 min o roteador continua julgando o prefixo quente por 1 h. Efeito: perde a fronteira fria (não reescreve/reclassifica quando poderia), não gera
+  custo novo. Roteador é opcional e está desligado nesta máquina. Proposta: `observeUsage` usar a janela da última gravação (como o compaction-event agora) em vez do máximo.
+
 ## Recuperação de contexto do Brain para o orquestrador (pedido do orquestrador, 2026-10-17) — em `develop`, sem release
 
 Origem: `docs/research/compreensao-de-intencao-2026-10-17.md` (projeto orchestrador, §6.2). Testes em `scripts/test-units.js` (bloco "Orchestrator request").

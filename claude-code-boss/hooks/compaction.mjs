@@ -54,6 +54,7 @@ function newCtx() {
     pendingSettle: null,     // a compaction whose effect the next turn measures
     lastMessageId: null,     // newest API call already recorded as cache.turn
     turnEndTimer: 0,         // token of the pending turn-end re-check (a newer one supersedes)
+    turnEndWaitTtlMs: 0,     // the TTL the pending turn-end re-check was armed with (0 = none pending)
     folder: null,            // the launch cwd: the folder whose .claude/settings.local.json this session reads
     folderAbove: false,      // past the threshold at the last look (what the folder report says)
     folderTtl: null,         // the daemon's last answer for this folder ({ttl, live, allAbove, action})
@@ -168,6 +169,9 @@ function startHeartbeat($, ctx) {
       if (ctx.transcriptPath) { const { reply } = await observeCalls($, ctx); await folderFromReply($, ctx, reply); }
       else $.ui.log('compaction: folder heartbeat has no transcript path (classic SessionStart not seen) — calls not observed');
       await reportFolder($, ctx);
+      // A turn-end re-check armed by the 1h window while the turn's 5m writes had not landed yet would wait the hour
+      // and the next message would re-write a cold cache: re-judge it now by the shorter window.
+      if (ctx.turnEndWaitTtlMs && ttlInUse(ctx).ttlMs < ctx.turnEndWaitTtlMs) await turnEnd($, ctx);
     })().catch((err) => $.ui.log(`compaction: folder heartbeat failed: ${String(err && err.message ? err.message : err)}`)).finally(beat);
   });
   beat();
@@ -275,6 +279,7 @@ async function currentWindow($, ctx) {
 // queued command): past the threshold, compact once the cache is COLD (waiting for it, never
 // compacting a warm one) — the prompt gate never sees these. Nothing is held or re-sent.
 async function turnEnd($, ctx) {
+  ctx.turnEndWaitTtlMs = 0;
   try {
     if (!ctx.interactive || !ctx.configLoaded || !ctx.config.enabled) return;
     if (ctx.awaitCallAfterCut) return; // just compacted: the size reading is the pre-cut one
@@ -287,6 +292,7 @@ async function turnEnd($, ctx) {
       // Over the threshold with a warm cache: never compact it. Re-check when the cache is due
       // to be cold (a newer turn moves lastAnswerAt, so the re-check then waits again or stands down).
       const token = ++ctx.turnEndTimer;
+      ctx.turnEndWaitTtlMs = ttlMs;
       emit($, ctx, 'gate', {
         action: d.action, reason: d.reason, dueInMs: d.dueInMs, tokens: tokens ?? null, idleMs: now - ctx.lastAnswerAt, ttlMs, ttlSource,
         thresholdPercent: thr.percent, thresholdTokens: thr.thresholdTokens, windowTokens: windowTokens ?? null, windowSource,

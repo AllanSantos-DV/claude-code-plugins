@@ -28473,6 +28473,115 @@ test('compaction-event.run: trail events land in the metrics store; turn records
   });
 });
 
+// After the folder TTL switches to 5m, every call READS the 1h system prefix (~18k) and re-writes the rest at 5m:
+// a "hit" by parseCacheUsage, which leaves its window null. Real session a91f3364 (security-check, 18/10): 155 gates
+// judged by the 1h host window, waited, and 62 cold re-writes followed with no cut. Measured rows, not invented ones.
+const POST_SWITCH_CALL = { input_tokens: 3, output_tokens: 900, cache_read_input_tokens: 17753, cache_creation_input_tokens: 380829, cache_creation: { ephemeral_5m_input_tokens: 380829, ephemeral_1h_input_tokens: 0 } };
+const PRE_SWITCH_CALL = { input_tokens: 3, output_tokens: 900, cache_read_input_tokens: 0, cache_creation_input_tokens: 299000, cache_creation: { ephemeral_5m_input_tokens: 0, ephemeral_1h_input_tokens: 299000 } };
+
+test('compaction-event.run turn: a hit that WRITES at 5m proves a 5 min window (the folder-TTL sessions are all hits on the 1h system prefix)', async () => {
+  await withCmpStore(async (ce) => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-cmp-hit5m-'));
+    const f = cmpTranscript(dir, [{ type: 'assistant', message: { id: 'msg-h', model: 'm1', usage: POST_SWITCH_CALL } }]);
+    const reply = await ce.run({ session_id: 'sid-h', cwd: dir, transcript_path: f, payload: { kind: 'turn', host: 'gw.local', auth: 'api-key' } });
+    assertEq(reply.observed.cacheState, 'hit');
+    assertEq(reply.observed.ttlMs, 300000, 'the window of the write, hit or miss');
+    const f2 = cmpTranscript(dir, [{ type: 'assistant', message: { id: 'msg-r', model: 'm1', usage: { input_tokens: 1, output_tokens: 5, cache_read_input_tokens: 400000, cache_creation_input_tokens: 0 } } }]);
+    assertEq((await ce.run({ session_id: 'sid-h', cwd: dir, transcript_path: f2, payload: { kind: 'turn', host: 'gw.local', auth: 'api-key' } })).observed.ttlMs, null, 'a pure read writes nothing: no window (the last one stands)');
+  });
+});
+
+// The module run for real against a fake engine, its daemon calls answered by the REAL compaction-event.run.
+async function folderCutRun(ce, { gated }) {
+  const cmp = await import(require('url').pathToFileURL(path.join(ROOT, 'hooks', 'compaction.mjs')).href);
+  const hooks = collectModuleHooks(cmp.register);
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-folder-cut-'));
+  fs.writeFileSync(path.join(dir, 'brain-http.token'), 'tok');
+  const transcript = path.join(dir, 'session.jsonl');
+  const row = (id, usage) => JSON.stringify({ type: 'assistant', message: { id, model: 'm1', usage } }) + '\n';
+  fs.writeFileSync(transcript, row('msg-1', PRE_SWITCH_CALL));
+  const config = { enabled: true, thresholdPercent: 30, minIntervalMs: 600000, folderTtl: true };
+  const out = { compacts: 0, timers: [], logs: [] };
+  let now = 1_000_000_000;
+  const env = { CLAUDE_PLUGIN_DATA: dir, BRAIN_HTTP_PORT: '1' };
+  const $ = {
+    env: { get: async (k) => env[k] },
+    fs: { read: async (p) => fs.readFileSync(p, 'utf8') },
+    http: { fetch: async (url, init) => {
+      if (url.endsWith('/health')) return { status: 200, ok: true, text: JSON.stringify({ dataDir: dir }) };
+      const body = JSON.parse(init.body);
+      const payload = JSON.parse(body.payload);
+      let reply = {};
+      if (payload.kind === 'hello') reply = { config };
+      else if (payload.kind === 'folder' || payload.kind === 'folder-end') reply = { folderTtl: { ttl: '5m', live: 1, allAbove: true, action: 'none' } }; // never the real global state
+      else if (payload.kind === 'turn') reply = { ...(await ce.run({ ...body, payload })), config };
+      return { status: 200, ok: true, text: JSON.stringify(reply) };
+    } },
+    session: {
+      id: async () => 'sid-folder-cut', cwd: async () => dir, root: async () => dir, authorize: async () => ({ kind: 'api-key' }),
+      usage: async () => ({ context: { tokens: 400000, window: 1000000, breakdown: { rawMaxTokens: 1000000, autoCompactThreshold: 967000 } } }),
+      messages: async () => [],
+    },
+    clock: { now: async () => now, after: (ms, fn) => { out.timers.push({ ms, fn }); } },
+    ui: { log: (t) => out.logs.push(t), toast: () => {} },
+    command: { run: async () => { out.compacts++; } },
+    prompt: { submit: async () => {} },
+  };
+  const flush = async () => { for (let i = 0; i < 20; i++) await new Promise((r) => setImmediate(r)); };
+  const fire = async (pred) => { const i = out.timers.findIndex(pred); assert(i >= 0, `timer expected (${out.timers.map((t) => t.ms)})`); const [t] = out.timers.splice(i, 1); t.fn(); await flush(); };
+  await findHook(hooks, 'classic.SessionStart').fn($, { transcript_path: transcript, source: 'startup' }, async (e) => e);
+  await findHook(hooks, 'session.start').fn($, { isInteractive: true }, async (e) => e);
+  await fire((t) => t.ms === 1); // the folder join: hello + report + heartbeat
+  const submit = findHook(hooks, 'prompt.submit').fn;
+  const turn = async () => {
+    await findHook(hooks, 'turn.start').fn($, {}, async (e) => e);
+    await findHook(hooks, 'turn.complete').fn($, {}, async () => ({}));
+    await fire((t) => t.ms === 1); // afterTurn (+ turnEnd when no person prompt went through the gate)
+  };
+  // Turn 1, before the switch: the call wrote 1h.
+  if (gated) await submit($, { text: 'p1', origin: { kind: 'composer' } }, async (e) => e);
+  await turn();
+  if (gated) {
+    // Turn 2, after the switch: the call reads the 1h system prefix and re-writes the rest at 5m.
+    now += 30000;
+    await submit($, { text: 'p2', origin: { kind: 'composer' } }, async (e) => e);
+    fs.appendFileSync(transcript, row('msg-2', POST_SWITCH_CALL));
+    await turn();
+    now += 6 * 60000; // the person comes back after 6 min: the 5m cache is cold
+    out.held = await submit($, { text: 'p3', origin: { kind: 'composer' } }, async (e) => e);
+  } else {
+    // Autonomous turn whose 5m call lands in the transcript after turn.complete: turnEnd armed by the 1h window.
+    out.armedMs = out.timers.filter((t) => t.ms > 120000).map((t) => t.ms);
+    fs.appendFileSync(transcript, row('msg-2', POST_SWITCH_CALL));
+    now += 120000;
+    await fire((t) => t.ms === 120000); // the heartbeat picks the late call up
+    out.rearmedMs = out.timers.filter((t) => t.ms > 1000 && t.ms !== 120000).map((t) => t.ms);
+    now += 5 * 60000;
+    const due = out.timers.filter((t) => t.ms > 1000 && t.ms !== 120000 && t.ms < 3600000);
+    for (const t of due) { out.timers.splice(out.timers.indexOf(t), 1); t.fn(); }
+    await flush();
+  }
+  fs.rmSync(dir, { recursive: true, force: true });
+  return out;
+}
+
+test('compaction hook + compaction-event: after the 5m folder switch, a person back after 6 min is cut (it waited for 1h before)', async () => {
+  await withCmpStore(async (ce) => {
+    const r = await folderCutRun(ce, { gated: true });
+    assert(r.held && /compacting first/.test(r.held.drop || ''), `the prompt is held for the cut, got ${JSON.stringify(r.held)} ${r.logs.join(' | ')}`);
+  });
+});
+
+test('compaction hook: a turn-end re-check armed by the 1h window is re-armed by the heartbeat once the 5m write lands, and the cut comes', async () => {
+  await withCmpStore(async (ce) => {
+    const r = await folderCutRun(ce, { gated: false });
+    assertEq(r.armedMs, [3601000], 'armed by the 1h window (the turn\'s 5m call not in the transcript yet)');
+    assert(r.rearmedMs.some((ms) => ms < 300000), `re-armed by the 5m window (${r.rearmedMs}) ${r.logs.join(' | ')}`);
+    assertEq(r.compacts, 1, 'compacted once the 5m cache went cold');
+  });
+});
+
+
 test('hook_compaction_event: daemon transport (payload arrives as an object, bad events degrade visibly); module in hooks.json; free profile turns compaction off', async () => {
   const ht = require('./lib/hook-tools.js');
   const tools = ht.createHookTools({ pluginRoot: ROOT });
