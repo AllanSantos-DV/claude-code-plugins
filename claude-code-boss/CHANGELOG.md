@@ -6,6 +6,9 @@
 - **graph-guard avisa em vez de bloquear** (`graph-guard-core.js`, `graph-guard.js`, `curation-guard.js`): a busca ampla (`grep -r`/`rg` no Bash, Grep/Glob nativos) deixou de ser negada na primeira vez; vira `additionalContext` (uma vez por busca única e sessão), sem `permissionDecision`. O `deny` vencia o redirecionamento transparente do Smart Tool 0.9.23 e travava o agente. No Bash o aviso é somado à decisão do restante da curadoria.
 - **Aviso do graph-guard manda usar `smart_search`** (`graph-guard-core.js`): o texto deixou de orientar refazer a busca com `path:`/`glob:` (estreitar para escapar); agora aponta o Smart Tool (`smart_search` e `project_manage` graph: índice amplo, correlações, mapa de dependência). Continua só avisando, sem negar. Teste falha com o texto antigo.
 
+### Fixed
+- **Cache de 5 min por pasta sem o corte** (`scripts/compaction-event.js`, `hooks/compaction.mjs`): depois da troca do TTL da pasta para 5 min, toda chamada lê o prefixo de sistema ainda em 1 h (~18 mil tokens) e regrava o resto em 5 min. O registro tratava isso como acerto de cache e não lia a janela, então a sessão seguia julgando pelo TTL de 1 h: esperava a hora, a pessoa voltava depois de 5 a 10 min e o contexto inteiro era regravado frio, sem compactação. Nos 6 dias medidos, 46 de 48 sessões que trocaram para 5 min nunca foram compactadas (241 regravações a frio, 121 milhões de tokens). Agora a janela vem da gravação da chamada, com ou sem leitura, e o corte vem na primeira volta depois de 5 min. A revisão no fim de um turno autônomo, marcada pela janela de 1 h antes de a chamada de 5 min chegar ao transcript, é refeita pelo heartbeat assim que ela chega.
+
 ## [3.10.0] - 2026-10-19
 
 Check-up do motor (2026-10-15). Cada item tem teste; os números são do dado real desta máquina.

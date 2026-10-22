@@ -149,6 +149,8 @@ async function run(ev) {
       const u = c.usage;
       const parsed = cacheCycle().parseCacheUsage(u);
       const detail = u.cache_creation || {};
+      const write5m = Number(detail.ephemeral_5m_input_tokens) || 0;
+      const write1h = Number(detail.ephemeral_1h_input_tokens) || 0;
       observed = {
         host: data.host || 'unknown',
         auth: data.auth || 'unknown',
@@ -158,10 +160,13 @@ async function run(ev) {
         output: Number(u.output_tokens) || 0,
         read: parsed.read,
         write: parsed.creation,
-        write5m: Number(detail.ephemeral_5m_input_tokens) || 0,
-        write1h: Number(detail.ephemeral_1h_input_tokens) || 0,
+        write5m,
+        write1h,
         cacheState: parsed.state,
-        ttlMs: parsed.ttlMs,
+        // The window this call WROTE, hit or miss. parseCacheUsage leaves it null on a hit, but after the folder TTL
+        // switches to 5m every call is a "hit" on the 1h system prefix (~18k read) that re-writes the rest at 5m:
+        // with null the session kept judging by 1h, waited, and never cut (a91f3364: 62 cold re-writes, no cut).
+        ttlMs: write1h > 0 ? cacheCycle().TTL_1H : (write5m > 0 ? cacheCycle().TTL_5M : null),
         afterCompaction: c.afterCompaction,
       };
       await metrics.record('cache.turn', observed, ctx);
