@@ -2,6 +2,9 @@
 
 ## [Unreleased]
 
+### Fixed
+- **Lista de projetos do painel vazia em outras máquinas** (`scripts/dashboard.js`): quando o servidor de memória guardava um projeto com id inválido (a pasta home do usuário, uma raiz de disco ou uma pasta do sistema, gravado antes de o servidor validar escopos), ele recusava a leitura desse projeto com texto em vez de JSON, e o painel inteiro caía com `Unexpected token 'p', "project_id"... is not valid JSON`. Agora só esse projeto sai da lista, com o motivo na aba Logs, e os outros aparecem.
+
 ## [3.10.1] - 2026-10-22
 
 ### Changed

@@ -1,5 +1,18 @@
 # Backlog
 
+## Lista de projetos do painel quebra em outras máquinas (pedido do orquestrador, 2026-10-23) — em `develop`, aguardando a validação do dono
+
+Origem: relato do dono de várias máquinas; Logs do painel: `memory server unreachable: Unexpected token 'p', "project_id"... is not valid JSON` e `warm-up of the Home metrics failed`.
+
+- [x] **Achado e corrigido na hora — um projeto recusado pelo servidor derrubava a lista inteira** (`scripts/dashboard.js`, `scanServerKb`): `list_projects` devolve ids gravados antes
+  de o servidor validar escopos (pasta home do usuário, raiz de disco, pasta do sistema). Para eles o `list_documents` responde `isError` em texto puro (`project_id igual ao diretório
+  home do usuário ('C:\Users\…') — …`, `ProjectIdValidator` do mcp-memory 2.55.1, conferido contra o daemon local), e o `JSON.parse` sem tratamento abortava a varredura: Home, KB e
+  promoção de skill ficavam sem projeto nenhum. Na máquina do dono não há id desses, por isso ali funcionava. Agora o projeto recusado sai da lista com o motivo do servidor na aba Logs,
+  e uma recusa do próprio `list_projects` vira erro claro com o texto do servidor. Falha de transporte continua lançando. Teste: `dashboard scanServerKb: a project id the server refuses…`
+  (falha antes com o erro do print, passa depois); smoke do painel real contra daemon falso: `smoke/dashboard-kb-refused-project.mjs`.
+- [ ] **Fora de escopo — as memórias desses ids ficam invisíveis**: os documentos sob a pasta home/raiz continuam no servidor, mas nenhuma leitura os alcança. Proposta (projeto mcp-memory,
+  não editado): oferecer a migração com `memory_reclassify` (`from_project_id` → `clear_project_id` ou um projeto real) ou o painel apontar o caminho; decidir com o dono do servidor.
+
 ## Cache de 5 min por pasta sem o corte (pedido do orquestrador, 2026-10-22) — publicado na v3.10.1 (tag a partir da main; smoke interativo real no HEAD fadc224: troca para 5m, gate compact cache-cold, poda 97.753 → 32.813 tokens)
 
 Origem: `orchestrador/docs/research/cache-1h-e-contexto-2026-10-18.md` (46 de 48 sessões trocadas para 5 min nunca compactadas). Nota: `docs/research/folder-ttl-sem-corte-2026-10-22.md`.
