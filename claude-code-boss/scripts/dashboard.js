@@ -382,6 +382,38 @@ async function serverKbSummary() {
   return refreshServerKb();
 }
 
+/** A tool reply the server answered with a refusal (isError plain text) or anything that is not JSON. */
+class ServerToolRefusal extends Error {}
+
+/**
+ * One scan of the server's projects with their document counts. list_projects can return ids its own
+ * validator refuses on a read (the user's home folder, a drive root, a system folder — stored before the
+ * server validated scopes): list_documents answers those with plain text ("project_id igual ao diretório
+ * home…"), so such a project is left out and logged instead of taking the whole list down. Transport
+ * failures still throw.
+ */
+async function scanServerKb(client) {
+  const parse = (name, r) => {
+    const text = (r && r.text) || '';
+    if (r && r.raw && r.raw.isError) throw new ServerToolRefusal(`${name} refused by the memory server: ${text.slice(0, 300)}`);
+    let d;
+    try { d = JSON.parse(text || '{}'); } catch (err) { throw new ServerToolRefusal(`${name} answered non-JSON (${err.message}): ${text.slice(0, 300)}`); }
+    return Array.isArray(d) ? d : (d.data || d.projects || d.documents || d.results || d.items || []);
+  };
+  const ids = parse('list_projects', await client.callTool('list_projects', {})).filter((p) => typeof p === 'string' && (p === '__user__' || !p.startsWith('__')));
+  const projects = [];
+  for (const project of ids) {
+    let entries;
+    try { entries = parse('list_documents', await client.callTool('list_documents', { metadata: { project_id: project } })).length; } catch (err) {
+      if (!(err instanceof ServerToolRefusal)) throw err;
+      console.error(`[DASHBOARD] project "${project}" left out of the memory list: ${err.message}`);
+      continue;
+    }
+    if (entries > 0) projects.push({ project, entries });
+  }
+  return projects.sort((a, b) => b.entries - a.entries);
+}
+
 async function refreshServerKb() {
   if (_serverKbFail && Date.now() - _serverKbFail.at < 10000) throw new Error(_serverKbFail.message);
   // One scan at a time, on its OWN client: the shared brain-backend singleton re-inits per project
@@ -392,16 +424,9 @@ async function refreshServerKb() {
       const mcp = ((require('../engine/lib/brain-config.js').load().backend || {}).mcpMemory) || {};
       const McpClient = require('../engine/mcp-client.js');
       const client = new McpClient({ transport: 'http', serverUrl: mcp.serverUrl || '', runDir: mcp.runDir || '', projectId: 'default', timeout: 30000, restartMode: 'background' });
-      const parse = (r) => { const d = JSON.parse((r && r.text) || '{}'); return Array.isArray(d) ? d : (d.data || d.projects || d.documents || d.results || d.items || []); };
       try {
         await client.connect();
-        const ids = parse(await client.callTool('list_projects', {})).filter((p) => typeof p === 'string' && (p === '__user__' || !p.startsWith('__')));
-        const projects = [];
-        for (const project of ids) {
-          const entries = parse(await client.callTool('list_documents', { metadata: { project_id: project } })).length;
-          if (entries > 0) projects.push({ project, entries });
-        }
-        return projects.sort((a, b) => b.entries - a.entries);
+        return await scanServerKb(client);
       } finally { client.close(); }
     })();
   }
@@ -2688,4 +2713,4 @@ if (require.main === module) startDashboardServer();
 // exported so a test can call it with a fake res ({writeHead,end}) and assert
 // on the exact JSON it serializes — otherwise a bug in byokSafe (e.g. `x || null`
 // silently turning a valid `0` into `null`) would never be caught by any test.
-module.exports = { getCurationProjects, getCurationShells, deleteCurationShell, getValueSummary, getTuningRecommendations, _metricsMemo, getDoctorSwitchedOff, postDoctorUndo, getDoctorConfig, saveDoctorConfig, writeRouterOverride, resolveRouterFlags, getRouterConfig, fetchByokModelIds, getByokModels, opensWithField, postPluginUpdate, getProjectMarker, saveProjectMarker, saveCompactionConfig, getPhaseRestartMeasure };
+module.exports = { getCurationProjects, getCurationShells, deleteCurationShell, getValueSummary, getTuningRecommendations, _metricsMemo, getDoctorSwitchedOff, postDoctorUndo, getDoctorConfig, saveDoctorConfig, writeRouterOverride, resolveRouterFlags, getRouterConfig, fetchByokModelIds, getByokModels, opensWithField, postPluginUpdate, getProjectMarker, saveProjectMarker, saveCompactionConfig, getPhaseRestartMeasure, scanServerKb };

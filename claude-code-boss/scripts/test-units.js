@@ -3305,6 +3305,39 @@ test('dashboard: os paineis da Home leem pelo memo — repetir a consulta nao re
   } finally { fs.rmSync(dataDir, { recursive: true, force: true }); }
 });
 
+test('dashboard scanServerKb: a project id the server refuses ("project_id igual ao diretório home…", isError text) is left out and logged — the rest of the list still comes', () => {
+  const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-kbscan-dash-'));
+  const script = `
+    const assert = require('assert');
+    const dash = require(process.argv[1] + '/dashboard.js');
+    const refused = (t) => ({ text: t, raw: { isError: true, content: [{ type: 'text', text: t }] } });
+    const ok = (v) => ({ text: JSON.stringify(v), raw: { content: [] } });
+    const docs = { 'proj-a': 2, 'proj-b': 3, empty: 0 };
+    const client = (projectsReply) => ({ callTool: async (name, args) => {
+      if (name === 'list_projects') return projectsReply;
+      const id = args.metadata.project_id;
+      if (id === 'C:\\\\Users\\\\joao') return refused("project_id igual ao diretório home do usuário ('C:\\\\Users\\\\joao') — escopá-lo mistura a memória entre projetos");
+      return ok({ documents: Array.from({ length: docs[id] }, (_, i) => ({ id: id + i })) });
+    } });
+    (async () => {
+      const logged = [];
+      const orig = console.error; console.error = (m) => logged.push(String(m));
+      let got;
+      try { got = await dash.scanServerKb(client(ok({ data: ['proj-a', 'C:\\\\Users\\\\joao', 'proj-b', 'empty', '__system__'] }))); }
+      finally { console.error = orig; }
+      assert.deepStrictEqual(got, [{ project: 'proj-b', entries: 3 }, { project: 'proj-a', entries: 2 }]);
+      assert(logged.some((m) => m.includes('C:\\\\Users\\\\joao') && m.includes('diretório home')), 'the refused id and the server reason reach the Logs tab: ' + JSON.stringify(logged));
+      // list_projects itself refused: a clear error carrying the server text, never "Unexpected token".
+      await assert.rejects(dash.scanServerKb(client(refused('project_id vazio/nulo não é um escopo válido'))), (e) => /list_projects/.test(e.message) && /escopo válido/.test(e.message) && !/Unexpected token/.test(e.message));
+      console.log('OK');
+    })().catch((e) => { console.error(e.stack); process.exit(1); });
+  `;
+  try {
+    const r = require('child_process').spawnSync(process.execPath, ['-e', script, __dirname], { env: { ...process.env, CLAUDE_PLUGIN_DATA: dataDir }, encoding: 'utf8', windowsHide: true, timeout: 60000 });
+    assert(r.status === 0 && /OK/.test(r.stdout), `child failed (status ${r.status}): ${r.stderr || r.stdout}`);
+  } finally { fs.rmSync(dataDir, { recursive: true, force: true }); }
+});
+
 test('dashboard Home: volta a Home mostra o que ja esta renderizado (sem apagar nem pedir de novo dentro da janela), nada espera o /api/status e a contagem do servidor e servida velha enquanto atualiza', () => {
   const html = fs.readFileSync(path.join(__dirname, '..', 'dashboard', 'index.html'), 'utf8');
   assert(/home: loadHomeIfStale/.test(html) && /HOME_FRESH_MS = 30000/.test(html), 'navegacao usa a janela de frescor');
