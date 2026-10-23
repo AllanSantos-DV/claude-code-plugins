@@ -314,12 +314,13 @@ async function getStatusAsync(req, res) {
     }
   }
 
-  let brainProjects = [], brainTotal = 0, brainSource = 'local', brainError = null;
+  let brainProjects = [], brainTotal = 0, brainSource = 'local', brainError = null, brainIssues = [];
   const brainBaseDir = path.join(DATA_DIR, 'brain');
   if (serverMode()) {
     brainSource = 'mcp-memory';
     try {
       brainProjects = await serverKbSummary();
+      brainIssues = _serverKbIssues;
       brainTotal = brainProjects.reduce((n, p) => n + p.entries, 0);
     } catch (err) { brainError = `memory server unreachable: ${err.message}`; console.error(`[DASHBOARD] ${brainError}`); }
   } else if (fs.existsSync(brainBaseDir)) {
@@ -342,7 +343,7 @@ async function getStatusAsync(req, res) {
 
   json(res, {
     uptime: process.uptime().toFixed(0),
-    brain: { projects: brainProjects, totalEntries: brainTotal, backend: backendMode, connected: backendConnected, source: brainSource, ...(brainError ? { error: brainError } : {}) },
+    brain: { projects: brainProjects, totalEntries: brainTotal, backend: backendMode, connected: backendConnected, source: brainSource, issues: brainIssues, ...(brainError ? { error: brainError } : {}) },
     hooks: { total: hooksTotal, active: hooksActive },
     // Resolution diagnostics: the folder we actually use vs. the most-populated
     // sibling. When they differ the UI can flag KB fragmentation for the user.
@@ -368,6 +369,7 @@ function serverMode() {
  */
 let _serverKbInflight = null;
 let _serverKbFail = null;
+let _serverKbIssues = [];
 // Stale-while-revalidate: a scan takes seconds on a big server, so a count up to KB_STALE_MAX_MS old is answered at once while one
 // refresh runs in the background; a failing refresh is logged and, once the count is older than that, thrown (never hidden for good).
 const KB_FRESH_MS = 60000;
@@ -390,9 +392,10 @@ class ServerToolRefusal extends Error {}
  * validator refuses on a read (the user's home folder, a drive root, a system folder — stored before the
  * server validated scopes): list_documents answers those with plain text ("project_id igual ao diretório
  * home…"), so such a project is left out and logged instead of taking the whole list down. Transport
- * failures still throw.
+ * failures still throw. Each project left out is also pushed to `issues` ({project, folder, reason}) so the
+ * panel can name it on screen, not only in the Logs tab.
  */
-async function scanServerKb(client) {
+async function scanServerKb(client, issues = []) {
   const parse = (name, r) => {
     const text = (r && r.text) || '';
     if (r && r.raw && r.raw.isError) throw new ServerToolRefusal(`${name} refused by the memory server: ${text.slice(0, 300)}`);
@@ -407,6 +410,7 @@ async function scanServerKb(client) {
     try { entries = parse('list_documents', await client.callTool('list_documents', { metadata: { project_id: project } })).length; } catch (err) {
       if (!(err instanceof ServerToolRefusal)) throw err;
       console.error(`[DASHBOARD] project "${project}" left out of the memory list: ${err.message}`);
+      issues.push({ project, folder: /^[A-Za-z]:[\\/]|^[\\/~]/.test(project) ? project : null, reason: err.message });
       continue;
     }
     if (entries > 0) projects.push({ project, entries });
@@ -426,7 +430,10 @@ async function refreshServerKb() {
       const client = new McpClient({ transport: 'http', serverUrl: mcp.serverUrl || '', runDir: mcp.runDir || '', projectId: 'default', timeout: 30000, restartMode: 'background' });
       try {
         await client.connect();
-        return await scanServerKb(client);
+        const issues = [];
+        const projects = await scanServerKb(client, issues);
+        _serverKbIssues = issues;
+        return projects;
       } finally { client.close(); }
     })();
   }

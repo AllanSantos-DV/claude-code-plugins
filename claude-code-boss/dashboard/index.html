@@ -2669,6 +2669,26 @@ function loadHomeIfStale() {
   _homeLoading = loadHome().finally(() => { _homeLoading = null; });
 }
 
+// Warning above the Home project list: every project the memory server refused (exact id, folder, server
+// reason) and a whole-scan error, as one copyable block to hand to an agent. '' when there is nothing to say.
+function brainIssuesText(brain) {
+  const lines = [];
+  if (brain.error) lines.push(`Memory server: ${brain.error}`);
+  (brain.issues || []).forEach(i => lines.push(`Project: ${i.project}${i.folder ? `\nFolder: ${i.folder}` : ''}\nReason: ${i.reason}`));
+  return lines.join('\n\n');
+}
+function brainIssuesHtml(brain) {
+  const text = brainIssuesText(brain);
+  if (!text) return '';
+  const n = (brain.issues || []).length;
+  const head = brain.error && !n ? 'The memory server project list failed' : `${n} project${n === 1 ? '' : 's'} left out of this list (the memory server refused them)`;
+  return `<div id="brain-issues" role="alert" style="border:1px solid var(--warning);border-radius:6px;padding:.6rem .8rem;margin-bottom:.8rem">
+    <b style="color:var(--warning)">⚠ ${escapeHtml(head)}</b>
+    <pre id="brain-issues-text" style="white-space:pre-wrap;user-select:all;margin:.4rem 0;font-size:.8rem">${escapeHtml(text)}</pre>
+    <button class="btn btn-primary" onclick="navigator.clipboard.writeText(document.getElementById('brain-issues-text').textContent)">Copy</button>
+  </div>`;
+}
+
 async function loadHome() {
   const el = document.getElementById('home-grid');
   if (!el.hasChildNodes()) el.innerHTML = '<div class="spinner" style="margin:1rem auto"></div>';
@@ -2700,6 +2720,7 @@ async function loadHome() {
         s.brain.projects.map(p => `<tr><td>${escapeHtml(p.project)}</td><td>${p.entries}</td></tr>`).join('') +
         '</tbody></table>';
     }
+    brainEl.insertAdjacentHTML('afterbegin', brainIssuesHtml(s.brain));
     _homeLoadedAt = Date.now();
   } catch { el.innerHTML = '<p class="text-muted">Failed to load status.</p>'; }
   await Promise.allSettled(panels);
