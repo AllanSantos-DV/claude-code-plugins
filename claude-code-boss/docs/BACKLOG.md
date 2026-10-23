@@ -10,6 +10,7 @@ Origem: relato do dono de várias máquinas; Logs do painel: `memory server unre
   promoção de skill ficavam sem projeto nenhum. Na máquina do dono não há id desses, por isso ali funcionava. Agora o projeto recusado sai da lista com o motivo do servidor na aba Logs,
   e uma recusa do próprio `list_projects` vira erro claro com o texto do servidor. Falha de transporte continua lançando. Teste: `dashboard scanServerKb: a project id the server refuses…`
   (falha antes com o erro do print, passa depois); smoke do painel real contra daemon falso: `smoke/dashboard-kb-refused-project.mjs`.
+- [x] **Pedido do dono (complemento) — o painel diz qual projeto está com erro** (`scripts/dashboard.js` `scanServerKb(client, issues)` → `/api/status` `brain.issues`; `dashboard/index.html` `brainIssuesHtml`): aviso na Home com id, pasta e motivo do servidor e botão Copy; resposta não-JSON de um projeto vai pelo mesmo caminho. Testes: `dashboard scanServerKb…` (issues) e `dashboard Home: o aviso de projetos recusados…`.
 - [ ] **Fora de escopo — as memórias desses ids ficam invisíveis**: os documentos sob a pasta home/raiz continuam no servidor, mas nenhuma leitura os alcança. Proposta (projeto mcp-memory,
   não editado): oferecer a migração com `memory_reclassify` (`from_project_id` → `clear_project_id` ou um projeto real) ou o painel apontar o caminho; decidir com o dono do servidor.
 

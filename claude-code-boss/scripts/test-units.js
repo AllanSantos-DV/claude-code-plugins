@@ -3323,10 +3323,21 @@ test('dashboard scanServerKb: a project id the server refuses ("project_id igual
       const logged = [];
       const orig = console.error; console.error = (m) => logged.push(String(m));
       let got;
-      try { got = await dash.scanServerKb(client(ok({ data: ['proj-a', 'C:\\\\Users\\\\joao', 'proj-b', 'empty', '__system__'] }))); }
+      const issues = [];
+      try { got = await dash.scanServerKb(client(ok({ data: ['proj-a', 'C:\\\\Users\\\\joao', 'proj-b', 'empty', '__system__'] })), issues); }
       finally { console.error = orig; }
       assert.deepStrictEqual(got, [{ project: 'proj-b', entries: 3 }, { project: 'proj-a', entries: 2 }]);
       assert(logged.some((m) => m.includes('C:\\\\Users\\\\joao') && m.includes('diretório home')), 'the refused id and the server reason reach the Logs tab: ' + JSON.stringify(logged));
+      // The panel gets the exact id, the folder and the server's reason to show and copy.
+      assert.strictEqual(issues.length, 1);
+      assert.strictEqual(issues[0].project, 'C:\\\\Users\\\\joao');
+      assert.strictEqual(issues[0].folder, 'C:\\\\Users\\\\joao');
+      assert(/diretório home/.test(issues[0].reason), issues[0].reason);
+      // A non-JSON answer for one project is named the same way.
+      const bad = { callTool: async (name) => name === 'list_projects' ? ok({ data: ['proj-x'] }) : { text: '<html>oops', raw: { content: [] } } };
+      const issues2 = [];
+      assert.deepStrictEqual(await dash.scanServerKb(bad, issues2), []);
+      assert(issues2.length === 1 && issues2[0].project === 'proj-x' && issues2[0].folder === null && /non-JSON/.test(issues2[0].reason), JSON.stringify(issues2));
       // list_projects itself refused: a clear error carrying the server text, never "Unexpected token".
       await assert.rejects(dash.scanServerKb(client(refused('project_id vazio/nulo não é um escopo válido'))), (e) => /list_projects/.test(e.message) && /escopo válido/.test(e.message) && !/Unexpected token/.test(e.message));
       console.log('OK');
@@ -3336,6 +3347,18 @@ test('dashboard scanServerKb: a project id the server refuses ("project_id igual
     const r = require('child_process').spawnSync(process.execPath, ['-e', script, __dirname], { env: { ...process.env, CLAUDE_PLUGIN_DATA: dataDir }, encoding: 'utf8', windowsHide: true, timeout: 60000 });
     assert(r.status === 0 && /OK/.test(r.stdout), `child failed (status ${r.status}): ${r.stderr || r.stdout}`);
   } finally { fs.rmSync(dataDir, { recursive: true, force: true }); }
+});
+
+test('dashboard Home: o aviso de projetos recusados mostra id, pasta e motivo, com texto copiavel, e some quando nao ha nada a dizer', () => {
+  const html = fs.readFileSync(path.join(__dirname, '..', 'dashboard', 'index.html'), 'utf8');
+  const src = (n) => { const i = html.indexOf('function ' + n); return html.slice(i, html.indexOf('\n}\n', i) + 3); };
+  const escapeHtml = (x) => String(x).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+  const fns = new Function('escapeHtml', src('brainIssuesText') + src('brainIssuesHtml') + 'return { brainIssuesText, brainIssuesHtml };')(escapeHtml);
+  assert(fns.brainIssuesHtml({ issues: [] }) === '');
+  const out = fns.brainIssuesHtml({ issues: [{ project: 'C:\\Users\\joao', folder: 'C:\\Users\\joao', reason: 'project_id igual ao diretório home' }] });
+  assert(out.includes('C:\\Users\\joao') && out.includes('Folder:') && out.includes('diretório home') && /clipboard\.writeText/.test(out) && /1 project left out/.test(out), out);
+  assert(/Memory server: boom/.test(fns.brainIssuesText({ error: 'boom', issues: [] })));
+  assert(/brainIssuesHtml\(s\.brain\)/.test(html), 'Home renders the warning');
 });
 
 test('dashboard Home: volta a Home mostra o que ja esta renderizado (sem apagar nem pedir de novo dentro da janela), nada espera o /api/status e a contagem do servidor e servida velha enquanto atualiza', () => {
