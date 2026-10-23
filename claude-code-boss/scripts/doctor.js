@@ -482,6 +482,16 @@ function checkSetup(ctx) {
   } else {
     out.push({ ...base, id: 'setup-memory', label: 'Memory backend', status: 'ok', detail: m.backend === 'mcp-memory' ? 'mcp-memory connected' : 'local SQLite (inside the plugin)', fix: '' });
   }
+  const sc = m.scope;
+  if (sc && !sc.id && !sc.optedOut) {
+    out.push({ ...base, id: 'setup-memory-scope', label: 'Memory in this folder', status: 'warn',
+      detail: 'OFF: this folder has no project id (no .memory/project.json, no git remote), so nothing is remembered or saved here',
+      fix: 'Name the project: call project_set from the agent (it asks you), or write .memory/project.json with {"version":"1","metadata":{"defaults":{"project_id":"<name>"}}}. To keep memory off on purpose, create .memory/memory-off.json with {"memory":"off"}.' });
+  } else if (sc && sc.optedOut) {
+    out.push({ ...base, id: 'setup-memory-scope', label: 'Memory in this folder', status: 'ok', detail: 'off on purpose (.memory/memory-off.json)', fix: '' });
+  } else if (sc && sc.id) {
+    out.push({ ...base, id: 'setup-memory-scope', label: 'Memory in this folder', status: 'ok', detail: `on, project id "${sc.id}" (${sc.strength})`, fix: '' });
+  }
   const g = s.graph;
   if (g.applicable) {
     if (g.state === 'ready') out.push({ ...base, id: 'setup-graph', label: 'Code graph', status: 'ok', detail: `ready (${g.nodes} nodes)`, fix: '' });

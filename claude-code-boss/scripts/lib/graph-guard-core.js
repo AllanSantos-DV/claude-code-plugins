@@ -321,7 +321,13 @@ function makeGraphStateProbe({ cwd, timeoutMs }) {
     const base = await client.graphBase({ discover: resolver });
     if (!base) return { state: 'offline', nodes: 0 };
     const ctx = client.graphContextFor('', cwd);
-    const { json } = await client.post(base, 'status', ctx, {}, { timeoutMs });
+    let json;
+    try { ({ json } = await client.post(base, 'status', ctx, {}, { timeoutMs })); }
+    catch (e) {
+      // A root conflict is a setup problem the user can fix, not "offline": say it (stderr), then fail-open as before.
+      if (e && e.code === 'ROOT_CONFLICT') console.error(`[graph-guard] ${e.message}`);
+      throw e;
+    }
     const state = json && json.state;
     const nodes = json && Number.isFinite(json.nodes) ? json.nodes : 0;
     if (state === 'ready' || state === 'not_indexed' || state === 'indexing') return { state, nodes };
@@ -377,7 +383,7 @@ function makeGraphIngestDispatch({ cwd, timeoutMs }) {
       await client.post(base, 'ingest', ctx, {}, { timeoutMs });
       return { dispatched: true };
     } catch (e) {
-      return { dispatched: false, reason: (e && e.code) || 'error' };
+      return { dispatched: false, reason: (e && e.code) || 'error', detail: e && e.message };
     }
   };
 }

@@ -17,7 +17,7 @@ const SMART_TOOL_NAME = /smart[-_]?tool/i;
 /**
  * @returns {Promise<{
  *   smartTool: {configured: boolean, servers: string[], reachable: boolean|null},
- *   memory: {backend: 'local'|'mcp-memory', connected: boolean|null, reason: string},
+ *   memory: {backend: 'local'|'mcp-memory', connected: boolean|null, reason: string, scope: {id: string|null, strength: string, optedOut: boolean}},
  *   graph: {applicable: boolean, state: string, nodes: number},
  *   rules: {files: Array<{path:string,tokens:number}>, policies: number},
  *   errors: string[]
@@ -33,6 +33,10 @@ async function gatherSetup({
   loadBrainConfig = () => require('../../engine/lib/brain-config.js').load(),
   probeMemory = (cfg) => require('./mcp-health.js').probeHealth(cfg),
   graphProbe = (c) => require('./graph-guard-core.js').makeGraphStateProbe({ cwd: c, timeoutMs: 3000 })(),
+  resolveScope = (c) => {
+    const pid = require('../../engine/lib/project-id.js');
+    return { id: pid.tryResolveProjectId({ cwd: c }), strength: pid.projectIdStrength({ cwd: c }), optedOut: pid.memoryOptedOut({ cwd: c }) };
+  },
   countPolicies = (c) => {
     const policyStore = require('../../engine/lib/policy-store.js');
     let projectId = 'default';
@@ -43,7 +47,7 @@ async function gatherSetup({
   const errors = [];
   const out = {
     smartTool: { configured: false, servers: [], reachable: null },
-    memory: { backend: 'local', connected: null, reason: '' },
+    memory: { backend: 'local', connected: null, reason: '', scope: { id: null, strength: 'none', optedOut: false } },
     graph: { applicable: false, state: 'n/a', nodes: 0 },
     rules: { files: [], policies: 0 },
     errors,
@@ -86,6 +90,9 @@ async function gatherSetup({
   } else {
     out.memory.connected = true; // local SQLite lives inside the plugin: connected by design
   }
+
+  // Memory is per FOLDER: with no project id (and no opt-out) it is off here, whatever the backend says.
+  try { out.memory.scope = resolveScope(cwd); } catch (err) { errors.push(`memory scope: ${err.message}`); }
 
   try {
     const { files, errors: e } = listInstructions({ home, cwd });
