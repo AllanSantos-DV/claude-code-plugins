@@ -2681,7 +2681,7 @@ function brainIssuesHtml(brain) {
   const text = brainIssuesText(brain);
   if (!text) return '';
   const n = (brain.issues || []).length;
-  const head = brain.error && !n ? 'The memory server project list failed' : `${n} project${n === 1 ? '' : 's'} left out of this list (the memory server refused them)`;
+  const head = brain.error && !n ? 'The memory server project list failed' : `${n} project${n === 1 ? '' : 's'} left out of this list (refused by the memory server)`;
   return `<div id="brain-issues" role="alert" style="border:1px solid var(--warning);border-radius:6px;padding:.6rem .8rem;margin-bottom:.8rem">
     <b style="color:var(--warning)">⚠ ${escapeHtml(head)}</b>
     <pre id="brain-issues-text" style="white-space:pre-wrap;user-select:all;margin:.4rem 0;font-size:.8rem">${escapeHtml(text)}</pre>
