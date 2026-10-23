@@ -68,7 +68,7 @@ function composeNotice({ key, results, fixes, audit, turnedOff = [], lang = user
   for (const f of ok) L.push(`Applied (${f.id}): ${f.message}`);
   for (const f of fixes.filter((x) => !x.ok)) L.push(`FIX FAILED (${f.id}): ${f.message}`);
   const fixedIds = new Set(ok.map((f) => f.id));
-  const rest = results.filter((r) => r.status !== 'ok' && !fixedIds.has(r.id));
+  const rest = results.filter((r) => r.status !== 'ok' && !r.optional && !fixedIds.has(r.id)); // an optional piece that is simply absent (Smart Tool, rules) is in the full report, not in every session's context
   for (const r of rest) L.push(`${r.status === 'fail' ? 'PROBLEM' : 'Warning'} — ${r.label}: ${r.detail}${r.fix ? ` → ${r.fix}` : ''}`);
   if (ok.length) L.push('Restart Claude Code to load the changes. Undo everything: `node scripts/doctor.js --undo` (in the plugin folder).');
   L.push('Full report any time: `node scripts/doctor.js --cost`.');

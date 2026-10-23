@@ -453,7 +453,59 @@ function gatherCrashes(data, now = Date.now()) {
   return { file: ce.crashLogFile(data), records, reports };
 }
 
-const CHECKS = [checkNode, checkDaemonNode, checkNativeDeps, checkEnv, checkDataDirs, checkModel, checkDaemon, checkNativeRuntime, checkEmbedderProbe, checkEmbedderGuard, checkCrashes, checkCostTuning, checkBossConfig, checkFixedCost, checkCompactionRate, checkHooksEvents];
+/**
+ * What the setup gives the agent to look things up and remember (Smart Tool, memory backend, code graph, rules).
+ * None of it is required: a missing optional piece is a warning that says what the user gains by adding it, never a fail.
+ */
+function checkSetup(ctx) {
+  const s = ctx.setup;
+  const base = { critical: false };
+  if (!s) return [{ ...base, id: 'setup', label: 'Agent setup (search, memory, graph, rules)', status: 'ok', detail: 'not checked here (setup not probed)', fix: '' }];
+  const out = [];
+  const st = s.smartTool;
+  if (!st.configured) {
+    out.push({ ...base, id: 'setup-smart-tool', label: 'Smart Tool (semantic search + code graph)', status: 'warn', optional: true,
+      detail: 'not configured: the agent finds existing code with Grep/Read only',
+      fix: 'Optional. Install Smart Tool and register the project so the agent can search by meaning and ask who calls a function before writing a duplicate.' });
+  } else if (st.reachable === false) {
+    out.push({ ...base, id: 'setup-smart-tool', label: 'Smart Tool (semantic search + code graph)', status: 'warn',
+      detail: `configured (${st.servers.join(', ')}) but its server does not answer`,
+      fix: 'Start the Smart Tool service; until then the agent falls back to Grep/Read.' });
+  } else {
+    out.push({ ...base, id: 'setup-smart-tool', label: 'Smart Tool (semantic search + code graph)', status: 'ok',
+      detail: `${st.servers.join(', ')} ${st.reachable ? 'answers' : 'configured (stdio, not probed)'}`, fix: '' });
+  }
+  const m = s.memory;
+  if (m.backend === 'mcp-memory' && m.connected === false) {
+    out.push({ ...base, id: 'setup-memory', label: 'Memory backend', status: 'warn', detail: `mcp-memory not connected (${m.reason || 'no reason given'})`,
+      fix: 'Start the mcp-memory server (or switch the backend back to local in the dashboard); lessons and the code graph need it.' });
+  } else {
+    out.push({ ...base, id: 'setup-memory', label: 'Memory backend', status: 'ok', detail: m.backend === 'mcp-memory' ? 'mcp-memory connected' : 'local SQLite (inside the plugin)', fix: '' });
+  }
+  const g = s.graph;
+  if (g.applicable) {
+    if (g.state === 'ready') out.push({ ...base, id: 'setup-graph', label: 'Code graph', status: 'ok', detail: `ready (${g.nodes} nodes)`, fix: '' });
+    else out.push({ ...base, id: 'setup-graph', label: 'Code graph', status: 'warn', detail: `state: ${g.state}`,
+      fix: g.state === 'not_indexed' ? 'Run graph_analyze once for this project; it indexes in the background.' : g.state === 'indexing' ? 'Indexing in progress; ready when it finishes.' : g.state === 'error' ? 'The memory server answered the graph query with an error: its message is in the "Setup probe" line below.' : 'The memory server is not answering, so there is no graph.' });
+  } else {
+    out.push({ ...base, id: 'setup-graph', label: 'Code graph', status: 'ok', detail: 'needs the mcp-memory backend (not in use): symbol search goes through Smart Tool or Grep', fix: '' });
+  }
+  const r = s.rules;
+  if (!r.files.length && !r.policies) {
+    out.push({ ...base, id: 'setup-rules', label: 'Standing rules (CLAUDE.md, AGENTS.md, policies)', status: 'warn', optional: true,
+      detail: 'none found: the agent starts every session without project conventions',
+      fix: 'Optional. Add a CLAUDE.md/AGENTS.md, or activate a policy (e.g. "reuse what exists before writing new code") from the dashboard.' });
+  } else {
+    out.push({ ...base, id: 'setup-rules', label: 'Standing rules (CLAUDE.md, AGENTS.md, policies)', status: 'ok',
+      detail: `${r.files.length} instruction file(s), ${r.policies} active policy(ies)`, fix: '' });
+  }
+  if (s.errors && s.errors.length) {
+    out.push({ ...base, id: 'setup-probe-errors', label: 'Setup probe', status: 'warn', detail: `part of the setup could not be read: ${s.errors.join('; ')}`, fix: '' });
+  }
+  return out;
+}
+
+const CHECKS = [checkNode, checkDaemonNode, checkNativeDeps, checkEnv, checkDataDirs, checkModel, checkDaemon, checkNativeRuntime, checkEmbedderProbe, checkEmbedderGuard, checkCrashes, checkCostTuning, checkBossConfig, checkFixedCost, checkCompactionRate, checkSetup, checkHooksEvents];
 
 /** Run every pure check over a ctx snapshot (a check may return one result or a list). */
 function runChecks(ctx) {
@@ -645,6 +697,9 @@ async function gatherContext({ probe = false, audit = false } = {}) {
     } catch (e) { console.error(`[doctor] compaction history: ${e.message}`); compaction = { error: e.message }; }
   }
 
+  let setup = null;
+  try { setup = await require('./lib/setup-map.js').gatherSetup({ home, cwd: process.env.CLAUDE_PROJECT_DIR || process.cwd() }); } catch (e) { console.error(`[doctor] setup map: ${e.message}`); }
+
   const nodeChoice = nodeSupport.pickSupportedNode();
   let embedderCfg = null;
   try { embedderCfg = embedderGuard.configured(); } catch (e) { console.error(`[doctor] embedder config: ${e.message}`); }
@@ -671,6 +726,7 @@ async function gatherContext({ probe = false, audit = false } = {}) {
     bossConfig,
     fixedCost,
     compaction,
+    setup,
   };
 }
 
@@ -780,7 +836,7 @@ if (require.main === module) {
 }
 
 module.exports = {
-  runChecks, summarize, applyFixes, FIXERS, checkCostTuning, checkBossConfig, checkFixedCost, bossPluginId, gatherContext, formatReport,
+  runChecks, summarize, applyFixes, FIXERS, checkCostTuning, checkBossConfig, checkFixedCost, checkSetup, bossPluginId, gatherContext, formatReport,
   checkNode, checkDaemonNode, checkNativeDeps, checkEnv, checkDataDirs, checkModel, checkDaemon, checkNativeRuntime, checkEmbedderProbe, checkEmbedderGuard, checkCrashes, checkHooksEvents,
   findDataDirCandidates, probeEmbedder, gatherNative, gatherCrashes, MIN_MSVCP,
   STANDARD_EVENTS, MIN_NODE,

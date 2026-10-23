@@ -17904,6 +17904,95 @@ test('doctor-first-run.composeNotice: auditoria que falhou aparece e correcao qu
   assert(!/Restart Claude Code/.test(t), 'nada aplicado, nada a reiniciar');
 });
 
+// ─── doctor: mapa do setup (Smart Tool, memoria, grafo, regras) ──────────────
+const setupMap = require('./lib/setup-map.js');
+const mkSetupDeps = (over = {}) => ({
+  home: 'H', cwd: 'C',
+  listServers: () => ({ servers: [], errors: [] }),
+  listInstructions: () => ({ files: [], errors: [] }),
+  tcpProbe: async () => true, derivePort: () => 8765,
+  loadBrainConfig: () => ({ backend: { type: 'local' } }),
+  probeMemory: async () => ({ connected: true }),
+  graphProbe: async () => ({ state: 'ready', nodes: 7 }),
+  countPolicies: () => 0,
+  ...over,
+});
+
+test('setup-map: raw project (nothing configured) → no Smart Tool, local memory, no graph, no rules; lookup falls back to grep', async () => {
+  const s = await setupMap.gatherSetup(mkSetupDeps());
+  assertEq(s.smartTool.configured, false);
+  assertEq(s.memory.backend, 'local');
+  assertEq(s.graph.applicable, false);
+  assertEq(s.rules.files.length + s.rules.policies, 0);
+  assertEq(JSON.stringify(setupMap.capabilities(s)), JSON.stringify({ lookup: 'grep', hasRules: false, tools: [] }));
+  const r = doctor.checkSetup({ setup: s });
+  assertEq(r.find((x) => x.id === 'setup-smart-tool').status, 'warn');
+  assert(r.find((x) => x.id === 'setup-smart-tool').optional && r.find((x) => x.id === 'setup-rules').optional, 'absence of optional pieces is flagged optional');
+  assert(r.every((x) => x.status !== 'fail' && !x.critical), 'never a fail for an absent optional piece');
+});
+
+test('setup-map: Smart Tool configured and answering, disabled server ignored, down server warns', async () => {
+  const servers = [{ name: 'smart-tool', config: { url: 'http://127.0.0.1:8765/mcp' }, disabled: false }, { name: 'smart-tool-old', config: { url: 'http://x' }, disabled: true }];
+  const up = await setupMap.gatherSetup(mkSetupDeps({ listServers: () => ({ servers, errors: [] }) }));
+  assertEq(JSON.stringify(up.smartTool), JSON.stringify({ configured: true, servers: ['smart-tool'], reachable: true }));
+  assertEq(setupMap.capabilities(up).lookup, 'smart_search');
+  assertEq(doctor.checkSetup({ setup: up }).find((x) => x.id === 'setup-smart-tool').status, 'ok');
+  const down = await setupMap.gatherSetup(mkSetupDeps({ listServers: () => ({ servers, errors: [] }), tcpProbe: async () => false }));
+  assertEq(down.smartTool.reachable, false);
+  assertEq(setupMap.capabilities(down).lookup, 'grep', 'a server that does not answer is not a lookup tool');
+  const w = doctor.checkSetup({ setup: down }).find((x) => x.id === 'setup-smart-tool');
+  assert(w.status === 'warn' && !w.optional, 'configured but down is a real warning, shown in the first-run notice');
+});
+
+test('setup-map: mcp-memory backend — connected + graph ready; not connected explains why and the graph is offline', async () => {
+  const cfg = { loadBrainConfig: () => ({ backend: { type: 'mcp-memory' } }) };
+  const ok = await setupMap.gatherSetup(mkSetupDeps(cfg));
+  assertEq(ok.memory.connected, true);
+  assertEq(JSON.stringify(ok.graph), JSON.stringify({ applicable: true, state: 'ready', nodes: 7 }));
+  assertEq(setupMap.capabilities(ok).tools.includes('graph'), true);
+  const bad = await setupMap.gatherSetup(mkSetupDeps({ ...cfg, probeMemory: async () => ({ connected: false, details: { reason: 'tcp-closed' } }), graphProbe: async () => { throw new Error('must not be called'); } }));
+  assertEq(bad.memory.reason, 'tcp-closed');
+  assertEq(bad.graph.state, 'offline');
+  const rs = doctor.checkSetup({ setup: bad });
+  assert(/tcp-closed/.test(rs.find((x) => x.id === 'setup-memory').detail) && rs.find((x) => x.id === 'setup-memory').status === 'warn', JSON.stringify(rs));
+  assertEq(rs.find((x) => x.id === 'setup-graph').status, 'warn');
+});
+
+test('setup-map: a graph query the server answers with an error (e.g. ROOT_CONFLICT) is state "error", not "offline", and says where the message is', async () => {
+  const s = await setupMap.gatherSetup(mkSetupDeps({ loadBrainConfig: () => ({ backend: { type: 'mcp-memory' } }), graphProbe: async () => { throw new Error('ROOT_CONFLICT'); } }));
+  assertEq(s.graph.state, 'error');
+  const rs = doctor.checkSetup({ setup: s });
+  assert(/answered the graph query with an error/.test(rs.find((x) => x.id === 'setup-graph').fix), JSON.stringify(rs));
+  assert(/ROOT_CONFLICT/.test(rs.find((x) => x.id === 'setup-probe-errors').detail), 'the server message is shown');
+  assertEq(setupMap.capabilities(s).tools.includes('graph'), false);
+});
+
+test('setup-map: a probe that throws is reported in errors (fail-loud), not turned into "all fine"', async () => {
+  const s = await setupMap.gatherSetup(mkSetupDeps({ listServers: () => { throw new Error('boom'); }, countPolicies: () => { throw new Error('store corrupt'); } }));
+  assert(s.errors.some((e) => /smart-tool: boom/.test(e)) && s.errors.some((e) => /policies: store corrupt/.test(e)), JSON.stringify(s.errors));
+  const r = doctor.checkSetup({ setup: s }).find((x) => x.id === 'setup-probe-errors');
+  assert(r && r.status === 'warn' && /boom/.test(r.detail), JSON.stringify(r));
+});
+
+test('setup-map: rules present (CLAUDE.md or active policy) → ok and capabilities.hasRules; first-run notice skips optional absences only', async () => {
+  const s = await setupMap.gatherSetup(mkSetupDeps({ listInstructions: () => ({ files: [{ path: 'CLAUDE.md', tokens: 90 }], errors: [] }), countPolicies: () => 2 }));
+  assertEq(setupMap.capabilities(s).hasRules, true);
+  assertEq(doctor.checkSetup({ setup: s }).find((x) => x.id === 'setup-rules').status, 'ok');
+  const firstRun = require('./doctor-first-run.js');
+  const raw = await setupMap.gatherSetup(mkSetupDeps());
+  const downSrv = await setupMap.gatherSetup(mkSetupDeps({ listServers: () => ({ servers: [{ name: 'smart-tool', config: { url: 'http://127.0.0.1:1/mcp' }, disabled: false }], errors: [] }), tcpProbe: async () => false }));
+  const quiet = firstRun.composeNotice({ key: 'k', results: doctor.checkSetup({ setup: raw }), fixes: [] });
+  assert(!/Smart Tool|Standing rules/.test(quiet), 'optional absence must not cost tokens in every session: ' + quiet);
+  const loud = firstRun.composeNotice({ key: 'k', results: doctor.checkSetup({ setup: downSrv }), fixes: [] });
+  assert(/Smart Tool/.test(loud), 'a configured-but-down server is shown: ' + loud);
+});
+
+test('doctor: checkSetup is part of runChecks and a ctx without setup stays ok (not probed)', () => {
+  const res = doctor.runChecks({});
+  assertEq(res.find((x) => x.id === 'setup').status, 'ok');
+  assertEq(doctor.checkSetup({}).length, 1);
+});
+
 test('doctor-first-run: o aviso diz QUAIS itens foram desativados, POR QUE (sem uso / sem autenticacao) e onde desfazer um a um', async () => {
   const firstRun = require('./doctor-first-run.js');
   const dir = fcTmp('first-off');
@@ -18303,11 +18392,11 @@ test('doctor.runChecks + summarize: criticalFail flagged, counts add up', () => 
     hooksEvents: ['Stop'],
   };
   const results = doctor.runChecks(ctx);
-  assertEq(results.length, 16);
+  assertEq(results.length, 17);
   const s = doctor.summarize(results);
   assert(s.criticalFail, 'old node → criticalFail');
   assertEq(s.ok, false);
-  assertEq(s.counts.ok + s.counts.warn + s.counts.fail, 16);
+  assertEq(s.counts.ok + s.counts.warn + s.counts.fail, 17);
 });
 
 test('doctor.runChecks: all-healthy ctx → ok summary', () => {
