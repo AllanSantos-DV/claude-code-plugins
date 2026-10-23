@@ -41,9 +41,22 @@ const clampInt = (v, def, max) => {
  * the daemon is authoritative and returns it on every response.
  */
 function graphContextFor(rootArg, cwd) {
-  let root = rootArg && String(rootArg).trim() ? pathResolve(String(rootArg).trim()) : String(cwd || process.cwd());
+  let root = rootArg && String(rootArg).trim() ? pathResolve(String(rootArg).trim()) : projectRootOf(String(cwd || process.cwd()));
   try { root = realpathSync(root); } catch (e) { void e; /* missing → assertSafeRoot rejects later */ }
   return { root };
+}
+
+/**
+ * The folder the graph must be asked about when the caller only has a cwd: the PROJECT root, not the
+ * subfolder the session happens to stand in. The daemon keeps ONE root per project id, so a probe from
+ * `repo/sub` while `repo` is already mapped answers ROOT_CONFLICT (seen live: the Doctor, graph_guard and
+ * graph-warm run from `claude-code-boss/`). Marker root first, then the git toplevel; else the cwd itself.
+ */
+function projectRootOf(cwd) {
+  try {
+    const pid = require('../../../engine/lib/project-id.js');
+    return pid.findProjectRoot({ cwd }) || pid._defaultGit(['rev-parse', '--show-toplevel'], cwd) || cwd;
+  } catch (e) { void e; return cwd; /* resolver unavailable → keep the cwd (the old behavior) */ }
 }
 
 /**
@@ -88,8 +101,11 @@ async function post(base, sub, ctx, extra = {}, { fetchImpl = globalThis.fetch, 
     if (res.status === 200 || res.status === 202) return { status: res.status, json: json || {} };
     const code = (json && (json.code || json.error)) || httpCodeName(res.status);
     const retryAfter = res.headers && typeof res.headers.get === 'function' ? res.headers.get('retry-after') : null;
-    throw new GraphError(res.status, code, (json && json.message) || code, {
-      mappedRoot: json && json.mappedRoot, requestedRoot: json && json.requestedRoot,
+    // The daemon puts the text in `error`/`detail` (not `message`) and the two roots only inside it.
+    const detail = json && (json.message || json.detail || json.error);
+    const roots = code === 'ROOT_CONFLICT' ? rootsFromConflict(detail) : {};
+    throw new GraphError(res.status, code, detail || code, {
+      mappedRoot: (json && json.mappedRoot) || roots.mappedRoot, requestedRoot: (json && json.requestedRoot) || roots.requestedRoot,
       retryAfter: retryAfter ? Number(retryAfter) || retryAfter : undefined,
       hint: json && json.hint, state: json && json.state,
     });
@@ -99,6 +115,12 @@ async function post(base, sub, ctx, extra = {}, { fetchImpl = globalThis.fetch, 
   } finally {
     clearTimeout(t);
   }
+}
+
+/** "...já mapeado para raiz 'A'; requisitada 'B' (...)" → { mappedRoot: A, requestedRoot: B } (empty when it does not match). */
+function rootsFromConflict(msg) {
+  const m = /mapeado para raiz '([^']+)'; requisitada '([^']+)'/.exec(String(msg || ''));
+  return m ? { mappedRoot: m[1], requestedRoot: m[2] } : {};
 }
 
 function httpCodeName(s) {

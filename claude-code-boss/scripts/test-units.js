@@ -17915,6 +17915,7 @@ const mkSetupDeps = (over = {}) => ({
   probeMemory: async () => ({ connected: true }),
   graphProbe: async () => ({ state: 'ready', nodes: 7 }),
   countPolicies: () => 0,
+  resolveScope: () => ({ id: 'acme/app', strength: 'declared', optedOut: false }),
   ...over,
 });
 
@@ -17985,6 +17986,48 @@ test('setup-map: rules present (CLAUDE.md or active policy) → ok and capabilit
   assert(!/Smart Tool|Standing rules/.test(quiet), 'optional absence must not cost tokens in every session: ' + quiet);
   const loud = firstRun.composeNotice({ key: 'k', results: doctor.checkSetup({ setup: downSrv }), fixes: [] });
   assert(/Smart Tool/.test(loud), 'a configured-but-down server is shown: ' + loud);
+});
+
+test('setup-map: folder with no project id → memory OFF is a visible (non-optional) warning with the fix; opt-out and a resolved id are ok', async () => {
+  const off = await setupMap.gatherSetup(mkSetupDeps({ resolveScope: () => ({ id: null, strength: 'none', optedOut: false }) }));
+  const w = doctor.checkSetup({ setup: off }).find((x) => x.id === 'setup-memory-scope');
+  assert(w && w.status === 'warn' && !w.optional && /OFF/.test(w.detail) && /project\.json/.test(w.fix) && /memory-off\.json/.test(w.fix), JSON.stringify(w));
+  const firstRun = require('./doctor-first-run.js');
+  assert(/Memory in this folder/.test(firstRun.composeNotice({ key: 'k', results: doctor.checkSetup({ setup: off }), fixes: [] })), 'reaches the first-session notice');
+  const opted = await setupMap.gatherSetup(mkSetupDeps({ resolveScope: () => ({ id: null, strength: 'none', optedOut: true }) }));
+  assertEq(doctor.checkSetup({ setup: opted }).find((x) => x.id === 'setup-memory-scope').status, 'ok');
+  const on = await setupMap.gatherSetup(mkSetupDeps());
+  const o = doctor.checkSetup({ setup: on }).find((x) => x.id === 'setup-memory-scope');
+  assert(o.status === 'ok' && /acme\/app/.test(o.detail), JSON.stringify(o));
+  const boom = await setupMap.gatherSetup(mkSetupDeps({ resolveScope: () => { throw new Error('fs down'); } }));
+  assert(boom.errors.some((e) => /memory scope: fs down/.test(e)), 'a failed scope probe is reported, not read as "on"');
+});
+
+test('graph client: a probe from a SUBFOLDER asks the daemon about the PROJECT root (no ROOT_CONFLICT against the mapped root)', () => {
+  const G = require('./lib/graph/client.js');
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-graph-root-'));
+  fs.mkdirSync(path.join(root, '.memory'));
+  fs.writeFileSync(path.join(root, '.memory', 'project.json'), JSON.stringify({ metadata: { defaults: { project_id: 'acme/app' } } }));
+  require('child_process').spawnSync('git', ['init', '-q'], { cwd: root, stdio: 'ignore' }); // the git toplevel anchors the marker whatever HOME the run uses
+  const sub = path.join(root, 'plugin', 'scripts');
+  fs.mkdirSync(sub, { recursive: true });
+  try {
+    assertEq(G.graphContextFor('', sub).root, fs.realpathSync(root), 'marker root, not the subfolder');
+    assertEq(G.graphContextFor('', root).root, fs.realpathSync(root));
+    assertEq(G.graphContextFor(sub, null).root, fs.realpathSync(sub), 'an explicit root is honored as given');
+  } finally { fs.rmSync(root, { recursive: true, force: true }); }
+});
+
+test('graph client: ROOT_CONFLICT from the daemon (text in error/detail, roots only inside it) keeps both roots and the text', async () => {
+  const G = require('./lib/graph/client.js');
+  const msg = "project_id 'x/y' já mapeado para raiz 'C:\\a'; requisitada 'C:\\a\\b' (Cut 1 rejeita)";
+  const fetchImpl = async () => ({ status: 409, headers: { get: () => null }, json: async () => ({ error: msg, code: 'ROOT_CONFLICT', detail: msg }) });
+  let err = null;
+  try { await G.post('http://x', 'status', { root: 'C:\\a\\b' }, {}, { fetchImpl }); } catch (e) { err = e; }
+  assert(err instanceof G.GraphError && err.code === 'ROOT_CONFLICT', String(err));
+  assertEq(err.mappedRoot, 'C:\\a');
+  assertEq(err.requestedRoot, 'C:\\a\\b');
+  assert(/já mapeado para raiz/.test(err.message), 'the Doctor line shows the server text, not just the code: ' + err.message);
 });
 
 test('doctor: checkSetup is part of runChecks and a ctx without setup stays ok (not probed)', () => {

@@ -54,6 +54,8 @@ async function run(event) {
     const res = await dispatch();
     if (res && res.dispatched) {
       core.stampWarm(stampFile); // only stamp when the daemon actually accepted the ingest
+    } else if (res && res.reason === 'ROOT_CONFLICT') {
+      console.error(`[graph-warm] ${res.detail || 'the memory server maps this project id to another folder'}: the graph is NOT being warmed for ${projectRoot}`);
     }
     return null; // never inject/block — pure background warm
   } catch (err) {
