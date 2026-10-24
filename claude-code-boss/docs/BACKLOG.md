@@ -5,6 +5,7 @@
 - [x] **Achado e corrigido na hora — o botão Copy do aviso de projetos recusados (dentro de `role="alert"`) não dava retorno** (`dashboard/index.html`, `copyBrainIssues`): o `onclick` inline
   engolia a recusa da área de transferência e não mostrava que copiou. Agora o rótulo diz `Copied!` ou `Copy failed: select the text` (com `console.error`) e volta a `Copy`; `type="button"`.
   Teste em `scripts/test-units.js` (`dashboard Home: o aviso de projetos recusados…`) cobre sucesso e recusa.
+- [x] **Pages migradas para a branch `gh-pages` (pedido do orquestrador, 2026-10-24)**: `.github/scripts/pages-publish.mjs` + `pages-deploy.yml`; deploy key e secret `PAGES_DEPLOY_KEY` criados; fonte do Pages = gh-pages `/`. Provado: dispatch na develop verde, build `dynamic` de gh-pages `built` (f4501d2), verify leu v3.11.0 na URL pública; 4 testes (workflow sem artefato/GITHUB_TOKEN, commit órfão só do site, falhas altas, verify).
 - [x] **Pages por artefato**: nada a corrigir. O `pages-deploy.yml` já é build → deploy em dois jobs (Q61) e os 6 últimos runs na main passaram (o mais recente em 2026-10-24). A recusa do deploy
   a partir da develop é a política do ambiente `github-pages` (só `main`), o desenho esperado; o workflow só dispara em push na `main`.
 - [ ] **Antes do release**: `pages-guard check` está vermelho (fontes da vitrine mudaram com o CHANGELOG das três funcionalidades). É o passo do agente `vitrine` + `stamp`, feito no release como nas 3.10.x.
