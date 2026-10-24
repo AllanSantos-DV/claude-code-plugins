@@ -33,6 +33,11 @@ const RECORDED = new Set(['gate', 'run', 'resume', 'settled', 'error']);
 const TAIL_BYTES = 512 * 1024;
 const TTL_LOOKBACK = 500; // cache.turn rows read to judge a host's window
 
+/** The plugin version this daemon runs: what a session's module is compared with. */
+function installedVersion() {
+  return require(path.join(__dirname, '..', 'package.json')).version;
+}
+
 function cacheCycle() {
   return require(path.join(__dirname, '..', 'servers', 'model-router', 'cache-cycle.js'));
 }
@@ -154,8 +159,9 @@ async function run(ev) {
   const hostKey = `${data.host || 'unknown'}|${data.auth || 'unknown'}`;
   if (kind === 'hello') {
     // A record first opens this project's store, so the verdict reads its history.
-    await metrics.record('compaction.session', { host: data.host, auth: data.auth, source: data.source || null }, ctx);
-    return { config: compactionConfig(), ttl: ttlVerdictFor(hostKey, storedCacheTurns()) };
+    // moduleVersion null = a module from before the version was sent: an old one, by definition.
+    await metrics.record('compaction.session', { host: data.host, auth: data.auth, source: data.source || null, moduleVersion: data.moduleVersion || null, installedVersion: installedVersion() }, ctx);
+    return { config: compactionConfig(), ttl: ttlVerdictFor(hostKey, storedCacheTurns()), installedVersion: installedVersion() };
   }
 
   // What the transcript says about a session the module has no live reading of (reopened, resumed, started before the
@@ -204,6 +210,7 @@ async function run(ev) {
       lastMessageId: calls.length ? calls[calls.length - 1].id : (data.sinceMessageId || null),
       ttl: ttlVerdictFor(hostKey, storedCacheTurns()),
       config: compactionConfig(), // the dashboard slider reaches open sessions from their next turn
+      installedVersion: installedVersion(),
     };
   }
 
