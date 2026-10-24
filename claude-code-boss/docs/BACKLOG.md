@@ -1,5 +1,21 @@
 # Backlog
 
+## Boss não compactou antes do prompt frio com 788 mil tokens (pedido do orquestrador, 2026-10-23) — liberado na 3.10.2
+
+Origem: dono, Boss 3.10.1 em outra máquina; sessão reaberta, parada há mais de 3 h, 788 mil tokens; o token-guard avisou, o prompt saiu e o contexto foi regravado frio.
+
+- [x] **Achado e corrigido na hora — o portão não tinha horário da última resposta fora de `turn.complete`/`resume`** (`hooks/compaction.mjs`, `gate`; `compaction-core.decideTiming`):
+  `lastAnswerAt` só nasce em `turn.complete` ou num SessionStart com `source: 'resume'`. Sessão aberta como `startup` (ou cujo SessionStart clássico não chegou) com o contexto já enorme
+  respondia `cache-age-unknown`; sem leitura de tamanho da sessão viva, `no-reading`; num `resume` sem tamanho da sessão viva e sem histórico recarregado, o `context_tokens` do SessionStart não era usado
+  (`below-threshold` com 1 token). Os dois guardas (idade desconhecida não é frio; sem leitura não age) estão certos — faltava a fonte. Agora o transcript, que tem o carimbo de cada chamada, é a fonte (evento `tail`
+  em `scripts/compaction-event.js`); `context_tokens` do SessionStart entra na cadeia de tamanho. Sessão sem chamada nenhuma no transcript continua `cache-age-unknown`; cache quente continua `cache-warm`;
+  corte depois da última chamada invalida o tamanho. Testes (falham antes, passam depois): seis `compaction hook, session reopened…` em `scripts/test-units.js`.
+- [x] **Resolvido a pedido do orquestrador (2026-10-23) — sessão aberta antes da atualização roda o módulo antigo até ser reaberta e nada avisa** (`hooks/compaction.mjs`): o módulo de função fica carregado no processo da sessão; o daemon novo
+  responde, mas o portão é o código velho. Não há aviso de versão/sessão desatualizada em lugar nenhum (nem faixa, nem Doctor). Proposta: o `hello` mandar a versão do módulo e o daemon/Doctor/faixa
+  dizerem "sessão rodando 3.x.y, instalado 3.y.z — reabra". Implementado: `MODULE_VERSION` no módulo (mantida por `sync-version.js`), `hello` com `moduleVersion`, resposta com `installedVersion`, aviso único na sessão e check `session-modules` do Doctor. Limite: o módulo antigo, que não manda versão, não mostra aviso nenhum — só o Doctor o acusa (versão ausente). A faixa não foi alterada. Testes: `compaction hook: hello reports the module version…`, `compaction-event hello…`, `compaction-report.staleModuleSessions + doctor.checkSessionModules…`.
+- [x] **Resolvido a pedido do orquestrador (2026-10-23) — janela desconhecida desligava o portão** (`compaction-core.thresholdFor`): sem `window` no `usage()` o limiar é nulo e a resposta é `no-window` (regra "nunca agir por palpite"). Se uma
+  sessão reaberta reportar janela vazia, o corte não vem; o transcript traz o modelo (`[1m]`) e poderia inferir. Agora `fallbackWindow` (1 M pelo `[1m]` do modelo, 1 M se o contexto passa de 200 mil, senão 200 mil). Testes: `compaction-core.fallbackWindow…` e `compaction hook, the engine reports NO window…`.
+
 ## Cache de 5 min por pasta sem o corte (pedido do orquestrador, 2026-10-22) — em `develop`, sem release
 
 Origem: `orchestrador/docs/research/cache-1h-e-contexto-2026-10-18.md` (46 de 48 sessões trocadas para 5 min nunca compactadas). Nota: `docs/research/folder-ttl-sem-corte-2026-10-22.md`.
