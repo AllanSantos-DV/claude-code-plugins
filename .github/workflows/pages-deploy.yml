@@ -1,53 +1,44 @@
 name: Deploy Pages
 
-# Publica pages/ no GitHub Pages via Actions. Roda quando as páginas mudam
-# (após o merge na main) e pode ser disparado manualmente. Independente do
-# pages-guard: o guard barra páginas desatualizadas; este só publica.
-#
-# Dois jobs (o modelo oficial do GitHub): no job único, o deploy consultava os
-# artefatos ~0,4 s depois do upload e às vezes não os via ainda ("Found 0
-# artifact(s)"); re-rodar o job no MESMO run deixava dois "github-pages" e o
-# deploy recusava. Com o deploy num job seguinte, o artefato já está registrado.
+# Publica pages/ na branch gh-pages quando as páginas mudam (após o merge na main) e pode ser disparado
+# manualmente. Fonte do Pages = "Deploy from a branch", gh-pages, "/": sem artefato do Actions (o
+# upload/deploy-pages falhou por consistência de artefato e depende da cota de armazenamento). O push usa a chave de
+# deploy PAGES_DEPLOY_KEY (push com GITHUB_TOKEN não dispara a publicação) e o job falha se a página no ar não
+# mostrar a versão do plugin. Independente do pages-guard: o guard barra páginas desatualizadas; este só publica.
+# Reverter: AGENTS.md, "Publicação por branch".
 
 on:
   push:
     branches: [main]
     paths:
       - 'pages/**'
+      - '.github/scripts/pages-publish.mjs'
       - '.github/workflows/pages-deploy.yml'
   workflow_dispatch:
 
 permissions:
   contents: read
-  pages: write
-  id-token: write
 
 concurrency:
   group: pages
-  cancel-in-progress: true
+  cancel-in-progress: false
 
 jobs:
-  build:
+  publish:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
         uses: actions/checkout@v6.0.2
 
-      - name: Configure Pages
-        uses: actions/configure-pages@v5
-
-      - name: Upload pages artifact
-        uses: actions/upload-pages-artifact@v3
+      - name: Setup Node
+        uses: actions/setup-node@v6
         with:
-          path: pages
+          node-version: '22'
 
-  deploy:
-    needs: build
-    runs-on: ubuntu-latest
-    environment:
-      name: github-pages
-      url: ${{ steps.deployment.outputs.page_url }}
-    steps:
-      - name: Deploy to GitHub Pages
-        id: deployment
-        uses: actions/deploy-pages@v4
+      - name: Publish pages/ to gh-pages
+        env:
+          PAGES_DEPLOY_KEY: ${{ secrets.PAGES_DEPLOY_KEY }}
+        run: node .github/scripts/pages-publish.mjs publish --message "Pages ${GITHUB_SHA::7}"
+
+      - name: The public page shows this version
+        run: node .github/scripts/pages-publish.mjs verify --stamp "$GITHUB_SHA"

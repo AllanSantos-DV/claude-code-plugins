@@ -10173,6 +10173,107 @@ test('release-guard: o workflow passa o token p/ datar pela atividade da main', 
   assert(/GITHUB_TOKEN:\s*\$\{\{\s*github\.token\s*\}\}/.test(wf), 'sem o token o guard volta a datar pelo commit (drift falso no push do release)');
 });
 
+// ─── pages-publish: Pages pela branch gh-pages, sem artefato do Actions ──
+const nassert = require('node:assert');
+const PP_PATH = path.resolve(ROOT, '..', '.github', 'scripts', 'pages-publish.mjs');
+const PP_WORKFLOW = fs.readFileSync(path.resolve(ROOT, '..', '.github', 'workflows', 'pages-deploy.yml'), 'utf8')
+  .split(/\r?\n/).filter((l) => !l.trimStart().startsWith('#')).join('\n');
+const loadPagesPublish = () => import(require('url').pathToFileURL(PP_PATH).href);
+function ppSite(dir, body) {
+  const site = path.join(dir, 'pages');
+  fs.mkdirSync(path.join(site, 'claude-code-boss'), { recursive: true });
+  fs.mkdirSync(path.join(site, '.token-guard'), { recursive: true });
+  fs.writeFileSync(path.join(site, 'index.html'), '<h1>hub</h1>');
+  fs.writeFileSync(path.join(site, 'claude-code-boss', 'index.html'), body || '<h1>boss <small>v3.11.0</small></h1>');
+  fs.writeFileSync(path.join(site, 'claude-code-boss', '.source-hash'), 'abc');
+  fs.writeFileSync(path.join(site, '.token-guard', 'x.txt'), 'dump');
+  return site;
+}
+
+test('pages-publish: o workflow publica por branch (sem artefato, sem GITHUB_TOKEN), com a chave de deploy e confere a versao no ar depois', () => {
+  for (const bad of ['upload-pages-artifact', 'deploy-pages', 'configure-pages', 'pages: write', 'id-token', 'GITHUB_TOKEN']) {
+    assert(!PP_WORKFLOW.includes(bad), `o workflow nao pode conter ${bad}`);
+  }
+  assert(PP_WORKFLOW.includes('secrets.PAGES_DEPLOY_KEY') && PP_WORKFLOW.includes('contents: read'));
+  assert(PP_WORKFLOW.indexOf('pages-publish.mjs publish') !== -1 && PP_WORKFLOW.indexOf('pages-publish.mjs publish') < PP_WORKFLOW.indexOf('pages-publish.mjs verify'));
+});
+
+test('pages-publish.checkSite: site valido passa; sem pagina, versao velha ou link simbolico falham alto', async () => {
+  const { checkSite, PagesError } = await loadPagesPublish();
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-pp-'));
+  try {
+    checkSite(ppSite(dir), '3.11.0');
+    nassert.throws(() => checkSite(path.join(dir, 'nada'), '3.11.0'), (e) => e instanceof PagesError && /nothing to publish/.test(e.message));
+    nassert.throws(() => checkSite(ppSite(fs.mkdtempSync(path.join(dir, 'old-')), '<h1>v3.10.0</h1>'), '3.11.0'), (e) => /stale page/.test(e.message));
+    const withLink = ppSite(fs.mkdtempSync(path.join(dir, 'lnk-')));
+    try { fs.symlinkSync(path.join(withLink, 'index.html'), path.join(withLink, 'link')); } catch (e) { void e; return; } // no symlink permission here
+    nassert.throws(() => checkSite(withLink, '3.11.0'), (e) => /symbolic links/.test(e.message));
+  } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+});
+
+test('pages-publish.publish: commit orfao com so o site + .nojekyll (sem .token-guard/.source-hash), forca so em gh-pages, remoto SSH exige a chave', async () => {
+  const { publish } = await loadPagesPublish();
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-pp-'));
+  const sh = (args, cwd) => require('child_process').spawnSync('git', args, { cwd, encoding: 'utf8', windowsHide: true });
+  try {
+    const site = ppSite(dir);
+    const remote = path.join(dir, 'remote.git');
+    nassert.strictEqual(sh(['init', '-q', '--bare', remote]).status, 0);
+    const base = { site, remote, message: 'Pages abc', key: '' };
+    const first = publish({ ...base, branch: 'gh-pages' });
+    fs.writeFileSync(path.join(site, 'index.html'), '<h1>hub 2</h1>');
+    const second = publish({ ...base, branch: 'gh-pages' });
+    assert(first !== second);
+    nassert.strictEqual(sh(['rev-list', '--count', 'gh-pages'], remote).stdout.trim(), '1', 'a branch e refeita: um commit so, orfao');
+    const files = sh(['ls-tree', '-r', '--name-only', 'gh-pages'], remote).stdout.split('\n').filter(Boolean).sort();
+    nassert.deepStrictEqual(files, ['.nojekyll', 'claude-code-boss/index.html', 'index.html']);
+    nassert.throws(() => publish({ ...base, branch: 'main' }), (e) => /only to gh-pages/.test(e.message));
+    nassert.throws(() => publish({ ...base, remote: 'git@github.com:x/y.git', branch: 'gh-pages' }), (e) => /PAGES_DEPLOY_KEY/.test(e.message));
+  } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+});
+
+// Runs in a child process: fetch's sockets inside the suite's own process abort it at exit on Windows (libuv
+// "UV_HANDLE_CLOSING"), which has nothing to do with the code under test.
+test('pages-publish.verify: passa quando a URL publica mostra a versao e o index publicado; falha alto quando nao mostra', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-pp-'));
+  try {
+    const site = ppSite(dir);
+    const probe = path.join(dir, 'probe.mjs');
+    fs.writeFileSync(probe, `
+      import http from 'node:http';
+      import fs from 'node:fs';
+      import path from 'node:path';
+      import { verify } from ${JSON.stringify(require('url').pathToFileURL(PP_PATH).href)};
+      const site = ${JSON.stringify(site)};
+      let body = '<h1>boss <small>v3.10.9</small></h1>';
+      const server = http.createServer((req, res) => {
+        if (!req.url.startsWith('/claude-code-boss/index.html')) { res.statusCode = 404; return res.end('x'); }
+        res.end(body);
+      });
+      await new Promise((r) => server.listen(0, '127.0.0.1', r));
+      const url = 'http://127.0.0.1:' + server.address().port + '/';
+      const args = { url, version: '3.11.0', attempts: 2, interval: 0.01, stamp: 's', site };
+      const msg = async (a) => { try { await verify(a); return 'ok'; } catch (e) { return e.message; } };
+      const out = [];
+      out.push(await msg(args));
+      body = '<h1>boss <small>v3.11.0</small></h1> extra';
+      out.push(await msg(args));
+      body = fs.readFileSync(path.join(site, 'claude-code-boss', 'index.html'), 'utf8');
+      out.push(await msg(args));
+      out.push(await msg({ ...args, url: url + 'missing/' }));
+      server.closeAllConnections(); server.close();
+      console.log(JSON.stringify(out));
+    `);
+    const r = require('child_process').spawnSync(process.execPath, [probe], { encoding: 'utf8', windowsHide: true });
+    assert(r.status === 0, `probe: ${r.stderr}`);
+    const [stale, other, good, missing] = JSON.parse(r.stdout);
+    assert(/does not show 'v3\.11\.0' after 2 attempts/.test(stale) && /without that version/.test(stale), stale);
+    assert(/not the published index\.html/.test(other), other);
+    assert(good === 'ok', good);
+    assert(/HTTP 404/.test(missing), missing);
+  } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+});
+
 // ─── pages-guard: a apresentação não carrega changelog (regra do Allan, 2026-10-15) ──
 // A página de vitrine é mostrada a pessoas; o histórico de versões vai para uma
 // página própria linkada no rodapé. A do boss tinha virado um muro de "Na 3.1.1,
