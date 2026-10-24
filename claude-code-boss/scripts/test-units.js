@@ -3350,7 +3350,7 @@ test('dashboard scanServerKb: a project id the server refuses ("project_id igual
 });
 
 test('dashboard Home: o aviso de projetos recusados mostra id, pasta e motivo, com texto copiavel, e some quando nao ha nada a dizer', () => {
-  const html = fs.readFileSync(path.join(__dirname, '..', 'dashboard', 'index.html'), 'utf8');
+  const html = fs.readFileSync(path.join(__dirname, '..', 'dashboard', 'index.html'), 'utf8').replace(/\r\n/g, '\n'); // a CRLF checkout (autocrlf) has no bare \n}\n
   const src = (n) => { const i = html.indexOf('function ' + n); return html.slice(i, html.indexOf('\n}\n', i) + 3); };
   const escapeHtml = (x) => String(x).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
   const fns = new Function('escapeHtml', src('brainIssuesText') + src('brainIssuesHtml') + 'return { brainIssuesText, brainIssuesHtml };')(escapeHtml);
