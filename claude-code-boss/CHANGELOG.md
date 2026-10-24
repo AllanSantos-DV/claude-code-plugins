@@ -1,8 +1,14 @@
 # Changelog
 
-## [Unreleased]
+## [3.11.0] - 2026-10-24
+
+### Added
+- **Doctor mapeia o setup** (`scripts/lib/setup-map.js`, `scripts/doctor.js`): checks opcionais e sem insistência dizem o que o seu setup dá ao agente para procurar e lembrar — Smart Tool (configurado e respondendo), backend de memória (local ou mcp-memory, conectado), grafo de código (só mcp-memory; estado e nós) e regras permanentes (CLAUDE.md/AGENTS.md e políticas ativas). Aviso (`warn`) só informa; nada reprova o Doctor. Numa pasta sem project id o Doctor diz que a memória está desligada ali.
+- **Funil "reuso antes de escrever", opt-in e desligado por padrão** (`specFunnel.enabled`, `scripts/policy-inject.js`): ligado, injeta no SessionStart e no SubagentStart, no mesmo bloco `[BRAIN policy]`, uma instrução curta: procurar o que já existe e reaproveitar, entregar o menor diff, e dizer o que foi pulado. Só vale em projeto sem CLAUDE.md/AGENTS.md/regras próprias (ver `docs/CONFIGURATION.md`).
 
 ### Fixed
+- **Botão Copy do aviso de projetos recusados** (`dashboard/index.html`): o clique agora mostra `Copied!` ou `Copy failed: select the text` (e registra o erro), em vez de um `onclick` que engolia a recusa da área de transferência.
+- **Sonda do grafo pede a raiz do projeto** (`scripts/lib/graph/client.js`, `graph-warm.js`): numa subpasta da sessão o servidor respondia `ROOT_CONFLICT`; agora a sonda usa a raiz.
 - **Lista de projetos do painel vazia em outras máquinas** (`scripts/dashboard.js`): quando o servidor de memória guardava um projeto com id inválido (a pasta home do usuário, uma raiz de disco ou uma pasta do sistema, gravado antes de o servidor validar escopos), ele recusava a leitura desse projeto com texto em vez de JSON, e o painel inteiro caía com `Unexpected token 'p', "project_id"... is not valid JSON`. Agora só esse projeto sai da lista, com o motivo na aba Logs, e os outros aparecem.
 - **Painel mostra qual projeto está com erro** (Home): cada projeto que o servidor de memória recusou, ou que respondeu algo ilegível, aparece num aviso acima da lista com o id exato, a pasta (quando o id é um caminho) e o motivo dado pelo servidor, mais o botão Copy para colar a um agente. O erro da leitura inteira da lista (servidor recusou `list_projects`) aparece no mesmo aviso.
 
