@@ -51,4 +51,28 @@ function formatReport(summary, { days = 30 } = {}) {
   return L.join('\n');
 }
 
-module.exports = { loadCompactionRows, formatReport, describeSuggestion, summarizeCompaction };
+/**
+ * Sessions seen in the last `hours` that run another version of the compaction module than the installed one (their
+ * hello carries it; a hello from before the version was sent has none — an old module). One entry per session, newest
+ * hello wins. Sessions that have since closed are listed too: the metrics hold no session end.
+ * @param {{installed: string, hours?: number, project?: (string|null), store?: object}} o
+ * @returns {Array<{sessionId: string, version: (string|null), ts: number}>}
+ */
+function staleModuleSessions({ installed, hours = 24, project = null, store = require('../../engine/lib/metrics-store.js') } = {}) {
+  const sinceTs = Date.now() - hours * 3600_000;
+  const projects = project ? [project] : store.listProjects();
+  const latest = new Map();
+  for (const p of projects) {
+    store.close();
+    if (!store.init({ project: p })) continue;
+    for (const r of store.getEventLog({ eventName: 'compaction.session', sinceTs })) {
+      if (!r.sessionId || r.ts < sinceTs) continue;
+      const prev = latest.get(r.sessionId);
+      if (!prev || r.ts > prev.ts) latest.set(r.sessionId, { sessionId: r.sessionId, version: (r.payload && r.payload.moduleVersion) || null, ts: r.ts });
+    }
+  }
+  store.close();
+  return [...latest.values()].filter((s) => s.version !== installed);
+}
+
+module.exports = { staleModuleSessions, loadCompactionRows, formatReport, describeSuggestion, summarizeCompaction };

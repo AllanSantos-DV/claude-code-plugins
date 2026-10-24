@@ -277,6 +277,21 @@ function checkCompactionRate(ctx) {
   };
 }
 
+/** Sessions still running a compaction module older than the installed plugin (ctx.sessionModules, from the hello events). */
+function checkSessionModules(ctx) {
+  const base = { id: 'session-modules', label: 'Sessions on an old Boss', critical: false };
+  const m = ctx.sessionModules;
+  if (!m) return { ...base, status: 'ok', detail: 'not checked here', fix: '' };
+  if (m.error) return { ...base, status: 'warn', detail: `could not read the sessions' module versions: ${m.error}`, fix: '' };
+  if (!m.stale.length) return { ...base, status: 'ok', detail: `no session of the last 24 h runs a module older than ${m.installed}`, fix: '' };
+  const ids = m.stale.slice(0, 5).map((s) => `${String(s.sessionId).slice(0, 8)} (${s.version || 'before the version was reported'})`).join(', ');
+  return {
+    ...base, status: 'warn',
+    detail: `${m.stale.length} session(s) of the last 24 h started before the update to ${m.installed} and keep the old compaction module (fixes not active): ${ids}`,
+    fix: 'Reopen those sessions (close and resume them) to activate the installed version; sessions that already closed need nothing.',
+  };
+}
+
 /** Fixed cost every message pays (MCP definitions, skill listing, plugins): measured in ctx.fixedCost by `--cost` / `--fix` / first run. */
 function checkFixedCost(ctx) {
   const base = { id: 'fixed-cost', label: 'Fixed cost per message (MCP, skills, plugins)', critical: false };
@@ -515,7 +530,7 @@ function checkSetup(ctx) {
   return out;
 }
 
-const CHECKS = [checkNode, checkDaemonNode, checkNativeDeps, checkEnv, checkDataDirs, checkModel, checkDaemon, checkNativeRuntime, checkEmbedderProbe, checkEmbedderGuard, checkCrashes, checkCostTuning, checkBossConfig, checkFixedCost, checkCompactionRate, checkSetup, checkHooksEvents];
+const CHECKS = [checkNode, checkDaemonNode, checkNativeDeps, checkEnv, checkDataDirs, checkModel, checkDaemon, checkNativeRuntime, checkEmbedderProbe, checkEmbedderGuard, checkCrashes, checkCostTuning, checkBossConfig, checkFixedCost, checkCompactionRate, checkSessionModules, checkSetup, checkHooksEvents];
 
 /** Run every pure check over a ctx snapshot (a check may return one result or a list). */
 function runChecks(ctx) {
@@ -707,6 +722,12 @@ async function gatherContext({ probe = false, audit = false } = {}) {
     } catch (e) { console.error(`[doctor] compaction history: ${e.message}`); compaction = { error: e.message }; }
   }
 
+  let sessionModules = null;
+  try {
+    const installed = require('../package.json').version;
+    sessionModules = { installed, stale: require('./lib/compaction-report.js').staleModuleSessions({ installed }) };
+  } catch (e) { console.error(`[doctor] session modules: ${e.message}`); sessionModules = { error: e.message }; }
+
   let setup = null;
   try { setup = await require('./lib/setup-map.js').gatherSetup({ home, cwd: process.env.CLAUDE_PROJECT_DIR || process.cwd() }); } catch (e) { console.error(`[doctor] setup map: ${e.message}`); }
 
@@ -736,6 +757,7 @@ async function gatherContext({ probe = false, audit = false } = {}) {
     bossConfig,
     fixedCost,
     compaction,
+    sessionModules,
     setup,
   };
 }

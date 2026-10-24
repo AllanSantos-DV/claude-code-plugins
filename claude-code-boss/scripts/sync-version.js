@@ -117,6 +117,16 @@ function markdownBoldVersionFile(filePath) {
   };
 }
 
+// A constant inside a source file (the compaction module reports it to the daemon: see MODULE_VERSION there).
+function constVersionFile(filePath, name) {
+  const re = new RegExp(`(const ${name} = ')([0-9]+\\.[0-9]+\\.[0-9]+)(')`);
+  return {
+    path: filePath,
+    read() { const m = re.exec(fs.readFileSync(filePath, 'utf-8')); return m ? m[2] : null; },
+    write() { fs.writeFileSync(filePath, fs.readFileSync(filePath, 'utf-8').replace(re, (_, pre, _v, post) => `${pre}${version}${post}`)); },
+  };
+}
+
 const lockPath = path.join(PLUGIN_ROOT, 'package-lock.json');
 
 const FILES = [
@@ -130,6 +140,7 @@ const FILES = [
   jsonVersionFile(path.join(PLUGIN_ROOT, '.claude-plugin', 'plugin.json'), 'version'),
   markdownTableFile(path.join(REPO_ROOT, 'README.md'), 'claude-code-boss'),
   markdownBoldVersionFile(path.join(PLUGIN_ROOT, 'README.md')),
+  constVersionFile(path.join(PLUGIN_ROOT, 'hooks', 'compaction.mjs'), 'MODULE_VERSION'),
 ];
 
 // ─── Check or Sync ──────────────────────────────────────────────────────────
