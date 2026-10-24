@@ -248,6 +248,15 @@ function getPolicyInject() {
   };
 }
 
+// Not profile-controlled — read straight from the raw file. OPT-IN "reuse before writing"
+// funnel (docs/research/funil: helped only where the existing helper is not an obvious grep
+// hit, cost +9–17% per run, nothing for projects that already have rules). DEFAULT OFF:
+// `enabled` is true ONLY when the file explicitly sets it to true.
+function getSpecFunnel() {
+  const sf = load().specFunnel || {};
+  return { enabled: sf.enabled === true };
+}
+
 // Not profile-controlled — read straight from the raw file (like getPolicyInject).
 // Backs the OPT-IN, prospective trigger-evidence capture (Fase 3 micro-B1). When
 // enabled, the shadow hook stores a bounded, REDACTED, TTL-limited record of the
@@ -637,6 +646,7 @@ module.exports = {
   getPowershellGuard,
   getFileFormatGuard,
   getPolicyInject,
+  getSpecFunnel,
   getCaptureTriggerEvidence,
   getCuration,
   getVerifyNudge,
