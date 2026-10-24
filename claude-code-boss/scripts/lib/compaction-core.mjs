@@ -324,6 +324,19 @@ export function thresholdFor(w, options = {}) {
   return { thresholdTokens, percent: pct, aboveEngine: engine > 0 && thresholdTokens >= engine };
 }
 
+/**
+ * The window to judge by when the engine reports none (an empty usage() on a reopened session): a safe default instead
+ * of switching the gate off. The model name says 1M ("[1m]"); else a context past 200k can only be a 1M window; else
+ * 200k. The smaller guess errs toward cutting a cold cache early, never toward re-writing a huge one.
+ * @param {{model?: (string|null), tokens?: (number|null)}} s
+ * @returns {{window: number, source: ('fallback-model'|'fallback-observed'|'fallback-default')}}
+ */
+export function fallbackWindow(s = {}) {
+  if (/\[1m\]/i.test(String(s.model || ''))) return { window: 1000000, source: 'fallback-model' };
+  if (Number(s.tokens) > 200000) return { window: 1000000, source: 'fallback-observed' };
+  return { window: 200000, source: 'fallback-default' };
+}
+
 /** The configured percent, inside the slider's range (a hand-edited config included). */
 export function clampPercent(v, options = {}) {
   const o = { ...DEFAULTS, ...options };

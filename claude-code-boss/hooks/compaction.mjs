@@ -26,7 +26,11 @@
 // daemon (POST /hook/compaction-event → tool hook_compaction_event → scripts/compaction-event.js).
 
 import { daemon as sharedDaemon } from '../scripts/lib/module-daemon.mjs';
-import { planCompaction, buildBrief, decideTiming, decideTurnEnd, classifyResume, estimateTokens, thresholdFor, chooseCompaction, isCacheWarm, isMechanicalCut, resumedAnswerAt, decidePhaseRestart, lastTurnDelivered, phaseRestartNotice, DEFAULTS } from '../scripts/lib/compaction-core.mjs';
+import { planCompaction, buildBrief, decideTiming, decideTurnEnd, classifyResume, estimateTokens, thresholdFor, fallbackWindow, chooseCompaction, isCacheWarm, isMechanicalCut, resumedAnswerAt, decidePhaseRestart, lastTurnDelivered, phaseRestartNotice, DEFAULTS } from '../scripts/lib/compaction-core.mjs';
+
+// Kept equal to package.json by scripts/sync-version.js. The daemon compares it with the installed plugin: a session
+// started before an update keeps running this file, so the person is told to reopen it.
+const MODULE_VERSION = '3.10.1';
 
 const PERSON_ORIGINS = new Set(['composer', 'bridge', 'sdk']);
 // Folder TTL (scripts/lib/folder-ttl.js): the daemon drops a session that stops reporting for 5 min; this keeps an
@@ -63,6 +67,9 @@ function newCtx() {
     // the gate compacted the just-cut session again from it). No new compaction until a real call is observed.
     awaitCallAfterCut: false,
     phaseNotified: false,    // the phase-restart notice was given for the current crossing of its threshold
+    model: null,             // the transcript's last call's model (window fallback when the engine reports none)
+    tailTokens: undefined,   // the transcript's size reading, same use
+    staleWarned: false,      // the "old Boss in this session" notice was given
   };
 }
 
@@ -109,6 +116,15 @@ async function send($, ctx, kind, data) {
 // Trail events never block the session; a failure is said, never swallowed.
 function emit($, ctx, kind, data) {
   send($, ctx, kind, data).catch((err) => $.ui.log(`compaction: ${kind} event not recorded: ${String(err && err.message ? err.message : err)}`));
+}
+
+function noteVersion($, ctx, reply) {
+  const installed = reply && reply.installedVersion;
+  if (!installed || installed === MODULE_VERSION || ctx.staleWarned) return;
+  ctx.staleWarned = true;
+  const text = `Boss: this session runs an old Boss (${MODULE_VERSION}) and ${installed} is installed — reopen the session to activate the fixes`;
+  $.ui.toast(text);
+  $.ui.log(`compaction: ${text}`);
 }
 
 function applyTtl(ctx, reply) {
@@ -185,7 +201,8 @@ function ttlInUse(ctx) {
 
 async function hello($, ctx) {
   const id = await identity($, ctx);
-  const reply = await send($, ctx, 'hello', { ...id, source: ctx.start ? ctx.start.source : null });
+  const reply = await send($, ctx, 'hello', { ...id, source: ctx.start ? ctx.start.source : null, moduleVersion: MODULE_VERSION });
+  noteVersion($, ctx, reply);
   if (reply.config) {
     ctx.config = { ...DEFAULTS, ...reply.config };
     ctx.configLoaded = true;
@@ -207,6 +224,7 @@ async function observeCalls($, ctx) {
   const reply = await send($, ctx, 'turn', { ...id, sinceMessageId: ctx.lastMessageId });
   if (reply.lastMessageId) ctx.lastMessageId = reply.lastMessageId;
   if (reply.config) { ctx.config = { ...DEFAULTS, ...reply.config }; ctx.configLoaded = true; } // slider changes, live
+  noteVersion($, ctx, reply);
   applyTtl(ctx, reply);
   return { id, reply };
 }
@@ -268,8 +286,13 @@ function scheduleCompactThenResend($, ctx, text, reason) {
 async function currentWindow($, ctx) {
   const { context } = await $.session.usage({ breakdown: 'summary' });
   const bd = context.breakdown || {};
-  const windowTokens = Number(bd.rawMaxTokens) > 0 ? Number(bd.rawMaxTokens) : context.window;
-  const windowSource = Number(bd.rawMaxTokens) > 0 ? (bd.autocompactSource || null) : 'model-window';
+  let windowTokens = Number(bd.rawMaxTokens) > 0 ? Number(bd.rawMaxTokens) : context.window;
+  let windowSource = Number(bd.rawMaxTokens) > 0 ? (bd.autocompactSource || null) : 'model-window';
+  if (!(Number(windowTokens) > 0)) {
+    ({ window: windowTokens, source: windowSource } = fallbackWindow({
+      model: ctx.model, tokens: context.tokens ?? ctx.measuredTokens ?? ctx.tailTokens ?? (ctx.start && ctx.start.lastTokens > 0 ? ctx.start.lastTokens : null),
+    }));
+  }
   const engineAutoCompactAt = bd.isAutoCompactEnabled === false ? null : (Number(bd.autoCompactThreshold) > 0 ? Number(bd.autoCompactThreshold) : null);
   const thr = thresholdFor({ window: windowTokens, engineAutoCompactAt }, ctx.config);
   return { context, windowTokens, windowSource, engineAutoCompactAt, thr };
@@ -345,13 +368,17 @@ async function gate($, ctx, e, next) {
   const now = await $.clock.now();
   // The window the engine applies NOW (the model's limit or a smaller compaction window) and
   // its own auto-compact point — a local estimate, no API call. The model window as fallback.
-  const { context, windowTokens, windowSource, engineAutoCompactAt, thr } = await currentWindow($, ctx);
+  let { context, windowTokens, windowSource, engineAutoCompactAt, thr } = await currentWindow($, ctx);
   let tokens = context.tokens ?? ctx.measuredTokens ?? (ctx.start && ctx.start.lastTokens > 0 ? ctx.start.lastTokens : undefined);
   let tokensSource = context.tokens != null ? 'session' : ctx.measuredTokens != null ? 'measure' : tokens != null ? 'session-start' : null;
   let ageSource = ctx.lastAnswerAt == null ? null : 'session';
   if (tokens == null || ctx.lastAnswerAt == null) {
     const tail = await transcriptTail($, ctx);
     if (tail) {
+      if (tail.model) ctx.model = tail.model;
+      if (tail.tokens != null) ctx.tailTokens = tail.tokens;
+      // The engine gave no window: the transcript's model and size sharpen the fallback guess.
+      if (String(windowSource).startsWith('fallback')) ({ windowTokens, windowSource, engineAutoCompactAt, thr } = await currentWindow($, ctx));
       if (ctx.lastAnswerAt == null && tail.at != null) { ctx.lastAnswerAt = tail.at; ageSource = 'transcript'; }
       if (tokens == null && tail.tokens != null) { tokens = tail.tokens; tokensSource = 'transcript'; }
     }
