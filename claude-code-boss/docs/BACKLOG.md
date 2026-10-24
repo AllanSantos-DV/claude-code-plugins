@@ -1,5 +1,14 @@
 # Backlog
 
+## Develop pronta e instalada com 6e419fc, 7033e53 e d858dd8 (pedido do orquestrador, 2026-10-24) — aguardando o dono, sem release
+
+- [x] **Achado e corrigido na hora — o botão Copy do aviso de projetos recusados (dentro de `role="alert"`) não dava retorno** (`dashboard/index.html`, `copyBrainIssues`): o `onclick` inline
+  engolia a recusa da área de transferência e não mostrava que copiou. Agora o rótulo diz `Copied!` ou `Copy failed: select the text` (com `console.error`) e volta a `Copy`; `type="button"`.
+  Teste em `scripts/test-units.js` (`dashboard Home: o aviso de projetos recusados…`) cobre sucesso e recusa.
+- [x] **Pages por artefato**: nada a corrigir. O `pages-deploy.yml` já é build → deploy em dois jobs (Q61) e os 6 últimos runs na main passaram (o mais recente em 2026-10-24). A recusa do deploy
+  a partir da develop é a política do ambiente `github-pages` (só `main`), o desenho esperado; o workflow só dispara em push na `main`.
+- [ ] **Antes do release**: `pages-guard check` está vermelho (fontes da vitrine mudaram com o CHANGELOG das três funcionalidades). É o passo do agente `vitrine` + `stamp`, feito no release como nas 3.10.x.
+
 ## Boss não compactou antes do prompt frio com 788 mil tokens (pedido do orquestrador, 2026-10-23) — liberado na 3.10.2
 
 Origem: dono, Boss 3.10.1 em outra máquina; sessão reaberta, parada há mais de 3 h, 788 mil tokens; o token-guard avisou, o prompt saiu e o contexto foi regravado frio.
