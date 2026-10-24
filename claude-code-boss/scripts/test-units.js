@@ -18435,11 +18435,11 @@ test('doctor.runChecks + summarize: criticalFail flagged, counts add up', () => 
     hooksEvents: ['Stop'],
   };
   const results = doctor.runChecks(ctx);
-  assertEq(results.length, 17);
+  assertEq(results.length, 18);
   const s = doctor.summarize(results);
   assert(s.criticalFail, 'old node → criticalFail');
   assertEq(s.ok, false);
-  assertEq(s.counts.ok + s.counts.warn + s.counts.fail, 17);
+  assertEq(s.counts.ok + s.counts.warn + s.counts.fail, 18);
 });
 
 test('doctor.runChecks: all-healthy ctx → ok summary', () => {
@@ -28807,7 +28807,7 @@ async function reopenedRun(ce, o) {
     fs.writeFileSync(transcript, row('msg-old', o.lastCallAgoMs, REOPEN_CALL) + (o.boundaryAfter ? JSON.stringify({ type: 'system', subtype: 'compact_boundary' }) + '\n' : ''));
   }
   const config = { enabled: true, thresholdPercent: 30, minIntervalMs: 600000, folderTtl: true };
-  const out = { logs: [], gates: [], timers: [], compacts: 0 };
+  const out = { logs: [], gates: [], timers: [], compacts: 0, toasts: [], hello: null };
   const env = { CLAUDE_PLUGIN_DATA: dir, BRAIN_HTTP_PORT: '1', CLAUDE_CONFIG_DIR: cfgDir };
   const prevCfgDir = process.env.CLAUDE_CONFIG_DIR;
   process.env.CLAUDE_CONFIG_DIR = cfgDir;
@@ -28820,7 +28820,7 @@ async function reopenedRun(ce, o) {
       const body = JSON.parse(init.body);
       const payload = JSON.parse(body.payload);
       let reply = {};
-      if (payload.kind === 'hello') reply = { config };
+      if (payload.kind === 'hello') { out.hello = payload; reply = { config, installedVersion: o.installedVersion }; }
       else if (payload.kind === 'folder' || payload.kind === 'folder-end') reply = { folderTtl: { ttl: '5m', live: 1, allAbove: true, action: 'none' } };
       else if (payload.kind === 'gate') out.gates.push(payload);
       else if (payload.kind === 'turn' || payload.kind === 'tail') reply = { ...(await ce.run({ ...body, payload })), config };
@@ -28832,7 +28832,7 @@ async function reopenedRun(ce, o) {
       messages: async () => bigHistory,
     },
     clock: { now: async () => now, after: (ms, fn) => { out.timers.push({ ms, fn }); } },
-    ui: { log: (t) => out.logs.push(t), toast: () => {} },
+    ui: { log: (t) => out.logs.push(t), toast: (t) => out.toasts.push(t) },
     command: { run: async () => { out.compacts++; } },
     prompt: { submit: async () => {} },
   };
@@ -28908,6 +28908,78 @@ test('compaction hook, reopened session: a compaction after the transcript\'s la
     assert(!(r.held && r.held.drop), `a pre-cut reading must not hold the prompt — ${heldOrWhy(r)}`);
     assertEq(r.lastGate && r.lastGate.reason, 'no-reading');
   });
+});
+
+test('compaction-core.fallbackWindow: the model name, then the observed size, then 200k — never "no window"', async () => {
+  const core = await import(require('url').pathToFileURL(path.join(ROOT, 'scripts', 'lib', 'compaction-core.mjs')).href);
+  assertEq(core.fallbackWindow({ model: 'claude-opus-5-5[1m]', tokens: 10 }), { window: 1000000, source: 'fallback-model' });
+  assertEq(core.fallbackWindow({ model: 'claude-opus-5-5', tokens: 788000 }), { window: 1000000, source: 'fallback-observed' });
+  assertEq(core.fallbackWindow({ tokens: 150000 }), { window: 200000, source: 'fallback-default' });
+  assertEq(core.fallbackWindow(), { window: 200000, source: 'fallback-default' });
+});
+
+test('compaction hook, the engine reports NO window on a reopened 788k session: the gate judges by a fallback window and still cuts (it switched itself off before)', async () => {
+  await withCmpStore(async (ce) => {
+    const live = await reopenedRun(ce, { source: 'startup', usageTokens: 788000, window: null, lastCallAgoMs: H3 });
+    assert(live.held && HELD.test(live.held.drop || ''), `live size, no window — ${heldOrWhy(live)}`);
+    assertEq(live.lastGate.windowSource, 'fallback-model', 'the transcript\'s [1m] model beats the size');
+    const bare = await reopenedRun(ce, { source: 'startup', usageTokens: 788000, window: null, noTranscript: true });
+    assertEq(bare.lastGate.windowSource, 'fallback-observed', 'no model known: a context past 200k can only be a 1M window');
+    assertEq(bare.lastGate.thresholdTokens, 300000);
+    const tail = await reopenedRun(ce, { source: 'startup', usageTokens: null, window: null, lastCallAgoMs: H3 });
+    assert(tail.held && HELD.test(tail.held.drop || ''), `transcript size and model, no window — ${heldOrWhy(tail)}`);
+    assertEq(tail.lastGate.windowSource, 'fallback-model');
+    const small = await reopenedRun(ce, { source: 'startup', usageTokens: 50000, window: null, noTranscript: true });
+    assert(!(small.held && small.held.drop), `${heldOrWhy(small)}`);
+    assertEq(small.lastGate.windowSource, 'fallback-default');
+  });
+});
+
+test('compaction hook: hello reports the module version; a session older than the installed plugin is told once, visibly, to reopen', async () => {
+  await withCmpStore(async (ce) => {
+    const pkgVersion = require('../package.json').version;
+    assertEq(fs.readFileSync(path.join(ROOT, 'hooks', 'compaction.mjs'), 'utf8').match(/const MODULE_VERSION = '([^']+)'/)[1], pkgVersion, 'the constant follows package.json (sync-version)');
+    const old = await reopenedRun(ce, { source: 'startup', usageTokens: 1000, lastCallAgoMs: 60000, installedVersion: '99.0.0' });
+    assertEq(old.hello.moduleVersion, pkgVersion);
+    assertEq(old.toasts.filter((t) => /old Boss/.test(t)).length, 1, `one notice, got ${JSON.stringify(old.toasts)}`);
+    assert(/reopen the session/.test(old.toasts.join(' ')) && old.logs.some((l) => /old Boss/.test(l)), 'toast and log both say it');
+    const same = await reopenedRun(ce, { source: 'startup', usageTokens: 1000, lastCallAgoMs: 60000, installedVersion: pkgVersion });
+    assertEq(same.toasts.filter((t) => /old Boss/.test(t)), [], 'same version: silent');
+  });
+});
+
+test('compaction-event hello: records the module version (null = a module from before it was sent) and answers the installed one', async () => {
+  await withCmpStore(async (ce, store) => {
+    const pkgVersion = require('../package.json').version;
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-cmp-hello-'));
+    const hello = (sid, extra) => ce.run({ session_id: sid, cwd: dir, payload: { kind: 'hello', host: 'h', auth: 'a', ...extra } });
+    assertEq((await hello('sid-new', { moduleVersion: pkgVersion })).installedVersion, pkgVersion);
+    await hello('sid-old', {});
+    const rows = store().getEventLog({ eventName: 'compaction.session' });
+    const by = (sid) => rows.find((r) => r.sessionId === sid).payload;
+    assertEq([by('sid-new').moduleVersion, by('sid-old').moduleVersion], [pkgVersion, null]);
+  });
+});
+
+test('compaction-report.staleModuleSessions + doctor.checkSessionModules: sessions on another module version are listed (newest hello wins) and warned about', () => {
+  const { staleModuleSessions } = require('./lib/compaction-report.js');
+  const doctor = require('./doctor.js');
+  const now = Date.now();
+  const rows = [
+    { sessionId: 'aaaaaaaa-1', ts: now - 1000, payload: { moduleVersion: '3.10.1' } },
+    { sessionId: 'bbbbbbbb-2', ts: now - 2000, payload: { moduleVersion: null } },
+    { sessionId: 'cccccccc-3', ts: now - 9000, payload: { moduleVersion: '3.9.0' } },
+    { sessionId: 'cccccccc-3', ts: now - 3000, payload: { moduleVersion: '3.10.2' } },
+  ];
+  const store = { listProjects: () => ['p'], close() {}, init: () => true, getEventLog: () => rows };
+  const stale = staleModuleSessions({ installed: '3.10.2', store });
+  assertEq(stale.map((s) => [s.sessionId, s.version]).sort(), [['aaaaaaaa-1', '3.10.1'], ['bbbbbbbb-2', null]]);
+  const res = doctor.runChecks({ sessionModules: { installed: '3.10.2', stale } }).find((r) => r.id === 'session-modules');
+  assertEq(res.status, 'warn');
+  assert(/2 session\(s\)/.test(res.detail) && /before the version was reported/.test(res.detail) && /Reopen/.test(res.fix), res.detail);
+  assertEq(doctor.runChecks({ sessionModules: { installed: '3.10.2', stale: [] } }).find((r) => r.id === 'session-modules').status, 'ok');
+  assertEq(doctor.runChecks({ sessionModules: { error: 'x' } }).find((r) => r.id === 'session-modules').status, 'warn', 'a read failure is shown');
+  assertEq(doctor.runChecks({}).find((r) => r.id === 'session-modules').status, 'ok', 'not probed → says so');
 });
 
 test('hook_compaction_event: daemon transport (payload arrives as an object, bad events degrade visibly); module in hooks.json; free profile turns compaction off', async () => {
