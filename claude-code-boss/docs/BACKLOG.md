@@ -1,5 +1,21 @@
 # Backlog
 
+## Boss não compactou antes do prompt frio com 788 mil tokens (pedido do orquestrador, 2026-10-23) — em `develop`, aguardando a decisão de liberar
+
+Origem: dono, Boss 3.10.1 em outra máquina; sessão reaberta, parada há mais de 3 h, 788 mil tokens; o token-guard avisou, o prompt saiu e o contexto foi regravado frio.
+
+- [x] **Achado e corrigido na hora — o portão não tinha horário da última resposta fora de `turn.complete`/`resume`** (`hooks/compaction.mjs`, `gate`; `compaction-core.decideTiming`):
+  `lastAnswerAt` só nasce em `turn.complete` ou num SessionStart com `source: 'resume'`. Sessão aberta como `startup` (ou cujo SessionStart clássico não chegou) com o contexto já enorme
+  respondia `cache-age-unknown`; sem leitura de tamanho da sessão viva, `no-reading`; num `resume` sem tamanho da sessão viva e sem histórico recarregado, o `context_tokens` do SessionStart não era usado
+  (`below-threshold` com 1 token). Os dois guardas (idade desconhecida não é frio; sem leitura não age) estão certos — faltava a fonte. Agora o transcript, que tem o carimbo de cada chamada, é a fonte (evento `tail`
+  em `scripts/compaction-event.js`); `context_tokens` do SessionStart entra na cadeia de tamanho. Sessão sem chamada nenhuma no transcript continua `cache-age-unknown`; cache quente continua `cache-warm`;
+  corte depois da última chamada invalida o tamanho. Testes (falham antes, passam depois): seis `compaction hook, session reopened…` em `scripts/test-units.js`.
+- [ ] **Fora de escopo — sessão aberta antes da atualização roda o módulo antigo até ser reaberta e nada avisa** (`hooks/compaction.mjs`): o módulo de função fica carregado no processo da sessão; o daemon novo
+  responde, mas o portão é o código velho. Não há aviso de versão/sessão desatualizada em lugar nenhum (nem faixa, nem Doctor). Proposta: o `hello` mandar a versão do módulo e o daemon/Doctor/faixa
+  dizerem "sessão rodando 3.x.y, instalado 3.y.z — reabra". Não implementado: não foi pedido nesta entrega.
+- [ ] **Fora de escopo — janela desconhecida desliga o portão** (`compaction-core.thresholdFor`): sem `window` no `usage()` o limiar é nulo e a resposta é `no-window` (regra "nunca agir por palpite"). Se uma
+  sessão reaberta reportar janela vazia, o corte não vem; o transcript traz o modelo (`[1m]`) e poderia inferir. Não observado; registrado para o caso de aparecer.
+
 ## Lista de projetos do painel quebra em outras máquinas (pedido do orquestrador, 2026-10-23) — em `develop`, aguardando a validação do dono
 
 Origem: relato do dono de várias máquinas; Logs do painel: `memory server unreachable: Unexpected token 'p', "project_id"... is not valid JSON` e `warm-up of the Home metrics failed`.
