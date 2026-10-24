@@ -3,13 +3,13 @@
 <head>
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
-<title>claude-code-boss v3.10.3 — changelog</title>
+<title>claude-code-boss v3.11.0 — changelog</title>
 <meta name="description" content="O que mudou em cada versão do claude-code-boss, da mais recente para a mais antiga." />
 <link rel="canonical" href="https://allansantos-dv.github.io/claude-code-plugins/claude-code-boss/changelog.html">
 <meta property="og:type" content="website">
 <meta property="og:site_name" content="allansantos-plugins">
 <meta property="og:locale" content="pt_BR">
-<meta property="og:title" content="claude-code-boss v3.10.3 — changelog">
+<meta property="og:title" content="claude-code-boss v3.11.0 — changelog">
 <meta property="og:description" content="O que mudou em cada versão do claude-code-boss, da mais recente para a mais antiga.">
 <meta property="og:url" content="https://allansantos-dv.github.io/claude-code-plugins/claude-code-boss/changelog.html">
 <meta property="og:image" content="https://allansantos-dv.github.io/claude-code-plugins/claude-code-boss/og-card.jpg">
@@ -17,7 +17,7 @@
 <meta property="og:image:height" content="630">
 <meta property="og:image:alt" content="claude-code-boss: Menos repetição. Mais memória.">
 <meta name="twitter:card" content="summary_large_image">
-<meta name="twitter:title" content="claude-code-boss v3.10.3 — changelog">
+<meta name="twitter:title" content="claude-code-boss v3.11.0 — changelog">
 <meta name="twitter:description" content="O que mudou em cada versão do claude-code-boss, da mais recente para a mais antiga.">
 <meta name="twitter:image" content="https://allansantos-dv.github.io/claude-code-plugins/claude-code-boss/og-card.jpg">
 <script data-ccb-theme-script>
@@ -274,14 +274,14 @@ html{scroll-behavior:auto}
   <nav class="nav-links">
     <a href="index.html">← Apresentação</a>
     <a href="tech.html">Detalhes técnicos</a>
-    <a href="#top" class="ver">v3.10.3</a>
+    <a href="#top" class="ver">v3.11.0</a>
   </nav>
 <div class="ccb-theme" role="group" aria-label="Tema"><button type="button" data-ccb-theme="dark" aria-pressed="true">Dark</button><button type="button" data-ccb-theme="light" aria-pressed="false">Light</button></div>
 </header>
 
 <main class="wrap" id="top">
   <div class="page-head">
-    <p class="kick">changelog · v3.10.3</p>
+    <p class="kick">changelog · v3.11.0</p>
     <h1>O que mudou em cada versão</h1>
     <p class="intro">Histórico do claude-code-boss, da versão mais recente para a mais antiga. O registro completo, com cada correção, está no <a href="https://github.com/AllanSantos-DV/claude-code-plugins/blob/main/claude-code-boss/CHANGELOG.md">CHANGELOG.md</a>.</p>
     <div class="toc">
@@ -292,6 +292,7 @@ html{scroll-behavior:auto}
 
   <section id="resumo">
     <h2>Em linguagem simples</h2>
+    <p><b>3.11.0</b> (2026-10-24) · Novidades: o Doctor passa a mapear o seu setup, dizendo o que ele dá ao agente para procurar e lembrar (Smart Tool, backend de memória, grafo de código, regras permanentes), só como informação, sem reprovar nada. Há também um funil opcional, desligado por padrão, que lembra o agente de procurar o que já existe antes de escrever código novo. Correções: o botão Copy do aviso de projetos recusados agora mostra se copiou ou se a área de transferência recusou; a sonda do grafo usa a raiz do projeto quando a sessão abre numa subpasta; um projeto com id inválido no servidor de memória não derruba mais a lista do painel, e o painel mostra qual projeto está com erro.</p>
     <p><b>3.10.3</b> (2026-10-24) · Correção: o aviso do Doctor sobre sessões ainda rodando um Boss antigo listava também sessões que já tinham fechado. Agora ele conta só as sessões que estiveram ativas depois da atualização.</p>
     <p><b>3.10.2</b> (2026-10-23) · Correção: numa sessão reaberta depois de horas parada, com o contexto enorme, o prompt saía sem o corte e o contexto inteiro era regravado com o cache frio. Agora o corte lê do histórico da conversa há quanto tempo foi a última resposta e o tamanho do contexto, e age antes do prompt. Quando o motor não informa a janela do modelo, o corte não se desliga mais: usa uma janela padrão segura. E a sessão aberta antes da atualização, ainda rodando um Boss antigo, agora recebe um aviso único para reabrir e ativar as correções.</p>
     <p><b>3.10.1</b> (2026-10-22) · Correção: depois que a pasta passava para cache de 5 minutos, a compactação ainda esperava a janela de 1 hora e o corte não vinha, regravando o contexto inteiro. Agora o corte vem quando o cache de 5 minutos esfria. O aviso de busca ampla passou a apontar o Smart Tool.</p>
@@ -313,11 +314,12 @@ html{scroll-behavior:auto}
 
   <section id="versoes">
     <h2>Destaques por versão <span class="tag">98 releases</span></h2>
-    <p class="lead">O changelog completo (v1.0.0 → v3.10.3) vive no <a href="https://github.com/AllanSantos-DV/claude-code-plugins/blob/main/claude-code-boss/CHANGELOG.md">CHANGELOG.md</a>. Destaques recentes:</p>
+    <p class="lead">O changelog completo (v1.0.0 → v3.11.0) vive no <a href="https://github.com/AllanSantos-DV/claude-code-plugins/blob/main/claude-code-boss/CHANGELOG.md">CHANGELOG.md</a>. Destaques recentes:</p>
     <div class="table-scroll">
       <table>
         <thead><tr><th>Versão</th><th>Destaque</th></tr></thead>
         <tbody>
+          <tr><td><b>v3.11.0</b></td><td>O Doctor mapeia o setup; funil opcional de reuso antes de escrever (desligado por padrão); botão Copy com resultado visível; sonda do grafo usa a raiz do projeto.</td></tr>
           <tr><td><b>v3.10.3</b></td><td>O aviso do Doctor sobre sessões com Boss antigo não lista mais sessões já fechadas: conta só as ativas desde a atualização.</td></tr>
           <tr><td><b>v3.10.2</b></td><td>O corte da compactação funciona numa sessão reaberta depois de horas parada; janela de modelo desconhecida não desliga mais o corte; sessão com Boss antigo recebe aviso para reabrir.</td></tr>
           <tr><td><b>v3.10.1</b></td><td>O corte da compactação volta a vir depois da troca do cache da pasta para 5 minutos; o aviso de busca ampla aponta o Smart Tool.</td></tr>
@@ -368,7 +370,7 @@ html{scroll-behavior:auto}
       <a href="https://github.com/AllanSantos-DV/claude-code-plugins/blob/main/claude-code-boss/README.md">README</a>
       <a href="https://github.com/AllanSantos-DV/claude-code-plugins">GitHub</a>
     </div>
-    <div class="legal">MIT · Allan Santos · claude-code-boss v3.10.3</div>
+    <div class="legal">MIT · Allan Santos · claude-code-boss v3.11.0</div>
   </div>
 </footer>
 
