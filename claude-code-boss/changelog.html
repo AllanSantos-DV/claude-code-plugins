@@ -1,0 +1,378 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>claude-code-boss v3.11.0 — changelog</title>
+<meta name="description" content="O que mudou em cada versão do claude-code-boss, da mais recente para a mais antiga." />
+<link rel="canonical" href="https://allansantos-dv.github.io/claude-code-plugins/claude-code-boss/changelog.html">
+<meta property="og:type" content="website">
+<meta property="og:site_name" content="allansantos-plugins">
+<meta property="og:locale" content="pt_BR">
+<meta property="og:title" content="claude-code-boss v3.11.0 — changelog">
+<meta property="og:description" content="O que mudou em cada versão do claude-code-boss, da mais recente para a mais antiga.">
+<meta property="og:url" content="https://allansantos-dv.github.io/claude-code-plugins/claude-code-boss/changelog.html">
+<meta property="og:image" content="https://allansantos-dv.github.io/claude-code-plugins/claude-code-boss/og-card.jpg">
+<meta property="og:image:width" content="1200">
+<meta property="og:image:height" content="630">
+<meta property="og:image:alt" content="claude-code-boss: Menos repetição. Mais memória.">
+<meta name="twitter:card" content="summary_large_image">
+<meta name="twitter:title" content="claude-code-boss v3.11.0 — changelog">
+<meta name="twitter:description" content="O que mudou em cada versão do claude-code-boss, da mais recente para a mais antiga.">
+<meta name="twitter:image" content="https://allansantos-dv.github.io/claude-code-plugins/claude-code-boss/og-card.jpg">
+<script data-ccb-theme-script>
+/* Shared theme; executed before styles and first paint. */
+(function () {
+  'use strict';
+  const dashboard = false;
+  const root = document.documentElement;
+  const read = key => { try { return localStorage.getItem(key); } catch (error) { void error; return null; } };
+  const write = (key, value) => { try { localStorage.setItem(key, value); } catch (error) { console.info('Tema mantido nesta página: armazenamento indisponível.'); } };
+  const normalize = value => value === 'light' ? 'light' : 'dark';
+  const initial = normalize(read('ccb-theme'));
+  root.setAttribute('data-theme', initial);
+  // Seed the existing application's preference; its original scripts stay untouched.
+  if (dashboard) write('dash.theme', initial);
+  function reflect(theme) {
+    document.querySelectorAll('[data-ccb-theme]').forEach(button => {
+      button.setAttribute('aria-pressed', String(button.dataset.ccbTheme === theme));
+    });
+    document.querySelectorAll('[data-ccb-section]').forEach(link => {
+      link.setAttribute('href', '#' + theme + '-' + link.dataset.ccbSection);
+    });
+    const meta = document.querySelector('meta[name="theme-color"]');
+    if (meta) meta.content = theme === 'dark' ? '#10101b' : '#f7f9fc';
+  }
+  function choose(value) {
+    const theme = normalize(value);
+    if (dashboard) {
+      // Invoke the preserved application control, keeping its internal state in sync.
+      if (normalize(root.getAttribute('data-theme')) !== theme) document.getElementById('theme-toggle').click();
+    }
+    root.setAttribute('data-theme', theme);
+    write('ccb-theme', theme);
+    reflect(theme);
+    const target = location.hash.match(/^#(?:dark|light)-(.+)$/);
+    if (target && document.querySelector('.theme-story')) {
+      const hash = '#' + theme + '-' + target[1];
+      history.replaceState(null, '', hash);
+      document.getElementById(hash.slice(1))?.scrollIntoView({behavior:'instant'});
+    }
+  }
+  if (dashboard) new MutationObserver(() => {
+    const theme = normalize(root.getAttribute('data-theme'));
+    // The original applyTheme removes the attribute for Dark. Normalize it for tokens.
+    if (!root.hasAttribute('data-theme')) root.setAttribute('data-theme', theme);
+    if (read('ccb-theme') !== theme) write('ccb-theme', theme);
+    reflect(theme);
+  }).observe(root, {attributes:true, attributeFilter:['data-theme']});
+  document.addEventListener('DOMContentLoaded', () => {
+    reflect(normalize(root.getAttribute('data-theme')));
+    document.querySelectorAll('[data-ccb-theme]').forEach(button => {
+      button.addEventListener('click', () => choose(button.dataset.ccbTheme));
+    });
+  });
+  window.addEventListener('storage', event => {
+    if (event.key === 'ccb-theme' || event.key === null) choose(event.newValue);
+  });
+})();
+</script><link rel="preconnect" href="https://fonts.googleapis.com"><link rel="preconnect" href="https://fonts.gstatic.com" crossorigin><link href="https://fonts.googleapis.com/css2?family=Manrope:wght@400;500;600;700;800&amp;family=DM+Sans:wght@400;500;600;700&amp;family=Space+Grotesk:wght@400;500;600;700&amp;family=IBM+Plex+Mono:wght@400;500;600&amp;display=swap" rel="stylesheet"><style>
+  :root{
+    --bg:#0d0c10; --bg-soft:#131218; --ink:#edeae1; --muted:#9a978d;
+    --line:rgba(255,255,255,.10); --amber:#e08c3a; --amber-soft:rgba(224,140,58,.13);
+    --amber-lite:#f6c694; --maxw:1040px;
+    --mono:ui-monospace,"Cascadia Code","JetBrains Mono",Consolas,monospace;
+    --sans:system-ui,-apple-system,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
+  }
+  @media (prefers-color-scheme:light){
+    :root{ --bg:#faf7f1; --bg-soft:#f2eee6; --ink:#1b1a1e; --muted:#6b6a62;
+           --line:rgba(20,20,25,.13); --amber:#a8571c; --amber-soft:rgba(168,87,28,.10); --amber-lite:#8a4a1a; }
+  }
+  @media (prefers-reduced-motion:reduce){
+    *{ animation:none !important; transition:none !important; scroll-behavior:auto !important }
+  }
+  *{ box-sizing:border-box }
+  html{ -webkit-text-size-adjust:100%; scroll-behavior:smooth }
+  body{
+    margin:0; background:var(--bg); color:var(--ink);
+    font-family:var(--sans); font-size:16px; line-height:1.6;
+    -webkit-font-smoothing:antialiased; overflow-x:hidden;
+  }
+  a{ color:var(--amber-lite) }
+  a:hover{ text-decoration:underline }
+  a:focus-visible,button:focus-visible{ outline:2px solid var(--amber); outline-offset:3px; border-radius:4px }
+  code{ font-family:var(--mono); font-size:.85em; background:var(--amber-soft); color:var(--amber-lite);
+    padding:1px 6px; border-radius:5px; white-space:nowrap; word-break:break-all }
+  .wrap{ max-width:var(--maxw); margin:0 auto; padding:0 24px }
+  .mono{ font-family:var(--mono) }
+
+  header.nav{ display:flex; align-items:center; justify-content:space-between; gap:14px;
+    padding:18px 24px; border-bottom:1px solid var(--line) }
+  .brand{ display:flex; align-items:center; gap:10px; text-decoration:none; color:var(--ink) }
+  .brand .logo{ width:30px; height:30px; border-radius:8px; display:grid; place-items:center;
+    background:var(--amber-soft); border:1px solid var(--amber); color:var(--amber);
+    font-family:var(--mono); font-size:14px; font-weight:700 }
+  .brand .name{ font-family:var(--mono); font-size:14px; font-weight:600 }
+  .brand .name small{ color:var(--muted); font-weight:400; margin-left:6px }
+  .nav-links{ display:flex; align-items:center; gap:4px; flex-wrap:wrap }
+  .nav-links a{ font-family:var(--mono); font-size:12.5px; color:var(--muted); text-decoration:none;
+    padding:7px 12px; border-radius:8px }
+  .nav-links a:hover{ color:var(--ink); background:var(--bg-soft) }
+  .ver{ color:var(--amber) !important; border:1px solid var(--amber); border-radius:999px !important }
+
+  main{ padding:clamp(44px,6vw,72px) 0 }
+  .page-head{ margin-bottom:44px }
+  .kick{ font-family:var(--mono); font-size:11.5px; letter-spacing:.28em; text-transform:uppercase;
+    color:var(--amber); margin:0 0 16px }
+  h1{ font-family:var(--mono); font-size:clamp(1.7rem,4vw,2.3rem); letter-spacing:-.03em; line-height:1.1; margin:0 }
+  .intro{ color:var(--muted); font-size:16px; max-width:66ch; margin:18px 0 0; line-height:1.6 }
+  .intro b{ color:var(--ink); font-weight:600 }
+
+  .toc{ display:flex; flex-wrap:wrap; gap:8px; margin:26px 0 0; padding:16px 0 0; border-top:1px solid var(--line) }
+  .toc a{ font-family:var(--mono); font-size:12px; color:var(--muted); text-decoration:none;
+    border:1px solid var(--line); border-radius:999px; padding:5px 13px }
+  .toc a:hover{ color:var(--amber); border-color:var(--amber) }
+
+  section{ margin-bottom:56px }
+  section h2{ font-family:var(--mono); font-size:1.25rem; letter-spacing:-.02em; margin:0 0 18px;
+    display:flex; flex-wrap:wrap; align-items:baseline; gap:6px 12px }
+  section h2 .tag{ font-size:10.5px; color:var(--amber); border:1px solid var(--amber);
+    padding:2px 9px; border-radius:999px; letter-spacing:.08em; white-space:nowrap }
+  section h3{ font-size:1.02rem; margin:26px 0 10px }
+  p.lead{ color:var(--muted); margin:0 0 18px; max-width:72ch }
+
+  .panel{ border:1px solid var(--line); border-radius:14px; background:var(--bg-soft); padding:26px }
+  .panel + .panel{ margin-top:16px }
+
+  ul.tight{ margin:8px 0 0; padding-left:20px; color:var(--muted); display:grid; gap:7px }
+  ul.tight b{ color:var(--ink); font-weight:600 }
+
+  table{ border-collapse:collapse; width:100%; font-size:13px; margin-top:14px }
+  th{ font-family:var(--mono); font-size:10.5px; letter-spacing:.1em; text-transform:uppercase;
+    color:var(--muted); text-align:left; padding:10px 14px; border-bottom:2px solid var(--amber) }
+  td{ padding:10px 14px; border-bottom:1px solid var(--line); vertical-align:top }
+  td b{ font-family:var(--mono); font-size:12px; font-weight:600 }
+  tr:hover td{ background:var(--amber-soft) }
+  .table-scroll{ overflow-x:auto }
+
+  .grid2{ display:grid; grid-template-columns:1fr 1fr; gap:14px }
+  .grid3{ display:grid; grid-template-columns:repeat(3,1fr); gap:14px }
+  .mini{ border:1px solid var(--line); border-radius:12px; padding:18px }
+  .mini .k{ font-family:var(--mono); font-size:10.5px; letter-spacing:.12em; text-transform:uppercase;
+    color:var(--amber); margin:0 0 9px }
+  .mini > b{ display:block; font-family:var(--mono); font-size:13px; margin:0 0 7px }
+  .mini p{ margin:0; color:var(--muted); font-size:12.5px; line-height:1.55 }
+
+  .flow-bar{ font-family:var(--mono); font-size:12px; display:flex; flex-wrap:wrap; align-items:center;
+    gap:8px; margin:8px 0 16px }
+  .flow-bar .f{ background:var(--bg); border:1px solid var(--line); border-radius:8px; padding:6px 12px; color:var(--ink) }
+  .flow-bar .ar{ color:var(--amber); font-weight:700 }
+
+  .callout{ border-left:3px solid var(--amber); background:var(--amber-soft); border-radius:0 10px 10px 0;
+    padding:14px 18px; margin:18px 0; font-size:13.5px; color:var(--muted) }
+  .callout b{ color:var(--ink); font-weight:600 }
+
+  footer{ border-top:1px solid var(--line); padding:40px 0 60px }
+  footer .links{ display:flex; gap:6px; flex-wrap:wrap }
+  footer .links a{ font-family:var(--mono); font-size:12px; color:var(--muted); text-decoration:none; padding:6px 12px; border-radius:8px }
+  footer .links a:hover{ color:var(--amber); background:var(--amber-soft) }
+  footer .legal{ font-family:var(--mono); font-size:11px; color:var(--muted); margin-top:14px }
+
+  @media (max-width:860px){
+    .grid2,.grid3{ grid-template-columns:1fr }
+    .table-scroll{ max-width:100% }
+  }
+  @media (max-width:600px){
+    .nav-links{ display:none }
+    body{ font-size:15px }
+    .table-scroll table, .table-scroll tbody, .table-scroll tr, .table-scroll td{ display:block; width:auto }
+    .table-scroll thead{ display:none }
+    .table-scroll tr{ padding:10px 0; border-bottom:1px solid var(--line) }
+    .table-scroll td{ border:0; padding:3px 0; overflow-wrap:break-word }
+    .table-scroll td:first-child{ color:var(--ink) }
+    .table-scroll tr:hover td{ background:none }
+  }
+
+:root, [data-theme="dark"] {
+  color-scheme: dark;
+  --ccb-bg:#10101b; --ccb-surface:#191725; --ccb-surface-alt:#232034;
+  --ccb-text:#f4f1ff; --ccb-muted:#b1abc4; --ccb-border:#49415e;
+  --ccb-primary:#c7afff; --ccb-on-primary:#24153e; --ccb-highlight:#edb9df;
+  --ccb-success:#9bd8b5; --ccb-error:#ffabab; --ccb-warning:#efc582;
+  --ccb-display:'Manrope','Segoe UI',sans-serif;
+  --ccb-body:'Manrope','Segoe UI',sans-serif;
+  --ccb-mono:'IBM Plex Mono',Consolas,monospace;
+  --ccb-radius:14px; --ccb-radius-sm:8px;
+  --ccb-shadow:0 12px 36px #00000024;
+}
+[data-theme="light"] {
+  color-scheme: light;
+  --ccb-bg:#f7f9fc; --ccb-surface:#ffffff; --ccb-surface-alt:#eaf0ff;
+  --ccb-text:#15264a; --ccb-muted:#55627b; --ccb-border:#c1cce1;
+  --ccb-primary:#2455ed; --ccb-on-primary:#ffffff; --ccb-highlight:#ac3813;
+  --ccb-success:#246345; --ccb-error:#b42d43; --ccb-warning:#855515;
+  --ccb-display:'Space Grotesk','Segoe UI',sans-serif;
+  --ccb-body:'DM Sans','Segoe UI',sans-serif;
+  --ccb-mono:'IBM Plex Mono',Consolas,monospace;
+  --ccb-radius:14px; --ccb-radius-sm:8px;
+  --ccb-shadow:0 12px 36px #173d790d;
+}
+
+/* Shared identity and theme control. */
+html { background:var(--ccb-bg); }
+body { font-family:var(--ccb-body); background:var(--ccb-bg); color:var(--ccb-text); }
+.ccb-theme { display:inline-flex; flex:none; align-items:center; gap:3px; padding:4px; margin:0;
+  border:1px solid var(--ccb-border); border-radius:999px; background:var(--ccb-surface); }
+.ccb-theme button { appearance:none; font:600 11px/1 var(--ccb-body); letter-spacing:0;
+  padding:10px 13px; min-height:34px; margin:0; border:0; border-radius:999px;
+  background:transparent; color:var(--ccb-muted); cursor:pointer; white-space:nowrap; }
+.ccb-theme button[aria-pressed="true"] { background:var(--ccb-primary); color:var(--ccb-on-primary); }
+.ccb-theme button:hover { box-shadow:inset 0 0 0 1px var(--ccb-primary); }
+:where(a,button,input,select,textarea,[tabindex]):focus-visible {
+  outline:3px solid var(--ccb-primary); outline-offset:4px; }
+@media(prefers-reduced-motion:reduce) {
+  *,*::before,*::after { animation:none!important; transition:none!important; scroll-behavior:auto!important; }
+}
+
+html[data-theme]{
+ --bg:var(--ccb-bg);--bg-soft:var(--ccb-surface);--ink:var(--ccb-text);--muted:var(--ccb-muted);
+ --line:var(--ccb-border);--amber:var(--ccb-primary);--amber-lite:var(--ccb-primary);
+ --amber-soft:var(--ccb-surface-alt);--mono:var(--ccb-mono);--sans:var(--ccb-body);
+}
+body{overflow-x:visible}
+h1,section h2,section h3{font-family:var(--ccb-display)}
+h1{font-size:clamp(2rem,4vw,3rem);letter-spacing:-.055em}
+section h2{font-size:1.5rem;letter-spacing:-.035em}
+.panel{border-radius:var(--ccb-radius);box-shadow:var(--ccb-shadow)}
+.mini,.flow-bar .f{border-radius:var(--ccb-radius-sm)}
+.brand .name{font-family:var(--ccb-display);font-size:15px}
+.brand .name small{display:block;margin:0;font:11px/1.6 var(--ccb-body)}
+header.nav{flex-wrap:wrap;gap:16px}
+header.nav .nav-links{margin-left:auto}
+code{white-space:normal;overflow-wrap:anywhere;word-break:normal}
+main.wrap{padding-top:52px;padding-bottom:30px}
+.grid2,.grid3{grid-template-columns:repeat(2,minmax(0,1fr))}
+.grid3{grid-template-columns:repeat(3,minmax(0,1fr))}
+html{scroll-behavior:auto}
+@media(max-width:860px){.grid2,.grid3{grid-template-columns:1fr}header.nav .nav-links{order:3;width:100%;margin:0}}
+@media(max-width:600px){
+ .wrap{padding-left:20px;padding-right:20px}.panel{padding:20px}.nav-links{display:flex}
+ header.nav{padding:18px 20px}.brand{flex:1 0 100%}.ccb-theme{margin-left:0}
+ header.nav .nav-links{order:initial;width:auto;flex:1;gap:3px}.nav-links a{font-size:11px;padding:7px 6px}
+ .nav-links .ver{display:none}.toc a{overflow-wrap:anywhere;max-width:100%}
+ .flow-bar .f{overflow-wrap:anywhere;max-width:100%}
+}
+</style>
+</head>
+<body>
+
+<header class="nav wrap">
+  <a class="brand" href="index.html">
+    <span class="logo">B</span>
+    <span class="name">claude-code-boss<small>changelog</small></span>
+  </a>
+  <nav class="nav-links">
+    <a href="index.html">← Apresentação</a>
+    <a href="tech.html">Detalhes técnicos</a>
+    <a href="#top" class="ver">v3.11.0</a>
+  </nav>
+<div class="ccb-theme" role="group" aria-label="Tema"><button type="button" data-ccb-theme="dark" aria-pressed="true">Dark</button><button type="button" data-ccb-theme="light" aria-pressed="false">Light</button></div>
+</header>
+
+<main class="wrap" id="top">
+  <div class="page-head">
+    <p class="kick">changelog · v3.11.0</p>
+    <h1>O que mudou em cada versão</h1>
+    <p class="intro">Histórico do claude-code-boss, da versão mais recente para a mais antiga. O registro completo, com cada correção, está no <a href="https://github.com/AllanSantos-DV/claude-code-plugins/blob/main/claude-code-boss/CHANGELOG.md">CHANGELOG.md</a>.</p>
+    <div class="toc">
+      <a href="#resumo">Em linguagem simples</a>
+      <a href="#versoes">Destaques por versão</a>
+    </div>
+  </div>
+
+  <section id="resumo">
+    <h2>Em linguagem simples</h2>
+    <p><b>3.11.0</b> (2026-10-24) · Novidades: o Doctor passa a mapear o seu setup, dizendo o que ele dá ao agente para procurar e lembrar (Smart Tool, backend de memória, grafo de código, regras permanentes), só como informação, sem reprovar nada. Há também um funil opcional, desligado por padrão, que lembra o agente de procurar o que já existe antes de escrever código novo. Correções: o botão Copy do aviso de projetos recusados agora mostra se copiou ou se a área de transferência recusou; a sonda do grafo usa a raiz do projeto quando a sessão abre numa subpasta; um projeto com id inválido no servidor de memória não derruba mais a lista do painel, e o painel mostra qual projeto está com erro.</p>
+    <p><b>3.10.3</b> (2026-10-24) · Correção: o aviso do Doctor sobre sessões ainda rodando um Boss antigo listava também sessões que já tinham fechado. Agora ele conta só as sessões que estiveram ativas depois da atualização.</p>
+    <p><b>3.10.2</b> (2026-10-23) · Correção: numa sessão reaberta depois de horas parada, com o contexto enorme, o prompt saía sem o corte e o contexto inteiro era regravado com o cache frio. Agora o corte lê do histórico da conversa há quanto tempo foi a última resposta e o tamanho do contexto, e age antes do prompt. Quando o motor não informa a janela do modelo, o corte não se desliga mais: usa uma janela padrão segura. E a sessão aberta antes da atualização, ainda rodando um Boss antigo, agora recebe um aviso único para reabrir e ativar as correções.</p>
+    <p><b>3.10.1</b> (2026-10-22) · Correção: depois que a pasta passava para cache de 5 minutos, a compactação ainda esperava a janela de 1 hora e o corte não vinha, regravando o contexto inteiro. Agora o corte vem quando o cache de 5 minutos esfria. O aviso de busca ampla passou a apontar o Smart Tool.</p>
+    <p><b>3.10.0</b> (2026-10-19) · Reinício em fases, desligado por padrão: passado o limiar de contexto, com o cache quente e no primeiro prompt depois de um turno com commit, a sessão recebe um aviso curto sugerindo seguir a próxima fase numa sessão nova a partir de um handoff. Ligar pelo painel mede antes as conversas dos últimos 30 dias (só leitura) e mostra se há economia. Também: faixa acima do prompt e <code>/boss</code> com custo da sessão, economia do Token Guard e estado do Brain.</p>
+    <p><b>3.9.0</b> · Retomada de sessão grande conta como cache frio: o primeiro pedido de uma sessão retomada regrava o histórico inteiro, e o gate achava o cache quente e não cortava. Agora, com o contexto acima do limite, o primeiro prompt da retomada passa pelo corte a frio. Medido em 14 dias: 5 de 5 retomadas grandes regravaram 88–100% do histórico, cerca de US$ 3–7 cada.</p>
+    <p><b>3.9.0</b> · Contagem de compactações: cada corte vira um registro, por sessão e por modelo|janela, com quando, modelo, janela, contexto antes e depois, % da janela no disparo, quem cortou (boss automático, boss manual ou o engine) e o custo do turno de reescrita. O indicador “compacta demais” acende com mais de 5 cortes por 100 chamadas ou mais de 2 por hora. A sugestão de teto é um modelo de custo, não uma medição: só sai com 5 ou mais cortes medidos e diz o que falta. O padrão de 30% não muda. Onde ver: painel Home, <code>doctor --cost</code> (<code>compaction-rate</code>), <code>node scripts/compaction-report.js [dias] [--json]</code> e <code>/api/metrics/compaction</code>.</p>
+    <p><b>3.9.0</b> · Doctor de custo fixo: <code>node scripts/doctor.js --cost</code> mede o que vai em toda mensagem (servidores MCP, skills, plugins) contra o uso real dos últimos 30 dias e diz o que sobra, em tokens e US$ por mensagem e por sessão. <code>--fix</code> aplica as correções reversíveis e <code>--undo</code> desfaz tudo. Na primeira sessão depois de atualizar, o doctor roda sozinho uma vez e diz o que achou, o que mudou e como desfazer. O Tool Search fica sempre ligado: as definições das ferramentas MCP carregam sob demanda.</p>
+    <p><b>3.9.0</b> · Cache de 5 min por pasta: enquanto todas as sessões abertas na mesma pasta passaram do limite, o boss grava o TTL de 5 min no <code>.claude/settings.local.json</code> daquela pasta. O cache esfria em 5 min e o corte vem logo. O valor anterior volta depois do corte, ao fechar a sessão ou se ela morrer. Subpasta é outra pasta. Cada sessão só é cortada com o próprio cache frio.</p>
+    <p><b>3.9.0</b> · Corte no cache frio sem chamar o modelo: com o cache frio, o histórico vira um brief. Seus pedidos ficam na íntegra, cada ferramenta ganha uma linha e os últimos ~2 mil tokens ficam na íntegra. Medido em 6 compactações reais: o brief guarda ~81% do que os turnos seguintes citaram, contra 73% do resumo do modelo. O <code>/compact</code> digitado continua com o resumo do modelo.</p>
+    <p>Na 3.9.0, também: com o Node fora da faixa, o plugin usa um Node 22 ou 24 já instalado. A busca semântica continua sendo o padrão. Só numa máquina em que o onnxruntime derruba o processo ao carregar o modelo, o boss passa sozinho para busca só por palavra-chave (para o daemon não cair a cada prompt) e volta sozinho quando o teste de carga passa; também dá para escolher à mão. A ingestão de conversa manda só o trecho novo. E o erro -32000 na troca de daemon acabou.</p>
+    <p>Na 3.7.0, um CLI silencioso (<code>scripts/mcp-memory-bootstrap.js</code>: <code>status</code>, <code>ensure</code>, <code>update</code>) instala e atualiza o servidor de memória fora do Claude Code: uma linha JSON no stdout e código de saída 0/1/2/3 (3 = falta Java). A versão mínima do servidor, 2.49.0, fica declarada em <code>lib/mcp-min-version.js</code>. Na 3.8.0, o doctor descobre a causa do crash 0xC0000409 do daemon: o Node 25 abortava com chamadas HTTPS em paralelo. A faixa testada (22.13 – 24.x, recomendado Node 24 LTS) é checada no setup, no aviso do SessionStart e no doctor, junto com o Node e as flags reais do daemon (<code>daemon-node</code>) e as dependências nativas (<code>native-deps</code>). A morte do daemon agora deixa registro.</p>
+    <p>Na 3.6.0, quando um hook falha você sabe de quem é: o Claude Code rotula o erro só pelo evento, sem dizer o plugin. Agora os hooks de comando do boss prefixam toda mensagem de erro com <code>[claude-code-boss:hook]</code> e, no prompt seguinte, o boss lê as falhas e os tempos esgotados da sessão e avisa "Hook X falhou → dono: plugin Y". Para hook de comando o casamento é exato; para <code>mcp_tool</code>, que não grava o comando, ele diz "candidatos: A, B" em vez de inventar certeza.</p>
+    <p>Na 3.2.2, a compactação automática do Claude Code com o cache ainda quente fica com o resumo nativo em vez da poda do boss: a poda mantinha 75–95% do histórico e obrigava a regravar tudo no cache (medido numa sessão real: a janela caiu só 12% e o turno seguinte regravou 780 mil tokens, ~7× o custo do resumo). Agora a poda só vale com cache quente se cortar 85% ou mais; com cache frio e no <code>/compact</code> manual nada muda.</p>
+    <p>Na 3.2.1, a economia dos scripts curados passa a ser exata: o redirecionamento diz ao script onde registrar o tamanho da saída crua (<code>CCB_RAW_REPORT</code>) e o painel e o resumo do início da sessão mostram “scripts curados (exato)”, o cru menos o que entrou no contexto (a estimativa fica só para scripts que ainda não registram). E duas correções no painel: o total de economia da curadoria não conta mais em dobro o histórico de métricas copiado na separação por projeto, e o resumo de 30 dias (no painel e no início da sessão) lê a janela inteira em vez de parar em 500 eventos por tipo (também nas telas de valor, impacto do perfil e recomendações de ajuste).</p>
+    <p>Na 3.2.0, os scripts curados saem do repositório: ficam na sua pasta de usuário, um diretório por projeto (<code>~/.claude/claude-code-boss/curation/&lt;owner&gt;/&lt;repo&gt;/</code>), e a curadoria pessoal (não versionada) em <code>.vscode/</code> é movida sozinha na primeira chamada, com cópia de segurança; um <code>shells.json</code> versionado no git é do time e continua sendo lido no lugar. Scripts registrados com <code>passthrough</code> recebem as variantes do comando com os argumentos e flags (<code>mvn test -Dtest=X -q</code>); redirecionar por semelhança foi medido e descartado, porque mandava <code>git commit</code> para scripts só de leitura. O plugin passa a ter versão semver de verdade (você só recebe atualização quando a versão sobe), nenhuma janela de terminal pisca mais por causa do servidor de memória, as métricas são separadas pelo id do projeto e um alias que só serve para uma execução é recusado no registro.</p>
+    <p>Na 3.1.1, correções para quem usa o servidor de memória: lições que se repetem voltam a somar recorrência no próprio servidor (a promoção a skill e o checklist de revisão leem o servidor); a consolidação semanal funciona no servidor e roda para cada projeto; o painel mostra a memória do servidor; e, depois de uma queda dele, a primeira operação responde na hora ("reiniciando") em vez de estourar o tempo. Um arquivo de configuração corrompido não troca mais o backend sozinho: a última versão boa é restaurada automaticamente e o início da sessão avisa. Para juntar lições repetidas no servidor, o boss usa o embedder configurado: com o local (o padrão) nada sai da máquina; com a Voyage ou um Ollama remoto, título e resumo das lições vão para esse serviço.</p>
+    <p>Na 3.1.0, junto com a compactação controlada: o que você ajusta no painel passa a valer — o embedder escolhido, a ordenação e os limites da memória, a promoção de skills — e ajustes de hooks, inclusive um hook desligado, sobrevivem ao update; um arquivo de ajustes ilegível não é mais trocado em silêncio (a gravação falha com a mensagem e o arquivo fica como estava). Se você já tinha trocado o embedder, a troca vale agora e as memórias locais precisam ser regravadas (<code>node scripts/brain-reembed.js</code>; o aviso de início de sessão diz quantas). O roteador de modelos não se liga por cima do seu próprio gateway (o painel dele avisa quando isso acontece) nem confunde um gateway local, como LiteLLM ou claude-code-router, com ele mesmo; o backup com o servidor de memória grande vai em fluxo para o disco, uma decisão registrada não some dentro de uma lição parecida e o atualizador do painel não confunde o boss com outro plugin. A compactação fica desligada no perfil <code>free</code> e em sessões headless, e exige Claude Code 2.1.274+.</p>
+  </section>
+
+  <section id="versoes">
+    <h2>Destaques por versão <span class="tag">98 releases</span></h2>
+    <p class="lead">O changelog completo (v1.0.0 → v3.11.0) vive no <a href="https://github.com/AllanSantos-DV/claude-code-plugins/blob/main/claude-code-boss/CHANGELOG.md">CHANGELOG.md</a>. Destaques recentes:</p>
+    <div class="table-scroll">
+      <table>
+        <thead><tr><th>Versão</th><th>Destaque</th></tr></thead>
+        <tbody>
+          <tr><td><b>v3.11.0</b></td><td>O Doctor mapeia o setup; funil opcional de reuso antes de escrever (desligado por padrão); botão Copy com resultado visível; sonda do grafo usa a raiz do projeto.</td></tr>
+          <tr><td><b>v3.10.3</b></td><td>O aviso do Doctor sobre sessões com Boss antigo não lista mais sessões já fechadas: conta só as ativas desde a atualização.</td></tr>
+          <tr><td><b>v3.10.2</b></td><td>O corte da compactação funciona numa sessão reaberta depois de horas parada; janela de modelo desconhecida não desliga mais o corte; sessão com Boss antigo recebe aviso para reabrir.</td></tr>
+          <tr><td><b>v3.10.1</b></td><td>O corte da compactação volta a vir depois da troca do cache da pasta para 5 minutos; o aviso de busca ampla aponta o Smart Tool.</td></tr>
+          <tr><td><b>v3.10.0</b></td><td>Reinício em fases (desligado por padrão, com medição das conversas dos últimos 30 dias antes de ligar), faixa acima do prompt e <code>/boss</code> com custo da sessão, economia do Token Guard e estado do Brain.</td></tr>
+          <tr><td><b>v3.9.0</b></td><td>CLI para instalar/atualizar o servidor de memória fora do Claude Code (<code>scripts/mcp-memory-bootstrap.js</code>: <code>status</code> · <code>ensure</code> · <code>update</code>), pedido do whatsapp-bridge. Reusa <code>lib/mcp-bootstrap/</code> (Java, download verificado, launcher) e o restart do auto-update. Silencioso (sem janela), uma linha JSON no stdout, código de saída 0/1/2/3 (3 = falta Java). Versão mínima oficial declarada em um lugar só (<code>lib/mcp-min-version.js</code>, <b>2.49.0</b>); falha alto se a última release publicada for menor.</td></tr>
+          <tr><td><b>v3.6.0</b></td><td>Falha de hook diz de quem é. O Claude Code rotula um hook com erro só pelo evento, sem o plugin dono (anthropics/claude-code#86368). (A) Os 5 hooks de comando do boss prefixam todo stderr com <code>[claude-code-boss:&lt;hook&gt;]</code> (<code>lib/hook-prefix.js</code>). (B) <code>lib/hook-owner.js</code>, melhor esforço: no prompt seguinte lê do transcript as falhas (<code>hook_non_blocking_error</code>) e timeouts (<code>hook_cancelled</code>) novos da sessão e mostra "Hook X falhou (saída N) → dono: plugin Y" pelo <code>systemMessage</code>. Comando de hook = casamento exato contra os <code>hooks.json</code> dos plugins instalados e os settings; <code>mcp_tool</code> não grava comando, então sai "dono provável"/"candidatos: A, B", nunca certeza inventada. Cada falha é avisada uma vez; máximo de 3 por prompt. Correção: o 401 "missing/invalid token" agora nomeia o daemon que respondeu (pid, raiz do plugin, porta).</td></tr>
+          <tr><td><b>v3.5.0</b></td><td>Correção de custo. O aviso "o Brain está aprendendo" do <code>session-summary</code> (uma vez por sessão, quando há lição capturada) deixou de bloquear o Stop e passou a chegar como <code>systemMessage</code>: nenhum turno extra do modelo, que custava de US$ 0,25 a US$ 4,50 por sessão. Os avisos que pedem ação do agente (captura de decisão, curadoria) continuam bloqueando.</td></tr>
+          <tr><td><b>v3.2.9</b></td><td>Custo. A compactação passa a acontecer perto de 120k em vez de 267k: o boss grava <code>CLAUDE_CODE_AUTO_COMPACT_WINDOW=153000</code> (o Claude Code compacta 33k abaixo da janela). O limite de 30% do boss só age com o cache frio, e com cache de 1 h só 0,19% dos intervalos esfriam, então as 34 compactações medidas chegaram todas a 266–269k. O resumo continua sendo o do Claude Code, cuja chamada lê o histórico do cache quente (medido). Simulado em 7.049 chamadas reais: −12,7% de custo, com o mesmo resumo. O limite do gate de cache frio nunca fica abaixo de 90k.</td></tr>
+          <tr><td><b>v3.2.8</b></td><td>Correção. No Windows o Bash tool do Claude Code corta pela metade as barras invertidas e quebra heredoc com aspas simples no corpo (bugs abertos #85856, #98622, #32563, #90630). Antes de rodar, o boss move o conteúdo frágil para um arquivo e reescreve só o comando: <code>cmd &lt;&lt;'EOF' … EOF</code> → <code>cmd &lt; arquivo</code>, <code>node -e '…'</code> → <code>node &lt; arquivo</code>, <code>python -c '…'</code> → <code>python - &lt; arquivo</code>; o script chega byte a byte. Medido nos 7 dias anteriores: 6,1–7,8% de falha em heredoc/<code>node -e</code> e ~214 mil tokens em erros de escape. O que não dá para reescrever com segurança recebe só um aviso. Config <code>shellEscapeGuard</code> (<code>mode: "warn"</code>, <code>enabled: false</code>, <code>block: true</code>); só age no Windows.</td></tr>
+          <tr><td><b>v3.2.7</b></td><td>Correção de custo. No início de cada sessão o boss grava no <code>env</code> do <code>~/.claude/settings.json</code> <code>CLAUDE_CODE_AUTO_COMPACT_WINDOW=300000</code> (o Claude Code compacta perto de 267k em vez de ~967k, inclusive no meio de um turno longo ou numa sessão delegada) e, só com chave de API, gateway ou provedor de nuvem, <code>CLAUDE_CODE_PROMPT_CACHE_TTL=1h</code> (com 5 min, cada espera maior regravava o contexto inteiro). Simulado nas transcrições reais de 6 sessões-dia: US$513 → ~US$213. Reversível: <code>costTuning.enabled: false</code> ou o perfil <code>free</code> devolvem o valor anterior; um valor que você mudar depois fica como está.</td></tr>
+          <tr><td><b>v3.2.6</b></td><td>Correção de custo. Com o cache frio ou num <code>/compact</code> manual o boss trocava o resumo do Claude Code pela própria poda, que mantinha 60–95% do contexto e fazia cada chamada seguinte reler esse contexto (medido nas transcrições reais: US$0,50 por chamada com ~600k depois da poda, contra US$0,075 com ~110k depois do resumo; primeira chamada US$2,99 contra US$0,25). Agora o resumo é o padrão em toda compactação e a poda só entra com corte de 85% ou mais. A injeção por prompt não era a causa: fora das compactações o acerto de cache segue em 99%.</td></tr>
+          <tr><td><b>v3.2.5</b></td><td>Correção. O daemon do Brain relia de forma síncrona todos os registros de sessão (123 numa máquina real) a cada chamada de ferramenta do modelo, segurando a thread que atende todas as sessões por até ~200 ms; agora o índice pasta→id de projeto só é relido quando a pasta dos registros muda, e um hook <code>SessionEnd</code> novo apaga o registro da sessão que terminou (as que morreram sem encerrar saem em 7 dias).</td></tr>
+          <tr><td><b>v3.2.4</b></td><td>Correção. Com muitas sessões abertas o daemon do Brain era tratado como processo estranho na porta ("daemon único não pôde ser garantido" a cada prompt) porque hooks rodavam <code>git</code> de forma síncrona na thread que atende todas as sessões (medido: 1,4 s numa rajada, com 17 sessões). O cache de 30 s das respostas do <code>git</code> do id do projeto passa a servir a resposta anterior na hora e renová-la em segundo plano; só a primeira consulta de cada pasta ainda espera o <code>git</code>.</td></tr>
+          <tr><td><b>v3.2.3</b></td><td>Correções. Com o Token Guard 2.x instalado como hook <code>http</code>, o boss passa a reconhecê-lo e para de limitar a saída de <code>cat</code>/<code>grep</code>/<code>git log</code> por cima dele (antes a mesma saída era cortada duas vezes). A identidade do projeto salva pela aba Brain do dashboard agora grava o <code>.memory/project.json</code>, como o <code>project_set</code>, em vez do marcador antigo <code>.claude-boss-project</code>, que perdia para ele. As ferramentas do servidor do Brain declaram <code>readOnlyHint</code>/<code>destructiveHint</code> (clientes como o OpenDots param de pedir confirmação para consultas; no Claude Code nada muda). O bootstrap do mcp-memory virou uma pasta reaproveitável (<code>scripts/lib/mcp-bootstrap/</code>) com checagem de cópias divergentes em outros plugins; comportamento igual.</td></tr>
+          <tr><td><b>v3.2.2</b></td><td>Compactação automática com cache quente: o boss não troca mais o resumo nativo do Claude Code pela poda. A poda mantinha 75–95% do histórico e forçava regravá-lo no cache — medido numa sessão real: janela −12% para uma regravação de 780 mil tokens (~7× o custo do resumo, e outra compactação logo em seguida). Com cache quente a poda só vale se cortar 85% ou mais; cache frio e <code>/compact</code> manual inalterados.</td></tr>
+          <tr><td><b>v3.2.1</b></td><td>Economia exata da curadoria: o redirecionamento passa <code>CCB_RAW_REPORT</code> ao script curado, que registra o tamanho da saída crua; o painel e o resumo do início da sessão mostram “scripts curados (exato)” (cru menos o que entrou no contexto), com estimativa só para scripts que ainda não registram. Correções no painel. Total de economia da curadoria: o banco de métricas antigo copiado para a chave do id do projeto fica fora do total (a não ser que receba eventos novos de outro repositório com o mesmo nome), sem contar o histórico em dobro. Resumo de 30 dias (painel e início da sessão): a leitura por janela de tempo não corta mais em 500 eventos por tipo (também nas telas de valor, impacto do perfil e recomendações de ajuste).</td></tr>
+          <tr><td><b>v3.2.0</b></td><td><b>Curadoria fora do repositório</b>: scripts e <code>shells.json</code> em <code>~/.claude/claude-code-boss/curation/&lt;owner&gt;/&lt;repo&gt;/</code> (pelo id do projeto, o mesmo da memória); a curadoria pessoal (não versionada) em <code>.vscode/</code> migra sozinha na primeira chamada (cópia de segurança, script rastreado pelo git da curadoria pessoal fica no lugar com aviso para <code>git rm</code>; um <code>shells.json</code> versionado é do time, vale por branch e continua sendo lido no lugar; se o git não souber dizer o que rastreia, nada migra) e o redirecionamento define <code>CCB_PROJECT_ROOT</code>. <b>Passthrough</b>: script com <code>passthrough: true</code> recebe toda variante que começa com um alias, com argumentos e flags (semelhança por vetores medida e descartada: mandava <code>git add</code>/<code>git commit</code> para scripts só de leitura); atribuições de ambiente iniciais (<code>NODE_ENV=test npm test</code>) são mantidas. <b>Semver real</b> no <code>plugin.json</code> (antes o Claude Code usava o SHA do commit) e o <code>release-guard</code> acusa código alterado sem bump. Métricas pela chave do id do projeto; alias de uso único (número, hash, UUID, caminho temporário) recusado no registro; início de sessão só chama o inicializador do servidor de memória quando o <code>/health</code> não responde, via <code>wscript</code> oculto (nenhuma janela pisca).</td></tr>
+          <tr><td><b>v3.1.1</b></td><td>Correções. Com o servidor de memória: captura equivalente (mesmo tipo e projeto) soma a recorrência no servidor, e a promoção a skill e o checklist de revisão leem o servidor pelo id oficial do projeto; consolidação semanal no servidor e para cada projeto; painel lê contagens, projetos, lições e skills do servidor; após uma queda, a primeira operação responde na hora ("reiniciando") e o servidor religa em segundo plano. Arquivo de configuração corrompido: última versão boa restaurada automaticamente, com aviso no início da sessão. Privacidade: juntar lições no modo servidor usa o embedder configurado (local por padrão; com Voyage/Ollama remoto, título e resumo vão a esse serviço).</td></tr>
+          <tr><td><b>v3.1.0</b></td><td><b>Compactação controlada</b> por function hook (<code>hooks/compaction.mjs</code>, Claude Code 2.1.274+): só com o contexto acima do limiar (% da janela, padrão 30%) e o cache do provedor já expirado; poda resultados de ferramenta velhos em vez de resumir (medido: 55k → 4k tokens em ~10 ms); poda as cópias de uma retomada antes do envio; painel <b>Compaction &amp; cache</b> e <code>GET /api/metrics/compaction</code>. O servidor de memória passa a ser iniciado só pelo inicializador oficial (requer 2.45.5+). Corrigido: embedder, <code>kb.rerank</code>/limites do KB e <code>kb.skillPromotion</code> do arquivo de usuário passam a valer (um embedder trocado antes exige regravar as memórias locais: <code>node scripts/brain-reembed.js</code>); ajustes de hooks e hook desligado no painel sobrevivem ao update; arquivo de usuário ilegível não é mais trocado em silêncio; roteador não se liga por cima de um gateway próprio nem confunde um gateway local com ele mesmo; backup em fluxo com servidor grande; atualizador escolhe a release do boss.</td></tr>
+          <tr><td><b>v3.0.0</b></td><td>Major. <b>Incompatível:</b> assinatura de comando composto por todos os segmentos (U4: 425 assinaturas para 2.285 comandos → 27) e número de descritor fora da assinatura (U13) — marcações gravadas para esses comandos são pedidas de novo uma vez. O boss não aprova mais comandos por você: "nada a fazer" virou abstenção (<code>{}</code>) em vez de <code>allow</code>, e só as reescritas decidem. Curadoria redesenhada: auto-redirect via <code>updatedInput</code>, script só para comando de tarefa que se repete (cobranças do Stop 1.316 → 45 no replay), exploração limitada sem Token Guard, pipe sobre script curado permitido e medido (negações do guard antigo 243 → 0). Métricas reais e painel <b>Curation &amp; guards</b>; <code>hookLatency</code> por hook no <code>/health</code>. Novos: <code>/dashboard</code> respondido por hook, sem o modelo (0 turnos, US$ 0); variante recorrente vira alias do script curado (EXTEND; <code>curation_register_shell</code> num id existente preserva os campos não enviados); filtro repetido gera um pedido para embutir no script; poda segura de scripts que nunca rodaram (botão Prune + <code>curation_prune_unused</code>); resumo de valor diário no <code>SessionStart</code>; alerta de hook lento no BRAIN-HEALTH. Corrigido: o script da página do dashboard não compilava (nenhum painel carregava). 13 hooks servidos pelo daemon do brain-server, com a raiz da sessão gravada no <code>SessionStart</code>, reconexão por 404 (G16) e correções no model-router. Inclui a parte preparada como 2.29.1.</td></tr>
+          <tr><td><b>v2.29.1</b><br>não publicada</td><td>Preparada e incorporada à v3.0.0. Hotfix no Windows: todo spawn de processo filho em runtime (hooks, daemons, updater, testers de config, dashboard, router, brain-server) passa <code>windowsHide: true</code>, acabando com os consoles <code>cmd</code> que piscavam e roubavam o foco; wrappers e seams de injeção forçam a opção depois do spread. Nova regra ESLint <code>local/require-windows-hide</code>, que nega por padrão e não aceita <code>eslint-disable</code> inline em <code>scripts/</code> e <code>servers/</code>, impede a regressão. Novo mapeamento de modelo do BYOK (origem → destino), opcional e restrito à rota BYOK, com injeção opcional via template <code>{model}</code> e editor no dashboard.</td></tr>
+          <tr><td><b>v2.29.0</b></td><td>Custom upstream e BYOK configuráveis por operação nos protocolos Anthropic Messages e OpenAI Chat Completions, com alias reversível no picker e catálogo isolado por destino e credencial. O adapter recompõe nomes fragmentados de tool calls e preserva o <code>usage</code> do chunk final separado. No MCP Memory HTTP, update remoto exige opt-in e nunca usa fallback local; se a versão nova falha, o rollback só é confirmado após <code>/health.version</code> validar a versão anterior restaurada.</td></tr>
+          <tr><td><b>v2.28.0</b></td><td>Seis dispatchers in-process (<code>SessionStart</code>, <code>UserPromptSubmit</code>, <code>PreToolUse/Bash</code>, <code>PostToolUse/Bash</code>, <code>PostToolUseFailure</code> e o <code>Stop</code> já existente) eliminam ~34 spawns de Node por sessão/prompt/comando; detectores concorrentes com timeout próprio e distinção <code>ok</code>/<code>timeout</code>/<code>error</code>; <code>brain-status.js</code> ganha <code>run(event)</code> advisory-only sem mexer na CLI; +21 testes unitários e +9 de integração real.</td></tr>
+          <tr><td><b>v2.27.0</b></td><td>Pool de <code>kb-worker</code>s com roteamento sticky por projeto (ADR-014): lock por worker em vez de global, projetos diferentes rodam de fato concorrentes (<code>/health</code> em <code>max=5ms</code> sob carga); teste de regressão fecha o gap de cobertura de <code>CCB_PROJECT_ID</code> em <code>resolveProjectChain</code>.</td></tr>
+          <tr><td><b>v2.26.0</b></td><td>Download automático hardware-aware do memory server (<code>mcp-release-resolver.js</code> + <code>nvidia-smi</code> → <code>-gpu.jar</code> vs CPU, <code>sha256</code> verificado); dashboard unifica o botão &ldquo;Baixar e ativar&rdquo; + <code>escapeHtml</code> anti-XSS; corrige botão de download escondido quando ele é o próximo passo; CI <code>setup-node@v4→@v6</code>.</td></tr>
+          <tr><td><b>v2.25.1</b></td><td>Correções de robustez: <code>kb-worker.js</code>/<code>kb-worker-client.js</code> (nunca versionados) faziam o daemon crashar no import em clone novo; CAS (<code>_v</code> de versão) elimina lost-update na config de override do brain; dashboard passa a validar timeout BYOK antes de salvar.</td></tr>
+          <tr><td><b>v2.25.0</b></td><td>MCP Activation Wizard + <code>/brain-status</code> (visibilidade total do backend); CRUD do Dashboard roteado pela fachada real; BYOK com timeout por tipo de endpoint (fixo/rotativo, <code>0</code> = sem limite) e log de latência opcional.</td></tr>
+          <tr><td><b>v2.24.0</b></td><td>Auto-setup do daemon em background; graceful shutdown (sem <code>process.exit</code>), body/session limits; model-router declarativo por rota com auth declarativa (401/403/405/404).</td></tr>
+          <tr><td><b>v2.23.0</b></td><td>MCP auto-reconnect no restart do daemon; BYOK SSE hardening (TTFB ceiling + debounce de swap); curation fixes.</td></tr>
+          <tr><td><b>v2.22.0</b></td><td>Multi-tenant por projeto (CSS headers); Router Fases A–E; BYOK Classify; série histórica diária com sparkline; editor inline + delete com backup no Dashboard.</td></tr>
+          <tr><td><b>v2.21.0</b></td><td>BYOK (bring-your-own-key) e plano B para 429 via router; mode sombra para policies.</td></tr>
+          <tr><td><b>v2.20.0</b></td><td>Reliability suite: atomic-write, diagnostics dos 6 sinais que degradavam em silêncio, hot-paths 21ms vs ~253ms (medição real).</td></tr>
+          <tr><td><b>v2.10.0</b></td><td>Auto-aprendizado: captura durável com ACK explícito (Fase 1) + políticas que você ativa, injetadas (Fase 2) — surfacing ≠ enforcement.</td></tr>
+          <tr><td><b>v2.0.0</b></td><td>Anti context-bloat: curadoria de comandos e outputs; release story de v2.0.0.</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <div class="callout" style="margin-top:20px"><b>Sharding/observabilidade:</b> release-guard (drift de versão) e pages-guard (frescura das páginas) correm deterministicamente no CI — sem cota de modelo. Releases publicam apenas após CI green + smoke local.</div>
+  </section>
+
+</main>
+
+<footer>
+  <div class="wrap">
+    <div class="links">
+      <a href="index.html">← Voltar à apresentação</a>
+      <a href="tech.html">Detalhes técnicos</a>
+      <a href="https://github.com/AllanSantos-DV/claude-code-plugins/blob/main/claude-code-boss/README.md">README</a>
+      <a href="https://github.com/AllanSantos-DV/claude-code-plugins">GitHub</a>
+    </div>
+    <div class="legal">MIT · Allan Santos · claude-code-boss v3.11.0</div>
+  </div>
+</footer>
+
+</body>
+</html>

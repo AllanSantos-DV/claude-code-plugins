@@ -1,0 +1,523 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>claude-code-boss v3.11.0 — detalhes técnicos</title>
+<meta name="description" content="Detalhes técnicos do claude-code-boss v3.11.0: daemon HTTP, hooks, Brain KB, Model Router Anthropic/OpenAI, MCP Memory, graph tools e dashboard." />
+<link rel="canonical" href="https://allansantos-dv.github.io/claude-code-plugins/claude-code-boss/tech.html">
+<meta property="og:type" content="website">
+<meta property="og:site_name" content="allansantos-plugins">
+<meta property="og:locale" content="pt_BR">
+<meta property="og:title" content="claude-code-boss v3.11.0 — detalhes técnicos">
+<meta property="og:description" content="Detalhes técnicos do claude-code-boss v3.11.0: daemon HTTP, hooks, Brain KB, Model Router Anthropic/OpenAI, MCP Memory, graph tools e dashboard.">
+<meta property="og:url" content="https://allansantos-dv.github.io/claude-code-plugins/claude-code-boss/tech.html">
+<meta property="og:image" content="https://allansantos-dv.github.io/claude-code-plugins/claude-code-boss/og-card.jpg">
+<meta property="og:image:width" content="1200">
+<meta property="og:image:height" content="630">
+<meta property="og:image:alt" content="claude-code-boss: Menos repetição. Mais memória.">
+<meta name="twitter:card" content="summary_large_image">
+<meta name="twitter:title" content="claude-code-boss v3.11.0 — detalhes técnicos">
+<meta name="twitter:description" content="Detalhes técnicos do claude-code-boss v3.11.0: daemon HTTP, hooks, Brain KB, Model Router Anthropic/OpenAI, MCP Memory, graph tools e dashboard.">
+<meta name="twitter:image" content="https://allansantos-dv.github.io/claude-code-plugins/claude-code-boss/og-card.jpg">
+<script data-ccb-theme-script>
+/* Shared theme; executed before styles and first paint. */
+(function () {
+  'use strict';
+  const dashboard = false;
+  const root = document.documentElement;
+  const read = key => { try { return localStorage.getItem(key); } catch (error) { void error; return null; } };
+  const write = (key, value) => { try { localStorage.setItem(key, value); } catch (error) { console.info('Tema mantido nesta página: armazenamento indisponível.'); } };
+  const normalize = value => value === 'light' ? 'light' : 'dark';
+  const initial = normalize(read('ccb-theme'));
+  root.setAttribute('data-theme', initial);
+  // Seed the existing application's preference; its original scripts stay untouched.
+  if (dashboard) write('dash.theme', initial);
+  function reflect(theme) {
+    document.querySelectorAll('[data-ccb-theme]').forEach(button => {
+      button.setAttribute('aria-pressed', String(button.dataset.ccbTheme === theme));
+    });
+    document.querySelectorAll('[data-ccb-section]').forEach(link => {
+      link.setAttribute('href', '#' + theme + '-' + link.dataset.ccbSection);
+    });
+    const meta = document.querySelector('meta[name="theme-color"]');
+    if (meta) meta.content = theme === 'dark' ? '#10101b' : '#f7f9fc';
+  }
+  function choose(value) {
+    const theme = normalize(value);
+    if (dashboard) {
+      // Invoke the preserved application control, keeping its internal state in sync.
+      if (normalize(root.getAttribute('data-theme')) !== theme) document.getElementById('theme-toggle').click();
+    }
+    root.setAttribute('data-theme', theme);
+    write('ccb-theme', theme);
+    reflect(theme);
+    const target = location.hash.match(/^#(?:dark|light)-(.+)$/);
+    if (target && document.querySelector('.theme-story')) {
+      const hash = '#' + theme + '-' + target[1];
+      history.replaceState(null, '', hash);
+      document.getElementById(hash.slice(1))?.scrollIntoView({behavior:'instant'});
+    }
+  }
+  if (dashboard) new MutationObserver(() => {
+    const theme = normalize(root.getAttribute('data-theme'));
+    // The original applyTheme removes the attribute for Dark. Normalize it for tokens.
+    if (!root.hasAttribute('data-theme')) root.setAttribute('data-theme', theme);
+    if (read('ccb-theme') !== theme) write('ccb-theme', theme);
+    reflect(theme);
+  }).observe(root, {attributes:true, attributeFilter:['data-theme']});
+  document.addEventListener('DOMContentLoaded', () => {
+    reflect(normalize(root.getAttribute('data-theme')));
+    document.querySelectorAll('[data-ccb-theme]').forEach(button => {
+      button.addEventListener('click', () => choose(button.dataset.ccbTheme));
+    });
+  });
+  window.addEventListener('storage', event => {
+    if (event.key === 'ccb-theme' || event.key === null) choose(event.newValue);
+  });
+})();
+</script><link rel="preconnect" href="https://fonts.googleapis.com"><link rel="preconnect" href="https://fonts.gstatic.com" crossorigin><link href="https://fonts.googleapis.com/css2?family=Manrope:wght@400;500;600;700;800&amp;family=DM+Sans:wght@400;500;600;700&amp;family=Space+Grotesk:wght@400;500;600;700&amp;family=IBM+Plex+Mono:wght@400;500;600&amp;display=swap" rel="stylesheet"><style>
+  :root{
+    --bg:#0d0c10; --bg-soft:#131218; --ink:#edeae1; --muted:#9a978d;
+    --line:rgba(255,255,255,.10); --amber:#e08c3a; --amber-soft:rgba(224,140,58,.13);
+    --amber-lite:#f6c694; --maxw:1040px;
+    --mono:ui-monospace,"Cascadia Code","JetBrains Mono",Consolas,monospace;
+    --sans:system-ui,-apple-system,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
+  }
+  @media (prefers-color-scheme:light){
+    :root{ --bg:#faf7f1; --bg-soft:#f2eee6; --ink:#1b1a1e; --muted:#6b6a62;
+           --line:rgba(20,20,25,.13); --amber:#a8571c; --amber-soft:rgba(168,87,28,.10); --amber-lite:#8a4a1a; }
+  }
+  @media (prefers-reduced-motion:reduce){
+    *{ animation:none !important; transition:none !important; scroll-behavior:auto !important }
+  }
+  *{ box-sizing:border-box }
+  html{ -webkit-text-size-adjust:100%; scroll-behavior:smooth }
+  body{
+    margin:0; background:var(--bg); color:var(--ink);
+    font-family:var(--sans); font-size:16px; line-height:1.6;
+    -webkit-font-smoothing:antialiased; overflow-x:hidden;
+  }
+  a{ color:var(--amber-lite) }
+  a:hover{ text-decoration:underline }
+  a:focus-visible,button:focus-visible{ outline:2px solid var(--amber); outline-offset:3px; border-radius:4px }
+  code{ font-family:var(--mono); font-size:.85em; background:var(--amber-soft); color:var(--amber-lite);
+    padding:1px 6px; border-radius:5px; white-space:nowrap; word-break:break-all }
+  .wrap{ max-width:var(--maxw); margin:0 auto; padding:0 24px }
+  .mono{ font-family:var(--mono) }
+
+  header.nav{ display:flex; align-items:center; justify-content:space-between; gap:14px;
+    padding:18px 24px; border-bottom:1px solid var(--line) }
+  .brand{ display:flex; align-items:center; gap:10px; text-decoration:none; color:var(--ink) }
+  .brand .logo{ width:30px; height:30px; border-radius:8px; display:grid; place-items:center;
+    background:var(--amber-soft); border:1px solid var(--amber); color:var(--amber);
+    font-family:var(--mono); font-size:14px; font-weight:700 }
+  .brand .name{ font-family:var(--mono); font-size:14px; font-weight:600 }
+  .brand .name small{ color:var(--muted); font-weight:400; margin-left:6px }
+  .nav-links{ display:flex; align-items:center; gap:4px; flex-wrap:wrap }
+  .nav-links a{ font-family:var(--mono); font-size:12.5px; color:var(--muted); text-decoration:none;
+    padding:7px 12px; border-radius:8px }
+  .nav-links a:hover{ color:var(--ink); background:var(--bg-soft) }
+  .ver{ color:var(--amber) !important; border:1px solid var(--amber); border-radius:999px !important }
+
+  main{ padding:clamp(44px,6vw,72px) 0 }
+  .page-head{ margin-bottom:44px }
+  .kick{ font-family:var(--mono); font-size:11.5px; letter-spacing:.28em; text-transform:uppercase;
+    color:var(--amber); margin:0 0 16px }
+  h1{ font-family:var(--mono); font-size:clamp(1.7rem,4vw,2.3rem); letter-spacing:-.03em; line-height:1.1; margin:0 }
+  .intro{ color:var(--muted); font-size:16px; max-width:66ch; margin:18px 0 0; line-height:1.6 }
+  .intro b{ color:var(--ink); font-weight:600 }
+
+  .toc{ display:flex; flex-wrap:wrap; gap:8px; margin:26px 0 0; padding:16px 0 0; border-top:1px solid var(--line) }
+  .toc a{ font-family:var(--mono); font-size:12px; color:var(--muted); text-decoration:none;
+    border:1px solid var(--line); border-radius:999px; padding:5px 13px }
+  .toc a:hover{ color:var(--amber); border-color:var(--amber) }
+
+  section{ margin-bottom:56px }
+  section h2{ font-family:var(--mono); font-size:1.25rem; letter-spacing:-.02em; margin:0 0 18px;
+    display:flex; flex-wrap:wrap; align-items:baseline; gap:6px 12px }
+  section h2 .tag{ font-size:10.5px; color:var(--amber); border:1px solid var(--amber);
+    padding:2px 9px; border-radius:999px; letter-spacing:.08em; white-space:nowrap }
+  section h3{ font-size:1.02rem; margin:26px 0 10px }
+  p.lead{ color:var(--muted); margin:0 0 18px; max-width:72ch }
+
+  .panel{ border:1px solid var(--line); border-radius:14px; background:var(--bg-soft); padding:26px }
+  .panel + .panel{ margin-top:16px }
+
+  ul.tight{ margin:8px 0 0; padding-left:20px; color:var(--muted); display:grid; gap:7px }
+  ul.tight b{ color:var(--ink); font-weight:600 }
+
+  table{ border-collapse:collapse; width:100%; font-size:13px; margin-top:14px }
+  th{ font-family:var(--mono); font-size:10.5px; letter-spacing:.1em; text-transform:uppercase;
+    color:var(--muted); text-align:left; padding:10px 14px; border-bottom:2px solid var(--amber) }
+  td{ padding:10px 14px; border-bottom:1px solid var(--line); vertical-align:top }
+  td b{ font-family:var(--mono); font-size:12px; font-weight:600 }
+  tr:hover td{ background:var(--amber-soft) }
+  .table-scroll{ overflow-x:auto }
+
+  .grid2{ display:grid; grid-template-columns:1fr 1fr; gap:14px }
+  .grid3{ display:grid; grid-template-columns:repeat(3,1fr); gap:14px }
+  .mini{ border:1px solid var(--line); border-radius:12px; padding:18px }
+  .mini .k{ font-family:var(--mono); font-size:10.5px; letter-spacing:.12em; text-transform:uppercase;
+    color:var(--amber); margin:0 0 9px }
+  .mini > b{ display:block; font-family:var(--mono); font-size:13px; margin:0 0 7px }
+  .mini p{ margin:0; color:var(--muted); font-size:12.5px; line-height:1.55 }
+
+  .flow-bar{ font-family:var(--mono); font-size:12px; display:flex; flex-wrap:wrap; align-items:center;
+    gap:8px; margin:8px 0 16px }
+  .flow-bar .f{ background:var(--bg); border:1px solid var(--line); border-radius:8px; padding:6px 12px; color:var(--ink) }
+  .flow-bar .ar{ color:var(--amber); font-weight:700 }
+
+  .callout{ border-left:3px solid var(--amber); background:var(--amber-soft); border-radius:0 10px 10px 0;
+    padding:14px 18px; margin:18px 0; font-size:13.5px; color:var(--muted) }
+  .callout b{ color:var(--ink); font-weight:600 }
+
+  footer{ border-top:1px solid var(--line); padding:40px 0 60px }
+  footer .links{ display:flex; gap:6px; flex-wrap:wrap }
+  footer .links a{ font-family:var(--mono); font-size:12px; color:var(--muted); text-decoration:none; padding:6px 12px; border-radius:8px }
+  footer .links a:hover{ color:var(--amber); background:var(--amber-soft) }
+  footer .legal{ font-family:var(--mono); font-size:11px; color:var(--muted); margin-top:14px }
+
+  @media (max-width:860px){
+    .grid2,.grid3{ grid-template-columns:1fr }
+    .table-scroll{ max-width:100% }
+  }
+  @media (max-width:600px){
+    .nav-links{ display:none }
+    body{ font-size:15px }
+    .table-scroll table, .table-scroll tbody, .table-scroll tr, .table-scroll td{ display:block; width:auto }
+    .table-scroll thead{ display:none }
+    .table-scroll tr{ padding:10px 0; border-bottom:1px solid var(--line) }
+    .table-scroll td{ border:0; padding:3px 0; overflow-wrap:break-word }
+    .table-scroll td:first-child{ color:var(--ink) }
+    .table-scroll tr:hover td{ background:none }
+  }
+
+:root, [data-theme="dark"] {
+  color-scheme: dark;
+  --ccb-bg:#10101b; --ccb-surface:#191725; --ccb-surface-alt:#232034;
+  --ccb-text:#f4f1ff; --ccb-muted:#b1abc4; --ccb-border:#49415e;
+  --ccb-primary:#c7afff; --ccb-on-primary:#24153e; --ccb-highlight:#edb9df;
+  --ccb-success:#9bd8b5; --ccb-error:#ffabab; --ccb-warning:#efc582;
+  --ccb-display:'Manrope','Segoe UI',sans-serif;
+  --ccb-body:'Manrope','Segoe UI',sans-serif;
+  --ccb-mono:'IBM Plex Mono',Consolas,monospace;
+  --ccb-radius:14px; --ccb-radius-sm:8px;
+  --ccb-shadow:0 12px 36px #00000024;
+}
+[data-theme="light"] {
+  color-scheme: light;
+  --ccb-bg:#f7f9fc; --ccb-surface:#ffffff; --ccb-surface-alt:#eaf0ff;
+  --ccb-text:#15264a; --ccb-muted:#55627b; --ccb-border:#c1cce1;
+  --ccb-primary:#2455ed; --ccb-on-primary:#ffffff; --ccb-highlight:#ac3813;
+  --ccb-success:#246345; --ccb-error:#b42d43; --ccb-warning:#855515;
+  --ccb-display:'Space Grotesk','Segoe UI',sans-serif;
+  --ccb-body:'DM Sans','Segoe UI',sans-serif;
+  --ccb-mono:'IBM Plex Mono',Consolas,monospace;
+  --ccb-radius:14px; --ccb-radius-sm:8px;
+  --ccb-shadow:0 12px 36px #173d790d;
+}
+
+/* Shared identity and theme control. */
+html { background:var(--ccb-bg); }
+body { font-family:var(--ccb-body); background:var(--ccb-bg); color:var(--ccb-text); }
+.ccb-theme { display:inline-flex; flex:none; align-items:center; gap:3px; padding:4px; margin:0;
+  border:1px solid var(--ccb-border); border-radius:999px; background:var(--ccb-surface); }
+.ccb-theme button { appearance:none; font:600 11px/1 var(--ccb-body); letter-spacing:0;
+  padding:10px 13px; min-height:34px; margin:0; border:0; border-radius:999px;
+  background:transparent; color:var(--ccb-muted); cursor:pointer; white-space:nowrap; }
+.ccb-theme button[aria-pressed="true"] { background:var(--ccb-primary); color:var(--ccb-on-primary); }
+.ccb-theme button:hover { box-shadow:inset 0 0 0 1px var(--ccb-primary); }
+:where(a,button,input,select,textarea,[tabindex]):focus-visible {
+  outline:3px solid var(--ccb-primary); outline-offset:4px; }
+@media(prefers-reduced-motion:reduce) {
+  *,*::before,*::after { animation:none!important; transition:none!important; scroll-behavior:auto!important; }
+}
+
+html[data-theme]{
+ --bg:var(--ccb-bg);--bg-soft:var(--ccb-surface);--ink:var(--ccb-text);--muted:var(--ccb-muted);
+ --line:var(--ccb-border);--amber:var(--ccb-primary);--amber-lite:var(--ccb-primary);
+ --amber-soft:var(--ccb-surface-alt);--mono:var(--ccb-mono);--sans:var(--ccb-body);
+}
+body{overflow-x:visible}
+h1,section h2,section h3{font-family:var(--ccb-display)}
+h1{font-size:clamp(2rem,4vw,3rem);letter-spacing:-.055em}
+section h2{font-size:1.5rem;letter-spacing:-.035em}
+.panel{border-radius:var(--ccb-radius);box-shadow:var(--ccb-shadow)}
+.mini,.flow-bar .f{border-radius:var(--ccb-radius-sm)}
+.brand .name{font-family:var(--ccb-display);font-size:15px}
+.brand .name small{display:block;margin:0;font:11px/1.6 var(--ccb-body)}
+header.nav{flex-wrap:wrap;gap:16px}
+header.nav .nav-links{margin-left:auto}
+code{white-space:normal;overflow-wrap:anywhere;word-break:normal}
+main.wrap{padding-top:52px;padding-bottom:30px}
+.grid2,.grid3{grid-template-columns:repeat(2,minmax(0,1fr))}
+.grid3{grid-template-columns:repeat(3,minmax(0,1fr))}
+html{scroll-behavior:auto}
+@media(max-width:860px){.grid2,.grid3{grid-template-columns:1fr}header.nav .nav-links{order:3;width:100%;margin:0}}
+@media(max-width:600px){
+ .wrap{padding-left:20px;padding-right:20px}.panel{padding:20px}.nav-links{display:flex}
+ header.nav{padding:18px 20px}.brand{flex:1 0 100%}.ccb-theme{margin-left:0}
+ header.nav .nav-links{order:initial;width:auto;flex:1;gap:3px}.nav-links a{font-size:11px;padding:7px 6px}
+ .nav-links .ver{display:none}.toc a{overflow-wrap:anywhere;max-width:100%}
+ .flow-bar .f{overflow-wrap:anywhere;max-width:100%}
+}
+</style>
+</head>
+<body>
+
+<header class="nav wrap">
+  <a class="brand" href="index.html">
+    <span class="logo">B</span>
+    <span class="name">claude-code-boss<small>detalhes técnicos</small></span>
+  </a>
+  <nav class="nav-links">
+    <a href="index.html">← Apresentação</a>
+    <a href="https://github.com/AllanSantos-DV/claude-code-plugins/blob/main/claude-code-boss/README.md">README</a>
+    <a href="#top" class="ver">v3.11.0</a>
+  </nav>
+<div class="ccb-theme" role="group" aria-label="Tema"><button type="button" data-ccb-theme="dark" aria-pressed="true">Dark</button><button type="button" data-ccb-theme="light" aria-pressed="false">Light</button></div>
+</header>
+
+<main class="wrap" id="top">
+  <div class="page-head">
+    <p class="kick">documentação técnica · v3.11.0</p>
+    <h1>Arquitetura e funcionamento interno</h1>
+    <p class="intro">Para quem quer saber <b>como funciona por baixo</b>: daemon HTTP único, pipeline de hooks, Brain KB em 3 camadas, Model Router Anthropic/OpenAI, backend MCP Memory, exploração de repositório por grafo e dashboard. Fontes: <a href="https://github.com/AllanSantos-DV/claude-code-plugins/blob/main/claude-code-boss/README.md">README</a> e <a href="https://github.com/AllanSantos-DV/claude-code-plugins/blob/main/claude-code-boss/CHANGELOG.md">CHANGELOG</a>.</p>
+    <div class="toc">
+      <a href="#daemon">Daemon HTTP único</a>
+      <a href="#hooks">Hooks pipeline</a>
+      <a href="#brain">Brain KB</a>
+      <a href="#config">Config &amp; perfis</a>
+      <a href="#router">Model Router</a>
+      <a href="#graph">Graph tools</a>
+      <a href="#dashboard">Dashboard</a>
+    </div>
+  </div>
+
+  <section id="daemon">
+    <h2>Daemon HTTP único <span class="tag">ADR-001</span></h2>
+    <p class="lead">O brain-server roda como <b>um único daemon HTTP</b> de longa duração (StreamableHTTP, stateful) numa <b>porta fixa (<code>38217</code>)</b>, compartilhado por toda sessão do Claude Code e qualquer outro consumidor na máquina — <b>um modelo, um SQLite</b>. O <code>.mcp.json</code> usa <code>"type":"http"</code> direto (sem spawn por sessão).</p>
+
+    <div class="flow-bar">
+      <span class="f">sessão 1</span><span class="ar">▸</span>
+      <span class="f">sessão 2</span><span class="ar">▸</span>
+      <span class="f">sessão N</span><span class="ar">▸</span>
+      <span class="f" style="border-color:var(--amber)">daemon único :38217</span><span class="ar">▸</span>
+      <span class="f">1 modelo · 1 SQLite</span>
+    </div>
+
+    <div class="panel">
+      <h3>Garantia + lifecycle</h3>
+      <ul class="tight">
+        <li><b>Auto-start + auto-upgrade:</b> o hook <code>brain-daemon-ensure.js</code> (SessionStart/UserPromptSubmit) encontra-ou-inicia o daemon; a cada atualização do plugin, troca um daemon obsoleto pelo novo (lock em <code>DATA_DIR</code> + checagem de versão via <code>/health</code>). Desligue com <code>BRAIN_HTTP_AUTOSTART=0</code>.</li>
+        <li><b>Auto-setup em background:</b> se o <code>node_modules</code> está faltando, o hook roda <code>plugin-setup.js</code> em background (detached, non-blocking) antes de tentar o spawn — sem bloquear a sessão e sem exigir intervenção.</li>
+        <li><b>Fail-open:</b> qualquer erro só adia a disponibilidade da KB; o próximo SessionStart/UserPromptSubmit re-emite o ensure. Nunca bloqueia o início de sessão.</li>
+        <li><b>Endpoints:</b> <code>/health</code> (aberto), <code>/mcp</code> (guarda de Origin), <code>/shutdown</code> (exige token local em <code>&lt;DATA_DIR&gt;/brain-http.token</code> ou <code>BRAIN_HTTP_TOKEN</code>).</li>
+        <li><b>Limites:</b> <code>MAX_BODY_BYTES = 1MB</code> (proteção contra OOM), <code>MAX_SESSIONS = 50</code> (prevenção de exaustão de FDs); graceful shutdown sem <code>process.exit()</code> hard kill.</li>
+      </ul>
+      <div class="callout"><b>Consumo externo:</b> qualquer ferramenta (ex.: OpenCode) aponte para <code>http://127.0.0.1:38217/mcp</code> com <code>project</code> explícito. O parâmetro <code>project</code> é obrigatório por chamada — sem ele, o daemon rejeita (<code>PROJECT_REQUIRED</code>).</div>
+    </div>
+  </section>
+
+  <section id="hooks">
+    <h2>Hooks pipeline <span class="tag">hooks servidos pelo daemon</span></h2>
+    <p class="lead">Todos os hooks vivem em <code>hooks/hooks.json</code>. Desde a <b>v2.28.0</b>, cada evento tem um <b>dispatcher in-process</b> (lê o payload uma vez, roda cada <code>run(event)</code> concorrente, com timeout próprio, e funde o resultado). Na <b>v3.0.0</b> (ADR-015) 13 hooks nem sobem processo: o <code>hooks.json</code> declara um <code>mcp_tool</code> <code>hook_&lt;nome&gt;</code> do brain-server, que roda o mesmo script in-process no daemon HTTP compartilhado — <b>8,9 ms p50</b> por hook (antes 122 ms com spawn). Ficam como <code>command</code> só os que precisam funcionar sem o daemon: <code>SessionStart</code>, o <code>user-prompt-submit-dispatcher</code> (que inclui o <code>model-router-ensure</code>) e o <code>dashboard-command</code> do <code>/dashboard</code>. Uma exceção na tool vira <code>systemMessage</code> de degradação (fail-open visível); <code>Stop</code> e os hooks de efeito colateral rodam num worker próprio, e cada hook tem prazo interno de <code>timeout − 1 s</code>.</p>
+
+    <div class="table-scroll">
+      <table>
+        <thead><tr><th>Evento</th><th>Script</th><th>O que faz</th></tr></thead>
+        <tbody>
+          <tr><td><b>SessionStart</b></td><td><b>session-start-dispatcher.js</b> <code>command</code></td><td>Entry único: roda in-process os 13 detectores de sessão (daemon-ensure, memory-rotate, whitelist, brain-health, project-snapshot, curation-session, doctor, review-checklist, tuning, <b>value-digest</b>, project-identity, graph-warm, policy-inject), concorrentes, advisories fundidos num só <code>additionalContext</code></td></tr>
+          <tr><td>SessionStart (via dispatcher)</td><td><b>value-digest.js</b> <code>novo</code></td><td>1×/dia por projeto: uma linha com o que a curadoria economizou nos últimos 7 dias (moldador exato + redirects estimados), redirects, execuções, custo cru e o maior gargalo; silencioso sem atividade</td></tr>
+          <tr><td>SessionStart (via dispatcher)</td><td><b>brain-health.js</b></td><td>Liveness probe: se o MCP estiver caído, advisory acionável; <b>novo:</b> avisa quando um hook do daemon fica <b>sem folga</b> (p95 ≥ metade do prazo com 10+ chamadas, ou prazo estourado), no máximo 1×/hook/6 h; senão, silencioso</td></tr>
+          <tr><td>SessionStart</td><td><b>model-router-ensure.js</b></td><td>Garante o daemon do model-router e publica <code>ANTHROPIC_BASE_URL</code>/shim — spawn próprio, fora do dispatcher</td></tr>
+          <tr><td>SubagentStart</td><td><b>mcp_tool → hook_policy_inject</b></td><td>Injeta políticas standing no contexto próprio do subagente, no daemon, sem spawn por subagente</td></tr>
+          <tr><td><b>PreToolUse (Bash)</b></td><td><b>mcp_tool → hook_curation_guard</b></td><td>Reescreve via <code>updatedInput</code> cada parte de tarefa cuja assinatura + flags casam com um alias curado (<code>allow</code> em <code>bypassPermissions</code>, <code>ask</code> nos demais modos; <code>CCB_RAW=1</code> para a saída crua). Pipe sobre script curado é permitido e medido. Sem Token Guard e em <code>bypassPermissions</code>, exploração isolada e sem pipe próprio (nunca <code>tail -f</code>/<code>less</code>) é limitada em streaming pelo <code>shape-output.js</code>. Fora das reescritas o guard <b>se abstém</b> (<code>{}</code>), nunca responde <code>allow</code>: o fluxo de permissões do usuário decide</td></tr>
+          <tr><td>PreToolUse (Bash)</td><td><b>mcp_tool → hook_error_guard</b></td><td>Nega o comando que já falhou ≥N vezes nesta sessão, no mesmo diretório, sem edição desde a última falha; um sucesso ou uma edição desbloqueia. Em paralelo ao curation-guard; <code>deny</code> vence</td></tr>
+          <tr><td>PreToolUse (Edit)</td><td><b>mcp_tool → hook_policy_enforce_shadow</b></td><td>Shadow-mode: detecta violação de política de código ativa (sem bloquear ainda)</td></tr>
+          <tr><td>PreToolUse (Grep|Glob)</td><td><b>mcp_tool → hook_graph_guard</b></td><td>Busca ampla com Session Graph READY → deny-once: <code>graph_search</code>/<code>graph_symbols</code> primeiro; retry idêntico passa. Fora disso, abstenção (<code>{}</code>)</td></tr>
+          <tr><td><b>PostToolUse (Bash)</b></td><td><b>mcp_tool → hook_posttoolusebash_dispatcher</b></td><td>Roda <code>curation-detect</code> (1ª ocorrência fica pendente; curadoria só quando o comando de tarefa se repete; uma <b>variante</b> de script existente pede para <b>estender</b> esse script (EXTEND) em vez de criar outro; execução <code>CCB_RAW=1</code> nunca é cobrada; o mesmo script filtrado do mesmo jeito 2× gera <b>um</b> pedido para embutir o filtro) + <code>decision-detect</code> (side-effect only, sempre <code>{}</code>)</td></tr>
+          <tr><td>PostToolUse (Edit|Write|NotebookEdit)</td><td><b>mcp_tool → hook_file_edit_detect</b></td><td>Journala arquivos editados no turno (alimenta verify-nudge e self-review)</td></tr>
+          <tr><td>PostToolUse (Edit|Write|MultiEdit|NotebookEdit)</td><td><b>mcp_tool → hook_policy_glob_inject</b></td><td>Advisory de política glob quando o arquivo editado casa um padrão ativo</td></tr>
+          <tr><td><b>UserPromptExpansion</b></td><td><b>dashboard-command.js</b> <code>command</code> <code>novo</code></td><td><b><code>/dashboard</code> sem LLM</b> (matcher <code>dashboard</code>): garante o dashboard no ar (sonda HTTP da porta publicada), abre o navegador e <b>bloqueia</b> a expansão mostrando a URL; o prompt nunca chega ao modelo. Falha também bloqueia, com a causa</td></tr>
+          <tr><td>UserPromptExpansion</td><td><b>mcp_tool → hook_skill_metric</b></td><td>Métrica de uso de skill (matcher <code>.*</code>)</td></tr>
+          <tr><td><b>PostToolUseFailure</b></td><td><b>mcp_tool → hook_posttoolusefailure_dispatcher</b></td><td>Roda <code>curation-detect</code> + <code>failure-detect</code> (journal da falha, alimenta <code>failure-retro</code>)</td></tr>
+          <tr><td><b>Stop</b></td><td><b>mcp_tool → hook_stop_dispatcher</b></td><td>Roda in-process no daemon, em ordem, todos os detectores e funde os blocks num só <code>{decision:'block', reason}</code></td></tr>
+          <tr><td>Stop (via dispatcher)</td><td><b>pattern-detect, self-review, verify-nudge, refine-research, project-id-stop, curation-stop, session-summary</b></td><td>Nudges advisory throttled (aprendizado, self-review, verificação, pesquisa, project id, curadoria, resumo)</td></tr>
+          <tr><td>Stop (via dispatcher)</td><td><b>+ 7 outros</b></td><td>skill-promote-trigger, decision-scan-response, decision-promote, research-followup-detect, failure-retro, skill-success-detect, retrieval-feedback, auto-continue-stop</td></tr>
+          <tr><td><b>UserPromptSubmit</b></td><td><b>user-prompt-submit-dispatcher.js</b> <code>command</code></td><td>Funciona com o daemon fora do ar. Antes de tudo atende <code>/dashboard</code> digitado (o nome curto que a CLI não resolve chega aqui como texto), do mesmo jeito, sem LLM; depois roda <code>brain-daemon-ensure</code>, <code>brain-health</code> e <code>brain-status</code> concorrentes, cada um com timeout próprio, mais o <code>model-router-ensure</code> no mesmo processo</td></tr>
+          <tr><td>UserPromptSubmit</td><td><b>mcp_tool → hook_correction_detect</b></td><td>Detecta sinal de correção → nudge p/ <code>capture_lesson</code> (sem ler transcript)</td></tr>
+          <tr><td>UserPromptSubmit</td><td><b>mcp_tool → hook_active_research_detect</b></td><td>Prompt com sinais de pesquisa externa → nudge p/ <code>research_query</code></td></tr>
+          <tr><td>UserPromptSubmit</td><td><b>mcp_tool → brain_retrieve_context</b></td><td>Retrieval QUENTE por-turno: embeda o prompt no brain-server (~12–26ms), gate 0.20, federa <code>__user__</code>, injeta bloco <code>[BRAIN]</code></td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <div class="callout"><b>Captura de lição in-loop:</b> quando o usuário corrige, o agente chama a tool MCP <code>capture_lesson</code> com a lição curada — admission control inline (dedup/merge → recurrence), sem reler transcript, sem subagente caro. <b>Tom advisory:</b> os hooks informam, não coagem.</div>
+  </section>
+
+  <section id="brain">
+    <h2>Brain KB <span class="tag">3 camadas</span></h2>
+    <p class="lead">Base de conhecimento local com 3 layers:</p>
+
+    <div class="grid3">
+      <div class="mini">
+        <p class="k">tier 1</p>
+        <b>Storage</b>
+        <p><code>brain-store.js</code> — SQLite via <code>node:sqlite</code> (built-in, zero deps nativas) com fallback para <code>better-sqlite3</code> e, por fim, JSON. Busca vetorial (cosine similarity JS, &lt;10K entradas) + FTS keyword.</p>
+      </div>
+      <div class="mini">
+        <p class="k">tier 2</p>
+        <b>Index</b>
+        <p><code>brain-index.js</code> — Índice invertido de palavras-chave com TF scoring.</p>
+      </div>
+      <div class="mini">
+        <p class="k">tier 3</p>
+        <b>Graph</b>
+        <p><code>brain-graph.js</code> — Grafo de citação com 6 tipos de aresta.</p>
+      </div>
+    </div>
+
+    <div class="panel" style="margin-top:16px">
+      <h3>Providers de embedding</h3>
+      <div class="table-scroll">
+        <table>
+          <thead><tr><th>Provider</th><th>Config</th><th>Requisito</th><th>Custo</th></tr></thead>
+          <tbody>
+            <tr><td><b>transformers</b> (padrão)</td><td><code>embedder.provider: "transformers"</code></td><td>Zero build; baixa o modelo (~100–200 MB) no install</td><td>Zero</td></tr>
+            <tr><td><b>ollama</b></td><td><code>embedder.provider: "ollama"</code></td><td>Ollama rodando localmente</td><td>Zero</td></tr>
+            <tr><td><b>voyage</b></td><td><code>embedder.provider: "voyage"</code></td><td>Chave API Voyage AI</td><td>~$0.10/1M tokens</td></tr>
+          </tbody>
+        </table>
+      </div>
+      <p style="margin:14px 0 0; font-size:13px; color:var(--muted)">Modelo padrão: <code>Xenova/paraphrase-multilingual-MiniLM-L12-v2</code> (384-dim, 50 idiomas) — recupera lessons EN a partir de prompts em qualquer idioma suportado. Cache durável em <code>&lt;CLAUDE_PLUGIN_DATA&gt;/models/</code>, sobrevive a reinstalls. Trocar de modelo exige <code>node scripts/brain-reembed.js</code> (wipa a tabela <code>embeddings</code> e re-embeda com o modelo atual).</p>
+    </div>
+  </section>
+
+  <section id="config">
+    <h2>Config &amp; perfis</h2>
+    <p class="lead">Um único eixo de enforcement, três modos — lido do config <b>shipped mesclado</b> com <code>DATA_DIR/hooks/user-config.json</code> (update-safe, sobrevive ao auto-update).</p>
+
+    <div class="grid3">
+      <div class="mini">
+        <p class="k">default</p>
+        <b>standard</b>
+        <p>Silencioso, mas <b>aprende</b>: só a curadoria dá 1 aviso soft e relenta. <code>correction-detect</code> fica LIGADO (nudge silencioso). Ficam desligados os nudges interruptivos e ferramentas de dev. <code>session-summary</code> (1×/sessão) e o retrieval continuam.</p>
+      </div>
+      <div class="mini">
+        <p class="k">para quem estende o plugin</p>
+        <b>dev</b>
+        <p>Tudo ligado — curadoria escala até 3×; nudges, decisões, self-review, pesquisa, retros, auto-continue.</p>
+      </div>
+      <div class="mini">
+        <p class="k">sem enforcement</p>
+        <b>free</b>
+        <p>Passa tudo: os detectores do Stop e os guards (curadoria, error-guard, escape de shell, PowerShell, formato de arquivo, políticas, pesquisa ativa) ficam desligados — <b>nada bloqueia nem reescreve</b>; só o retrieval de contexto no prompt (read-only) segue ativo.</p>
+      </div>
+    </div>
+
+    <div class="panel" style="margin-top:16px">
+      <h3>Backends do Brain</h3>
+      <ul class="tight">
+        <li><b>local (padrão):</b> SQLite no <code>DATA_DIR/brain/&lt;projeto&gt;/brain.db</code> — zero servidor externo. Tem memória, recall, lições, curadoria e políticas. <b>Não tem</b> as tools que só o servidor entrega: grafo de código (<code>graph_*</code>), recall em dois níveis (<code>compose_recall</code>), ingestão de conversa e migração.</li>
+        <li><b>mcp-memory (integrado):</b> o mesmo plugin passa a usar o servidor de memória (native-java) e <b>ganha essas ferramentas</b>. HTTP com auto-discovery via <code>~/.mcp-memory/run/daemon.json</code>; ingestão opt-in; <b>Migrar agora</b> leva o acervo local para o servidor projeto a projeto (idempotente, fail-loud).</li>
+        <li><b>O agente ativa para você:</b> no backend local o agente é avisado do que está desligado. Ele pergunta se você já roda um servidor em outro host (aponta para o endereço, sem instalar nada); se você não souber, reaproveita o servidor que já roda na máquina (instalado por plugins irmãos — nunca um segundo) ou o instala: <code>backend_status</code>, <code>backend_setup</code> (confere Java 21+ e dá o comando de instalação do seu sistema se faltar), <code>backend_setup_status</code>. Ele mostra a versão do servidor e atualiza só com o seu OK (<code>backend_update</code>). Pelo Dashboard, o mesmo assistente roda no botão <b>Activate Server</b>.</li>
+        <li><b>Auto-update HTTP:</b> no <code>SessionStart</code>, consulta <code>check_update</code> no máximo uma vez por 24h e chama <code>update</code> uma vez, sem retry, sob lock cross-process. Um <code>serverUrl</code> remoto exige <code>autoUpdate.allowRemote=true</code> e nunca usa o fallback local. Se a nova versão falha no boot, o caminho local restaura o JAR anterior e confirma a versão restaurada em <code>/health.version</code> antes de reportar rollback concluído.</li>
+        <li><b>Backup:</b> o Dashboard (aba Brain) guarda tudo o que o plugin aprendeu num <code>.tar.gz</code> (bancos SQLite em snapshot <code>VACUUM INTO</code>, sem modelos nem segredos) e restaura em outra máquina, com cópia de segurança antes. Os dados do servidor entram quando ele oferecer <code>backup_export</code>/<code>backup_import</code> (contrato em <code>docs/BACKUP-CONTRACT.md</code>).</li>
+        <li><b>Status em tempo real</b> (<code>scripts/brain-status.js</code>, hook no <code>UserPromptSubmit</code> e comando <code>/brain-status</code>): reporta <code>mode</code>, <code>connected</code>, <code>project</code>, <code>backend</code>, <code>details</code> (URL/transporte/JAR) e <code>latency</code> — mesmo contrato exposto em <code>GET /api/brain/health</code> e refletido no badge online/offline do Dashboard.</li>
+      </ul>
+      <h3>Identidade do projeto (recall entre máquinas/pastas)</h3>
+      <p style="color:var(--muted); font-size:13.5px">Precedência: <code>CCB_PROJECT_ID</code> (env) → <code>.memory/project.json</code> (viaja com a pasta) → <code>.claude-boss-project</code> (legado) → git remote <code>origin</code> (<code>host/owner/repo</code>, o mesmo em qualquer máquina ou caminho). Sem id, a memória fica desligada na pasta: o agente examina a pasta, lista os projetos que já existem (<code>project_list</code>), pergunta se é um projeto novo ou a continuação de um existente e grava com <code>project_set</code> (nome repetido exige confirmação).</p>
+    </div>
+  </section>
+
+  <section id="router">
+    <h2>Model Router <span class="tag">Anthropic + OpenAI</span></h2>
+    <p class="lead">Custom upstream e BYOK aceitam <b>Anthropic Messages</b> ou <b>OpenAI Chat Completions</b>. Você escolhe URLs completas e independentes para catálogo de modelos, geração, contagem de tokens e classificação pelo dashboard, por <code>user-config.json</code> ou por variáveis de ambiente.</p>
+
+    <div class="grid2">
+      <div class="mini">
+        <p class="k">custom upstream</p>
+        <b>Credencial da assinatura preservada</b>
+        <p>O router leva a rota do Claude Code ao gateway escolhido e encaminha somente os headers extras autorizados.</p>
+      </div>
+      <div class="mini">
+        <p class="k">BYOK</p>
+        <b>Só a sua chave segue para o endpoint</b>
+        <p>O token da assinatura é removido. O destino recebe apenas os headers configurados por você.</p>
+      </div>
+    </div>
+
+    <div class="panel" style="margin-top:16px">
+      <h3>Adaptação OpenAI e catálogo isolado</h3>
+      <ul class="tight">
+        <li><b>Picker:</b> modelos não Anthropic recebem o alias <code>anthropic-ccb-alias-</code> na listagem e voltam ao ID real antes da geração ou contagem.</li>
+        <li><b>Conversão:</b> mensagens, imagens base64 suportadas, ferramentas, tool results, respostas JSON e stop reasons atravessam o adapter nos dois sentidos. No streaming SSE, fragmentos sucessivos do nome de uma tool call são concatenados, e o <code>usage</code> recebido sozinho no chunk final é preservado no fechamento do stream.</li>
+        <li><b>Isolamento:</b> o catálogo dinâmico é separado por tenant, destino, protocolo e fingerprint de credenciais; modelos de um gateway não aparecem em outro.</li>
+        <li><b>Precedência:</b> dashboard/<code>user-config.json</code> → ambiente → defaults. Campos incompatíveis falham explicitamente, sem omissão silenciosa.</li>
+      </ul>
+    </div>
+
+    <div class="panel" style="margin-top:16px">
+      <h3>Mapeamento de modelo do BYOK (origem → destino) · v3.0.0</h3>
+      <ul class="tight">
+        <li><b>Escopo:</b> opcional e vazio por padrão. <code>byok.modelMap</code> troca o <code>model</code> enviado ao endpoint só na rota BYOK (<code>always</code>, fallback <code>on-limit</code> e cooldown), em geração, classificação remota e <code>count_tokens</code>. O caminho da assinatura nunca é alterado e o corpo original não é mutado: o mapeamento trabalha sobre uma cópia, depois da tradução de protocolo, em Anthropic e OpenAI.</li>
+        <li><b>Correspondência:</b> ID exato; depois o ID sem data de snapshot (<code>-AAAAMMDD</code>); depois padrões com <code>*</code> (o mais específico vence, empate pela ordem de inserção). Sem prefixo implícito: <code>claude-opus-5</code> nunca captura <code>claude-opus-5-5</code>. Sem regra, o <code>model</code> segue como veio.</li>
+        <li><b>Injeção:</b> <code>byok.modelInjection</code> (desligado por padrão) grava o modelo resolvido em campos extras do corpo ou em headers via template <code>{model}</code>, o único placeholder; nada é avaliado como código. Não pode alterar <code>model</code> nem headers de credencial/protocolo.</li>
+        <li><b>Dashboard:</b> editor de regras em <code>/dashboard</code> → BYOK, com destinos sugeridos pelo <code>/v1/models</code> do endpoint ou digitação livre. Regra inválida é recusada com <code>400</code> e não chega ao disco.</li>
+        <li><b>Fail-loud:</b> regra inválida no fallback responde com a causa em vez de ceder à NVIDIA; em <code>always</code> vira <code>502 proxy_error</code>. Erros do endpoint citam o modelo enviado e a regra aplicada.</li>
+      </ul>
+    </div>
+  </section>
+
+  <section id="graph">
+    <h2>Graph tools <span class="tag">7 tools · backend mcp-memory</span></h2>
+    <p class="lead">Exploração rápida de repositório via Session Graph Engine do servidor de memória (<b>cliente REST puro</b>, nenhum Java embarcado no plugin) — disponíveis no backend <b>mcp-memory</b>. Hubs por PageRank, busca semântica com vizinhança (CALLS/CONTAINS/IMPORTS), quem-chama-um-símbolo — para entender um repo grande sem garimpar arquivo por arquivo.</p>
+    <div class="panel">
+      <div class="table-scroll">
+        <table>
+          <thead><tr><th>Tool</th><th>O que faz</th></tr></thead>
+          <tbody>
+            <tr><td><b>graph_analyze</b></td><td>Porta de entrada: ensureReady + hubs + busca opcional</td></tr>
+            <tr><td><b>graph_search</b></td><td>Busca semântica com expansão de vizinhança (N-hops)</td></tr>
+            <tr><td><b>graph_symbols</b></td><td>Lista hubs por PageRank ou busca por nome</td></tr>
+            <tr><td><b>graph_status</b></td><td>Nodes, edges, hubs — read-only, não indexa</td></tr>
+            <tr><td><b>graph_ingest</b></td><td>Indexa o projeto (async, poll até ready)</td></tr>
+            <tr><td><b>graph_callers</b></td><td>Quem chama um nó (inbound CALLS edges)</td></tr>
+            <tr><td><b>graph_references</b></td><td>Todas as referências a um nó (CALLS + CONTAINS + IMPORTS)</td></tr>
+          </tbody>
+        </table>
+      </div>
+      <div class="callout"><b>Exigem o backend mcp-memory:</b> no backend local elas respondem explicando como ativar — e o agente pode ativar o servidor para você (<code>backend_setup</code>). <b>Fail-open:</b> com o servidor offline, falham graciosamente — nunca derrubam a sessão.</div>
+    </div>
+  </section>
+
+  <section id="dashboard">
+    <h2>Dashboard</h2>
+    <p class="lead">SPA iniciado <b>sob demanda</b>. Configura o plugin (brain-config, hooks) com 4 abas. Abra com <code>/dashboard</code>: respondido por hook, <b>sem passar pelo modelo</b> (0 turnos, US$ 0; ~2 s na primeira vez, ~0,8 s já no ar), sobe o dashboard se preciso, abre o navegador e mostra a URL. Também: <code>node scripts/dashboard-start.js</code> (imprime <code>{ok, url}</code>).</p>
+    <div class="grid2">
+      <div class="mini"><p class="k">aba</p><b>Home</b><p>Visão geral e estado do plugin. Na v3.0.0, o painel <b>Curation &amp; guards</b> (via <code>GET /api/metrics/curation</code>): economia exata do moldador separada da estimada do redirect ("sem base" quando não há linha de base), custo, tabela por script, scripts que <b>nunca rodaram</b> na janela com botão <b>Prune</b> (também pela tool MCP <code>curation_prune_unused</code>: lista por padrão, poda só com <code>apply</code> e ids explícitos, <code>cwd</code> obrigatório; candidatos só quando o histórico de uso da 3.0 cobre a janela; backup do <code>shells.json</code> no diretório de dados do plugin, os 5 mais recentes por projeto) e latência por hook. Aceita <code>?root=&lt;pasta&gt;</code> como link direto.</p></div>
+      <div class="mini"><p class="k">aba</p><b>Brain KB</b><p>Browser paginado, editor inline de entradas (whitelist estrita, re-embed), delete com backup JSON obrigatório, backend configuration e migração.</p></div>
+      <div class="mini"><p class="k">aba</p><b>Hooks</b><p>Perfis (<code>standard|dev|free</code>) e seletor.</p></div>
+      <div class="mini"><p class="k">aba</p><b>Logs</b><p>Ring buffer de logs do plugin.</p></div>
+    </div>
+  </section>
+
+
+</main>
+
+<footer>
+  <div class="wrap">
+    <div class="links">
+      <a href="index.html">← Voltar à apresentação</a>
+      <a href="https://github.com/AllanSantos-DV/claude-code-plugins/blob/main/claude-code-boss/README.md">README</a>
+      <a href="changelog.html">Changelog</a>
+      <a href="https://github.com/AllanSantos-DV/claude-code-plugins">GitHub</a>
+    </div>
+    <div class="legal">MIT · Allan Santos · claude-code-boss v3.11.0</div>
+  </div>
+</footer>
+
+</body>
+</html>
