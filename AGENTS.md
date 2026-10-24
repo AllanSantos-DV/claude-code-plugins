@@ -230,6 +230,20 @@ changelog page → state `layers`, merge blocked); unit-tested in `test-units.js
   merge blocked until the page is redrawn and re-stamped. Only the `vitrine`
   agent writes under `pages/`; never hand-edit `.source-hash`.
 
+### Publicação por branch (`gh-pages`)
+
+The public site is served from the **`gh-pages` branch** ("Deploy from a branch", `/`), not from an Actions
+artifact. `.github/workflows/pages-deploy.yml` runs on every push to `main` that touches `pages/**` and calls
+`.github/scripts/pages-publish.mjs`: `publish` force-pushes an **orphan commit** holding only `pages/` (plus
+`.nojekyll`) to `gh-pages` with the deploy key in the secret `PAGES_DEPLOY_KEY` (a push made with `GITHUB_TOKEN` does
+not trigger the Pages build); `verify` then reads the public URL until it shows `v<plugin version>` and equals the
+published `index.html`, and **fails the job** if it never does. `gh-pages` belongs to the site: never commit to it by hand.
+
+- **Revert to the Actions artifact:** `gh api -X PUT repos/AllanSantos-DV/claude-code-plugins/pages -f build_type=workflow`
+  (Settings › Pages › Source: GitHub Actions) and `git revert` the commit that introduced this section, which restores the
+  `upload-pages-artifact` + `deploy-pages` workflow.
+- **Rotate the key:** generate an ed25519 pair, replace the deploy key (write access) and `gh secret set PAGES_DEPLOY_KEY`.
+
 ## Coding rules in the plugin
 
 - **No empty `catch {}`** — CI greps and fails.
