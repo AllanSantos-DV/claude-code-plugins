@@ -3356,9 +3356,21 @@ test('dashboard Home: o aviso de projetos recusados mostra id, pasta e motivo, c
   const fns = new Function('escapeHtml', src('brainIssuesText') + src('brainIssuesHtml') + 'return { brainIssuesText, brainIssuesHtml };')(escapeHtml);
   assert(fns.brainIssuesHtml({ issues: [] }) === '');
   const out = fns.brainIssuesHtml({ issues: [{ project: 'C:\\Users\\joao', folder: 'C:\\Users\\joao', reason: 'project_id igual ao diretório home' }] });
-  assert(out.includes('C:\\Users\\joao') && out.includes('Folder:') && out.includes('diretório home') && /clipboard\.writeText/.test(out) && /1 project left out/.test(out), out);
+  assert(out.includes('C:\\Users\\joao') && out.includes('Folder:') && out.includes('diretório home') && /copyBrainIssues\(this\)/.test(out) && /type="button"/.test(out) && /1 project left out/.test(out), out);
   assert(/Memory server: boom/.test(fns.brainIssuesText({ error: 'boom', issues: [] })));
   assert(/brainIssuesHtml\(s\.brain\)/.test(html), 'Home renders the warning');
+  // The copy button inside role="alert" reports the result in its label, for success and for a refused clipboard.
+  const copyFn = new Function('document', 'navigator', 'console', 'setTimeout', 'async ' + src('copyBrainIssues') + 'return copyBrainIssues;');
+  const run = async (writeText) => {
+    const btn = { textContent: 'Copy' }; const timers = []; const errs = [];
+    await copyFn({ getElementById: () => ({ textContent: 'Project: x' }) }, { clipboard: { writeText } }, { error: (...a) => errs.push(a) }, (f) => timers.push(f))(btn);
+    const shown = btn.textContent; timers.forEach((f) => f());
+    return { shown, after: btn.textContent, errs };
+  };
+  return Promise.all([run(async () => {}), run(async () => { throw new Error('denied'); })]).then(([ok, bad]) => {
+    assert(ok.shown === 'Copied!' && ok.after === 'Copy' && ok.errs.length === 0, JSON.stringify(ok));
+    assert(/Copy failed/.test(bad.shown) && bad.after === 'Copy' && bad.errs.length === 1, JSON.stringify(bad));
+  });
 });
 
 test('dashboard Home: volta a Home mostra o que ja esta renderizado (sem apagar nem pedir de novo dentro da janela), nada espera o /api/status e a contagem do servidor e servida velha enquanto atualiza', () => {

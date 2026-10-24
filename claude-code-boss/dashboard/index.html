@@ -2677,6 +2677,15 @@ function brainIssuesText(brain) {
   (brain.issues || []).forEach(i => lines.push(`Project: ${i.project}${i.folder ? `\nFolder: ${i.folder}` : ''}\nReason: ${i.reason}`));
   return lines.join('\n\n');
 }
+// The button sits inside role="alert": the label is its only feedback, so it says whether the copy happened
+// (a refused clipboard is shown, not swallowed) and goes back to "Copy" afterwards.
+async function copyBrainIssues(btn) {
+  let label;
+  try { await navigator.clipboard.writeText(document.getElementById('brain-issues-text').textContent); label = 'Copied!'; }
+  catch (e) { console.error('copy of the refused-projects text failed:', e); label = 'Copy failed: select the text'; }
+  btn.textContent = label;
+  setTimeout(() => { btn.textContent = 'Copy'; }, 2000);
+}
 function brainIssuesHtml(brain) {
   const text = brainIssuesText(brain);
   if (!text) return '';
@@ -2685,7 +2694,7 @@ function brainIssuesHtml(brain) {
   return `<div id="brain-issues" role="alert" style="border:1px solid var(--warning);border-radius:6px;padding:.6rem .8rem;margin-bottom:.8rem">
     <b style="color:var(--warning)">⚠ ${escapeHtml(head)}</b>
     <pre id="brain-issues-text" style="white-space:pre-wrap;user-select:all;margin:.4rem 0;font-size:.8rem">${escapeHtml(text)}</pre>
-    <button class="btn btn-primary" onclick="navigator.clipboard.writeText(document.getElementById('brain-issues-text').textContent)">Copy</button>
+    <button type="button" class="btn btn-primary" onclick="copyBrainIssues(this)">Copy</button>
   </div>`;
 }
 
