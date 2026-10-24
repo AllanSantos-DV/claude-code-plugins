@@ -2,6 +2,11 @@
 
 ## [Unreleased]
 
+## [3.10.3] - 2026-10-24
+
+### Fixed
+- **Doctor: o aviso de sessões com o Boss antigo listava sessões já fechadas** (`scripts/lib/compaction-report.js`, `scripts/doctor.js`): as métricas não registram o fim da sessão, e o check `session-modules` contava toda sessão das últimas 24 h com módulo anterior. Agora conta só as que fizeram alguma chamada depois da instalação da versão atual.
+
 ## [3.10.2] - 2026-10-23
 
 ### Fixed

@@ -15,6 +15,15 @@ Origem: dono, Boss 3.10.1 em outra máquina; sessão reaberta, parada há mais d
   dizerem "sessão rodando 3.x.y, instalado 3.y.z — reabra". Implementado: `MODULE_VERSION` no módulo (mantida por `sync-version.js`), `hello` com `moduleVersion`, resposta com `installedVersion`, aviso único na sessão e check `session-modules` do Doctor. Limite: o módulo antigo, que não manda versão, não mostra aviso nenhum — só o Doctor o acusa (versão ausente). A faixa não foi alterada. Testes: `compaction hook: hello reports the module version…`, `compaction-event hello…`, `compaction-report.staleModuleSessions + doctor.checkSessionModules…`.
 - [x] **Resolvido a pedido do orquestrador (2026-10-23) — janela desconhecida desligava o portão** (`compaction-core.thresholdFor`): sem `window` no `usage()` o limiar é nulo e a resposta é `no-window` (regra "nunca agir por palpite"). Se uma
   sessão reaberta reportar janela vazia, o corte não vem; o transcript traz o modelo (`[1m]`) e poderia inferir. Agora `fallbackWindow` (1 M pelo `[1m]` do modelo, 1 M se o contexto passa de 200 mil, senão 200 mil). Testes: `compaction-core.fallbackWindow…` e `compaction hook, the engine reports NO window…`.
+- [x] **Achado e corrigido na hora (liberado na 3.10.3) — o check `session-modules` do Doctor listava sessões já fechadas** (`scripts/lib/compaction-report.js`, `staleModuleSessions`): na primeira execução depois da
+  instalação da 3.10.2 listou 54 sessões das últimas 24 h, quase todas "before the version was reported" — as métricas não registram o fim da sessão. Proposta: contar só
+  sessões com atividade (`cache.turn`/`compaction.gate`) depois da instalação, que são as que de fato ainda rodam o módulo antigo. Feito: `staleModuleSessions({ installedAt })`, com a hora da
+  instalação lida do `package.json` do plugin. Teste: `compaction-report.staleModuleSessions + doctor.checkSessionModules…` (falha antes, passa depois).
+
+## Lista de projetos do painel quebra em outras máquinas (pedido do orquestrador, 2026-10-23) — em `develop`, aguardando a validação do dono
+
+Origem: relato do dono de várias máquinas; Logs do painel: `memory server unreachable: Unexpected token 'p', "project_id"... is not valid JSON` e `warm-up of the Home metrics failed`.
+
 
 ## Cache de 5 min por pasta sem o corte (pedido do orquestrador, 2026-10-22) — em `develop`, sem release
 

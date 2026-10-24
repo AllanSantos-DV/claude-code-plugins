@@ -54,25 +54,36 @@ function formatReport(summary, { days = 30 } = {}) {
 /**
  * Sessions seen in the last `hours` that run another version of the compaction module than the installed one (their
  * hello carries it; a hello from before the version was sent has none — an old module). One entry per session, newest
- * hello wins. Sessions that have since closed are listed too: the metrics hold no session end.
- * @param {{installed: string, hours?: number, project?: (string|null), store?: object}} o
- * @returns {Array<{sessionId: string, version: (string|null), ts: number}>}
+ * hello wins. With `installedAt`, only sessions that did something after the install count (a hello or a recorded call):
+ * the metrics hold no session end, so a session last seen before the install is most likely closed.
+ * @param {{installed: string, installedAt?: (number|null), hours?: number, project?: (string|null), store?: object}} o
+ * @returns {Array<{sessionId: string, version: (string|null), ts: number, lastSeen: number}>}
  */
-function staleModuleSessions({ installed, hours = 24, project = null, store = require('../../engine/lib/metrics-store.js') } = {}) {
+function staleModuleSessions({ installed, installedAt = null, hours = 24, project = null, store = require('../../engine/lib/metrics-store.js') } = {}) {
   const sinceTs = Date.now() - hours * 3600_000;
   const projects = project ? [project] : store.listProjects();
   const latest = new Map();
+  const lastSeen = new Map();
+  const seen = (sid, ts) => { if (!(lastSeen.get(sid) >= ts)) lastSeen.set(sid, ts); };
   for (const p of projects) {
     store.close();
     if (!store.init({ project: p })) continue;
     for (const r of store.getEventLog({ eventName: 'compaction.session', sinceTs })) {
       if (!r.sessionId || r.ts < sinceTs) continue;
+      seen(r.sessionId, r.ts);
       const prev = latest.get(r.sessionId);
       if (!prev || r.ts > prev.ts) latest.set(r.sessionId, { sessionId: r.sessionId, version: (r.payload && r.payload.moduleVersion) || null, ts: r.ts });
     }
+    if (installedAt != null) {
+      for (const ev of ['cache.turn', 'compaction.gate']) {
+        for (const r of store.getEventLog({ eventName: ev, sinceTs: Math.max(sinceTs, installedAt) })) if (r.sessionId) seen(r.sessionId, r.ts);
+      }
+    }
   }
   store.close();
-  return [...latest.values()].filter((s) => s.version !== installed);
+  return [...latest.values()]
+    .map((s) => ({ ...s, lastSeen: lastSeen.get(s.sessionId) }))
+    .filter((s) => s.version !== installed && (installedAt == null || s.lastSeen >= installedAt));
 }
 
 module.exports = { staleModuleSessions, loadCompactionRows, formatReport, describeSuggestion, summarizeCompaction };
