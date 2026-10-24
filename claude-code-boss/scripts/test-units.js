@@ -28791,6 +28791,25 @@ test('compaction-report.staleModuleSessions + doctor.checkSessionModules: sessio
   assert(/2 session\(s\)/.test(res.detail) && /before the version was reported/.test(res.detail) && /Reopen/.test(res.fix), res.detail);
   assertEq(doctor.runChecks({ sessionModules: { installed: '3.10.2', stale: [] } }).find((r) => r.id === 'session-modules').status, 'ok');
   assertEq(doctor.runChecks({ sessionModules: { error: 'x' } }).find((r) => r.id === 'session-modules').status, 'warn', 'a read failure is shown');
+  // With the install time: a session whose hello predates the install counts only if it recorded a call after it
+  // (the metrics hold no session end — the first real run listed 54 sessions, almost all already closed).
+  const installedAt = now - 5000;
+  const byEvent = {
+    'compaction.session': [
+      { sessionId: 'dddddddd-4', ts: now - 60000, payload: {} },              // old module, active after the install
+      { sessionId: 'eeeeeeee-5', ts: now - 60000, payload: {} },              // old module, nothing since: closed
+      { sessionId: 'ffffffff-6', ts: now - 1000, payload: { moduleVersion: '3.10.1' } }, // hello after the install
+    ],
+    'cache.turn': [{ sessionId: 'dddddddd-4', ts: now - 2000, payload: {} }, { sessionId: 'eeeeeeee-5', ts: now - 30000, payload: {} }],
+    'compaction.gate': [],
+  };
+  const asked = [];
+  const store2 = { listProjects: () => ['p'], close() {}, init: () => true, getEventLog: ({ eventName, sinceTs }) => { asked.push([eventName, sinceTs]); return byEvent[eventName].filter((r) => r.ts >= sinceTs); } };
+  const live = staleModuleSessions({ installed: '3.10.2', installedAt, store: store2 });
+  assertEq(live.map((s) => s.sessionId).sort(), ['dddddddd-4', 'ffffffff-6'], JSON.stringify(live));
+  assert(asked.some(([e, s]) => e === 'cache.turn' && s === installedAt), 'activity read only after the install');
+  const res2 = doctor.runChecks({ sessionModules: { installed: '3.10.2', stale: live } }).find((r) => r.id === 'session-modules');
+  assert(/active since the update/.test(res2.detail), res2.detail);
   assertEq(doctor.runChecks({}).find((r) => r.id === 'session-modules').status, 'ok', 'not probed → says so');
 });
 

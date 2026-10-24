@@ -283,12 +283,12 @@ function checkSessionModules(ctx) {
   const m = ctx.sessionModules;
   if (!m) return { ...base, status: 'ok', detail: 'not checked here', fix: '' };
   if (m.error) return { ...base, status: 'warn', detail: `could not read the sessions' module versions: ${m.error}`, fix: '' };
-  if (!m.stale.length) return { ...base, status: 'ok', detail: `no session of the last 24 h runs a module older than ${m.installed}`, fix: '' };
+  if (!m.stale.length) return { ...base, status: 'ok', detail: `no session active since the update to ${m.installed} runs an older module`, fix: '' };
   const ids = m.stale.slice(0, 5).map((s) => `${String(s.sessionId).slice(0, 8)} (${s.version || 'before the version was reported'})`).join(', ');
   return {
     ...base, status: 'warn',
-    detail: `${m.stale.length} session(s) of the last 24 h started before the update to ${m.installed} and keep the old compaction module (fixes not active): ${ids}`,
-    fix: 'Reopen those sessions (close and resume them) to activate the installed version; sessions that already closed need nothing.',
+    detail: `${m.stale.length} session(s) active since the update to ${m.installed} still run an older compaction module (fixes not active): ${ids}`,
+    fix: 'Reopen those sessions (close and resume them) to activate the installed version.',
   };
 }
 
@@ -663,7 +663,9 @@ async function gatherContext({ probe = false, audit = false } = {}) {
   let sessionModules = null;
   try {
     const installed = require('../package.json').version;
-    sessionModules = { installed, stale: require('./lib/compaction-report.js').staleModuleSessions({ installed }) };
+    // The install writes the plugin's files: package.json's mtime is when this version landed here.
+    const installedAt = fs.statSync(path.join(__dirname, '..', 'package.json')).mtimeMs;
+    sessionModules = { installed, stale: require('./lib/compaction-report.js').staleModuleSessions({ installed, installedAt }) };
   } catch (e) { console.error(`[doctor] session modules: ${e.message}`); sessionModules = { error: e.message }; }
 
   const nodeChoice = nodeSupport.pickSupportedNode();
