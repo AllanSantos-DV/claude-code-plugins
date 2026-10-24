@@ -15,6 +15,8 @@
  *              kind, model, cache read/write and the contracted window (ephemeral_5m /
  *              ephemeral_1h). Replies the window this turn proved, so the module waits
  *              for the REAL TTL of the host it talks to (subscription and API differ).
+ *   tail     → when the transcript's last API call happened and how large the context was (a session the module
+ *              has seen no turn of: reopened, resumed, or whose SessionStart never arrived); records nothing
  *   gate | run | resume | settled | error → `compaction.<kind>` (the trail)
  *   folder | folder-end → the folder's shared cache TTL (lib/folder-ttl.js): 5m while every live session of the
  *              launch folder is past the threshold, restored after the cut / at the end; `compaction.folder` on change
@@ -88,9 +90,11 @@ function readNewApiCalls(transcriptPath, sinceId, info) {
     const id = row.message.id || row.uuid;
     if (seen.has(id)) continue;
     seen.add(id);
-    calls.push({ id, model: row.message.model || null, usage: u, afterCompaction: boundaryPending });
+    const at = Date.parse(row.timestamp);
+    calls.push({ id, model: row.message.model || null, usage: u, at: Number.isFinite(at) ? at : null, afterCompaction: boundaryPending });
     boundaryPending = false;
   }
+  if (info) info.boundaryAfterLast = boundaryPending; // a cut came after the last call: its size is the pre-cut one
   // First observation of a process: the calls since the last compact_boundary in the tail are
   // this session's (a resumed one compacted before its first prompt); no boundary: the latest only.
   if (!sinceId) { const afterB = calls.filter((c, k) => k >= lastBoundaryCall); return lastBoundaryCall >= 0 && afterB.length ? afterB : calls.slice(-1); }
@@ -98,6 +102,21 @@ function readNewApiCalls(transcriptPath, sinceId, info) {
   if (at >= 0) return calls.slice(at + 1);
   if (info && calls.length) info.gap = { skippedInWindow: calls.length - 1, transcriptBytes: st.size };
   return calls.slice(-1); // since fell out of the window: latest only
+}
+
+/**
+ * The transcript of a session whose path the module was never given (the settings-hook SessionStart did not
+ * arrive): `<claude config dir>/projects/<folder>/<session_id>.jsonl`. Null when there is none (a fresh session).
+ */
+function findTranscript(sessionId) {
+  if (!sessionId || /[\\/]/.test(sessionId)) return null;
+  const root = path.join(process.env.CLAUDE_CONFIG_DIR || path.join(require('os').homedir(), '.claude'), 'projects');
+  if (!fs.existsSync(root)) return null;
+  for (const d of fs.readdirSync(root)) {
+    const f = path.join(root, d, `${sessionId}.jsonl`);
+    if (fs.existsSync(f)) return f;
+  }
+  return null;
 }
 
 /** Window verdict for one host|auth from the cache.turn rows already stored. */
@@ -137,6 +156,18 @@ async function run(ev) {
     // A record first opens this project's store, so the verdict reads its history.
     await metrics.record('compaction.session', { host: data.host, auth: data.auth, source: data.source || null }, ctx);
     return { config: compactionConfig(), ttl: ttlVerdictFor(hostKey, storedCacheTurns()) };
+  }
+
+  // What the transcript says about a session the module has no live reading of (reopened, resumed, started before the
+  // module saw its first turn): when its last API call happened and how large the context was then. Records nothing.
+  if (kind === 'tail') {
+    const file = ev.transcript_path || findTranscript(ev.session_id);
+    const info = {};
+    const last = readNewApiCalls(file, null, info).slice(-1)[0];
+    if (!last) return { tail: null, transcript: file || null };
+    const u = last.usage;
+    const tokens = (Number(u.input_tokens) || 0) + (Number(u.cache_read_input_tokens) || 0) + (Number(u.cache_creation_input_tokens) || 0);
+    return { tail: { at: last.at, tokens: info.boundaryAfterLast ? null : tokens, model: last.model, cutAfter: info.boundaryAfterLast === true }, transcript: file };
   }
 
   if (kind === 'turn') {
