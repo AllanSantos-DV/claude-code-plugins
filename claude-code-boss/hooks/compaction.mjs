@@ -320,6 +320,15 @@ async function turnEnd($, ctx) {
   }
 }
 
+// A session the module has seen no turn of (reopened after hours, resumed, SessionStart never delivered) has no
+// answer time and may have no live size: the transcript knows both (the daemon reads it; records nothing).
+async function transcriptTail($, ctx) {
+  try { return (await send($, ctx, 'tail', {})).tail || null; } catch (err) {
+    $.ui.log(`compaction: transcript reading failed, the gate has no age/size for this session: ${String(err && err.message ? err.message : err)}`);
+    return null;
+  }
+}
+
 async function gate($, ctx, e, next) {
   if (e.turnId || !PERSON_ORIGINS.has(e.origin && e.origin.kind)) return next(e);
   // Headless (-p/SDK): the engine refuses a plugin's compaction ("not available in a headless
@@ -337,13 +346,22 @@ async function gate($, ctx, e, next) {
   // The window the engine applies NOW (the model's limit or a smaller compaction window) and
   // its own auto-compact point — a local estimate, no API call. The model window as fallback.
   const { context, windowTokens, windowSource, engineAutoCompactAt, thr } = await currentWindow($, ctx);
-  let tokens = context.tokens ?? ctx.measuredTokens;
+  let tokens = context.tokens ?? ctx.measuredTokens ?? (ctx.start && ctx.start.lastTokens > 0 ? ctx.start.lastTokens : undefined);
+  let tokensSource = context.tokens != null ? 'session' : ctx.measuredTokens != null ? 'measure' : tokens != null ? 'session-start' : null;
+  let ageSource = ctx.lastAnswerAt == null ? null : 'session';
+  if (tokens == null || ctx.lastAnswerAt == null) {
+    const tail = await transcriptTail($, ctx);
+    if (tail) {
+      if (ctx.lastAnswerAt == null && tail.at != null) { ctx.lastAnswerAt = tail.at; ageSource = 'transcript'; }
+      if (tokens == null && tail.tokens != null) { tokens = tail.tokens; tokensSource = 'transcript'; }
+    }
+  }
   const { ttlMs, ttlSource } = ttlInUse(ctx);
   let d;
   if (ctx.start && ctx.start.source === 'resume' && !ctx.resumeChecked) {
     ctx.resumeChecked = true;
     const reloadedMsgs = await $.session.messages();
-    tokens = tokens ?? estimateTokens(reloadedMsgs);
+    if (tokens == null) { tokens = estimateTokens(reloadedMsgs); tokensSource = 'reloaded-history'; }
     const r = classifyResume({ messages: reloadedMsgs, lastTokens: ctx.start.lastTokens });
     emit($, ctx, 'resume', { ...r, messages: reloadedMsgs.length, secondsSince: ctx.start.secondsSince ?? null });
     d = r.reexpanded ? { action: 'compact', reason: 'resume-reexpanded' } : null;
@@ -352,7 +370,7 @@ async function gate($, ctx, e, next) {
   if (!d) d = decideTiming({ tokens, now, lastAnswerAt: ctx.lastAnswerAt, lastCompactAt: ctx.lastCompactAt, busy: false, ttlMs }, { ...ctx.config, thresholdTokens: thr.thresholdTokens });
   const idleMs = ctx.lastAnswerAt == null ? null : now - ctx.lastAnswerAt;
   emit($, ctx, 'gate', {
-    action: d.action, reason: d.reason, dueInMs: d.dueInMs ?? null, tokens: tokens ?? null, idleMs, ttlMs, ttlSource,
+    action: d.action, reason: d.reason, dueInMs: d.dueInMs ?? null, tokens: tokens ?? null, tokensSource, ageSource, idleMs, ttlMs, ttlSource,
     thresholdPercent: thr.percent, thresholdTokens: thr.thresholdTokens, windowTokens: windowTokens ?? null, windowSource,
     engineAutoCompactAt, thresholdAboveEngine: thr.aboveEngine,
   });

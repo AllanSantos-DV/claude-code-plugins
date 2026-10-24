@@ -28599,6 +28599,129 @@ test('compaction hook: a turn-end re-check armed by the 1h window is re-armed by
 });
 
 
+// ── A session reopened after hours idle, far past the threshold (owner report, 3.10.1: 788k tokens, idle > 3h, the
+// prompt went out and the whole context was re-written cold, no cut). The module run for real against a fake engine;
+// its daemon calls answered by the REAL compaction-event.run, reading a REAL transcript file.
+const REOPEN_CALL = { input_tokens: 4, output_tokens: 600, cache_read_input_tokens: 0, cache_creation_input_tokens: 787396, cache_creation: { ephemeral_5m_input_tokens: 0, ephemeral_1h_input_tokens: 787396 } };
+
+async function reopenedRun(ce, o) {
+  const cmp = await import(require('url').pathToFileURL(path.join(ROOT, 'hooks', 'compaction.mjs')).href);
+  const hooks = collectModuleHooks(cmp.register);
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-reopen-'));
+  fs.writeFileSync(path.join(dir, 'brain-http.token'), 'tok');
+  const now = Date.now();
+  const sid = 'sid-reopen-0123';
+  const cfgDir = path.join(dir, 'claude-config');
+  const transcript = o.noTranscript ? null : path.join(o.transcriptByIdOnly ? path.join(cfgDir, 'projects', 'C--some-project') : dir, o.transcriptByIdOnly ? `${sid}.jsonl` : 'session.jsonl');
+  if (transcript) {
+    fs.mkdirSync(path.dirname(transcript), { recursive: true });
+    const row = (id, ago, usage, extra = {}) => JSON.stringify({ type: 'assistant', timestamp: new Date(now - ago).toISOString(), message: { id, model: 'claude-opus-5-5[1m]', usage }, ...extra }) + '\n';
+    fs.writeFileSync(transcript, row('msg-old', o.lastCallAgoMs, REOPEN_CALL) + (o.boundaryAfter ? JSON.stringify({ type: 'system', subtype: 'compact_boundary' }) + '\n' : ''));
+  }
+  const config = { enabled: true, thresholdPercent: 30, minIntervalMs: 600000, folderTtl: true };
+  const out = { logs: [], gates: [], timers: [], compacts: 0 };
+  const env = { CLAUDE_PLUGIN_DATA: dir, BRAIN_HTTP_PORT: '1', CLAUDE_CONFIG_DIR: cfgDir };
+  const prevCfgDir = process.env.CLAUDE_CONFIG_DIR;
+  process.env.CLAUDE_CONFIG_DIR = cfgDir;
+  const bigHistory = o.historyChars ? [{ role: 'user', text: 'x'.repeat(o.historyChars) }] : [];
+  const $ = {
+    env: { get: async (k) => env[k] },
+    fs: { read: async (p) => fs.readFileSync(p, 'utf8') },
+    http: { fetch: async (url, init) => {
+      if (url.endsWith('/health')) return { status: 200, ok: true, text: JSON.stringify({ dataDir: dir }) };
+      const body = JSON.parse(init.body);
+      const payload = JSON.parse(body.payload);
+      let reply = {};
+      if (payload.kind === 'hello') reply = { config };
+      else if (payload.kind === 'folder' || payload.kind === 'folder-end') reply = { folderTtl: { ttl: '5m', live: 1, allAbove: true, action: 'none' } };
+      else if (payload.kind === 'gate') out.gates.push(payload);
+      else if (payload.kind === 'turn' || payload.kind === 'tail') reply = { ...(await ce.run({ ...body, payload })), config };
+      return { status: 200, ok: true, text: JSON.stringify(reply) };
+    } },
+    session: {
+      id: async () => sid, cwd: async () => dir, root: async () => dir, authorize: async () => ({ kind: 'api-key' }),
+      usage: async () => ({ context: { tokens: o.usageTokens ?? null, window: o.window === undefined ? 1000000 : o.window, breakdown: o.window === null ? {} : { rawMaxTokens: o.window ?? 1000000, autoCompactThreshold: 967000 } } }),
+      messages: async () => bigHistory,
+    },
+    clock: { now: async () => now, after: (ms, fn) => { out.timers.push({ ms, fn }); } },
+    ui: { log: (t) => out.logs.push(t), toast: () => {} },
+    command: { run: async () => { out.compacts++; } },
+    prompt: { submit: async () => {} },
+  };
+  const flush = async () => { for (let i = 0; i < 20; i++) await new Promise((r) => setImmediate(r)); };
+  try {
+    if (o.source) await findHook(hooks, 'classic.SessionStart').fn($, { transcript_path: o.noTranscriptPath ? '' : transcript || '', source: o.source, ...(o.startFields || {}) }, async (e) => e);
+    await findHook(hooks, 'session.start').fn($, { isInteractive: true }, async (e) => e);
+    const i = out.timers.findIndex((t) => t.ms === 1);
+    if (i >= 0) { const [t] = out.timers.splice(i, 1); t.fn(); await flush(); }
+    out.held = await findHook(hooks, 'prompt.submit').fn($, { text: 'continue', origin: { kind: 'composer' } }, async (e) => e);
+    await flush();
+    out.lastGate = out.gates[out.gates.length - 1] || null;
+    return out;
+  } finally {
+    if (prevCfgDir === undefined) delete process.env.CLAUDE_CONFIG_DIR; else process.env.CLAUDE_CONFIG_DIR = prevCfgDir;
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+}
+const HELD = /compacting first/;
+const heldOrWhy = (r) => `held=${JSON.stringify(r.held)} gate=${JSON.stringify(r.lastGate && { a: r.lastGate.action, r: r.lastGate.reason, t: r.lastGate.tokens, idle: r.lastGate.idleMs })} logs=${r.logs.join(' | ')}`;
+const H3 = 3 * 3600000 + 600000;
+
+test('compaction hook, session reopened > 3h idle at 788k tokens (1M window): the first prompt is held for the cold cut — startup with the age unknown to the module', async () => {
+  await withCmpStore(async (ce) => {
+    const r = await reopenedRun(ce, { source: 'startup', usageTokens: 788000, lastCallAgoMs: H3 });
+    assert(r.held && HELD.test(r.held.drop || ''), `held for the cut — ${heldOrWhy(r)}`);
+  });
+});
+
+test('compaction hook, session reopened > 3h idle: the size comes from the transcript when the live session reports none', async () => {
+  await withCmpStore(async (ce) => {
+    const r = await reopenedRun(ce, { source: 'startup', usageTokens: null, lastCallAgoMs: H3 });
+    assert(r.held && HELD.test(r.held.drop || ''), `held for the cut — ${heldOrWhy(r)}`);
+  });
+});
+
+test('compaction hook, session whose classic SessionStart never arrived (no transcript path, TTL state never recorded): the daemon finds the transcript by session id', async () => {
+  await withCmpStore(async (ce) => {
+    const r = await reopenedRun(ce, { source: null, transcriptByIdOnly: true, usageTokens: 788000, lastCallAgoMs: H3 });
+    assert(r.held && HELD.test(r.held.drop || ''), `held for the cut — ${heldOrWhy(r)}`);
+  });
+});
+
+test('compaction hook, resumed (--resume) > 3h idle: cut with the size from the live session, from the SessionStart reading, or estimated from the reloaded history', async () => {
+  await withCmpStore(async (ce) => {
+    for (const [label, o] of [
+      ['live usage', { usageTokens: 788000 }],
+      ['SessionStart context_tokens', { usageTokens: null, startFields: { context_tokens: 788000, seconds_since_last_response: 3 * 3600 }, noTranscript: true }],
+      ['reloaded history estimate', { usageTokens: null, historyChars: 3200000, noTranscript: true }],
+    ]) {
+      const r = await reopenedRun(ce, { source: 'resume', lastCallAgoMs: H3, ...o });
+      assert(r.held && HELD.test(r.held.drop || ''), `${label}: held for the cut — ${heldOrWhy(r)}`);
+    }
+  });
+});
+
+test('compaction hook, reopened session: a WARM cache (last call 1 min ago) or no history at all is never cut — the gate says why', async () => {
+  await withCmpStore(async (ce) => {
+    const warm = await reopenedRun(ce, { source: 'startup', usageTokens: 788000, lastCallAgoMs: 60000 });
+    assert(!(warm.held && warm.held.drop), `warm cache not held — ${heldOrWhy(warm)}`);
+    assertEq(warm.lastGate && warm.lastGate.reason, 'cache-warm');
+    const fresh = await reopenedRun(ce, { source: 'startup', usageTokens: 788000, noTranscript: true });
+    assert(!(fresh.held && fresh.held.drop), `a session with no history is not cut — ${heldOrWhy(fresh)}`);
+    assertEq(fresh.lastGate && fresh.lastGate.reason, 'cache-age-unknown');
+    const small = await reopenedRun(ce, { source: 'startup', usageTokens: 50000, lastCallAgoMs: H3 });
+    assert(!(small.held && small.held.drop), `below the threshold not held — ${heldOrWhy(small)}`);
+  });
+});
+
+test('compaction hook, reopened session: a compaction after the transcript\'s last call makes its size stale — never trusted', async () => {
+  await withCmpStore(async (ce) => {
+    const r = await reopenedRun(ce, { source: 'startup', usageTokens: null, boundaryAfter: true, lastCallAgoMs: H3 });
+    assert(!(r.held && r.held.drop), `a pre-cut reading must not hold the prompt — ${heldOrWhy(r)}`);
+    assertEq(r.lastGate && r.lastGate.reason, 'no-reading');
+  });
+});
+
 test('hook_compaction_event: daemon transport (payload arrives as an object, bad events degrade visibly); module in hooks.json; free profile turns compaction off', async () => {
   const ht = require('./lib/hook-tools.js');
   const tools = ht.createHookTools({ pluginRoot: ROOT });
