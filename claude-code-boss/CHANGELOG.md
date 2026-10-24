@@ -2,6 +2,13 @@
 
 ## [Unreleased]
 
+## [3.10.2] - 2026-10-23
+
+### Fixed
+- **Sessão reaberta depois de horas parada passava pelo prompt sem o corte a frio** (`hooks/compaction.mjs`, `scripts/compaction-event.js`): relato do dono com 788 mil tokens e mais de 3 h de pausa — o aviso do token-guard apareceu, o prompt saiu e o contexto inteiro foi regravado com o cache frio. O portão só agia se o módulo tivesse visto o horário da última resposta (`turn.complete` ou um SessionStart `resume`); numa sessão aberta como `startup`, ou sem o SessionStart chegar, esse horário nunca existia e o portão respondia `cache-age-unknown` para sempre, e sem leitura de tamanho da sessão viva respondia `no-reading`. Agora, sem horário ou sem tamanho, o portão pergunta ao daemon o fim do transcript (evento `tail`, que não grava nada): horário da última chamada à API e tamanho do contexto naquela chamada. O daemon acha o transcript pelo id da sessão quando o módulo não recebeu o caminho. Um corte depois da última chamada invalida o tamanho do transcript. O evento `gate` passa a dizer de onde vieram o tamanho e a idade (`tokensSource`, `ageSource`).
+- **Janela desconhecida não desliga mais o corte a frio** (`scripts/lib/compaction-core.mjs`, `hooks/compaction.mjs`): quando o motor não informava a janela do modelo (`usage()` vazio numa sessão reaberta), o limiar ficava nulo e o portão respondia `no-window` sem nunca agir. Agora cai numa janela padrão segura: 1 M se o nome do modelo traz `[1m]`, 1 M se o contexto observado passa de 200 mil, senão 200 mil; o `gate` registra a origem (`fallback-model`, `fallback-observed`, `fallback-default`).
+- **Sessão aberta antes da atualização agora avisa** (`hooks/compaction.mjs`, `scripts/compaction-event.js`, `scripts/doctor.js`): o módulo manda a própria versão no `hello`; o daemon grava e responde a versão instalada, e a sessão com versão diferente mostra um aviso único ("reabra a sessão para ativar as correções") no toast e no log. O Doctor ganhou o check `session-modules`, que lista as sessões das últimas 24 h que iniciaram com um módulo anterior (ou anterior ao envio da versão). Uma sessão que já roda o módulo antigo, sem o aviso, só passa a ser listada pelo Doctor.
+
 ## [3.10.1] - 2026-10-22
 
 ### Changed
