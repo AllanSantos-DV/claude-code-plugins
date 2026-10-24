@@ -24,7 +24,21 @@ const { runTextCli } = require('./lib/hook-io.js');
 const { dataDir } = require('../engine/lib/data-dir.js');
 const { resolveLocalScopeId } = require('../engine/lib/project-id.js');
 const policyStore = require('../engine/lib/policy-store.js');
-const { getPolicyInject } = require('./lib/hooks-config.js');
+const { getPolicyInject, getSpecFunnel } = require('./lib/hooks-config.js');
+
+/**
+ * The opt-in "reuse before writing" funnel (`specFunnel.enabled`, default OFF). Text as
+ * measured in docs/research/funil-2026-10-23 (100% reuse as a Boss policy on a raw project).
+ */
+const SPEC_FUNNEL_TEXT = [
+  'Before writing code: read the files the change touches and look for what already exists (helpers, utilities, similar modules). Reuse it in the way the project already does instead of writing a new one.',
+  'If a semantic search or code-graph tool is available, use it for that lookup; otherwise Grep/Read.',
+  'Then write the smallest version that does what was asked: no extra options, abstractions or features nobody asked for.',
+  'For a bug fix, find every caller and fix the root in the shared code, not one call site.',
+  'Never cut input validation at trust boundaries, error handling that prevents data loss, security, or anything the user asked for.',
+  'For a trivial one-line edit skip the lookup.',
+  'End the reply with one line: what you skipped or did not verify, and the risk.',
+].join(' ');
 
 /**
  * Render the bounded injection block. Header is always present (mirrors the
@@ -69,6 +83,7 @@ async function run(event) {
     const { records, corrupt } = policyStore.loadResult(DATA_DIR);
     void records; // consulted only for `corrupt`; active set is listAlways()'s job.
     const active = policyStore.listAlways(DATA_DIR, { projectId });
+    if (getSpecFunnel().enabled) active.push({ text: SPEC_FUNNEL_TEXT });
 
     // Nothing to surface AND nothing to warn about → stay silent.
     if (active.length === 0 && !corrupt) return null;
@@ -92,4 +107,4 @@ if (require.main === module) {
   main();
 }
 
-module.exports = { run, renderBlock };
+module.exports = { run, renderBlock, SPEC_FUNNEL_TEXT };

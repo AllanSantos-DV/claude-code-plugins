@@ -36,6 +36,9 @@
     "maxPolicies": 10,
     "maxChars": 4000
   },
+  "specFunnel": {
+    "enabled": false
+  },
   "captureTriggerEvidence": {
     "enabled": false,
     "ttlDays": 7,

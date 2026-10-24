@@ -1318,6 +1318,64 @@ const TESTS = [
       ? null : `no active policy must emit empty {}, got: ${JSON.stringify(r.parsed)}`,
   },
   {
+    name: 'policy-inject     [specFunnel default OFF + active policy→only the policy, no funnel text]',
+    script: 'policy-inject.js',
+    payload: { hook_event_name: 'SessionStart', cwd: _polActive.cwd },
+    expect: { hasKey: 'hookSpecificOutput', noError: true, hookEvent: 'SessionStart' },
+    extraEnv: () => ({ CLAUDE_PLUGIN_DATA: _polActive.dataDir, CCB_PROJECT_ID: '' }),
+    validate: r => {
+      const ctx = r.parsed?.hookSpecificOutput?.additionalContext || '';
+      return ctx.includes('what already exists') ? `the funnel must NOT be injected by default, got: ${ctx}` : null;
+    },
+  },
+  {
+    name: 'policy-inject     [specFunnel.enabled=true + no policy→injects the funnel]',
+    script: 'policy-inject.js',
+    payload: { hook_event_name: 'SessionStart', cwd: _polEmpty.cwd },
+    expect: { hasKey: 'hookSpecificOutput', noError: true, hookEvent: 'SessionStart' },
+    extraEnv: () => ({
+      CLAUDE_PLUGIN_ROOT: mkTempPluginRoot({ specFunnel: { enabled: true } }),
+      CLAUDE_PLUGIN_DATA: _polEmpty.dataDir,
+      CCB_PROJECT_ID: '',
+    }),
+    validate: r => {
+      const ctx = r.parsed?.hookSpecificOutput?.additionalContext || '';
+      if (!ctx.includes('[BRAIN policy]')) return `funnel must ride the policy block, got: ${ctx}`;
+      if (!ctx.includes(require('./policy-inject.js').SPEC_FUNNEL_TEXT)) return `funnel text missing, got: ${ctx}`;
+      return null;
+    },
+  },
+  {
+    name: 'policy-inject     [specFunnel.enabled=true + SubagentStart + active policy→both, event echoed]',
+    script: 'policy-inject.js',
+    payload: { hook_event_name: 'SubagentStart', cwd: _polActive.cwd },
+    expect: { hasKey: 'hookSpecificOutput', noError: true, hookEvent: 'SubagentStart' },
+    extraEnv: () => ({
+      CLAUDE_PLUGIN_ROOT: mkTempPluginRoot({ specFunnel: { enabled: true } }),
+      CLAUDE_PLUGIN_DATA: _polActive.dataDir,
+      CCB_PROJECT_ID: '',
+    }),
+    validate: r => {
+      const ctx = r.parsed?.hookSpecificOutput?.additionalContext || '';
+      if (!ctx.includes(POLICY_TEXT)) return `the user's policy must still be injected, got: ${ctx}`;
+      if (!ctx.includes(require('./policy-inject.js').SPEC_FUNNEL_TEXT)) return `funnel text missing, got: ${ctx}`;
+      return null;
+    },
+  },
+  {
+    name: 'policy-inject     [specFunnel.enabled=true but policyInject.enabled=false→empty]',
+    script: 'policy-inject.js',
+    payload: { hook_event_name: 'SessionStart', cwd: _polEmpty.cwd },
+    expect: { noError: true },
+    extraEnv: () => ({
+      CLAUDE_PLUGIN_ROOT: mkTempPluginRoot({ specFunnel: { enabled: true }, policyInject: { enabled: false } }),
+      CLAUDE_PLUGIN_DATA: _polEmpty.dataDir,
+      CCB_PROJECT_ID: '',
+    }),
+    validate: r => (r.parsed && !r.parsed.hookSpecificOutput)
+      ? null : `the master switch policyInject.enabled=false must also silence the funnel, got: ${JSON.stringify(r.parsed)}`,
+  },
+  {
     name: 'policy-inject     [corrupt-registry→inject warning]',
     script: 'policy-inject.js',
     payload: { hook_event_name: 'SessionStart', cwd: _polCorrupt.cwd },
