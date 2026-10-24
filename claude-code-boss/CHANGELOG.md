@@ -3,6 +3,7 @@
 ## [Unreleased]
 
 ### Fixed
+- **Doctor: o aviso de sessões com o Boss antigo listava sessões já fechadas** (`scripts/lib/compaction-report.js`, `scripts/doctor.js`): as métricas não registram o fim da sessão, e o check `session-modules` contava toda sessão das últimas 24 h com módulo anterior. Agora conta só as que fizeram alguma chamada depois da instalação da versão atual.
 - **Lista de projetos do painel vazia em outras máquinas** (`scripts/dashboard.js`): quando o servidor de memória guardava um projeto com id inválido (a pasta home do usuário, uma raiz de disco ou uma pasta do sistema, gravado antes de o servidor validar escopos), ele recusava a leitura desse projeto com texto em vez de JSON, e o painel inteiro caía com `Unexpected token 'p', "project_id"... is not valid JSON`. Agora só esse projeto sai da lista, com o motivo na aba Logs, e os outros aparecem.
 - **Painel mostra qual projeto está com erro** (Home): cada projeto que o servidor de memória recusou, ou que respondeu algo ilegível, aparece num aviso acima da lista com o id exato, a pasta (quando o id é um caminho) e o motivo dado pelo servidor, mais o botão Copy para colar a um agente. O erro da leitura inteira da lista (servidor recusou `list_projects`) aparece no mesmo aviso.
 
