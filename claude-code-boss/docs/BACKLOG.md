@@ -18,7 +18,7 @@ Origem: dono, Boss 3.10.1 em outra máquina; sessão reaberta, parada há mais d
 - [x] **Achado e corrigido na hora — teste do aviso de projetos recusados quebrava num checkout CRLF** (`scripts/test-units.js`, `dashboard Home: o aviso de projetos recusados…`): o teste
   recortava as funções de `dashboard/index.html` procurando `\n}\n`; com `core.autocrlf=true` o arquivo sai com CRLF depois de um checkout e o recorte vinha vazio
   (`ReferenceError: brainIssuesText is not defined`). Visto ao trazer a main de volta para a develop. O teste normaliza o EOL antes de recortar.
-- [x] **Achado e corrigido na hora (em `develop`, sai na próxima versão) — o check `session-modules` do Doctor listava sessões já fechadas** (`scripts/lib/compaction-report.js`, `staleModuleSessions`): na primeira execução depois da
+- [x] **Achado e corrigido na hora (liberado na 3.10.3) — o check `session-modules` do Doctor listava sessões já fechadas** (`scripts/lib/compaction-report.js`, `staleModuleSessions`): na primeira execução depois da
   instalação da 3.10.2 listou 54 sessões das últimas 24 h, quase todas "before the version was reported" — as métricas não registram o fim da sessão. Proposta: contar só
   sessões com atividade (`cache.turn`/`compaction.gate`) depois da instalação, que são as que de fato ainda rodam o módulo antigo. Feito: `staleModuleSessions({ installedAt })`, com a hora da
   instalação lida do `package.json` do plugin. Teste: `compaction-report.staleModuleSessions + doctor.checkSessionModules…` (falha antes, passa depois).
