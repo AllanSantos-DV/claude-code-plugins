@@ -30,7 +30,7 @@ import { planCompaction, buildBrief, decideTiming, decideTurnEnd, classifyResume
 
 // Kept equal to package.json by scripts/sync-version.js. The daemon compares it with the installed plugin: a session
 // started before an update keeps running this file, so the person is told to reopen it.
-const MODULE_VERSION = '3.10.2';
+const MODULE_VERSION = '3.10.3';
 
 const PERSON_ORIGINS = new Set(['composer', 'bridge', 'sdk']);
 // Folder TTL (scripts/lib/folder-ttl.js): the daemon drops a session that stops reporting for 5 min; this keeps an
