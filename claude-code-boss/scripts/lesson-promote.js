@@ -243,6 +243,7 @@ async function planAndRun(deps, args, cmd, mode) {
       const file = require('path').join(dataDir, 'promotions', 'last-scan.json');
       require('fs').mkdirSync(require('path').dirname(file), { recursive: true });
       require('../engine/lib/atomic-write.js').writeJsonAtomic(file, { ts: deps.now(), mode: 'dry-run', text: out });
+      registry.writeDryRunNotice(dataDir, built.accepted.map((a) => a.cand.rep.title));
     }
     return { code: 0, out, data: { ok: true, mode, wouldPromote: built.accepted.length, rejected: built.rejected.length, skipped: built.skipped.length } };
   }

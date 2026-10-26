@@ -138,6 +138,8 @@ async function run(event) {
     try {
       const promoted = require('./lib/promotion-registry.js').takeNotice(DATA_DIR);
       if (promoted) lines.push(promoted);
+      const dry = require('./lib/promotion-registry.js').takeDryRunNotice(DATA_DIR);
+      if (dry) lines.push(dry);
     } catch (e) { console.error(`[curation-session] promotion notice: ${e.message}`); }
     if (migration) lines.push(...migrationLines(migration));
     if (oneHits > 0 || curated > 0) {

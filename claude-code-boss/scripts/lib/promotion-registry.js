@@ -15,6 +15,7 @@ const { acquireFileLock, releaseFileLock } = require('../../engine/lib/process-l
 const dirOf = (dataDir) => path.join(dataDir, 'promotions');
 const registryPath = (dataDir) => path.join(dirOf(dataDir), 'registry.json');
 const noticePath = (dataDir) => path.join(dirOf(dataDir), 'notice.json');
+const dryNoticePath = (dataDir) => path.join(dirOf(dataDir), 'dryrun-notice.json');
 const stampPath = (dataDir) => path.join(dataDir, '.runtime', 'lesson-promote-last.json');
 
 function readJson(file, fallback) {
@@ -134,6 +135,28 @@ function writeNotice(dataDir, ids) {
 }
 
 /**
+ * What the weekly dry-run WOULD have promoted, for the next SessionStart (nothing was copied). Zero candidates
+ * clears a stale one. @param {string[]} titles
+ */
+function writeDryRunNotice(dataDir, titles) {
+  withLock(dataDir, () => {
+    if (!titles.length) { try { fs.unlinkSync(dryNoticePath(dataDir)); } catch (err) { if (err.code !== 'ENOENT') console.error(`[lesson-promote] dry-run notice not removed: ${err.message}`); } return; }
+    writeJsonAtomic(dryNoticePath(dataDir), { ts: Date.now(), titles });
+  });
+}
+
+/** One-line SessionStart notice for the last dry-run's candidates; reading it consumes it. @returns {string|null} */
+function takeDryRunNotice(dataDir) {
+  const file = dryNoticePath(dataDir);
+  if (!fs.existsSync(file)) return null;
+  let titles;
+  try { titles = readJson(file, { titles: [] }).titles || []; } finally { try { fs.unlinkSync(file); } catch (err) { if (err.code !== 'ENOENT') console.error(`[lesson-promote] dry-run notice not removed: ${err.message}`); } }
+  if (!titles.length) return null;
+  const shown = titles.slice(0, 3).map((t) => `"${t}"`).join(', ') + (titles.length > 3 ? ` +${titles.length - 3}` : '');
+  return `[BRAIN] Promoção de lições em dry-run: ${titles.length} lição(ões) iria(m) para o escopo do usuário (${shown}) — nada foi copiado. Ver: node scripts/lesson-promote.js scan · ligar: kb.promotion.mode = "apply" em user-config.json`;
+}
+
+/**
  * The one-line SessionStart notice for what the background run promoted since the last one; reading it consumes it.
  * Ids reverted meanwhile are left out. @returns {string|null}
  */
@@ -149,4 +172,4 @@ function takeNotice(dataDir) {
   return `[BRAIN] ${ids.length} lição(ões) promovida(s) ao escopo do usuário — desfazer: ${undo}`;
 }
 
-module.exports = { registryPath, load, save, addPromotion, addRejection, markReverted, promotionDue, markPromotionRun, claimPromotionRun, withRunLock, unmarkPromotionRun, writeNotice, takeNotice };
+module.exports = { registryPath, load, save, addPromotion, addRejection, markReverted, promotionDue, markPromotionRun, claimPromotionRun, withRunLock, unmarkPromotionRun, writeNotice, takeNotice, writeDryRunNotice, takeDryRunNotice };

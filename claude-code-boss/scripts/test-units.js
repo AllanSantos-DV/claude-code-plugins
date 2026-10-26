@@ -3316,11 +3316,17 @@ test('dashboard /api/metrics/outcome: the Home Results panel reads the same summ
       if (!store.init({ project: 'dash-outcome' })) { console.log('NO-SQLITE'); return; }
       store.recordMetric('lesson.captured', { type: 'procedural', decision: 'admit' }, 's1');
       store.recordMetric('lesson.captured', { type: 'procedural', decision: 'merge' }, 's1');
+      store.recordMetric('error-guard.denied', { sig: 'npm test', failures: 3 }, 's1');
+      store.recordMetric('error-guard.denied', { sig: 'npm test', failures: 4 }, 's2');
+      store.recordMetric('compaction.run', { trigger: 'gate' }, 's1');
+      store.recordMetric('compaction.settled', { tokensBefore: 300000, tokensAfter: 100000, tokensCut: 200000 }, 's1');
       store.close();
       const { body, code } = await call(dash.getOutcomeSummary, 'days=30');
       assert.strictEqual(code, 200);
       assert.strictEqual(body.rangeDays, 30);
       assert.strictEqual(body.learning.captured, 2, JSON.stringify(body.learning));
+      assert.deepStrictEqual(body.loopsAvoided, { denied: 2, sessions: 2 });
+      assert.deepStrictEqual([body.compaction.enabled, body.compaction.runs, body.compaction.measured, body.compaction.tokensCut], [true, 1, 1, 200000], JSON.stringify(body.compaction));
       assert(Array.isArray(body.byWeek) && body.curation && body.mechanical && body.window.projects >= 1);
       console.log('OK');
     })().catch((e) => { console.error(e.stack); process.exit(1); });
@@ -3332,6 +3338,31 @@ test('dashboard /api/metrics/outcome: the Home Results panel reads the same summ
   const html = fs.readFileSync(path.join(ROOT, 'dashboard', 'index.html'), 'utf8');
   assert(/id="home-outcome"/.test(html) && /loadOutcomePanel\(\)\.catch/.test(html) && /\/api\/metrics\/outcome/.test(html), 'Home card, isolated loader and endpoint call are in the page');
   assert(/p === '\/api\/metrics\/outcome'/.test(fs.readFileSync(path.join(__dirname, 'dashboard.js'), 'utf8')), 'route registered');
+  assert(/Loops avoided \(blind re-runs denied\)/.test(html) && /s\.loopsAvoided\.denied/.test(html), 'the Results panel carries the loops-avoided tile');
+  assert(/'Compaction', s\.compaction\.measured/.test(html) && /s\.compaction\.mechanicalCut/.test(html), 'the Results panel carries the one-tile compaction summary');
+});
+
+test('outcome-metrics loopsAvoided: counts error-guard denials and the sessions they happened in; zero without any', () => {
+  const { summarizeOutcomes } = require('./lib/outcome-metrics.js');
+  const e = (eventName, sessionId, project = 'p') => ({ eventName, ts: Date.UTC(2026, 9, 20), payload: {}, sessionId, project });
+  assertEq(summarizeOutcomes([e('error-guard.denied', 'a'), e('error-guard.denied', 'a'), e('error-guard.denied', 'b'), e('error-guard.denied', 'a', 'q'), e('curation.flagged', 'a')]).loopsAvoided, { denied: 4, sessions: 3 });
+  assertEq(summarizeOutcomes([]).loopsAvoided, { denied: 0, sessions: 0 });
+  assert(/not proof/.test(summarizeOutcomes([]).labels.loopsAvoided), 'the tile says it counts denials, it does not infer a saved loop');
+  assert(/loops avoided: 2 blind re-run\(s\) denied in 1 session/.test(require('./outcome-report.js').render(summarizeOutcomes([e('error-guard.denied', 'a'), e('error-guard.denied', 'a')]))), 'the CLI twin prints the same number');
+});
+
+test('compaction-metrics.compactionTile: on/off, mechanical cut flag and the measured tokens of the cuts; other events are ignored', () => {
+  const { compactionTile } = require('./lib/compaction-metrics.js');
+  const rows = [
+    { eventName: 'compaction.run', payload: {} }, { eventName: 'compaction.run', payload: {} },
+    { eventName: 'compaction.settled', payload: { tokensBefore: 300000, tokensAfter: 120000, tokensCut: 180000 } },
+    { eventName: 'compaction.settled', payload: { prevented: true } }, // no measured "before": not counted
+    { eventName: 'compaction.gate', payload: { action: 'hold' } }, { eventName: 'lesson.captured', payload: {} },
+  ];
+  assertEq(compactionTile({ enabled: true, mechanicalCut: true }, rows), { enabled: true, mechanicalCut: true, runs: 2, measured: 1, tokensCut: 180000 });
+  assertEq(compactionTile({ enabled: true, mechanicalCut: false }, rows).mechanicalCut, false, 'mechanical cut off: the model summary builds the brief');
+  assertEq(compactionTile({ enabled: false, mechanicalCut: true }, rows), { enabled: false, mechanicalCut: false, runs: 2, measured: 1, tokensCut: 180000 }, 'compaction off: the cut cannot be on');
+  assertEq(compactionTile(null, []), { enabled: true, mechanicalCut: true, runs: 0, measured: 0, tokensCut: 0 });
 });
 
 test('dashboard scanServerKb: a project id the server refuses ("project_id igual ao diretório home…", isError text) is left out and logged — the rest of the list still comes', () => {
@@ -9510,7 +9541,6 @@ test('model-router-ensure.cleanupGlobalEnv: com o selo, nenhum spawn de PowerShe
 // ─── cost-tuning: 1 h cache + auto-compact window in settings.json env (ownership-safe) ──
 const costTuning = require('./lib/cost-tuning.js');
 const CT_WANT = { CLAUDE_CODE_PROMPT_CACHE_TTL: '1h', CLAUDE_CODE_AUTO_COMPACT_WINDOW: '153000' };
-const CT_WANT_ALL = { CLAUDE_CODE_PROMPT_CACHE_TTL: '1h', ENABLE_TOOL_SEARCH: 'true', CLAUDE_CODE_AUTO_COMPACT_WINDOW: '153000' };
 
 test('cost-tuning: applies both knobs on a clean env and remembers they were unset', () => {
   const r = costTuning.planCostTuning({ KEEP: '1' }, CT_WANT, {});
@@ -9594,7 +9624,9 @@ test('cost-tuning: TTL only for API-billed sessions (gateway, key, cloud) — no
   const cfg = costTuning.resolveConfig({});
   assertEq(costTuning.wanted(cfg, false), { ENABLE_TOOL_SEARCH: 'true' }, 'Tool Search always; no fixed compaction window by default');
   assertEq(costTuning.wanted(cfg, true), { CLAUDE_CODE_PROMPT_CACHE_TTL: '1h', ENABLE_TOOL_SEARCH: 'true' });
-  assertEq(costTuning.wanted(costTuning.resolveConfig({ autoCompactWindow: 153000 }), true), CT_WANT_ALL, 'the window stays available as an explicit opt-in');
+  assertEq(costTuning.wanted(costTuning.resolveConfig({ autoCompactWindow: 153000 }), true), { CLAUDE_CODE_PROMPT_CACHE_TTL: '1h', ENABLE_TOOL_SEARCH: 'true' }, 'the opt-in window is no longer an env var (it outranks /autocompact)');
+  assertEq(costTuning.wantedWindow(costTuning.resolveConfig({ autoCompactWindow: 153000 })), 153000, 'it is asked for as the autoCompactWindow settings key');
+  assertEq([costTuning.wantedWindow(cfg), costTuning.wantedWindow(costTuning.resolveConfig({ enabled: false, autoCompactWindow: 153000 }))], [null, null]);
   assertEq(costTuning.wanted(costTuning.resolveConfig({ toolSearch: false }), false), {}, 'Tool Search can be turned off in the config');
   assertEq(costTuning.wanted(costTuning.resolveConfig({ enabled: false }), true), {});
   assertEq(costTuning.resolveConfig({ cacheTtl: '2h', autoCompactWindow: 5 }), { enabled: true, toolSearch: true, cacheTtl: null, autoCompactWindow: 100000 }, 'unknown TTL off, window clamped');
@@ -9649,6 +9681,77 @@ test('cost-tuning: applyCostTuning writes the temp HOME settings.json, keeps for
   }
 });
 
+test('cost-tuning: the opt-in window goes to the top-level autoCompactWindow key under ownership rules (user value never overwritten, yielded, restored on disable)', () => {
+  const on = costTuning.planWindowSetting({ KEEP: 1 }, 153000, {});
+  assertEq([on.settings, on.changed, on.state], [{ KEEP: 1, autoCompactWindow: 153000 }, true, { previous: null, applied: 153000 }]);
+  assertEq(costTuning.planWindowSetting(on.settings, 153000, { window: on.state }).changed, false, 'idempotent');
+  const off = costTuning.planWindowSetting(on.settings, null, { window: on.state });
+  assertEq([off.settings, off.state], [{ KEEP: 1 }, {}], 'off restores what was there (nothing)');
+  const theirs = costTuning.planWindowSetting({ autoCompactWindow: 500000 }, 153000, {});
+  assertEq([theirs.settings.autoCompactWindow, theirs.changed], [500000, false], "a window the user already set is never overwritten");
+  const edited = costTuning.planWindowSetting({ autoCompactWindow: 500000 }, 153000, { window: on.state });
+  assertEq([edited.settings.autoCompactWindow, edited.state.yielded, edited.state.applied], [500000, 500000, undefined], 'changed after us = theirs');
+  assertEq(costTuning.planWindowSetting(edited.settings, 153000, { window: edited.state }).changed, false, 'stays yielded');
+  const removed = costTuning.planWindowSetting({}, 153000, { window: on.state });
+  assertEq([removed.changed, removed.state.yielded], [false, null], 'removing it is a choice too: not re-applied');
+  const all = costTuning.planCostTuningAll({ env: { CLAUDE_CODE_AUTO_COMPACT_WINDOW: '153000', KEEP: '1' } }, { ENABLE_TOOL_SEARCH: 'true' }, 153000, { applied: { CLAUDE_CODE_AUTO_COMPACT_WINDOW: '153000' }, previous: { CLAUDE_CODE_AUTO_COMPACT_WINDOW: null } });
+  assertEq([all.env, all.settings.autoCompactWindow, all.state.window.applied, all.changed], [{ KEEP: '1', ENABLE_TOOL_SEARCH: 'true' }, 153000, 153000, true], 'the env var we wrote before is removed and the window moves to the settings key in one plan');
+});
+
+test('cost-tuning.autoCompactNotices: the user is told about the migration and about an env var that outranks /autocompact', () => {
+  const m = costTuning.autoCompactNotices({ migrated: true, window: 153000, env: {}, processEnv: { CLAUDE_CODE_AUTO_COMPACT_WINDOW: '153000' } });
+  assert(/153000.*saiu da variável CLAUDE_CODE_AUTO_COMPACT_WINDOW.*"autoCompactWindow".*\/autocompact.*vale/.test(m.migrated) && m.override === null, `migration notice, got: ${m.migrated}`);
+  assert(/removida do settings\.json/.test(costTuning.autoCompactNotices({ migrated: true, window: null, env: {}, processEnv: {} }).migrated), 'migration with the feature off says the variable was removed');
+  const o = costTuning.autoCompactNotices({ migrated: false, window: null, env: { CLAUDE_CODE_AUTO_COMPACT_WINDOW: '300000' }, processEnv: {} });
+  assert(/CLAUDE_CODE_AUTO_COMPACT_WINDOW=300000 está definida \(env do settings\.json\).*vence o \/autocompact/.test(o.override) && o.migrated === null, `override notice, got: ${o.override}`);
+  assert(/ambiente do processo/.test(costTuning.autoCompactNotices({ migrated: false, window: null, env: {}, processEnv: { CLAUDE_CODE_AUTO_COMPACT_WINDOW: '9' } }).override));
+  assertEq(costTuning.autoCompactNotices({ migrated: false, window: null, env: {}, processEnv: {} }), { migrated: null, override: null }, 'no variable, no notice');
+});
+
+test('cost-tuning: applyCostTuning migrates the env window we wrote to the autoCompactWindow key in settings.json, with a visible notice, and warns about a foreign env window', () => {
+  const hc = require('./lib/hooks-config.js');
+  const settings = path.join(os.homedir(), '.claude', 'settings.json');
+  const stateFile = path.join(require('../engine/lib/data-dir.js').globalDir(), 'cost-tuning-state.json');
+  assert(settings.startsWith(process.env.USERPROFILE) && stateFile.startsWith(process.env.USERPROFILE), 'temp HOME only');
+  const ucfg = hc.userConfigPath();
+  const keep = [settings, stateFile, ucfg].map((f) => [f, fs.existsSync(f) ? fs.readFileSync(f, 'utf8') : null]);
+  try {
+    for (const [f] of keep) { try { fs.unlinkSync(f); } catch (err) { void err; } }
+    fs.mkdirSync(path.dirname(settings), { recursive: true });
+    fs.mkdirSync(path.dirname(ucfg), { recursive: true });
+    fs.mkdirSync(path.dirname(stateFile), { recursive: true });
+    fs.writeFileSync(ucfg, JSON.stringify({ costTuning: { autoCompactWindow: 153000 } }));
+    hc._resetCache();
+    // the previous version had written the env var and owns it
+    fs.writeFileSync(settings, JSON.stringify({ env: { CLAUDE_CODE_AUTO_COMPACT_WINDOW: '153000', KEEP: '1' }, hooks: { X: 1 } }));
+    fs.writeFileSync(stateFile, JSON.stringify({ applied: { CLAUDE_CODE_AUTO_COMPACT_WINDOW: '153000' }, previous: { CLAUDE_CODE_AUTO_COMPACT_WINDOW: null }, yielded: {} }));
+    const out = {};
+    assertEq(routerEnsure.applyCostTuning({ ANTHROPIC_BASE_URL: 'http://100.124.248.83' }, out), true);
+    const s = JSON.parse(fs.readFileSync(settings, 'utf8'));
+    assertEq([s.env.CLAUDE_CODE_AUTO_COMPACT_WINDOW, s.env.KEEP, s.autoCompactWindow, s.hooks], [undefined, '1', 153000, { X: 1 }], 'env var gone, key written, the rest untouched');
+    assert(/saiu da variável CLAUDE_CODE_AUTO_COMPACT_WINDOW/.test(out.migrated), `visible migration notice, got: ${out.migrated}`);
+    assertEq(JSON.parse(fs.readFileSync(stateFile, 'utf8')).window.applied, 153000);
+    const again = {};
+    routerEnsure.applyCostTuning({ ANTHROPIC_BASE_URL: 'http://100.124.248.83' }, again);
+    assertEq([again.migrated, again.override], [null, null], 'the migration is told once');
+    // someone else's env var outranks /autocompact: visible warning, never removed
+    const s2 = JSON.parse(fs.readFileSync(settings, 'utf8'));
+    s2.env.CLAUDE_CODE_AUTO_COMPACT_WINDOW = '300000';
+    fs.writeFileSync(settings, JSON.stringify(s2));
+    const foreign = {};
+    routerEnsure.applyCostTuning({ ANTHROPIC_BASE_URL: 'http://100.124.248.83' }, foreign);
+    assert(/CLAUDE_CODE_AUTO_COMPACT_WINDOW=300000 está definida.*vence o \/autocompact/.test(foreign.override), `override warning, got: ${foreign.override}`);
+    assertEq(JSON.parse(fs.readFileSync(settings, 'utf8')).env.CLAUDE_CODE_AUTO_COMPACT_WINDOW, '300000', 'a foreign value is left alone');
+    // turning the opt-in off restores the settings key to unset
+    fs.writeFileSync(ucfg, JSON.stringify({ costTuning: {} }));
+    hc._resetCache();
+    routerEnsure.applyCostTuning({ ANTHROPIC_BASE_URL: 'http://100.124.248.83' });
+    assertEq(JSON.parse(fs.readFileSync(settings, 'utf8')).autoCompactWindow, undefined, 'off → the key we wrote is removed');
+  } finally {
+    for (const [f, v] of keep) { if (v == null) { try { fs.unlinkSync(f); } catch (err) { void err; } } else fs.writeFileSync(f, v); }
+    hc._resetCache();
+  }
+});
 
 test('mergeRouterConfig: sem override → shipped inalterado (enabled:false fica false)', () => {
   const m = routerEnsure.mergeRouterConfig({ enabled: false, port: 13456, nim: { apiKey: '' } }, null);
@@ -30839,7 +30942,11 @@ test('lesson-promote: a secret rejects the lesson and is recorded; a failed regi
     const dry = await lp.runCommand('apply', { auto: true }, { ...base, embedder: emb3, cfg: { ...cfg, mode: 'dry-run' } });
     assertEq([saved.length, dry.data.mode, dry.data.wouldPromote], [before, 'dry-run', 1], 'dry-run promotes nothing');
     assert(fs.existsSync(path.join(dataDir, 'promotions', 'last-scan.json')), 'the plan of a dry-run is kept for the owner to read');
-    assertEq(registry.takeNotice(dataDir), null, 'a dry-run leaves no notice');
+    assertEq(registry.takeNotice(dataDir), null, 'a dry-run leaves no "promoted" notice');
+    const dryNotice = registry.takeDryRunNotice(dataDir);
+    assert(/dry-run: 1 lição.*"three".*nada foi copiado.*lesson-promote\.js scan.*"apply"/.test(dryNotice), `a dry-run tells the next SessionStart what it would promote, got: ${dryNotice}`);
+    assertEq(registry.takeDryRunNotice(dataDir), null, 'the dry-run notice is shown once');
+    assertEq(require('../engine/lib/brain-config.js').getLessonPromotion().mode, 'dry-run', 'the promotion is born in dry-run (the owner turns apply on)');
     const live = await lp.runCommand('apply', { auto: true }, { ...base, embedder: emb3, cfg });
     assertEq([saved.length, live.code], [before + 1, 0]);
     const id = registry.load(dataDir).promotions.at(-1).id;
@@ -30939,7 +31046,7 @@ test('brain-config.getLessonPromotion: conservative defaults, the user override 
   const errs = []; const origErr = console.error; console.error = (m) => errs.push(String(m));
   try {
     bc._resetCache();
-    assertEq(bc.getLessonPromotion(), { enabled: true, mode: 'apply', cosine: 0.9, minProjects: 2, minCitedSessions: 2, minCitedProjects: 2, maxPerRun: 5, intervalDays: 7, types: ['lesson', 'pattern'], minConfidence: 0.7 });
+    assertEq(bc.getLessonPromotion(), { enabled: true, mode: 'dry-run', cosine: 0.9, minProjects: 2, minCitedSessions: 2, minCitedProjects: 2, maxPerRun: 5, intervalDays: 7, types: ['lesson', 'pattern'], minConfidence: 0.7 });
     const cur = prev ? JSON.parse(prev) : {};
     cur.kb = { ...(cur.kb || {}), promotion: { mode: 'dry-run', maxPerRun: 1, cosine: 7, minProjects: 1, types: [] } };
     fs.mkdirSync(path.dirname(file), { recursive: true });
@@ -31007,6 +31114,13 @@ test('curation-session: SessionStart announces what the weekly promotion copied,
     assert(/\[BRAIN\] 1 lição\(ões\) promovida\(s\) ao escopo do usuário — desfazer: node scripts\/lesson-promote\.js undo prom-t1/.test(first || ''), String(first));
     assert(!/promovida/.test((await cs.run({ cwd: process.env.CLAUDE_PLUGIN_DATA })) || ''), 'shown once');
     assert(!fs.existsSync(path.join(dd, '.runtime', 'lesson-promote-last.json')), 'no stamp, no run: this backend is not mcp-memory');
+    registry.writeDryRunNotice(dd, ['A lição X']);
+    const dry = await cs.run({ cwd: process.env.CLAUDE_PLUGIN_DATA });
+    assert(/\[BRAIN\] Promoção de lições em dry-run: 1 lição.*"A lição X".*nada foi copiado/.test(dry || ''), `SessionStart shows what the dry-run would promote, got: ${dry}`);
+    assert(!/dry-run/.test((await cs.run({ cwd: process.env.CLAUDE_PLUGIN_DATA })) || ''), 'the dry-run notice is shown once');
+    registry.writeDryRunNotice(dd, ['velha']);
+    registry.writeDryRunNotice(dd, []);
+    assert(!/dry-run/.test((await cs.run({ cwd: process.env.CLAUDE_PLUGIN_DATA })) || ''), 'a later scan with no candidates clears the stale notice');
   } finally { fs.rmSync(path.join(dd, 'promotions'), { recursive: true, force: true }); }
 });
 

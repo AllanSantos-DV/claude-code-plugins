@@ -1736,7 +1736,8 @@ function getOutcomeSummary(req, res, url) {
     const { loadRows } = require('./outcome-report.js');
     const { summarizeOutcomes } = require('./lib/outcome-metrics.js');
     const rows = loadRows(since, DATA_DIR);
-    json(res, { rangeDays: range, ...summarizeOutcomes(rows, { since, maturitySince: Date.now() - 14 * 86400_000 }) });
+    const compaction = require('./lib/compaction-metrics.js').compactionTile(require('./lib/hooks-config.js').getCompaction(), rows);
+    json(res, { rangeDays: range, ...summarizeOutcomes(rows, { since, maturitySince: Date.now() - 14 * 86400_000 }), compaction });
   } catch (err) {
     console.error(`[DASHBOARD] /api/metrics/outcome failed: ${err.message}`);
     fail(res, err.message, 500);

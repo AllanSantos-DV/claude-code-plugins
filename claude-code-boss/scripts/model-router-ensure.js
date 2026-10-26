@@ -352,7 +352,7 @@ async function waitPortFree(port, timeoutMs) {
 // Decide se o aviso "[model-router] ATIVO" deve ser injetado neste turno.
 // Regra: sempre que o servidor (re)subiu agora; caso contrário, no máximo 1x por
 // session_id; sem session_id, cai num cooldown por tempo. Persiste o carimbo.
-function shouldAnnounce(sessionId, justStarted) {
+function shouldAnnounce(sessionId, justStarted, kind = '') {
   let store = {};
   try {
     if (fs.existsSync(ANNOUNCE_FILE)) store = JSON.parse(fs.readFileSync(ANNOUNCE_FILE, 'utf-8')) || {};
@@ -361,7 +361,7 @@ function shouldAnnounce(sessionId, justStarted) {
   for (const k of Object.keys(store)) {
     if (typeof store[k] !== 'number' || now - store[k] > ANNOUNCE_TTL_MS) delete store[k];
   }
-  const key = sessionId ? `s:${sessionId}` : '_anon';
+  const key = `${kind}${sessionId ? `s:${sessionId}` : '_anon'}`;
   let announce;
   if (justStarted) announce = true;
   else if (sessionId) announce = !store[key];
@@ -689,13 +689,23 @@ function planCostTuningNow(env = process.env) {
   }
   const cfg = require('./lib/hooks-config.js').getCostTuning();
   const want = costTuning.wanted(cfg, costTuning.apiBilled(env, isOurProxyUrl));
-  return { s, state, plan: costTuning.planCostTuning(s.env || {}, want, state) };
+  const wantWin = costTuning.wantedWindow(cfg);
+  return { s, state, wantWin, plan: costTuning.planCostTuningAll(s, want, wantWin, state) };
 }
 
-function applyCostTuning(env = process.env) {
+// `out.messages` (optional) collects what the user must see about the auto-compact window: a migration of the env
+// var we wrote before, or an env var that outranks /autocompact. `out.override` is the per-session one (the caller
+// announces it once); `out.migrated` happens once by nature.
+function applyCostTuning(env = process.env, out = null) {
   const now = planCostTuningNow(env);
   if (now === null) return false;
-  const { s, state, plan } = now;
+  const { s, state, wantWin, plan } = now;
+  if (out) {
+    const hadOurs = ((state.applied || {})[costTuning.WINDOW_KEY]) != null;
+    const ownsNow = ((plan.state.applied || {})[costTuning.WINDOW_KEY]) != null;
+    const n = costTuning.autoCompactNotices({ migrated: hadOurs && !ownsNow && (plan.env || {})[costTuning.WINDOW_KEY] === undefined, window: wantWin, env: plan.env, processEnv: env });
+    out.migrated = n.migrated; out.override = n.override;
+  }
   if (!plan.changed && JSON.stringify(plan.state) === JSON.stringify(state)) return true;
   try {
     // State first: a crash between the two writes leaves us owning a value not yet written
@@ -704,6 +714,7 @@ function applyCostTuning(env = process.env) {
     writeJsonAtomic(COST_TUNING_STATE, plan.state);
     if (plan.changed) {
       if (Object.keys(plan.env).length === 0) delete s.env; else s.env = plan.env;
+      if (plan.settings.autoCompactWindow === undefined) delete s.autoCompactWindow; else s.autoCompactWindow = plan.settings.autoCompactWindow;
       writeSettings(s);
     }
     for (const n of plan.notes) log(`settings.json (cost-tuning): ${n}`);
@@ -1061,10 +1072,17 @@ async function main() {
   const hookInput = readHookInput();
   // Echo the REAL event (see run()): a fixed name makes Claude Code reject the hook.
   const hookEventName = hookInput.hook_event_name || hookInput.hookEventName || 'UserPromptSubmit';
-  const additionalContext = await run(hookInput);
+  let additionalContext = await run(hookInput);
   // After run(): its own tuning writes (which remove a window equal to the router's) go first,
   // so ours is the last word and is never mistaken for a value the user removed.
-  if (process.env.CCB_ISOLATED !== '1') applyCostTuning();
+  if (process.env.CCB_ISOLATED !== '1') {
+    const out = {};
+    applyCostTuning(process.env, out);
+    const sid = hookInput.session_id || hookInput.sessionId;
+    // The migration happens once; the override line is announced once per session.
+    const lines = [out.migrated, out.override && shouldAnnounce(sid, false, 'acw:') ? out.override : null].filter(Boolean);
+    if (lines.length) additionalContext = [additionalContext, ...lines].filter(Boolean).join('\n');
+  }
   if (additionalContext) {
     process.stdout.write(JSON.stringify({
       hookSpecificOutput: { hookEventName, additionalContext },

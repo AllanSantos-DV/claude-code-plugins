@@ -183,7 +183,7 @@ function getSkillPromotion() {
  */
 function getLessonPromotion() {
   const p = (load().kb && load().kb.promotion) || {};
-  const d = { enabled: true, mode: 'apply', cosine: 0.9, minProjects: 2, minCitedSessions: 2, minCitedProjects: 2, maxPerRun: 5, intervalDays: 7, types: ['lesson', 'pattern'], minConfidence: 0.7 };
+  const d = { enabled: true, mode: 'dry-run', cosine: 0.9, minProjects: 2, minCitedSessions: 2, minCitedProjects: 2, maxPerRun: 5, intervalDays: 7, types: ['lesson', 'pattern'], minConfidence: 0.7 };
   const bad = (k) => { console.error(`[brain-config] kb.promotion.${k} is invalid (${JSON.stringify(p[k])}) — using ${JSON.stringify(d[k])}`); return d[k]; };
   const int = (k, min) => (p[k] === undefined ? d[k] : (Number.isInteger(p[k]) && p[k] >= min ? p[k] : bad(k)));
   const frac = (k, lo) => (p[k] === undefined ? d[k] : (typeof p[k] === 'number' && p[k] >= lo && p[k] <= 1 ? p[k] : bad(k)));

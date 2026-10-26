@@ -13,8 +13,14 @@
  *     (ephemeral_1h_input_tokens on the reply).
  *   - ENABLE_TOOL_SEARCH=true — always set (owner, 14/10): MCP tool schemas load on demand instead of
  *     all up front. A value the user already has (false, auto) is theirs and stays.
- *   - CLAUDE_CODE_AUTO_COMPACT_WINDOW (OFF by default since 14/10; opt-in through the config) — the window the engine's auto-compaction budgets
- *     against. At 1M it compacts at ~967k, so every call between compactions re-reads up to
+ *   - the auto-compact window (OFF by default since 14/10; opt-in through the config) — the window the engine's auto-compaction budgets
+ *     against. Written as the top-level `autoCompactWindow` of settings.json, NOT as the env var
+ *     CLAUDE_CODE_AUTO_COMPACT_WINDOW: the env var outranks `/autocompact`, the `--autocompact` flag and every
+ *     settings key (code.claude.com/docs/en/model-config, "Set the auto-compact window"), so a user who typed
+ *     `/autocompact 500k` would silently lose. The `modelSettings` entry that `/autocompact` saves beats the
+ *     top-level key, so the user's command wins over the boss's value (`modelSettings` is per model id, which the
+ *     boss cannot know). An env window we wrote in an earlier version is restored away by the ownership state.
+ *     At 1M it compacts at ~967k, so every call between compactions re-reads up to
  *     ~1M tokens; the boss's own prompt gate only acts at a person's prompt on a cold cache,
  *     never mid-turn or in delegated sessions. The engine compacts at the window minus a fixed
  *     33k buffer (`/context`, CC 2.1.293: 300k → 267k, 153k → 120k), mid-turn too, through its
@@ -39,6 +45,7 @@
 const TTL_KEY = 'CLAUDE_CODE_PROMPT_CACHE_TTL';
 const WINDOW_KEY = 'CLAUDE_CODE_AUTO_COMPACT_WINDOW';
 const TOOL_SEARCH_KEY = 'ENABLE_TOOL_SEARCH'; // Anthropic's own switch (true | auto | auto:N | false)
+const WINDOW_SETTING_KEY = 'autoCompactWindow'; // top-level settings.json key; the user's /autocompact (modelSettings) beats it
 
 const DEFAULTS = Object.freeze({ enabled: true, cacheTtl: '1h', autoCompactWindow: null, toolSearch: true });
 const WINDOW_RANGE = Object.freeze([100000, 1000000]);
@@ -81,8 +88,12 @@ function wanted(cfg, billed) {
   if (!cfg.enabled) return want;
   if (cfg.cacheTtl && billed) want[TTL_KEY] = cfg.cacheTtl;
   if (cfg.toolSearch) want[TOOL_SEARCH_KEY] = 'true'; // always: MCP tools load on demand, not all up front
-  if (cfg.autoCompactWindow) want[WINDOW_KEY] = String(cfg.autoCompactWindow);
   return want;
+}
+
+/** The window we ask for in settings.json (never in env): a number of tokens, or null. */
+function wantedWindow(cfg) {
+  return cfg.enabled && cfg.autoCompactWindow ? cfg.autoCompactWindow : null;
 }
 
 /** May we write `val` over the user's own `cur`? Only a window LARGER than ours. */
@@ -143,4 +154,77 @@ function planCostTuning(env, want, state) {
   return { env: next, state: s, changed, notes };
 }
 
-module.exports = { DEFAULTS, WINDOW_RANGE, TTL_KEY, WINDOW_KEY, TOOL_SEARCH_KEY, resolveConfig, apiBilled, wanted, planCostTuning };
+/**
+ * The top-level `autoCompactWindow` of settings.json under the same ownership rules as the env keys: written only
+ * where the user has none, a value the user sets or changes is theirs (we yield, never re-apply over it), and turning
+ * the feature off restores what was there.
+ * @param {object} settings  parsed settings.json
+ * @param {number|null} want wantedWindow() output
+ * @param {{window?:{applied?:number, previous?:(number|null), yielded?:*}}} [state]
+ * @returns {{settings:object, state:object, changed:boolean, notes:string[]}}
+ */
+function planWindowSetting(settings, want, state) {
+  const next = { ...(settings || {}) };
+  const w = { ...((state && state.window) || {}) };
+  const notes = [];
+  const result = () => ({ settings: next, state: w, changed: next[WINDOW_SETTING_KEY] !== (settings || {})[WINDOW_SETTING_KEY], notes });
+
+  if (w.applied != null) {
+    const have = next[WINDOW_SETTING_KEY];
+    if (have !== w.applied) {
+      notes.push(`${WINDOW_SETTING_KEY}: changed by you (${have ?? 'removed'}) — left as is`);
+      w.yielded = have ?? null; // removing it is a choice too
+      delete w.applied; delete w.previous;
+    } else if (want !== w.applied) {
+      if (w.previous == null) delete next[WINDOW_SETTING_KEY]; else next[WINDOW_SETTING_KEY] = w.previous;
+      notes.push(`${WINDOW_SETTING_KEY}: ${w.applied} → ${w.previous ?? 'unset'} (restored)`);
+      delete w.applied; delete w.previous;
+    }
+  }
+  if (want == null || w.applied != null) return result();
+  const cur = next[WINDOW_SETTING_KEY];
+  if ('yielded' in w && (cur ?? null) === w.yielded) return result(); // the user's choice stands
+  delete w.yielded;
+  if (cur != null) return result(); // the user's own window: never overwritten, not ours to restore
+  w.previous = null; w.applied = want;
+  next[WINDOW_SETTING_KEY] = want;
+  notes.push(`${WINDOW_SETTING_KEY}: unset → ${want}`);
+  return result();
+}
+
+/**
+ * Env plan and settings-key plan of the cost knobs in one result (what the hook applies and the doctor reports).
+ * @returns {{env:object, settings:object, state:object, changed:boolean, notes:string[]}}
+ */
+function planCostTuningAll(settings, want, wantWin, state) {
+  const e = planCostTuning((settings || {}).env, want, state);
+  const win = planWindowSetting(settings, wantWin, state);
+  return { env: e.env, settings: win.settings, state: { ...e.state, window: win.state }, changed: e.changed || win.changed, notes: [...e.notes, ...win.notes] };
+}
+
+/**
+ * The lines the user must SEE about the auto-compact window: the env var outranks `/autocompact`.
+ *  - migrated: an earlier boss version had written the env var and this run moved it to the settings key;
+ *  - override: the env var is set by something else (settings.json env or the process environment).
+ * @param {{migrated:boolean, window:(number|null), env:object, processEnv:object}} a  env = settings.json env after the plan
+ * @returns {{migrated:(string|null), override:(string|null)}}
+ */
+function autoCompactNotices({ migrated, window: win, env, processEnv }) {
+  if (migrated) {
+    return {
+      migrated: win
+        ? `[BOSS] A janela de auto-compact do boss (${win}) saiu da variável ${WINDOW_KEY} — que vence o /autocompact sem avisar — e passou para "${WINDOW_SETTING_KEY}" no settings.json: o seu /autocompact por modelo agora vale e vence o valor do boss. Reinicie o Claude Code para a variável sair do ambiente.`
+        : `[BOSS] A variável ${WINDOW_KEY} que o boss tinha gravado foi removida do settings.json (ela vencia o /autocompact sem avisar). Reinicie o Claude Code para ela sair do ambiente.`,
+      override: null,
+    };
+  }
+  const inSettings = (env || {})[WINDOW_KEY];
+  const v = inSettings !== undefined ? inSettings : (processEnv || {})[WINDOW_KEY];
+  if (v === undefined || v === '') return { migrated: null, override: null };
+  return {
+    migrated: null,
+    override: `[BOSS] ${WINDOW_KEY}=${v} está definida (${inSettings !== undefined ? 'env do settings.json' : 'ambiente do processo'}): ela vence o /autocompact, a flag --autocompact e o autoCompactWindow — o comando só relata o valor. Para voltar a controlar a janela com /autocompact, remova a variável.`,
+  };
+}
+
+module.exports = { DEFAULTS, WINDOW_RANGE, TTL_KEY, WINDOW_KEY, WINDOW_SETTING_KEY, TOOL_SEARCH_KEY, resolveConfig, apiBilled, wanted, wantedWindow, planCostTuning, planWindowSetting, planCostTuningAll, autoCompactNotices };

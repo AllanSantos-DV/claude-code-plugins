@@ -61,7 +61,7 @@
     },
     "promotion": {
       "enabled": true,
-      "mode": "apply",
+      "mode": "dry-run",
       "cosine": 0.9,
       "minProjects": 2,
       "minCitedSessions": 2,
@@ -70,7 +70,7 @@
       "intervalDays": 7,
       "types": ["lesson", "pattern"],
       "minConfidence": 0.7,
-      "_comment_promotion": "Promoção automática de lição de projeto para o escopo do usuário (scripts/lesson-promote.js, semanal em segundo plano). Regra R1: a mesma lição (cosseno >= cosine, mesmo tipo) em >= minProjects projetos; regra R2: citada em >= minCitedSessions sessões de >= minCitedProjects projetos. COPIA (nunca move), reversível com `undo`. mode 'dry-run' só grava o plano em promotions/last-scan.json. Ajuste por usuário em user-config.json sob kb.promotion."
+      "_comment_promotion": "Promoção automática de lição de projeto para o escopo do usuário (scripts/lesson-promote.js, semanal em segundo plano). Regra R1: a mesma lição (cosseno >= cosine, mesmo tipo) em >= minProjects projetos; regra R2: citada em >= minCitedSessions sessões de >= minCitedProjects projetos. COPIA (nunca move), reversível com `undo`. mode 'dry-run' (padrão; o dono liga o 'apply') só grava o plano em promotions/last-scan.json e avisa no SessionStart o que promoveria. Ajuste por usuário em user-config.json sob kb.promotion."
     },
     "capture": {
       "maxBlockAttempts": 5,

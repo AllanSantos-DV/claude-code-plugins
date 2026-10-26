@@ -142,4 +142,18 @@ function summarizeCompaction(rows, { timeline = 20 } = {}) {
   return s;
 }
 
-module.exports = { summarizeCompaction, COMPACTION_EVENTS };
+/**
+ * The one-tile summary of controlled compaction for the Home (the full panel is summarizeCompaction): on or off, whether
+ * the cut at a cold cache builds the brief itself (`mechanicalCut`), and what the cuts saved as measured on the next turn.
+ * @param {{enabled?:boolean, mechanicalCut?:boolean}} cfg  hooks-config getCompaction()
+ * @param {Array} rows  any events; only the compaction runs and their measured outcome are read
+ * @returns {{enabled:boolean, mechanicalCut:boolean, runs:number, measured:number, tokensCut:number}}
+ */
+function compactionTile(cfg, rows) {
+  const only = (rows || []).filter((r) => { const n = r.eventName || r.event_name; return n === 'compaction.run' || n === 'compaction.settled'; });
+  const s = summarizeCompaction(only, { timeline: 0 });
+  const enabled = !cfg || cfg.enabled !== false;
+  return { enabled, mechanicalCut: enabled && (!cfg || cfg.mechanicalCut !== false), runs: s.runs.total, measured: s.settled.count, tokensCut: s.settled.tokensCut };
+}
+
+module.exports = { summarizeCompaction, compactionTile, COMPACTION_EVENTS };
