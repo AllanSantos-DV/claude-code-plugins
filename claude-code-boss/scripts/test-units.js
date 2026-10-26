@@ -10245,7 +10245,8 @@ test('pages-publish.publish: commit orfao com so o site + .nojekyll (sem .token-
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-pp-'));
   const sh = (args, cwd) => require('child_process').spawnSync('git', args, { cwd, encoding: 'utf8', windowsHide: true });
   try {
-    const site = ppSite(dir);
+    // publish() checks the page against the REAL package.json version, so the fixture must follow it (a hardcoded vX.Y.Z broke on every bump).
+    const site = ppSite(dir, `<h1>boss <small>v${JSON.parse(fs.readFileSync(path.join(ROOT, 'package.json'), 'utf8')).version}</small></h1>`);
     const remote = path.join(dir, 'remote.git');
     nassert.strictEqual(sh(['init', '-q', '--bare', remote]).status, 0);
     const base = { site, remote, message: 'Pages abc', key: '' };

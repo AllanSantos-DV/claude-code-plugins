@@ -1,5 +1,11 @@
 # Backlog
 
+## Release 3.11.1 (pedido do orquestrador, 2026-10-26)
+
+- [x] **Achado e corrigido na hora — o teste `pages-publish.publish` quebrava em todo bump de versão** (`scripts/test-units.js`, fixture `ppSite`). Visto no `test:units` do passo de bump para 3.11.1 (`1786 passed  1 failed`: `index.html does not show v3.11.1: stale page`). Causa: `publish()` confere a página contra a versão REAL do `claude-code-boss/package.json`, mas o teste montava a página com `v3.11.0` fixo. Correção: o teste do `publish` monta a página com a versão lida do `package.json`; os testes de `checkSite`/`verify` seguem com versão explícita própria (não dependem do repo). Validado: `test:units` sem falhas depois do ajuste.
+
+- [x] **Achado e corrigido na hora — eslint reprovava `scripts/curated-run.js:44`** (`local/require-windows-hide`: `spawnSync()` sem `windowsHide: true`). Visto ao rodar `npx eslint --config eslint.config.cjs scripts/ --max-warnings=0` antes do release (o CI rodaria o mesmo e falharia). Vinha do commit 5728846 (launcher do PowerShell). Correção: `windowsHide: true` nas opções (com `stdio: 'inherit'` o filho usa o console do pai, então não muda o comportamento). Validado: eslint sem erros e `test:units`/`test:hooks` verdes.
+
 ## Triagem do backlog e ganhos puros da lente de feature-irmã (pedido do orquestrador, 2026-10-26) — na develop, aguardando o dono, sem release
 
 Decidido (Jarvis, 26/10): os ~32 itens abertos foram triados (cada um ganhou a linha "Decidido" abaixo do seu texto); sobraram abertos só os que mudam o que o usuário vê/decide (Desktop, nome do plugin, `mode: apply`, painel) e os técnicos não feitos, listados com esforço.
