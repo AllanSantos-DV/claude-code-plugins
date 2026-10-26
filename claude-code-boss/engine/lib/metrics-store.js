@@ -229,7 +229,7 @@ function getEventLog({ eventName = null, limit = 50, sinceTs = null } = {}) {
  * if the DB file or SQLite backend is unavailable.
  * `eventNames` (array) reads several event kinds in one open, which is the expensive part.
  */
-function getEventLogIsolated(project, { eventName = null, eventNames = null, limit = 50, sinceTs = null, dataDir } = {}) {
+function getEventLogIsolated(project, { eventName = null, eventNames = null, limit = 50, sinceTs = null, sinceId = null, dataDir } = {}) {
   const Database = loadSqlite();
   if (!Database) return [];
   const dir = storeDir({ dataDir });
@@ -241,11 +241,14 @@ function getEventLogIsolated(project, { eventName = null, eventNames = null, lim
   try {
     const lo = lowerBound(sinceTs, floorFor(project, dir));
     const names = Array.isArray(eventNames) && eventNames.length ? eventNames : (eventName ? [eventName] : null);
+    // sinceId: only rows written after that id (incremental readers keep the last id they saw).
+    const idCut = sinceId == null ? '' : ' AND id > ?';
+    const idArg = sinceId == null ? [] : [Number(sinceId) || 0];
     const rows = names
       ? db.prepare(`SELECT id, ts, event_name, payload, session_id, project
-                      FROM metrics_event WHERE event_name IN (${names.map(() => '?').join(',')}) AND ts >= ? ORDER BY ts DESC LIMIT ?`).all(...names, lo, cap)
+                      FROM metrics_event WHERE event_name IN (${names.map(() => '?').join(',')}) AND ts >= ?${idCut} ORDER BY ts DESC LIMIT ?`).all(...names, lo, ...idArg, cap)
       : db.prepare(`SELECT id, ts, event_name, payload, session_id, project
-                      FROM metrics_event WHERE ts >= ? ORDER BY ts DESC LIMIT ?`).all(lo, cap);
+                      FROM metrics_event WHERE ts >= ?${idCut} ORDER BY ts DESC LIMIT ?`).all(lo, ...idArg, cap);
     return rows.map(r => ({
       id: r.id, ts: r.ts, eventName: r.event_name,
       payload: safeParseJson(r.payload), sessionId: r.session_id, project: r.project,

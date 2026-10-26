@@ -79,8 +79,13 @@ function summarizePromotions(rows, { since = 0, universe = 0 } = {}) {
   for (const p of promoted.values()) if (p.userEntryId) copies.set(p.userEntryId, p.sources);
   const byRule = {};
   for (const p of promoted.values()) byRule[p.rule || '?'] = (byRule[p.rule || '?'] || 0) + 1;
-  const eff = { citations: 0, reachedCitations: 0, originUnrecorded: 0, reachedProjects: new Set(), citedLessons: new Set(), otherCited: new Set(), otherCitations: 0 };
+  const eff = { injections: 0, injectionEvents: 0, citations: 0, reachedCitations: 0, originUnrecorded: 0, reachedProjects: new Set(), citedLessons: new Set(), otherCited: new Set(), otherCitations: 0 };
   for (const r of rows || []) {
+    // Per-entry injections (events recorded with `entryIds`): the real denominator of the promoted lessons' citation rate.
+    if (r && r.eventName === 'retrieve.injected' && num(r.ts) >= since && r.payload && Array.isArray(r.payload.entryIds)) {
+      eff.injectionEvents++;
+      for (const id of r.payload.entryIds) if (copies.has(id)) eff.injections++;
+    }
     if (!r || r.eventName !== 'retrieve.cited' || num(r.ts) < since || !r.payload || !r.payload.entryId) continue;
     const id = r.payload.entryId;
     if (!copies.has(id)) { eff.otherCited.add(id); eff.otherCitations++; continue; }
@@ -95,6 +100,7 @@ function summarizePromotions(rows, { since = 0, universe = 0 } = {}) {
     effect: {
       citations: eff.citations, citedLessons: eff.citedLessons.size, reachedCitations: eff.reachedCitations, reachedProjects: eff.reachedProjects.size, originUnrecorded: eff.originUnrecorded,
       citedShare: round(n ? eff.citedLessons.size / n : null), otherCitedShare: round(universe ? eff.otherCited.size / universe : null),
+      injections: eff.injections, injectionEvents: eff.injectionEvents, citationRate: round(eff.injections ? eff.citations / eff.injections : null),
       citationsPerPromoted: round(n ? eff.citations / n : null, 2), citationsPerOther: round(universe ? eff.otherCitations / universe : null, 2),
     },
     labels: {

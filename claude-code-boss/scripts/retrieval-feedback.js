@@ -184,6 +184,15 @@ function injectedChars(journalEntries) {
   return n;
 }
 
+/** Most entry ids one `retrieve.injected` event carries (the row stays small; `count` is still the full number). */
+const MAX_INJECTED_IDS = 20;
+
+/** The `entryIds` fields of a `retrieve.injected` payload: which entries entered the prompt, capped. Readers that only know count/chars ignore them. */
+function injectedIdsField(injectedIds) {
+  const ids = [...injectedIds].map(String);
+  return { entryIds: ids.slice(0, MAX_INJECTED_IDS), ...(ids.length > MAX_INJECTED_IDS ? { entryIdsTruncated: true } : {}) };
+}
+
 // ── Main (hook entry) ─────────────────────────────────────────────────────
 
 async function run(event) {
@@ -211,7 +220,7 @@ async function run(event) {
     try {
       const store = require('../engine/brain-store.js');
       const metrics = require('../engine/lib/metrics.js');
-      if (injectedIds.size && injectedChars(entries) > 0) metrics.fire('retrieve.injected', { count: injectedIds.size, chars: injectedChars(entries), origins: originTotals(entries) }, mctx);
+      if (injectedIds.size && injectedChars(entries) > 0) metrics.fire('retrieve.injected', { count: injectedIds.size, chars: injectedChars(entries), origins: originTotals(entries), ...injectedIdsField(injectedIds) }, mctx);
       else if (returnedCount) metrics.fire('retrieve.empty', { returned: returnedCount, reason: 'filtered' }, mctx);
       // KB citations go to the scope each entry was retrieved from. It used to be
       // basename(cwd): the UPDATE then hit a shard without the entry and silently
@@ -259,6 +268,8 @@ module.exports = {
   findCitations,
   injectedPairs,
   injectedChars,
+  injectedIdsField,
+  MAX_INJECTED_IDS,
   originTotals,
   originOf,
   readLastAssistantText,

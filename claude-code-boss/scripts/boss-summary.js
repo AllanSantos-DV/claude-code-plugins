@@ -72,16 +72,34 @@ function brainOf(health, healthError) {
   };
 }
 
-/** Every project's rows of the window, one open per project. */
-function readRows(sinceTs) {
-  const store = require('../engine/lib/metrics-store.js');
-  const eventNames = [...CURATION_EVENTS, ...ECONOMY_EVENTS, ...VALUE_EVENTS];
-  const rows = [];
-  for (const project of store.listProjects()) {
-    for (const r of store.getEventLogIsolated(project, { eventNames, sinceTs })) rows.push(r);
-  }
-  return rows;
+/**
+ * Every project's rows of the window. The daemon asks every 30 s on the heavy lane, so the reader is
+ * INCREMENTAL: it keeps, per project, the rows of the window and the last row id it saw, and a later call
+ * asks the store only for rows with a greater id (backlog: ~0.7 s of full re-read, 230 projects). Rows that
+ * left the window are dropped from the cache; a project whose db is gone leaves the cache with it.
+ * @param {{listProjects:Function, getEventLogIsolated:Function}} [storeArg]  injectable for tests
+ */
+function createRowReader(storeArg) {
+  const cache = new Map(); // project → { lastId, rows }
+  return function readRows(sinceTs) {
+    const store = storeArg || require('../engine/lib/metrics-store.js');
+    const eventNames = [...CURATION_EVENTS, ...ECONOMY_EVENTS, ...VALUE_EVENTS];
+    const projects = store.listProjects();
+    for (const p of [...cache.keys()]) if (!projects.includes(p)) cache.delete(p);
+    const rows = [];
+    for (const project of projects) {
+      const slot = cache.get(project) || { lastId: 0, rows: [] };
+      const fresh = store.getEventLogIsolated(project, { eventNames, sinceTs, sinceId: slot.lastId });
+      for (const r of fresh) if (Number(r.id) > slot.lastId) slot.lastId = Number(r.id);
+      slot.rows = slot.rows.filter((r) => Number(r.ts) >= sinceTs).concat(fresh);
+      cache.set(project, slot);
+      for (const r of slot.rows) rows.push(r);
+    }
+    return rows;
+  };
 }
+
+const readRows = createRowReader();
 
 async function run() {
   const now = Date.now();
@@ -98,4 +116,4 @@ async function run() {
   return summarizeBoss(rows, health, { now, healthError });
 }
 
-module.exports = { run, summarizeBoss, DAYS };
+module.exports = { run, summarizeBoss, createRowReader, DAYS };

@@ -23,7 +23,7 @@ import { createEmbedWorker } from './embed-worker-client.js';
 import { createRequire } from 'node:module';
 import path from 'node:path';
 import fs from 'node:fs';
-import { HEALTH_PATH, MCP_PATH, lockFile, ensureToken, requestAllowed, tokenFile, canonicalDataDir } from './daemon-common.js';
+import { HEALTH_PATH, MCP_PATH, lockFile, ensureToken, requestAllowed, tokenFile, canonicalDataDir, healthProof, HEALTH_NONCE_RE } from './daemon-common.js';
 
 const SESSION_IDLE_MS = 30 * 60 * 1000; // reap sessions idle > 30 min
 // SSE comment on the open GET stream: well under Claude Code's ~6 min idle timeout.
@@ -173,9 +173,12 @@ export async function startHttpDaemon({ pluginRoot, dataDir, port, host = '127.0
 
       // Health — the supervisor reads pluginRoot here to decide stale-vs-current.
       if (req.method === 'GET' && url === HEALTH_PATH) {
+        // Challenge: a client about to send the token sends a nonce and checks HMAC(token, nonce) (daemon-common.js).
+        const nonce = new URL(req.url || '', 'http://127.0.0.1').searchParams.get('nonce');
+        const proof = nonce && HEALTH_NONCE_RE.test(nonce) ? { proof: healthProof(token, nonce) } : {};
         res.writeHead(200, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({
-          ok: true, pluginRoot, dataDir, version, pid: process.pid, port,
+          ok: true, ...proof, pluginRoot, dataDir, version, pid: process.pid, port,
           // The doctor checks the daemon's real runtime: the hook that spawned it may have had another node on PATH.
           node: { version: process.version, execArgv: process.execArgv, nodeOptions: process.env.NODE_OPTIONS || '' },
           sessions: sessions.size, hookWorker: hookWorker.stats(), hookLatency: hookLatencyStats(), unhandledRejections, startedAt, uptimeMs: Date.now() - startedAt,

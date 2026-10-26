@@ -28564,7 +28564,7 @@ async function phaseGateRun({ config, tokens, messages, coldMs = 0, prompts = 1 
     env: { get: async (k) => env[k] },
     fs: { read: async (p) => fs.readFileSync(p, 'utf8') },
     http: { fetch: async (url, init) => {
-      if (url.endsWith('/health')) return { status: 200, ok: true, text: JSON.stringify({ dataDir: dir }) };
+      if (url.split('?')[0].endsWith('/health')) return { status: 200, ok: true, text: JSON.stringify({ dataDir: dir }) };
       const payload = JSON.parse(JSON.parse(init.body).payload);
       calls.events.push(payload);
       return { status: 200, ok: true, text: JSON.stringify(payload.kind === 'hello' ? { config } : {}) };
@@ -28975,7 +28975,7 @@ async function folderCutRun(ce, { gated }) {
     env: { get: async (k) => env[k] },
     fs: { read: async (p) => fs.readFileSync(p, 'utf8') },
     http: { fetch: async (url, init) => {
-      if (url.endsWith('/health')) return { status: 200, ok: true, text: JSON.stringify({ dataDir: dir }) };
+      if (url.split('?')[0].endsWith('/health')) return { status: 200, ok: true, text: JSON.stringify({ dataDir: dir }) };
       const body = JSON.parse(init.body);
       const payload = JSON.parse(body.payload);
       let reply = {};
@@ -29078,7 +29078,7 @@ async function reopenedRun(ce, o) {
     env: { get: async (k) => env[k] },
     fs: { read: async (p) => fs.readFileSync(p, 'utf8') },
     http: { fetch: async (url, init) => {
-      if (url.endsWith('/health')) return { status: 200, ok: true, text: JSON.stringify({ dataDir: dir }) };
+      if (url.split('?')[0].endsWith('/health')) return { status: 200, ok: true, text: JSON.stringify({ dataDir: dir }) };
       const body = JSON.parse(init.body);
       const payload = JSON.parse(body.payload);
       let reply = {};
@@ -29507,7 +29507,7 @@ test('boss.mjs: Desktop (SDK session, isInteractive false) gets /boss, and the b
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-boss-desk-'));
   fs.writeFileSync(path.join(dir, 'brain-http.token'), 'tok');
   const desk = fakeBoss$({ sessionId: 'sid-desk', env: { CLAUDE_PLUGIN_DATA: dir, BRAIN_HTTP_PORT: '1' }, fetchImpl: async (url) => {
-    if (url.endsWith('/health')) return { status: 200, ok: true, text: JSON.stringify({ dataDir: dir }) };
+    if (url.split('?')[0].endsWith('/health')) return { status: 200, ok: true, text: JSON.stringify({ dataDir: dir }) };
     assert(url.includes('session=sid-desk'), url);
     return { status: 200, ok: true, text: summary };
   } });
@@ -29547,7 +29547,7 @@ test('boss.mjs: daemon down → the band says so (logged once, not per poll); a 
   assertEq(down.calls.invalidations, 1);
   let summaryReply = '{}';
   const off = fakeBoss$({ env, fetchImpl: async (url, init) => {
-    if (url.endsWith('/health')) return { status: 200, ok: true, text: JSON.stringify({ dataDir: dir }) };
+    if (url.split('?')[0].endsWith('/health')) return { status: 200, ok: true, text: JSON.stringify({ dataDir: dir }) };
     assertEq(init.headers.Authorization, 'Bearer tok', 'the local token is sent');
     return { status: 200, ok: true, text: summaryReply };
   } });
@@ -30879,6 +30879,193 @@ test('curation-session: SessionStart announces what the weekly promotion copied,
     assert(!/promovida/.test((await cs.run({ cwd: process.env.CLAUDE_PLUGIN_DATA })) || ''), 'shown once');
     assert(!fs.existsSync(path.join(dd, '.runtime', 'lesson-promote-last.json')), 'no stamp, no run: this backend is not mcp-memory');
   } finally { fs.rmSync(path.join(dd, 'promotions'), { recursive: true, force: true }); }
+});
+
+// ─── backlog 26/10: boss-summary incremental read ────────────────────────────────────────────────────────────
+test('boss-summary.createRowReader: the 2nd call with no new events does not re-read the rows (only rows past the last id per project), and the window still drops old rows', () => {
+  const { createRowReader } = require('./boss-summary.js');
+  const db = { a: [{ id: 1, ts: 1000, eventName: 'curation.shaped' }, { id: 2, ts: 2000, eventName: 'curation.shaped' }], b: [{ id: 1, ts: 1500, eventName: 'lesson.captured' }] };
+  const calls = [];
+  let rowsHanded = 0;
+  const store = {
+    listProjects: () => Object.keys(db),
+    getEventLogIsolated: (project, opts) => {
+      calls.push({ project, sinceId: opts.sinceId });
+      const out = db[project].filter((r) => r.id > (opts.sinceId || 0) && r.ts >= opts.sinceTs);
+      rowsHanded += out.length;
+      return out;
+    },
+  };
+  const read = createRowReader(store);
+  assertEq(read(0).length, 3, 'first call reads everything');
+  assertEq(rowsHanded, 3);
+  rowsHanded = 0; calls.length = 0;
+  assertEq(read(0).length, 3, 'same answer from the cache');
+  assertEq(rowsHanded, 0, 'no new events → no row is read again');
+  assertEq(calls.map((c) => c.sinceId), [2, 1], 'each project asks only past its last id');
+  db.a.push({ id: 3, ts: 3000, eventName: 'curation.shaped' });
+  rowsHanded = 0;
+  assertEq(read(0).length, 4);
+  assertEq(rowsHanded, 1, 'only the new row is read');
+  assertEq(read(1800).map((r) => r.id).sort(), [2, 3], 'rows older than the window leave the cache');
+  delete db.b;
+  assertEq(read(0).length, 2, 'a project whose db is gone leaves the cache');
+});
+
+test('metrics-store.getEventLogIsolated: sinceId returns only rows written after that id', () => {
+  const dd = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-since-id-'));
+  const ms = require('../engine/lib/metrics-store.js');
+  try {
+    assert(ms.init({ project: 'pid', dataDir: dd }));
+    const id1 = ms.recordMetric('engine.probe', { n: 1 }, 's');
+    const id2 = ms.recordMetric('engine.probe', { n: 2 }, 's');
+    ms.close();
+    assertEq(ms.getEventLogIsolated('pid', { dataDir: dd, eventNames: ['engine.probe'], sinceTs: 0 }).length, 2);
+    assertEq(ms.getEventLogIsolated('pid', { dataDir: dd, eventNames: ['engine.probe'], sinceTs: 0, sinceId: id1 }).map((r) => r.id), [id2]);
+    assertEq(ms.getEventLogIsolated('pid', { dataDir: dd, sinceTs: 0, sinceId: id2 }).length, 0);
+  } finally { ms.close(); fs.rmSync(dd, { recursive: true, force: true }); }
+});
+
+// ─── backlog 26/10: retrieve.injected records which entries entered the prompt ───────────────────────────────
+test('retrieve.injected carries the injected entryIds (capped at 20), readers of count/chars are unaffected, and the promoted lessons get a real citation rate', async () => {
+  const rf = require('./retrieval-feedback.js');
+  const metrics = require('../engine/lib/metrics.js');
+  const backend = require('../engine/brain-backend.js');
+  const store = require('../engine/brain-store.js');
+  const journal = require('./lib/retrieval-journal.js');
+  const sid = 'inj-ids-' + Date.now();
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-inj-ids-'));
+  const tp = path.join(dir, 't.jsonl');
+  fs.writeFileSync(tp, JSON.stringify({ type: 'assistant', message: { role: 'assistant', content: [{ type: 'text', text: 'Following the database migration ordering lesson.' }] } }) + '\n');
+  const orig = { fire: metrics.fire, peek: backend.peekMode, init: backend.init, sig: backend.signalHelpful, sinit: store.init, rc: store.recordCitation };
+  const fired = [];
+  metrics.fire = (name, payload) => { fired.push({ name, payload }); };
+  backend.peekMode = () => 'mcp-memory'; backend.init = async () => {}; backend.signalHelpful = async () => true;
+  store.init = async () => {}; store.recordCitation = () => {};
+  try {
+    const ids = Array.from({ length: 25 }, (_, i) => `e${i}`);
+    journal.appendEntry(sid, { retrievalId: 'r1', ts: Date.now(), sid, tool: 'UserPromptSubmit', project: 'own/p', returnedIds: ids, returnedTitles: ids.map((_, i) => (i === 0 ? 'database migration ordering' : `title ${i}`)), injectedIds: ids, injectedChars: 500 });
+    await rf.run({ hook_event_name: 'Stop', session_id: sid, transcript_path: tp, cwd: dir });
+    const inj = fired.find((f) => f.name === 'retrieve.injected');
+    assert(inj, 'retrieve.injected fired');
+    assertEq([inj.payload.count, inj.payload.chars], [25, 500], 'count/chars keep their meaning (the full number)');
+    assertEq(inj.payload.entryIds, ids.slice(0, 20), 'ids capped at 20');
+    assertEq(inj.payload.entryIdsTruncated, true);
+    assertEq(rf.injectedIdsField(new Set(['a', 'b'])), { entryIds: ['a', 'b'] }, 'no flag when nothing was cut');
+  } finally {
+    Object.assign(metrics, { fire: orig.fire });
+    Object.assign(backend, { peekMode: orig.peek, init: orig.init, signalHelpful: orig.sig });
+    Object.assign(store, { init: orig.sinit, recordCitation: orig.rc });
+    journal.clearEntries(sid);
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+  // Readers: value-summary / outcome-metrics still count by `count`; the promoted lessons' rate uses the recorded ids.
+  const vs = require('./lib/value-summary.js');
+  assertEq(vs.injectedCount([{ payload: { count: 25, chars: 500, entryIds: ['a'] } }]), 25);
+  const { summarizePromotions } = require('./lib/outcome-metrics.js');
+  const rows = [
+    { eventName: 'lesson.promoted', ts: 1, payload: { id: 'p1', rule: 'R1', userEntryId: 'u1', projects: ['a/x', 'b/y'] } },
+    { eventName: 'retrieve.injected', ts: 2, project: 'c/z', payload: { count: 2, chars: 10, entryIds: ['u1', 'zz'] } },
+    { eventName: 'retrieve.injected', ts: 3, project: 'c/z', payload: { count: 1, chars: 10, entryIds: ['u1'] } },
+    { eventName: 'retrieve.injected', ts: 3, project: 'c/z', payload: { count: 4, chars: 10 } }, // before the field: no ids
+    { eventName: 'retrieve.cited', ts: 4, project: 'c/z', payload: { entryId: 'u1', origin: 'other' } },
+  ];
+  const eff = summarizePromotions(rows).effect;
+  assertEq([eff.injections, eff.citations, eff.citationRate], [2, 1, 0.5]);
+  assertEq(summarizePromotions(rows.filter((r) => r.eventName !== 'retrieve.injected')).effect.citationRate, null, 'no per-entry injection recorded → no rate, never a guess');
+});
+
+// ─── backlog 26/10: lesson-promote vector cache ──────────────────────────────────────────────────────────────
+test('lesson-promote gather: vectors are cached per entryId + text hash in <dataDir>/promotions — the 2nd run does not call the embedder for unchanged text, an edited lesson or another model re-embeds', async () => {
+  const lp = require('./lesson-promote.js');
+  const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-promo-cache-'));
+  try {
+    const store = {
+      'org/alpha': [{ id: 'a1', title: 'one', summary: 's1', type: 'lesson', bossWritten: true }, { id: 'a2', title: 'two', summary: 's2', type: 'lesson', bossWritten: true }],
+      __user__: [{ id: 'u1', title: 'user', summary: 'su', type: 'lesson', bossWritten: true }],
+    };
+    const backend = { init: async () => {}, listProjects: async () => Object.keys(store), listDocuments: async ({ projectId }) => store[projectId].map((d) => ({ ...d })) };
+    let embeds = 0; let model = 'm1';
+    const embedder = { init: async () => {}, getStatus: () => ({ ready: true, provider: 'local', model }), embed: async (t) => { embeds++; return Float32Array.from([t.length, 1, 2]); } };
+    const cfg = { ...require('./lib/lesson-promotion.js').DEFAULTS };
+    const g1 = await lp.gather({ backend, embedder, cfg, dataDir });
+    assertEq(embeds, 3, 'first run embeds every lesson');
+    assert(fs.existsSync(path.join(dataDir, 'promotions', 'embed-cache.json')), 'cache written under promotions/');
+    embeds = 0;
+    const g2 = await lp.gather({ backend, embedder, cfg, dataDir });
+    assertEq(embeds, 0, 'second run: unchanged text → the embedder is not called');
+    assertEq(g2.entries.map((e) => Array.from(e.vector)), g1.entries.map((e) => Array.from(e.vector)), 'same vectors from the cache');
+    store['org/alpha'][0].summary = 'edited';
+    await lp.gather({ backend, embedder, cfg, dataDir });
+    assertEq(embeds, 1, 'only the edited lesson is embedded again');
+    embeds = 0; model = 'm2';
+    await lp.gather({ backend, embedder, cfg, dataDir });
+    assertEq(embeds, 3, 'another embedder model invalidates the cache');
+    embeds = 0;
+    fs.writeFileSync(path.join(dataDir, 'promotions', 'embed-cache.json'), '{not json');
+    await lp.gather({ backend, embedder, cfg, dataDir });
+    assertEq(embeds, 3, 'a corrupt cache is not trusted (and is logged), the run still works');
+  } finally { fs.rmSync(dataDir, { recursive: true, force: true }); }
+});
+
+// ─── backlog 26/10: HMAC challenge on the daemon's /health ───────────────────────────────────────────────────
+test('module-daemon: /health HMAC challenge — the real daemon proves the token, an impostor that repeats the dataDir without the token is rejected, an old daemon (no proof) is accepted WITH an explicit warning', async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-health-hmac-'));
+  const url = require('url');
+  const nodeCrypto = require('crypto');
+  const { daemon, hmacSha256Hex } = await import(url.pathToFileURL(path.join(ROOT, 'scripts', 'lib', 'module-daemon.mjs')).href);
+  const { startHttpDaemon } = await import(url.pathToFileURL(path.join(ROOT, 'servers', 'brain-server', 'lib', 'http-daemon.js')).href);
+  // The plain-JS HMAC the module uses equals node:crypto's (short/long key, utf-8, empty and multi-block messages).
+  for (const [k, m] of [['k', 'm'], ['a'.repeat(100), 'nonce'], ['tokén-ü', 'x'.repeat(200)], ['t', ''], ['t'.repeat(64), 'y'.repeat(55)], ['t', 'y'.repeat(56)]]) {
+    assertEq(hmacSha256Hex(k, m), nodeCrypto.createHmac('sha256', k).update(m).digest('hex'), `hmac(${k.length},${m.length})`);
+  }
+  const savedTok = process.env.BRAIN_HTTP_TOKEN; delete process.env.BRAIN_HTTP_TOKEN;
+  const d = await startHttpDaemon({ pluginRoot: ROOT, dataDir: dir, port: 0 });
+  const servers = [];
+  try {
+    const base = `http://127.0.0.1:${d.httpServer.address().port}`;
+    const dataDir = (await (await fetch(`${base}/health`)).json()).dataDir;
+    const token = fs.readFileSync(path.join(dataDir, 'brain-http.token'), 'utf8').trim();
+    const nonce = 'ab'.repeat(16);
+    const open = await (await fetch(`${base}/health`)).json();
+    assertEq(open.proof, undefined, 'no nonce → the old answer, no proof');
+    assertEq((await (await fetch(`${base}/health?nonce=${nonce}`)).json()).proof, nodeCrypto.createHmac('sha256', token).update(nonce).digest('hex'), 'daemon proof = HMAC(token, nonce)');
+    assertEq((await (await fetch(`${base}/health?nonce=not-hex!`)).json()).proof, undefined, 'a malformed nonce gets no proof');
+    const mk$ = (port, logs) => ({
+      env: { get: async (n) => ({ CLAUDE_PLUGIN_DATA: dataDir.replace(/\\/g, '/'), BRAIN_HTTP_PORT: String(port) })[n] },
+      fs: { read: async (p) => fs.readFileSync(p, 'utf8') },
+      http: { fetch: async (u) => { const r = await fetch(u); return { ok: r.ok, status: r.status, text: await r.text() }; } },
+      ui: { log: (m) => logs.push(m) },
+    });
+    // 1. the real daemon: verified, no warning
+    const logsOk = [];
+    const got = await daemon(mk$(d.httpServer.address().port, logsOk), {}, false, 'test');
+    assertEq(got.token, token);
+    assertEq(logsOk, [], 'verified handshake: nothing to warn');
+    // 2. impostors on other ports: repeat the dataDir, do not know the token
+    const listen = (handler) => new Promise((resolve) => { const s = http.createServer(handler); servers.push(s); s.listen(0, '127.0.0.1', () => resolve(s.address().port)); });
+    const seen = [];
+    const wrongProof = await listen((req, res) => { seen.push(req.url); res.setHeader('Content-Type', 'application/json'); res.end(JSON.stringify({ ok: true, dataDir, proof: 'f'.repeat(64) })); });
+    const echoNonce = await listen((req, res) => { const n = new URL(req.url, 'http://x').searchParams.get('nonce'); seen.push(req.url); res.end(JSON.stringify({ ok: true, dataDir, proof: n })); });
+    for (const port of [wrongProof, echoNonce]) {
+      let err = null;
+      try { await daemon(mk$(port, []), {}, false, 'test'); } catch (e) { err = e; }
+      assert(err && /wrong proof/.test(err.message), `impostor on ${port} must be rejected: ${err && err.message}`);
+    }
+    // 3. an old daemon: no proof field → today's behaviour, loudly
+    const old = await listen((req, res) => { res.end(JSON.stringify({ ok: true, dataDir })); });
+    const logsOld = []; const holder = {};
+    const legacy = await daemon(mk$(old, logsOld), holder, false, 'test');
+    assertEq(legacy.token, token, 'compatibility: an old daemon still works');
+    assertEq(logsOld.length, 1);
+    assert(/did not answer the \/health challenge \(older build\)/.test(logsOld[0]), logsOld[0]);
+    await daemon(mk$(old, logsOld), holder, true, 'test');
+    assertEq(logsOld.length, 1, 'the warning is said once per session');
+  } finally {
+    if (savedTok !== undefined) process.env.BRAIN_HTTP_TOKEN = savedTok;
+    for (const s of servers) s.close();
+    await d.shutdown();
+  }
 });
 
 // ─── Runner ──────────────────────────────────────────────────────────────────
