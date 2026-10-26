@@ -292,6 +292,37 @@ function checkSessionModules(ctx) {
   };
 }
 
+/** Does the installed Claude Code still contain every name the plugin depends on (ctx.claudeCompat, from scripts/compat-check.js)? A name can survive a behaviour change: this proves presence only. */
+function checkClaudeCompat(ctx) {
+  const base = { id: 'claude-compat', label: 'Installed Claude Code vs what the plugin depends on', critical: false };
+  const c = ctx.claudeCompat;
+  if (!c) return { ...base, status: 'ok', detail: 'not checked in this run (it scans the Claude Code binary: run `node scripts/doctor.js --cost` or `node scripts/compat-check.js`)', fix: '' };
+  if (c.error) return { ...base, status: 'warn', detail: `could not check: ${c.error}`, fix: 'Run `node scripts/compat-check.js` in a terminal to see the error.' };
+  if (c.skipped) return { ...base, status: 'warn', detail: `not checked: ${c.skipped}`, fix: 'Run `node scripts/compat-check.js --bin <path to the claude executable>`.' };
+  if (!c.missing.length) return { ...base, status: 'ok', detail: `Claude Code ${c.version || '?'} has all ${c.total} names the plugin depends on`, fix: '' };
+  const names = c.missing.slice(0, 6).map((m) => `${m.name} (${m.kind})`).join(', ');
+  return {
+    ...base, status: 'warn',
+    detail: `Claude Code ${c.version || '?'} no longer contains ${c.missing.length} of ${c.total} names the plugin depends on: ${names}${c.missing.length > 6 ? ', …' : ''}`,
+    fix: 'Update the plugin (`claude plugin update claude-code-boss`); if it is already the latest, the dependent feature may have stopped working — `node scripts/compat-check.js` lists each name and why the plugin needs it.',
+  };
+}
+
+/** Sub-agent context sizes per agent type (ctx.subagents, from scripts/subagent-report.js): warns only where a smaller autoCompactWindow would pay. */
+function checkSubagentContexts(ctx) {
+  const base = { id: 'subagent-contexts', label: 'Sub-agent context sizes', critical: false };
+  const s = ctx.subagents;
+  if (!s) return { ...base, status: 'ok', detail: 'not measured in this run (it reads 30 days of sub-agent transcripts: run `node scripts/doctor.js --cost` or `node scripts/subagent-report.js`)', fix: '' };
+  if (s.error) return { ...base, status: 'warn', detail: `could not measure: ${s.error}`, fix: 'Run `node scripts/subagent-report.js` in a terminal to see the error.' };
+  const set = s.types.filter((t) => t.advice.action === 'set-autoCompactWindow');
+  if (!set.length) return { ...base, status: 'ok', detail: `${s.total.runs} sub-agent run(s) in 30 days; no agent type that would gain from a smaller compaction window`, fix: '' };
+  return {
+    ...base, status: 'warn',
+    detail: `${set.length} agent type(s) whose runs often peak above 150k tokens: ${set.map((t) => `${t.agentType} (${t.runs} runs, p90 ${t.peak.p90})`).join(', ')}`,
+    fix: `Add \`autoCompactWindow: ${set[0].advice.window}\` to the frontmatter of each agent file (nothing is applied automatically); \`node scripts/subagent-report.js\` shows the numbers.`,
+  };
+}
+
 /** Fixed cost every message pays (MCP definitions, skill listing, plugins): measured in ctx.fixedCost by `--cost` / `--fix` / first run. */
 function checkFixedCost(ctx) {
   const base = { id: 'fixed-cost', label: 'Fixed cost per message (MCP, skills, plugins)', critical: false };
@@ -530,7 +561,7 @@ function checkSetup(ctx) {
   return out;
 }
 
-const CHECKS = [checkNode, checkDaemonNode, checkNativeDeps, checkEnv, checkDataDirs, checkModel, checkDaemon, checkNativeRuntime, checkEmbedderProbe, checkEmbedderGuard, checkCrashes, checkCostTuning, checkBossConfig, checkFixedCost, checkCompactionRate, checkSessionModules, checkSetup, checkHooksEvents];
+const CHECKS = [checkNode, checkDaemonNode, checkNativeDeps, checkEnv, checkDataDirs, checkModel, checkDaemon, checkNativeRuntime, checkEmbedderProbe, checkEmbedderGuard, checkCrashes, checkCostTuning, checkBossConfig, checkFixedCost, checkCompactionRate, checkClaudeCompat, checkSubagentContexts, checkSessionModules, checkSetup, checkHooksEvents];
 
 /** Run every pure check over a ctx snapshot (a check may return one result or a list). */
 function runChecks(ctx) {
@@ -722,6 +753,19 @@ async function gatherContext({ probe = false, audit = false } = {}) {
     } catch (e) { console.error(`[doctor] compaction history: ${e.message}`); compaction = { error: e.message }; }
   }
 
+  // Both read big files (the Claude Code binary, 30 days of sub-agent transcripts): opt-in like the fixed-cost audit.
+  let claudeCompat = null; let subagents = null;
+  if (audit) {
+    try {
+      const cc = require('./compat-check.js');
+      const bin = cc.findBinary(null);
+      if (!bin) claudeCompat = { skipped: 'no Claude Code binary found (set CLAUDE_CODE_EXECPATH)' };
+      else { const r = cc.check(bin); claudeCompat = { version: r.version, total: r.rows.length, missing: r.rows.filter((x) => !x.present) }; }
+    } catch (e) { console.error(`[doctor] claude compat: ${e.message}`); claudeCompat = { error: e.message }; }
+    try { subagents = require('./lib/subagent-usage.js').summarizeSubagents(require('./subagent-report.js').subagentRuns(30)); }
+    catch (e) { console.error(`[doctor] sub-agent contexts: ${e.message}`); subagents = { error: e.message }; }
+  }
+
   let sessionModules = null;
   try {
     const installed = require('../package.json').version;
@@ -759,6 +803,8 @@ async function gatherContext({ probe = false, audit = false } = {}) {
     bossConfig,
     fixedCost,
     compaction,
+    claudeCompat,
+    subagents,
     sessionModules,
     setup,
   };

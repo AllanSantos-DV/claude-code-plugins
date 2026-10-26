@@ -15,6 +15,7 @@
  * promoted-LRU stored alongside.
  */
 'use strict';
+const { isShellTool } = require('./lib/shell-tool.js');
 const fs = require('fs');
 const { readJsonSafe, writeJsonSafe } = require('../engine/lib/json-file.js');
 const path = require('path');
@@ -132,7 +133,7 @@ function getHeadSha(cwd) {
  * @param {object} event
  */
 async function run(event) {
-  if (!event || event.tool_name !== 'Bash') return;
+  if (!event || !isShellTool(event.tool_name)) return;
   const cmd = event.tool_input?.command || '';
   if (!cmd) return;
 

@@ -19,6 +19,7 @@
  *   curated-failure-noisy — curated script failed, output exceeded raw thresholds
  *   (null)                — no condition matched; no entry recorded
  */
+const { isShellTool } = require('./lib/shell-tool.js');
 const path = require('path');
 const { runSideEffectCli } = require('./lib/hook-io.js');
 const turnJournal = require('./lib/turn-journal.js');
@@ -62,8 +63,8 @@ function appendTurnEntry(sessionId, entry) {
  */
 async function run(event) {
   try {
-    // Only handle Bash tool PostToolUse
-    if (!event || event.tool_name !== 'Bash') return;
+    // Only the shell tools (Bash, PowerShell)
+    if (!event || !isShellTool(event.tool_name)) return;
     // Read per call (not at module load): in the shared daemon (Phase G) a
     // module-level snapshot would freeze the config for every later session.
     const _curationCfg = brainConfig.getCuration();

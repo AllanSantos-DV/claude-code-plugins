@@ -1726,6 +1726,23 @@ async function getCompactionSummary(req, res, url) {
   }
 }
 
+// What the Boss delivers in results that grow with use (scripts/outcome-report.js is the CLI twin:
+// same loader, same summary). `maturitySince` is the last 14 days — the window the rule events are
+// retained for — so every maturity bucket is measured the same way.
+function getOutcomeSummary(req, res, url) {
+  try {
+    const range = Math.max(1, Math.min(365, parseInt(url.searchParams.get('days') || '30', 10)));
+    const since = Date.now() - range * 86400_000;
+    const { loadRows } = require('./outcome-report.js');
+    const { summarizeOutcomes } = require('./lib/outcome-metrics.js');
+    const rows = loadRows(since, DATA_DIR);
+    json(res, { rangeDays: range, ...summarizeOutcomes(rows, { since, maturitySince: Date.now() - 14 * 86400_000 }) });
+  } catch (err) {
+    console.error(`[DASHBOARD] /api/metrics/outcome failed: ${err.message}`);
+    fail(res, err.message, 500);
+  }
+}
+
 // The compaction threshold (% of the engine's window) and cooldown — the Home slider.
 // Saved UPDATE-SAFE in <globalDir>/hooks/user-config.json (BACKLOG Q38), never the shipped file.
 function getCompactionConfig(req, res) {
@@ -2587,6 +2604,7 @@ function handleAPI(req, res, url) {
   if (p === '/api/metrics/value-summary' && m === 'GET') return getValueSummary(req, res, url);
   if (p === '/api/metrics/curation' && m === 'GET') return getCurationSummary(req, res, url);
   if (p === '/api/metrics/compaction' && m === 'GET') return getCompactionSummary(req, res, url);
+  if (p === '/api/metrics/outcome' && m === 'GET') return getOutcomeSummary(req, res, url);
   if (p === '/api/compaction/config' && m === 'GET') return getCompactionConfig(req, res);
   if (p === '/api/compaction/config' && m === 'PUT') return saveCompactionConfig(req, res);
   if (p === '/api/compaction/phase-restart' && m === 'GET') return getPhaseRestartMeasure(req, res);
@@ -2720,4 +2738,4 @@ if (require.main === module) startDashboardServer();
 // exported so a test can call it with a fake res ({writeHead,end}) and assert
 // on the exact JSON it serializes — otherwise a bug in byokSafe (e.g. `x || null`
 // silently turning a valid `0` into `null`) would never be caught by any test.
-module.exports = { getCurationProjects, getCurationShells, deleteCurationShell, getValueSummary, getTuningRecommendations, _metricsMemo, getDoctorSwitchedOff, postDoctorUndo, getDoctorConfig, saveDoctorConfig, writeRouterOverride, resolveRouterFlags, getRouterConfig, fetchByokModelIds, getByokModels, opensWithField, postPluginUpdate, getProjectMarker, saveProjectMarker, saveCompactionConfig, getPhaseRestartMeasure, scanServerKb };
+module.exports = { getCurationProjects, getCurationShells, deleteCurationShell, getValueSummary, getOutcomeSummary, getTuningRecommendations, _metricsMemo, getDoctorSwitchedOff, postDoctorUndo, getDoctorConfig, saveDoctorConfig, writeRouterOverride, resolveRouterFlags, getRouterConfig, fetchByokModelIds, getByokModels, opensWithField, postPluginUpdate, getProjectMarker, saveProjectMarker, saveCompactionConfig, getPhaseRestartMeasure, scanServerKb };

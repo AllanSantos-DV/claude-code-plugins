@@ -91,6 +91,21 @@
               "project_dir": "${CLAUDE_PROJECT_DIR}"
             },
             "timeout": 5
+          },
+          {
+            "type": "mcp_tool",
+            "server": "plugin:claude-code-boss:brain-server",
+            "tool": "hook_error_guard",
+            "input": {
+              "hook_event_name": "${hook_event_name}",
+              "session_id": "${session_id}",
+              "cwd": "${cwd}",
+              "transcript_path": "${transcript_path}",
+              "tool_name": "${tool_name}",
+              "tool_input": "${tool_input}",
+              "project_dir": "${CLAUDE_PROJECT_DIR}"
+            },
+            "timeout": 8
           }
         ]
       },
@@ -156,7 +171,7 @@
     ],
     "PostToolUse": [
       {
-        "matcher": "Bash",
+        "matcher": "Bash|PowerShell",
         "hooks": [
           {
             "type": "mcp_tool",
@@ -217,7 +232,7 @@
         ]
       },
       {
-        "matcher": "Edit|Write|NotebookEdit",
+        "matcher": "Edit|Write|MultiEdit|NotebookEdit",
         "hooks": [
           {
             "type": "mcp_tool",

@@ -3305,6 +3305,35 @@ test('dashboard: os paineis da Home leem pelo memo — repetir a consulta nao re
   } finally { fs.rmSync(dataDir, { recursive: true, force: true }); }
 });
 
+test('dashboard /api/metrics/outcome: the Home Results panel reads the same summary as outcome-report (captured/recurring lessons from the real store), and the page wires the panel', () => {
+  const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-outcome-dash-'));
+  const script = `
+    const assert = require('assert');
+    const store = require(process.argv[1] + '/../engine/lib/metrics-store.js');
+    const dash = require(process.argv[1] + '/dashboard.js');
+    const call = async (fn, q) => { let body = null, code = 0; await fn({}, { writeHead(c) { code = c; }, end: (t) => { body = JSON.parse(t); } }, new URL('http://x/?' + q)); return { body, code }; };
+    (async () => {
+      if (!store.init({ project: 'dash-outcome' })) { console.log('NO-SQLITE'); return; }
+      store.recordMetric('lesson.captured', { type: 'procedural', decision: 'admit' }, 's1');
+      store.recordMetric('lesson.captured', { type: 'procedural', decision: 'merge' }, 's1');
+      store.close();
+      const { body, code } = await call(dash.getOutcomeSummary, 'days=30');
+      assert.strictEqual(code, 200);
+      assert.strictEqual(body.rangeDays, 30);
+      assert.strictEqual(body.learning.captured, 2, JSON.stringify(body.learning));
+      assert(Array.isArray(body.byWeek) && body.curation && body.mechanical && body.window.projects >= 1);
+      console.log('OK');
+    })().catch((e) => { console.error(e.stack); process.exit(1); });
+  `;
+  try {
+    const r = require('child_process').spawnSync(process.execPath, ['-e', script, __dirname], { env: { ...process.env, CLAUDE_PLUGIN_DATA: dataDir }, encoding: 'utf8', windowsHide: true, timeout: 60000 });
+    assert(r.status === 0 && /OK|NO-SQLITE/.test(r.stdout), `child failed (status ${r.status}): ${r.stderr || r.stdout}`);
+  } finally { fs.rmSync(dataDir, { recursive: true, force: true }); }
+  const html = fs.readFileSync(path.join(ROOT, 'dashboard', 'index.html'), 'utf8');
+  assert(/id="home-outcome"/.test(html) && /loadOutcomePanel\(\)\.catch/.test(html) && /\/api\/metrics\/outcome/.test(html), 'Home card, isolated loader and endpoint call are in the page');
+  assert(/p === '\/api\/metrics\/outcome'/.test(fs.readFileSync(path.join(__dirname, 'dashboard.js'), 'utf8')), 'route registered');
+});
+
 test('dashboard scanServerKb: a project id the server refuses ("project_id igual ao diretório home…", isError text) is left out and logged — the rest of the list still comes', () => {
   const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-kbscan-dash-'));
   const script = `
@@ -18548,11 +18577,11 @@ test('doctor.runChecks + summarize: criticalFail flagged, counts add up', () => 
     hooksEvents: ['Stop'],
   };
   const results = doctor.runChecks(ctx);
-  assertEq(results.length, 18);
+  assertEq(results.length, 20);
   const s = doctor.summarize(results);
   assert(s.criticalFail, 'old node → criticalFail');
   assertEq(s.ok, false);
-  assertEq(s.counts.ok + s.counts.warn + s.counts.fail, 18);
+  assertEq(s.counts.ok + s.counts.warn + s.counts.fail, 20);
 });
 
 test('doctor.runChecks: all-healthy ctx → ok summary', () => {
@@ -22673,9 +22702,9 @@ function _sfTranscript() {
   const add = (o) => fs.appendFileSync(tp, JSON.stringify(o) + '\n');
   return {
     tp,
-    bash(cwd, command, { fail = true, denied = false, sidechain = false } = {}) {
+    bash(cwd, command, { fail = true, denied = false, sidechain = false, tool = 'Bash' } = {}) {
       const id = `sf${n++}`;
-      add({ type: 'assistant', cwd, ...(sidechain ? { isSidechain: true } : {}), message: { role: 'assistant', content: [{ type: 'tool_use', id, name: 'Bash', input: { command } }] } });
+      add({ type: 'assistant', cwd, ...(sidechain ? { isSidechain: true } : {}), message: { role: 'assistant', content: [{ type: 'tool_use', id, name: tool, input: { command } }] } });
       const content = denied ? 'PreToolUse:Bash hook error: [error-guard] blocked' : (fail ? 'Exit code 1\nboom: cannot find module' : 'ok');
       add({ type: 'user', cwd, ...(sidechain ? { isSidechain: true } : {}), message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: id, is_error: fail || denied, content }] } });
     },
@@ -22751,6 +22780,83 @@ test('U2/U10: error-guard denies through the transcript, and its message never s
   assert(/nesta sessão/.test(why) && /nenhum arquivo foi editado/.test(why), why);
   assert(!/varia/i.test(why), `must not teach the bypass: ${why}`);
   assertEq(await eg.run({ tool_name: 'Bash', tool_input: { command: 'npm run build' }, cwd }), null, 'no transcript → abstain');
+});
+
+test('doctor: claude-compat and subagent-contexts — silent when not measured, warn with the names/types when something is missing or big, never a pass when it could not look', () => {
+  const doctor = require('./doctor.js');
+  const by = (ctx, id) => doctor.runChecks(ctx).find((r) => r.id === id);
+  for (const id of ['claude-compat', 'subagent-contexts']) {
+    assertEq(by({}, id).status, 'ok', `${id}: not measured in this run`);
+    assert(/not (checked|measured)/.test(by({}, id).detail), `${id}: says it did not look`);
+  }
+  assertEq(by({ claudeCompat: { version: '2.1.300', total: 60, missing: [] } }, 'claude-compat').status, 'ok');
+  const miss = by({ claudeCompat: { version: '2.1.301', total: 60, missing: [{ kind: 'contract', name: 'idleCompaction', why: 'x' }] } }, 'claude-compat');
+  assertEq(miss.status, 'warn');
+  assert(/idleCompaction \(contract\)/.test(miss.detail) && /1 of 60/.test(miss.detail), miss.detail);
+  assertEq(by({ claudeCompat: { skipped: 'no Claude Code binary found' } }, 'claude-compat').status, 'warn', 'no binary is never reported as a pass');
+  assertEq(by({ claudeCompat: { error: 'boom' } }, 'claude-compat').status, 'warn');
+  const { summarizeSubagents } = require('./lib/subagent-usage.js');
+  const runs = (type, n, peak) => Array.from({ length: n }, () => ({ agentType: type, maxContext: peak, calls: 5, units: 100, usd: 1 }));
+  assertEq(by({ subagents: summarizeSubagents(runs('my-agent', 12, 50000)) }, 'subagent-contexts').status, 'ok');
+  const big = by({ subagents: summarizeSubagents(runs('my-agent', 12, 170000)) }, 'subagent-contexts');
+  assertEq(big.status, 'warn');
+  assert(/my-agent/.test(big.detail) && /autoCompactWindow: 150000/.test(big.fix), big.detail + big.fix);
+  assertEq(by({ subagents: summarizeSubagents(runs('Explore', 12, 170000)) }, 'subagent-contexts').status, 'ok', 'a built-in type has no file to set it in: nothing to warn about');
+  assertEq(by({ subagents: { error: 'x' } }, 'subagent-contexts').status, 'warn');
+});
+
+test('lesson promotion: the weekly stamp is claimed atomically, a second apply is refused while one runs, and the manual bulk reclassify no longer copies files/source/project-naming tags', async () => {
+  const preg = require('./lib/promotion-registry.js');
+  const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-promo-claim-'));
+  try {
+    const now = Date.now();
+    assertEq(preg.claimPromotionRun(dataDir, now, 7), true, 'first caller owns the run');
+    assertEq(preg.claimPromotionRun(dataDir, now + 1000, 7), false, 'the second one, same instant, does not');
+    assertEq(preg.claimPromotionRun(dataDir, now + 8 * 86400000, 7), true, 'a week later it is due again');
+    let inner = null;
+    const outer = await preg.withRunLock(dataDir, async () => { inner = await preg.withRunLock(dataDir, async () => 'must-not-run'); return 'ran'; });
+    assertEq(outer, 'ran');
+    assertEq(inner.busy, true, 'a run started while another holds the lock is refused, not queued');
+    assertEq(await preg.withRunLock(dataDir, async () => 'again'), 'again', 'the lock is released afterwards');
+  } finally { fs.rmSync(dataDir, { recursive: true, force: true }); }
+  const { toUserEntry } = require('./scope-bulk-reclassify.js');
+  const e = { id: 'abc', title: 't', summary: 's', type: 'lesson', tags: ['workflow', 'my-secret-repo-notes', 'a/b'], scope: 'project', content: { detail: 'd', files: ['C:/Users/x/my-secret-repo/src/a.js'] }, source: { path: 'C:/Users/x/my-secret-repo' } };
+  const u = toUserEntry(e, { title: 't2', summary: 's2', detail: 'd2' }, 'owner/my-secret-repo');
+  assertEq(u.content, { detail: 'd2' }, 'no content.files');
+  assertEq(u.source, {}, 'no source');
+  assertEq(u.tags, ['workflow'], 'a project-naming or path-like tag is dropped, a user-level hint kept');
+  assertEq([u.scope, u.title, u.id], ['user', 't2', undefined]);
+});
+
+test('PowerShell parity: error-guard, curation-detect and decision-detect treat the PowerShell tool like Bash; hooks.json wires it', async () => {
+  const sf = require('./lib/session-failures.js'); sf._resetMemo();
+  const eg = require('./error-guard.js');
+  const t = _sfTranscript(); const cwd = path.join(os.tmpdir(), 'repoPS');
+  t.bash(cwd, 'npm run build', { tool: 'PowerShell' }); t.bash(cwd, 'npm run build', { tool: 'PowerShell' });
+  const out = await eg.run({ tool_name: 'PowerShell', tool_input: { command: 'npm run build' }, cwd, transcript_path: t.tp });
+  assertEq(out && out.hookSpecificOutput.permissionDecision, 'deny', 'repeated PowerShell failure is denied through the transcript');
+  assertEq(await eg.run({ tool_name: 'Read', tool_input: { command: 'npm run build' }, cwd, transcript_path: t.tp }), null, 'a non-shell tool still abstains');
+
+  const cd = require('./curation-detect.js');
+  const tj = require('./lib/turn-journal.js');
+  const sid = `ps-cd-${Date.now()}`;
+  const cmd = `node scripts/ps-${Date.now()}.js`;
+  for (let i = 0; i < 2; i++) {
+    await cd.run({ hook_event_name: 'PostToolUse', tool_name: 'PowerShell', session_id: sid, cwd: process.env.CLAUDE_PLUGIN_DATA, tool_input: { command: cmd }, tool_response: { stdout: 'x\n'.repeat(400), stderr: '' } });
+  }
+  assertEq(tj.readEntries(sid).length, 1, 'a bulky repeated PowerShell command is journaled for the Stop');
+
+  const dd = require('./decision-detect.js');
+  const { isShellTool } = require('./lib/shell-tool.js');
+  assert(isShellTool('Bash') && isShellTool('PowerShell') && !isShellTool('Edit'), 'shell tool set');
+  assertEq(await dd.run({ tool_name: 'Read', tool_input: { command: 'git commit -m "x"' } }), undefined, 'decision-detect ignores non-shell tools');
+
+  const hooks = JSON.parse(fs.readFileSync(path.join(ROOT, 'hooks', 'hooks.json'), 'utf8')).hooks;
+  const tools = (event, name) => hooks[event].filter(g => new RegExp(`^(?:${g.matcher})$`).test(name)).flatMap(g => g.hooks.map(h => h.tool));
+  assert(tools('PostToolUse', 'PowerShell').includes('hook_posttoolusebash_dispatcher'), 'PostToolUse dispatcher matches PowerShell');
+  assert(tools('PreToolUse', 'PowerShell').includes('hook_error_guard'), 'error-guard matches PowerShell');
+  assert(!tools('PreToolUse', 'PowerShell').includes('hook_curation_guard'), 'curation-guard (updatedInput owner on Bash) stays off PowerShell: powershell-guard owns it there');
+  assert(tools('PostToolUse', 'MultiEdit').includes('hook_file_edit_detect'), 'file-edit-detect matches MultiEdit');
 });
 
 // ─── U8: a capability pointer with nothing to name it is dropped, not "(unnamed)" ───

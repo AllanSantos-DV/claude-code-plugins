@@ -113,8 +113,7 @@ async function run(event) {
       const pcfg = bc.getLessonPromotion();
       const preg = require('./lib/promotion-registry.js');
       const root = process.env.CLAUDE_PLUGIN_ROOT;
-      if (pcfg.enabled && bc.getBackendType() === 'mcp-memory' && root && !root.includes('${') && preg.promotionDue(DATA_DIR, Date.now(), pcfg.intervalDays)) {
-        preg.markPromotionRun(DATA_DIR, Date.now());
+      if (pcfg.enabled && bc.getBackendType() === 'mcp-memory' && root && !root.includes('${') && preg.claimPromotionRun(DATA_DIR, Date.now(), pcfg.intervalDays)) {
         const { spawn } = require('child_process');
         const child = spawn(process.execPath, [path.join(root, 'scripts', 'lesson-promote.js'), 'apply', '--auto'],
           { detached: true, stdio: 'ignore', windowsHide: true, env: process.env });

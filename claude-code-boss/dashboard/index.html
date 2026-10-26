@@ -473,6 +473,12 @@ table{font-variant-numeric:tabular-nums}
       </h2>
       <div id="home-compaction"><div class="spinner" style="margin:1rem auto"></div></div>
     </div>
+    <div class="card">
+      <h2 style="margin:0 0 .5rem 0">Results <span class="text-muted" style="font-size:.8rem">(last 30 days)</span>
+        <span class="tip" data-tip="What the Boss delivers in results that grow with use: lessons learned and cited, how much noisy output a curated script handled, and how many decisions a rule took instead of the model. A machine's first days show little here by design. Same numbers as node scripts/outcome-report.js.">i</span>
+      </h2>
+      <div id="home-outcome"><div class="spinner" style="margin:1rem auto"></div></div>
+    </div>
     <div class="card" id="home-learning-loop-card" style="display:none">
       <h2 style="margin:0 0 .25rem 0">Learning loop
         <span class="tip" data-tip="Lições capturadas vs. mescladas (uma lição recorreu) por semana. Taxa de merge caindo = a autocrítica está mudando o comportamento (menos repetição). Subindo = lição não está sendo aplicada.">i</span>
@@ -2783,6 +2789,11 @@ async function loadValueSummary() {
       const p = document.getElementById('home-compaction');
       if (p) p.innerHTML = `<p class="text-muted">Compaction panel failed: ${escapeHtml(e && e.message ? e.message : e)}</p>`;
     });
+    // Isolated like the others: an outcome panel failure is shown there, never wipes these cards.
+    loadOutcomePanel().catch((e) => {
+      const p = document.getElementById('home-outcome');
+      if (p) p.innerHTML = `<p class="text-muted">Results panel failed: ${escapeHtml(e && e.message ? e.message : e)}</p>`;
+    });
     const learned = v.learned?.total || 0;
     const cited = v.memoryCited || 0;
     const prec = v.retrievalPrecision || { injected: 0, cited: 0, rate: 0 };
@@ -2891,6 +2902,40 @@ async function loadCurationPanel() {
   }
   el.innerHTML = html;
   return c;
+}
+
+// Results that grow with use (/api/metrics/outcome) — the panel twin of scripts/outcome-report.js.
+async function loadOutcomePanel() {
+  const el = document.getElementById('home-outcome');
+  if (!el) return null;
+  let s;
+  try {
+    s = await api('GET', '/api/metrics/outcome?days=30');
+  } catch (e) {
+    el.innerHTML = `<p class="text-muted">Failed to load results: ${escapeHtml(e && e.message ? e.message : e)}</p>`;
+    return null;
+  }
+  if (s && s.error) { el.innerHTML = `<p class="text-muted">Results: ${escapeHtml(s.error)}</p>`; return null; }
+  const pct = x => (x == null ? 'n/a' : Math.round(x * 100) + '%');
+  const stat = (value, label, badge, cls) => `<div class="stat"><div class="value">${value}</div><div class="label">${label}</div><span class="badge ${cls}">${badge}</span></div>`;
+  const l = s.learning, c = s.curation, m = s.mechanical;
+  let html = '<div class="grid">'
+    + stat(String(l.captured), 'Lessons captured', `${l.merged} recurring (${pct(l.recurrenceShare)})`, l.captured ? 'badge-green' : 'badge-yellow')
+    + stat(pct(l.citationRate), 'Recalled lessons cited', `${l.cited} of ${l.injected} recalled`, l.injected ? 'badge-green' : 'badge-yellow')
+    + stat(pct(c.share), 'Noisy commands handled by a script', `${c.scripts} scripts · ${c.uncovered} without one yet`, c.redirected ? 'badge-green' : 'badge-yellow')
+    + stat(pct(m.share), 'Decisions taken by a rule', `${m.mechanical} by rule · ${m.handedBack} handed to the model`, m.mechanical ? 'badge-green' : 'badge-yellow')
+    + '</div>';
+  const weeks = (s.byWeek || []).slice(-8);
+  if (weeks.length) {
+    html += '<table style="width:100%;font-size:.78rem;margin-top:.5rem"><thead><tr><th>Week</th><th>Captured / recurring</th><th>Recalled / cited</th><th>By rule / handed back</th><th>Rule share</th><th>Curated share</th></tr></thead><tbody>'
+      + weeks.map(w => `<tr><td>${escapeHtml(String(w.week))}</td><td>${w.captured} / ${w.merged}</td><td>${w.injected} / ${w.cited}</td><td>${w.mechanical} / ${w.handedBack}</td><td>${pct(w.mechanicalShare)}</td><td>${pct(w.curationShare)}</td></tr>`).join('')
+      + '</tbody></table>';
+  } else {
+    html += '<p class="text-muted" style="font-size:.8rem">No events in this window yet — the table fills as the Boss is used.</p>';
+  }
+  html += `<p class="text-muted" style="font-size:.75rem;margin:.5rem 0 0 0">${s.window.projects} projects, ${s.window.sessions} sessions in the window. Events for rules exist only for the last 14 days.</p>`;
+  el.innerHTML = html;
+  return s;
 }
 
 // Controlled compaction & provider cache (/api/metrics/compaction).

@@ -98,6 +98,28 @@ function markPromotionRun(dataDir, nowMs) {
   fs.mkdirSync(path.dirname(stampPath(dataDir)), { recursive: true });
   writeJsonAtomic(stampPath(dataDir), { ts: nowMs });
 }
+/**
+ * Claim the weekly run: check "due" and write the stamp under one lock, so two sessions opening together cannot both
+ * pass `promotionDue` before either marks. @returns {boolean} true = this caller owns the run
+ */
+function claimPromotionRun(dataDir, nowMs, intervalDays) {
+  return withLock(dataDir, () => {
+    if (!promotionDue(dataDir, nowMs, intervalDays)) return false;
+    markPromotionRun(dataDir, nowMs);
+    return true;
+  });
+}
+/**
+ * Run `fn` as THE promotion run of this data dir: a second apply (manual, or the weekly one) started meanwhile is not
+ * queued — it gets `{ busy: true }` and must not copy the same lessons again. A dead owner's lock is reclaimed.
+ */
+async function withRunLock(dataDir, fn) {
+  fs.mkdirSync(dirOf(dataDir), { recursive: true });
+  const lockPath = path.join(dirOf(dataDir), 'run.lock');
+  const got = acquireFileLock(lockPath);
+  if (!got.acquired) return { busy: true, reason: got.reason };
+  try { return await fn(); } finally { releaseFileLock(lockPath, got.owner); }
+}
 /** A failed run gives the interval back (the stamp is written before spawning, so two sessions never start two runs). */
 function unmarkPromotionRun(dataDir) {
   try { fs.unlinkSync(stampPath(dataDir)); } catch (err) { if (err.code !== 'ENOENT') console.error(`[lesson-promote] stamp not removed: ${err.message}`); }
@@ -127,4 +149,4 @@ function takeNotice(dataDir) {
   return `[BRAIN] ${ids.length} lição(ões) promovida(s) ao escopo do usuário — desfazer: ${undo}`;
 }
 
-module.exports = { registryPath, load, save, addPromotion, addRejection, markReverted, promotionDue, markPromotionRun, unmarkPromotionRun, writeNotice, takeNotice };
+module.exports = { registryPath, load, save, addPromotion, addRejection, markReverted, promotionDue, markPromotionRun, claimPromotionRun, withRunLock, unmarkPromotionRun, writeNotice, takeNotice };
