@@ -42,7 +42,7 @@ Fluxo: captura, recall, citação, consolidação, e (manual) skill ou policy. C
   3. se o offer segue aberto, repete o bloqueio, até `maxBlockAttempts=5` sem ack, quando relenta;
   4. para um offer novo, usa `turn-budget.js`: no máximo 8 capturas por sessão e cooldown de 2 min; orçamento por modelo (opus 4 a 8 ciclos e 9000 chars; sonnet 4 a 6 e 8000; haiku ou desconhecido 3 a 5 e 6000); dispara com ciclos >= `maxTurns` ou chars >= `maxChars`;
   5. ciclos órfãos de sessão encerrada são adotados após 24 h.
-- Sai: `{block:true}` com o trecho redigido da conversa, marcado como dado não confiável. O LLM escolhe entre `capture_lesson` e `capture_ack`.
+- Sai: `{block:true}` com um motivo de uma linha que só nomeia a janela (`windowId`); o trecho redigido da conversa, marcado como dado não confiável, chega ao LLM pela tool `capture_window`, cujo resultado o terminal mostra recolhido (o motivo de um Stop hook aparece inteiro na tela do CLI). O LLM escolhe entre `capture_lesson` e `capture_ack`.
 - Mecânico: o que oferecer, quando e quantas vezes. LLM: se há lição, o texto, as tags e o tipo.
 - Métricas: `capture.offered/reoffered/relented/acked/adopted`.
 

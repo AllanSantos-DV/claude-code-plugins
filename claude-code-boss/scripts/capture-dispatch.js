@@ -4,10 +4,12 @@
  * the SESSION agent for lesson capture (Phase 1 + 1.5).
  *
  * Registered in stop-dispatcher's DETECTORS. Deterministic; it does NOT spawn a
- * model — it hands a cleaned, redacted block back to the already-running agent
- * via the dispatcher's {block, reason} (emitStopBlock). That top-level shape is
- * the correct cross-runtime Stop mechanism (hookSpecificOutput.additionalContext
- * is rejected for Stop in Copilot Chat — see hook-io.js).
+ * model — it hands a cleaned, redacted block back to the already-running agent:
+ * the dispatcher's {block, reason} (emitStopBlock) names the window, and the
+ * capture_window MCP tool returns the block (see buildReason for why it is not
+ * inlined). That top-level shape is the correct cross-runtime Stop mechanism
+ * (hookSpecificOutput.additionalContext is rejected for Stop in Copilot Chat —
+ * see hook-io.js).
  *
  * Per Stop (all state in capture-queue.js — durable, redacted-at-rest, CAS):
  *   1. ingest: scan new human cycles into the durable queue (compaction-safe).
@@ -84,7 +86,33 @@ function _captureConfig() {
   return (cfg && cfg.kb && cfg.kb.capture) || {};
 }
 
-/** The instruction handed to the session agent (its own context is the curator). */
+/**
+ * The Stop `reason`: names the window and the tools, never the block. Claude Code
+ * prints a Stop reason in full ("Stop hook feedback: …"), so the block itself goes
+ * through capture_window, whose tool result the terminal collapses.
+ */
+function buildReason(windowId) {
+  const wid = windowId || '';
+  return `[BRAIN capture] A conversation review window is open: call the \`capture_window\` MCP tool with windowId "${wid}" to read it, `
+    + `then close it with \`capture_lesson\` (windowId "${wid}") if a reusable lesson emerged, or \`capture_ack\` (windowId "${wid}", outcome "none") if not. `
+    + 'The capture guard re-prompts until you do.';
+}
+
+/**
+ * Hand the block to the agent: stage the full instruction for capture_window and
+ * return the short reason, or null when it could not be staged (the offer stays
+ * open, so the next Stop retries — blocking on a window the agent cannot read
+ * would only burn a re-block).
+ */
+function stageOffer(blockText, windowId) {
+  if (!queue.writeWindow(windowId, buildInstruction(blockText, windowId))) {
+    console.error(`[capture] could not stage window ${windowId} for capture_window — not blocking this Stop`);
+    return null;
+  }
+  return buildReason(windowId);
+}
+
+/** The instruction handed to the session agent (its own context is the curator) — returned by capture_window. */
 function buildInstruction(blockText, windowId) {
   const wid = windowId || '';
   return [
@@ -159,8 +187,10 @@ function run(event, deps) {
       metrics.fire('capture.relented', { windowId: cur.windowId, blocks, model }, { sessionId: sid, cwd: ev.cwd });
       return {};
     }
+    const reason = stageOffer(cur.text, cur.windowId);
+    if (!reason) return {};
     metrics.fire('capture.reoffered', { windowId: cur.windowId, model }, { sessionId: sid, cwd: ev.cwd });
-    return { block: true, reason: buildInstruction(cur.text, cur.windowId) };
+    return { block: true, reason };
   }
 
   // 4. No open offer → consider a NEW one, gated by cadence bounds + budget.
@@ -183,10 +213,12 @@ function run(event, deps) {
   if (!decision.fire) return {};
   const off = queue.offer(project, sid, budget.maxChars);
   if (!off) return {};
+  const reason = stageOffer(off.text, off.windowId);
+  if (!reason) return {};
   // ackTracked: this build records the offer's outcome (capture.acked / a closing capture.relented), so the
   // funnel can count it; offers from older builds have no outcome event and would read as never answered.
   metrics.fire('capture.offered', { cycles: off.cycles, windowId: off.windowId, queueLen: st.queue.length, model, reason: decision.reason, ackTracked: true }, { sessionId: sid, cwd: ev.cwd });
-  return { block: true, reason: buildInstruction(off.text, off.windowId) };
+  return { block: true, reason };
 }
 
-module.exports = { run, buildInstruction, _captureConfig };
+module.exports = { run, buildInstruction, buildReason, _captureConfig };

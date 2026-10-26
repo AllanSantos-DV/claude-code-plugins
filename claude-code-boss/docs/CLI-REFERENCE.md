@@ -54,6 +54,7 @@ claude --plugin-dir ./claude-code-boss   # (raiz do repo) carrega o checkout num
 |------|-----------|
 | `capture_lesson` | Curadoria de licao pós-mortem (fecha a review-window como captured) |
 | `capture_ack` | Fecha review-window quando NÃO há licao a capturar |
+| `capture_window` | Lê a review-window aberta (o trecho da conversa + as instruções) pelo `windowId` que o Stop hook nomeia |
 
 ### Pesquisa web
 

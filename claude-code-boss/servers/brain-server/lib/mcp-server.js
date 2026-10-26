@@ -723,7 +723,7 @@ export function createBrainServer({ pluginRoot, mode = 'http', kbWorker, kbLock,
   // was checked to write nothing: brain_search/brain_related are NOT, store.get() bumps the
   // access_count that feeds ranking and pruning. destructive = may overwrite or remove.
   // A tool missing here is listed as { readOnly:false, destructive:true } and fails the unit test.
-  const READ_ONLY_TOOLS = new Set(['research_status', 'brain_count', 'policy_list', 'policy_shadow_report', 'policy_adjudication_report', 'policy_self_update_report', 'graph_status', 'graph_search', 'graph_symbols', 'graph_callers', 'graph_references', 'backend_status', 'project_list']);
+  const READ_ONLY_TOOLS = new Set(['capture_window', 'research_status', 'brain_count', 'policy_list', 'policy_shadow_report', 'policy_adjudication_report', 'policy_self_update_report', 'graph_status', 'graph_search', 'graph_symbols', 'graph_callers', 'graph_references', 'backend_status', 'project_list']);
   const ADDITIVE_TOOLS = new Set(['research_query', 'brain_search', 'brain_related', 'brain_store', 'capture_ack', 'brain_retrieve_context', 'curation_mark_oneoff', 'policy_adjudication_prepare', 'policy_adjudication_record', 'graph_analyze', 'graph_ingest', 'backend_setup_status', 'project_set']);
   const DESTRUCTIVE_TOOLS = new Set(['capture_lesson', 'curation_register_shell', 'curation_prune_unused', 'policy_activate', 'policy_deactivate', 'policy_apply_candidate', 'policy_adjudication_purge', 'policy_trigger_evidence_purge', 'backend_setup', 'backend_update']);
   function toolHints(name) {
@@ -774,6 +774,11 @@ export function createBrainServer({ pluginRoot, mode = 'http', kbWorker, kbLock,
       name: 'capture_ack',
       description: 'Close a lesson-capture review window when there is NO lesson to capture. When the plugin offers a review block and nothing is worth capturing, call this with the block\'s windowId to release the Stop. (Capturing via capture_lesson with the same windowId already closes it — you do not need both.)',
       inputSchema: { type: 'object', properties: { windowId: { type: 'string', description: 'The windowId from the offered review block' }, outcome: { type: 'string', enum: ['none'], description: 'Always "none" (no lesson to capture).' } }, required: ['windowId'] },
+    },
+    {
+      name: 'capture_window',
+      description: 'Read an open lesson-capture review window. When the plugin\'s Stop hook says a review window is open, call this with its windowId to get the conversation block and the capture instructions, then close the window with capture_lesson or capture_ack.',
+      inputSchema: { type: 'object', properties: { windowId: { type: 'string', description: 'The windowId named by the Stop hook' } }, required: ['windowId'] },
     },
     {
       name: 'brain_retrieve_context',
@@ -1098,6 +1103,17 @@ export function createBrainServer({ pluginRoot, mode = 'http', kbWorker, kbLock,
         // persisted via capture_lesson", keeping the captured metric honest.
         const ok = recordCaptureAck(args.windowId, 'none');
         return { content: [{ type: 'text', text: JSON.stringify({ status: ok ? 'acked' : 'ack-failed', ok, windowId: args.windowId || null, outcome: 'none' }, null, 2) }] };
+      }
+
+      case 'capture_window': {
+        let text = null;
+        try {
+          text = require(path.join(PLUGIN_ROOT, 'scripts', 'lib', 'capture-queue.js')).readWindow(args.windowId);
+        } catch (err) {
+          return { isError: true, content: [{ type: 'text', text: `capture_window failed: ${err.message}` }] };
+        }
+        if (!text) return { isError: true, content: [{ type: 'text', text: `capture_window: no open review window "${args.windowId || ''}" (already closed, or never offered). Nothing to capture for it.` }] };
+        return { content: [{ type: 'text', text }] };
       }
 
       case 'brain_related': {

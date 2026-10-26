@@ -1,5 +1,17 @@
 # Backlog
 
+## Stop hook despejava o bloco de captura na tela do CLI (pedido do orquestrador, 2026-10-26) — na develop, aguardando o dono, sem release
+
+- [x] **Corrigido — o `reason` do Stop levava o bloco `CONVERSATION_BLOCK` inteiro** (`scripts/capture-dispatch.js`): o Claude Code mostra o `reason` (e também o
+  `additionalContext`) de um Stop hook por inteiro como `Stop hook feedback:` no terminal; `suppressOutput` não age nisso (docs de hooks, anthropics/claude-code#104867, #67193).
+  Em transcripts reais do CLI o bloco tinha mediana de 70 linhas (máximo 201). Agora o `reason` é uma linha que nomeia o `windowId`; a instrução + bloco (mesmo texto de antes)
+  vai para `.runtime/capture-window-<windowId>.txt` (`capture-queue.writeWindow`) e chega ao modelo pela nova tool read-only `capture_window`, cujo resultado o terminal recolhe.
+  Limpo no ack, no relent e, órfão, após 24 h. Falha ao gravar: `console.error` e o Stop não bloqueia (o próximo tenta de novo). Teste: `capture-dispatch: the Stop reason
+  (printed in full by the CLI) carries no conversation text; the REAL capture_window tool hands the block to the model`; dois testes que liam o bloco no `reason` passaram a lê-lo da janela.
+- [ ] **Fora do escopo — 2 testes de `test-units.js` falham igual na HEAD `3306ca4`** (visto rodando a suíte antes/depois desta correção, 2026-10-26):
+  `brain-backend mcp: a REAL transport failure (daemon closed mid-session) opens the circuit` ("got false, want true") e `plano B: stream que fecha limpo com a última linha
+  sem \n…` ("nvidia/empty: …content_block…"). Proposta: investigar cada um isolado (o primeiro depende de um daemon real fechando a conexão; o segundo é o adaptador do router).
+
 ## Develop pronta e instalada com 6e419fc, 7033e53 e d858dd8 (pedido do orquestrador, 2026-10-24) — aguardando o dono, sem release
 
 - [x] **Achado e corrigido na hora — o botão Copy do aviso de projetos recusados (dentro de `role="alert"`) não dava retorno** (`dashboard/index.html`, `copyBrainIssues`): o `onclick` inline
