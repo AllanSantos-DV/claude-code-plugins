@@ -22855,7 +22855,8 @@ test('PowerShell parity: error-guard, curation-detect and decision-detect treat 
   const tools = (event, name) => hooks[event].filter(g => new RegExp(`^(?:${g.matcher})$`).test(name)).flatMap(g => g.hooks.map(h => h.tool));
   assert(tools('PostToolUse', 'PowerShell').includes('hook_posttoolusebash_dispatcher'), 'PostToolUse dispatcher matches PowerShell');
   assert(tools('PreToolUse', 'PowerShell').includes('hook_error_guard'), 'error-guard matches PowerShell');
-  assert(!tools('PreToolUse', 'PowerShell').includes('hook_curation_guard'), 'curation-guard (updatedInput owner on Bash) stays off PowerShell: powershell-guard owns it there');
+  assert(!tools('PreToolUse', 'PowerShell').includes('hook_curation_guard'), 'curation-guard is NOT registered a second time on the PowerShell matcher (two updatedInput owners overwrite each other): powershell-guard composes the curation redirect with the 5.1 chain fix into ONE updatedInput');
+  assertEq(tools('PreToolUse', 'PowerShell').filter((x) => x === 'hook_powershell_guard').length, 1, 'powershell-guard is the single updatedInput owner on the PowerShell matcher');
   assert(tools('PostToolUse', 'MultiEdit').includes('hook_file_edit_detect'), 'file-edit-detect matches MultiEdit');
 });
 
@@ -29838,27 +29839,154 @@ test('curation-guard: powershell -Command "$_" via Bash is rewritten (ask) with 
   } finally { hc.getPowershellGuard = orig; }
 });
 
-test('powershell-guard: PowerShell tool — 5.1 chains rewritten (ask/allow), 7 warns, clean/empty abstains', () => {
+test('powershell-guard: PowerShell tool — 5.1 chains rewritten (ask/allow), 7 warns, clean/empty abstains', async () => {
   if (process.platform !== 'win32') { console.log('  (skipped: win32 guard)'); return; }
   const pg = require('./powershell-guard.js');
   const ev = (command, extra = {}) => ({ tool_name: 'PowerShell', tool_input: { command, timeout: 5 }, session_id: 'ps-tool', ...extra });
   const ed = psc.toolEdition();
   if (ed === '5.1') {
-    const h = pg.run(ev('git pull && git push')).hookSpecificOutput;
+    const h = (await pg.run(ev('git pull && git push'))).hookSpecificOutput;
     assertEq(h.permissionDecision, 'ask');
     assertEq(h.updatedInput.command, 'git pull; if ($?) { git push }', 'rewritten; other tool_input fields kept');
     assertEq(h.updatedInput.timeout, 5);
-    assertEq(pg.run(ev('git pull && git push', { permission_mode: 'bypassPermissions' })).hookSpecificOutput.permissionDecision, 'allow');
-    assert(!pg.run(ev('$a ?? 1')).hookSpecificOutput.updatedInput, 'not rewritable → warn only');
+    assertEq((await pg.run(ev('git pull && git push', { permission_mode: 'bypassPermissions' }))).hookSpecificOutput.permissionDecision, 'allow');
+    assert(!(await pg.run(ev('$a ?? 1'))).hookSpecificOutput.updatedInput, 'not rewritable → warn only');
   } else {
-    const out = pg.run(ev('Get-WmiObject Win32_Bios'));
+    const out = await pg.run(ev('Get-WmiObject Win32_Bios'));
     assert(out.hookSpecificOutput.hookEventName === 'PreToolUse' && !out.hookSpecificOutput.permissionDecision, JSON.stringify(out));
     assert(out.hookSpecificOutput.additionalContext.includes('PowerShell 7'), out.hookSpecificOutput.additionalContext);
-    assertEq(Object.keys(pg.run(ev('git pull && git push'))).length, 0, 'valid on 7');
+    assertEq(Object.keys(await pg.run(ev('git pull && git push'))).length, 0, 'valid on 7');
   }
-  assertEq(Object.keys(pg.run(ev('Get-Date'))).length, 0);
-  assertEq(Object.keys(pg.run(null)).length, 0);
-  assertEq(Object.keys(pg.run(ev(''))).length, 0);
+  assertEq(Object.keys(await pg.run(ev('Get-Date'))).length, 0);
+  assertEq(Object.keys(await pg.run(null)).length, 0);
+  assertEq(Object.keys(await pg.run(ev(''))).length, 0);
+});
+
+test('PowerShell curation: a raw command with a curated script is redirected, composed with the 5.1 chain fix into ONE updatedInput; plain/unsafe/unknown commands, CCB_RAW, denyUnknown and the permission posture behave like Bash', async () => {
+  const sc = require('./shells-config.js');
+  const hc = require('./lib/hooks-config.js');
+  const pg = require('./powershell-guard.js');
+  const cg = require('./curation-guard.js');
+  const proj = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-ps-cur-'));
+  fs.writeFileSync(path.join(proj, 'package.json'), '{}');
+  const home = require('./curation-paths.js').curationHome(proj);
+  fs.mkdirSync(path.join(home, 'scripts'), { recursive: true });
+  const script = path.join(home, 'scripts', 'tests.mjs');
+  const S = script.replace(/\\/g, '/');
+  // the curated script reports what the launcher handed it and fails, like a red test run
+  fs.writeFileSync(script, 'console.log("ROOT=" + process.env.CCB_PROJECT_ROOT + " ARGS=" + process.argv.slice(2).join(","));\nprocess.exit(3);\n');
+  fs.writeFileSync(path.join(home, 'shells.json'), JSON.stringify({
+    shells: [
+      { id: 'tests', script: 'scripts/tests.mjs', aliases: ['npm test'] },
+      { id: 'mk', script: 'scripts/check.sh', aliases: ['make check'] },
+    ],
+    whitelist: ['Get-Date'],
+  }));
+  const origPs = hc.getPowershellGuard;
+  const origCur = hc.getCurationGuard;
+  hc.getPowershellGuard = () => ({ enabled: true, advisory: false, platforms: [process.platform] });
+  const ev = (command, extra = {}) => ({ tool_name: 'PowerShell', tool_input: { command, timeout: 5 }, session_id: 'ps-cur', cwd: proj, ...extra });
+  const hso = (o) => o.hookSpecificOutput || {};
+  const root = path.resolve(proj).replace(/\\/g, '/');
+  const rx = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const CALL = `node '[^']*curated-run\\.js' '--root=${rx(root)}' '--report=[^']+' '${rx(S)}'`;
+  try {
+    sc._resetCache();
+    // 1. redirect: rewritten to ONE native call, other tool_input fields kept, posture respected
+    const a = await pg.run(ev('npm test'), { edition: '7' });
+    assertEq(hso(a).permissionDecision, 'ask', 'default mode → ask, like Bash');
+    assert(new RegExp(`^${CALL}$`).test(hso(a).updatedInput.command), hso(a).updatedInput.command);
+    assertEq(hso(a).updatedInput.timeout, 5, 'other tool_input fields are kept');
+    assert(/\[curadoria\]/.test(hso(a).additionalContext) && /\$env:CCB_RAW=1;/.test(hso(a).additionalContext), 'the hint names the PowerShell raw escape, not the Bash one');
+    assertEq(hso(await pg.run(ev('npm test', { permission_mode: 'bypassPermissions' }), { edition: '7' })).permissionDecision, 'allow', 'bypassPermissions → allow');
+    assertEq(hso(await pg.run(ev('npm test', { permission_mode: 'plan' }), { edition: '7' })).permissionDecision, 'ask', 'any other mode → ask');
+
+    // 2. composition with the 5.1 chain fix: ONE updatedInput, ONE additionalContext
+    const b = await pg.run(ev('git pull && npm test'), { edition: '5.1' });
+    assert(new RegExp(`^git pull; if \\(\\$\\?\\) \\{ ${CALL} \\}$`).test(hso(b).updatedInput.command), hso(b).updatedInput.command);
+    assert(/\[curadoria\]/.test(hso(b).additionalContext) && /5\.1: 1 &&\/\|\| → if/.test(hso(b).additionalContext), hso(b).additionalContext);
+    assertEq(hso(b).permissionDecision, 'ask');
+    const c = await pg.run(ev('git pull && npm test'), { edition: '7' });
+    assert(new RegExp(`^git pull && ${CALL}$`).test(hso(c).updatedInput.command), 'on 7 the chain is valid: only the redirect applies');
+    const only51 = await pg.run(ev('git pull && git push'), { edition: '5.1' });
+    assertEq(hso(only51).updatedInput.command, 'git pull; if ($?) { git push }', 'no curated match: the chain fix alone, as before');
+    // arguments of a passthrough script go after the script, outside any block
+    fs.writeFileSync(path.join(home, 'shells.json'), JSON.stringify({ shells: [{ id: 'tests', script: 'scripts/tests.mjs', aliases: ['npm test'], passthrough: true }] }));
+    const pt = await pg.run(ev('npm test -- --grep x'), { edition: '7' });
+    assert(new RegExp(`^${CALL} -- --grep x$`).test(hso(pt).updatedInput.command), hso(pt).updatedInput.command);
+    fs.writeFileSync(path.join(home, 'shells.json'), JSON.stringify({ shells: [{ id: 'tests', script: 'scripts/tests.mjs', aliases: ['npm test'] }, { id: 'mk', script: 'scripts/check.sh', aliases: ['make check'] }], whitelist: ['Get-Date'] }));
+
+    // 3. nothing curated / not exactly rewritable → the command passes intact
+    for (const raw of ['Get-Date', 'npm run lint', 'make check', 'FOO=1 npm test', 'npm test > out.txt', 'npm test *> out.txt', 'npm test | Out-File out.txt', 'npm test | Tee-Object out.txt',
+      'foreach ($d in 1..2) { npm test }', 'if ($x) { npm test }', '& npm test', 'npm test; Write-Output "$(npm test)"']) {
+      const o = await pg.run(ev(raw), { edition: '7' });
+      assert(!hso(o).updatedInput, `must not be rewritten: ${raw} → ${JSON.stringify(o)}`);
+    }
+    assertEq(await pg.run(ev('Get-Date'), { edition: '7' }), {}, 'a command nobody curates abstains');
+    assertEq(hso(await pg.run(ev('npm test; Write-Output "$(npm test)"'), { edition: '7' })).updatedInput, undefined, 'subexpression → the splitter refuses the whole line');
+    const sh = await pg.run(ev('npm test && npm run lint'), { edition: '7' });
+    assert(new RegExp(`^${CALL} && npm run lint$`).test(hso(sh).updatedInput.command), 'only the matching part of a compound is rewritten');
+    // CCB_RAW=1 (PowerShell spelling) turns the redirect off
+    assertEq(await pg.run(ev('$env:CCB_RAW=1; npm test'), { edition: '7' }), {}, 'raw escape → abstain');
+
+    // 4. the Bash behavior of the cascade is kept: whitelist and the curated script itself abstain; denyUnknown denies
+    hc.getCurationGuard = () => ({ ...origCur(), enabled: true, denyUnknown: true });
+    sc._resetCache();
+    const d = await pg.run(ev('Remove-Item -Recurse x'), { edition: '7' });
+    const bash = await cg.run({ tool_name: 'Bash', tool_input: { command: 'Remove-Item -Recurse x' }, session_id: 'ps-cur', cwd: proj });
+    assertEq([hso(d).permissionDecision, hso(bash).permissionDecision], ['deny', 'deny'], 'denyUnknown: same verdict on PowerShell and Bash');
+    assertEq(await pg.run(ev('Get-Date'), { edition: '7' }), {}, 'whitelisted → abstain');
+    assertEq(await pg.run(ev(`node "${S}"`), { edition: '7' }), {}, 'the curated script itself → abstain');
+    assertEq(hso(await pg.run(ev('npm test'), { edition: '7' })).permissionDecision, 'ask', 'a redirect is not a deny');
+    hc.getCurationGuard = () => ({ ...origCur(), enabled: false });
+    assertEq(hso(await pg.run(ev('npm test'), { edition: '7' })).updatedInput, undefined, 'curationGuard disabled → no redirect');
+    hc.getCurationGuard = origCur;
+
+    // 5. the rewritten line really runs in PowerShell: variables arrive, the script's failure stops `&&`
+    const { spawnSync } = require('child_process');
+    sc._resetCache();
+    const full = hso(await pg.run(ev('npm test && Write-Output AFTER'), { edition: '5.1' })).updatedInput.command;
+    let ran = null;
+    for (const exe of ['powershell', 'pwsh']) {
+      const r = spawnSync(exe, ['-NoProfile', '-Command', full], { encoding: 'utf8', timeout: 30000 });
+      if (!r.error) { ran = r; break; }
+    }
+    if (!ran) console.log('  (skipped real PowerShell run: no powershell/pwsh on PATH)');
+    else {
+      assert(ran.stdout.includes(`ROOT=${root} `), `script ran with the project root: ${ran.stdout}`);
+      assert(!/AFTER/.test(ran.stdout), `a failing curated script must stop the chain: ${ran.stdout}`);
+      assert(ran.status !== 0, `the failure reaches the tool's exit code (got ${ran.status})`);
+    }
+  } finally {
+    hc.getPowershellGuard = origPs; hc.getCurationGuard = origCur; sc._resetCache();
+    fs.rmSync(proj, { recursive: true, force: true });
+  }
+});
+
+test('PowerShell curation: invocationFor(ps) is a single quoted native call — only .js/.mjs/.cjs/.ps1, never a path it cannot quote exactly; curated-run.js hands the variables over and returns the script status', () => {
+  const { invocationFor } = require('./lib/curation-redirect.js');
+  const cr = require('./curated-run.js');
+  const root = path.join(os.tmpdir(), "ccb-ps-inv-o'brien");
+  const inv = invocationFor({ script: '.vscode/scripts/t.mjs' }, root, { ps: true, reportPath: 'C:/tmp/r.jsonl' });
+  assert(/^node '[^']*curated-run\.js' '--root=[^']*o''brien' '--report=C:\/tmp\/r\.jsonl' '[^']*t\.mjs'$/.test(inv || ''), `single quotes doubled, no env prefix, no block: ${inv}`);
+  assert(!/[;{}]|\$env|CCB_PROJECT_ROOT=/.test(inv), 'one statement: nothing for the chain fix to split');
+  assert(/^node '[^']*curated-run\.js' '--root=.*o''brien' '[^']*g\.ps1'$/.test(invocationFor({ script: '.vscode/scripts/g.ps1' }, root, { ps: true })), '.ps1 goes through the launcher too');
+  for (const bad of ['a.sh', 'a.py', 'a.exe']) assertEq(invocationFor({ script: `.vscode/scripts/${bad}` }, root, { ps: true }), null, `${bad}: no promise it runs → raw`);
+  assertEq(invocationFor({ script: '.vscode/scripts/t.mjs' }, root, { ps: true, reportPath: 'C:/tmp/\u2019x.jsonl' }), null, 'a smart quote would close the PowerShell literal');
+  assert(/^CCB_PROJECT_ROOT="[^"]+" node "/.test(invocationFor({ script: '.vscode/scripts/t.mjs' }, root)), 'the Bash form is unchanged');
+  assertEq(cr.parse(['--root=/p', '--report=/r', 's.mjs', '--root=keep', 'x']), { env: { CCB_PROJECT_ROOT: '/p', CCB_RAW_REPORT: '/r' }, script: 's.mjs', args: ['--root=keep', 'x'] }, 'only the flags before the script are the launcher\'s');
+  assertEq(cr.commandFor('x.sh', []), null);
+
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-curated-run-'));
+  try {
+    const s = path.join(dir, 's.mjs');
+    fs.writeFileSync(s, 'console.log([process.env.CCB_PROJECT_ROOT, process.env.CCB_RAW_REPORT, process.argv.slice(2).join("|")].join(";"));\nprocess.exit(5);\n');
+    const { spawnSync } = require('child_process');
+    const run = (...args) => spawnSync(process.execPath, [path.join(__dirname, 'curated-run.js'), ...args], { encoding: 'utf8', timeout: 20000 });
+    const r = run('--root=/proj', '--report=/rep', s, 'a', 'b c');
+    assertEq([r.status, r.stdout.trim()], [5, '/proj;/rep;a|b c'], 'variables in, status out');
+    assertEq(run(path.join(dir, 'x.sh')).status, 2, 'no runner → loud failure, not a silent pass');
+  } finally { fs.rmSync(dir, { recursive: true, force: true }); }
 });
 
 test('powershell-advisory: states the edition per tool, win32 only, in a short text', async () => {

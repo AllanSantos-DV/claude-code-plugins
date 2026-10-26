@@ -21,7 +21,19 @@ const path = require('path');
 const { canonicalSig, principalSegment, indexOfShellMeta } = require('../../engine/lib/command-signature.js');
 const { classifySegment } = require('../../engine/lib/curation-families.js');
 
-const RAW_ESCAPE = /(^|\s)CCB_RAW=1(\s|$)/;
+// `CCB_RAW=1 cmd` (Bash) or `$env:CCB_RAW=1; cmd` (PowerShell).
+const RAW_ESCAPE = /(^|\s|\$env:)CCB_RAW=1(\s|;|$)/;
+
+// PowerShell: what a part may NOT contain for the rewrite to be exact. The redirect splits on
+// `;`/`&&`/`||` the way a shell does, which holds for a plain command line but not for script
+// blocks, subexpressions, variables, here-strings or redirects (`foreach (…) { cd $d; npm test }`
+// would be cut inside the braces). Anything beyond a plain command runs raw. `2>&1` is allowed.
+const PS_UNSAFE = /[`${}()@<>&\r\n‘’‚‛“”]/;
+const PS_SINK = /\*>|\|\s*(?:Out-File|Tee-Object|Set-Content|Add-Content|Export-\w+)\b/i;
+const psPlain = (text) => !PS_UNSAFE.test(String(text).replace(/2>&1/g, '')) && !PS_SINK.test(text);
+/** A PowerShell single-quoted literal (nothing inside is expanded; `'` is doubled). */
+const psq = (s) => `'${String(s).replace(/'/g, "''")}'`;
+const LAUNCHER = path.join(__dirname, '..', 'curated-run.js').replace(/\\/g, '/');
 
 /** Flags of the first pipeline stage of a part (tokens starting with `-`). */
 function flagsOf(part) {
@@ -110,7 +122,7 @@ function isInside(dir, p) {
  * `CCB_PROJECT_ROOT` naming the project: the script lives in the user's curation home, not
  * in the repo, so it can't find the project from its own location.
  */
-function invocationFor(shell, projectRoot, { reportPath = '' } = {}) {
+function invocationFor(shell, projectRoot, { reportPath = '', ps = false } = {}) {
   const rel = String((shell && (shell.script || shell.path || shell.command)) || '').trim(); // `command` = legacy field register writes
   if (!rel) return null;
   // The path is interpolated into a shell command between "…": a `"`, `$` or backtick in a
@@ -124,6 +136,16 @@ function invocationFor(shell, projectRoot, { reportPath = '' } = {}) {
   if (projectRoot && !isInside(curationHome(projectRoot), abs) && !isInside(projectRoot, abs)) return null;
   if (projectRoot && /["$`]/.test(projectRoot)) return null;
   const file = abs.replace(/\\/g, '/');
+  if (ps) {
+    // PowerShell has no `VAR=x cmd` prefix: one native call through the launcher carries the
+    // variables (see curated-run.js). Only what the launcher runs exactly — .js/.mjs/.cjs and
+    // .ps1; a .sh/.py would need an interpreter we cannot promise is on this PATH → raw.
+    if (!/\.(mjs|cjs|js|ps1)$/i.test(file)) return null;
+    const rep = String(reportPath || '').replace(/\\/g, '/');
+    const root = projectRoot ? path.resolve(projectRoot).replace(/\\/g, '/') : '';
+    if ([file, rep, root, LAUNCHER].some((s) => PS_UNSAFE.test(s.replace(/[&<>(){}@]/g, '')))) return null; // smart quotes, `$`, backtick, newline
+    return ['node', psq(LAUNCHER), root && psq(`--root=${root}`), rep && psq(`--report=${rep}`), psq(file)].filter(Boolean).join(' ');
+  }
   // CCB_RAW_REPORT (lib/raw-report.js): where the script records its raw output size — set only on
   // the invocations this rewrite produces, never by a text replace over the whole command (a
   // non-redirected part that merely contained the literal got it too — audit 3.2.1).
@@ -194,7 +216,7 @@ function passthroughMatch(text, profiles) {
  * Plan the rewrite of `command`.
  * @returns {{bypass:true}|{rewritten:string|null, replaced:Array<{shellId:string, from:string, to:string}>, uncovered:string[]}}
  */
-function planRedirect(command, shells, projectRoot, { reportPath = '' } = {}) {
+function planRedirect(command, shells, projectRoot, { reportPath = '', ps = false } = {}) {
   if (RAW_ESCAPE.test(String(command || ''))) return { bypass: true };
   const parts = splitTopLevel(command);
   const replaced = []; const uncovered = [];
@@ -208,6 +230,9 @@ function planRedirect(command, shells, projectRoot, { reportPath = '' } = {}) {
     // wanted on disk (typically grepped next) — rewriting would store the curated summary
     // instead. Not rewritten; `> /dev/null` and fd duplication (`2>&1`) don't count.
     if (/(^|\s)(?:\d|&)?>>?\s*(?!&\d)(?!\/dev\/null)[^\s|&;]+/.test(text.split('|')[0]) || /\|\s*tee\b/.test(text)) continue;
+    // PowerShell: only a plain command line is rewritten, and not one with a bash-style
+    // `VAR=x` prefix (it is not PowerShell syntax; the command is not ours to guess).
+    if (ps && (!psPlain(text) || envPrefixOf(text))) continue;
     let sig = ''; try { sig = canonicalSig(text); } catch (err) { void err; continue; }
     if (!sig) continue;
     // 1. PASSTHROUGH (a script that declares `passthrough` forwards its argv to the command it
@@ -217,7 +242,7 @@ function planRedirect(command, shells, projectRoot, { reportPath = '' } = {}) {
     //    (`mvn test -Dtest=X`, `gh run list --limit 5`) no longer run raw.
     const pass = passthroughMatch(text, profiles);
     if (pass) {
-      const inv = invocationFor(pass.shell, projectRoot, { reportPath });
+      const inv = invocationFor(pass.shell, projectRoot, { reportPath, ps });
       const to = inv && `${envPrefixOf(text)}${pass.args ? `${inv} ${pass.args}` : inv}`;
       if (to) { replaced.push({ shellId: pass.shell.id, from: text, to }); p.text = to; continue; }
     }
@@ -226,7 +251,7 @@ function planRedirect(command, shells, projectRoot, { reportPath = '' } = {}) {
     const flags = flagsOf(text);
     const exact = profiles.find((pr) => pr.sig === sig && [...flags].every((f) => pr.flags.has(f)));
     if (exact) {
-      let to = invocationFor(exact.shell, projectRoot, { reportPath });
+      let to = invocationFor(exact.shell, projectRoot, { reportPath, ps });
       if (to && exact.extraFrom) {
         // Variant alias: only a script that reads its argv gets it, WITH the extra tokens (taken
         // after the env/wrapper prefixes — splitting the raw part handed `FOO=1 git stash list`
