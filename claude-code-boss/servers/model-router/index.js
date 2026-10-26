@@ -1180,13 +1180,13 @@ function streamNvidiaToAnthropic(nvRes, res, reqBody, warning) {
     const tail = sseTailFrame(buf);
     if (tail.kind === 'partial') {
       logger.error('Stream NVIDIA terminou com frame incompleto', { bytes: Buffer.byteLength(buf), reason: tail.reason });
-      res.destroy(new Error('Stream NVIDIA terminou com frame SSE incompleto'));
+      cutStream(res, new Error('Stream NVIDIA terminou com frame SSE incompleto'));
       return;
     }
     if (tail.kind === 'done' || (tail.kind === 'json' && frameEnds(tail.value))) sawEnd = true;
     if (!sawEnd && isCloseDelimited(nvRes)) {
       logger.error('Stream NVIDIA sem enquadramento fechou sem [DONE] nem finish_reason — tratado como corte');
-      res.destroy(new Error('Stream NVIDIA fechou sem marcador de fim'));
+      cutStream(res, new Error('Stream NVIDIA fechou sem marcador de fim'));
       return;
     }
     if (tail.kind === 'json') {
@@ -1202,6 +1202,13 @@ function streamNvidiaToAnthropic(nvRes, res, reqBody, warning) {
     logger.error('NVIDIA stream erro — resposta interrompida', { err: e.message });
     if (!res.writableEnded && !res.destroyed) res.destroy(e);
   });
+}
+
+// Corta o cliente SEM descartar o que já foi escrito: res.destroy() imediato apaga
+// os bytes ainda no buffer do socket (o texto recebido antes do corte sumia).
+function cutStream(res, err) {
+  if (res.destroyed) return;
+  res.write('', () => res.destroy(err));
 }
 
 function finishStream(res) {
@@ -1613,7 +1620,7 @@ function proxyOpenAIResponse(upRes, res, reqBody, adapter, onReadError) {
             emitAdapterEvents(res, translator.finish());
           } catch (err) {
             logger.error('Falha ao fechar stream OpenAI', { err: err.message });
-            res.destroy(err);
+            cutStream(res, err);
             upRes.destroy(err);
             return;
           }
@@ -1625,7 +1632,7 @@ function proxyOpenAIResponse(upRes, res, reqBody, adapter, onReadError) {
           emitAdapterEvents(res, translator.consume(frame));
         } catch (err) {
           logger.error('Falha ao traduzir stream OpenAI', { err: err.message });
-          res.destroy(err);
+          cutStream(res, err);
           upRes.destroy(err);
           return;
         }
@@ -1638,13 +1645,13 @@ function proxyOpenAIResponse(upRes, res, reqBody, adapter, onReadError) {
         const tail = sseTailFrame(buffer);
         if (tail.kind === 'partial') {
           logger.error('Stream OpenAI terminou com frame incompleto', { bytes: Buffer.byteLength(buffer), reason: tail.reason });
-          res.destroy(new Error('Stream OpenAI terminou com frame SSE incompleto'));
+          cutStream(res, new Error('Stream OpenAI terminou com frame SSE incompleto'));
           return;
         }
         if (tail.kind === 'done' || (tail.kind === 'json' && frameEnds(tail.value))) sawEnd = true;
         if (!sawEnd && isCloseDelimited(upRes)) {
           logger.error('Stream OpenAI sem enquadramento fechou sem [DONE] nem finish_reason — tratado como corte');
-          res.destroy(new Error('Stream OpenAI fechou sem marcador de fim'));
+          cutStream(res, new Error('Stream OpenAI fechou sem marcador de fim'));
           return;
         }
         try {
@@ -1652,7 +1659,7 @@ function proxyOpenAIResponse(upRes, res, reqBody, adapter, onReadError) {
           emitAdapterEvents(res, translator.finish());
         } catch (err) {
           logger.error('Falha ao fechar stream OpenAI', { err: err.message });
-          res.destroy(err);
+          cutStream(res, err);
           return;
         }
         res.end();
@@ -1660,7 +1667,7 @@ function proxyOpenAIResponse(upRes, res, reqBody, adapter, onReadError) {
     });
     upRes.on('error', err => {
       logger.error('Erro no stream OpenAI', { err: err.message });
-      res.destroy(err);
+      cutStream(res, err);
     });
     return;
   }

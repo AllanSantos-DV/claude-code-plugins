@@ -8,9 +8,13 @@
   vai para `.runtime/capture-window-<windowId>.txt` (`capture-queue.writeWindow`) e chega ao modelo pela nova tool read-only `capture_window`, cujo resultado o terminal recolhe.
   Limpo no ack, no relent e, órfão, após 24 h. Falha ao gravar: `console.error` e o Stop não bloqueia (o próximo tenta de novo). Teste: `capture-dispatch: the Stop reason
   (printed in full by the CLI) carries no conversation text; the REAL capture_window tool hands the block to the model`; dois testes que liam o bloco no `reason` passaram a lê-lo da janela.
-- [ ] **Fora do escopo — 2 testes de `test-units.js` falham igual na HEAD `3306ca4`** (visto rodando a suíte antes/depois desta correção, 2026-10-26):
-  `brain-backend mcp: a REAL transport failure (daemon closed mid-session) opens the circuit` ("got false, want true") e `plano B: stream que fecha limpo com a última linha
-  sem \n…` ("nvidia/empty: …content_block…"). Proposta: investigar cada um isolado (o primeiro depende de um daemon real fechando a conexão; o segundo é o adaptador do router).
+- [x] **Achado e corrigido (2026-10-26, conferência da develop) — 2 testes de `test-units.js` falhavam; eram dois defeitos reais, não flakiness:**
+  1. `engine/brain-backend.js` `isTransportFailure`: com o daemon fechado, o `mcp-client` tenta reconectar e lança `DAEMON_RESTART: … not reachable (/health failed)`, que a regex
+     (`timed out|ECONNREFUSED|…`) não reconhecia — o breaker nunca abria e cada chamada seguinte esperava o daemon de novo. Agora `err.code === 'DAEMON_RESTART'` conta como falha de transporte.
+     Teste: `brain-backend mcp: a REAL transport failure…` (falhava, passa).
+  2. `servers/model-router/index.js`: ao cortar o stream do plano B (frame final incompleto / sem marcador de fim) o `res.destroy()` imediato descartava os bytes ainda no buffer do socket —
+     o cliente perdia o texto recebido antes do corte (reproduzido em Node 24: `parte1` não chegava). Novo `cutStream(res, err)` escreve vazio e destrói no callback; usado nos 4 cortes de fim de stream
+     (NVIDIA e OpenAI). Teste: `plano B: stream que fecha limpo com a última linha sem \n…` (falhava, passa).
 
 ## Develop pronta e instalada com 6e419fc, 7033e53 e d858dd8 (pedido do orquestrador, 2026-10-24) — aguardando o dono, sem release
 
@@ -20,7 +24,7 @@
 - [x] **Pages migradas para a branch `gh-pages` (pedido do orquestrador, 2026-10-24)**: `.github/scripts/pages-publish.mjs` + `pages-deploy.yml`; deploy key e secret `PAGES_DEPLOY_KEY` criados; fonte do Pages = gh-pages `/`. Provado: dispatch na develop verde, build `dynamic` de gh-pages `built` (f4501d2), verify leu v3.11.0 na URL pública; 4 testes (workflow sem artefato/GITHUB_TOKEN, commit órfão só do site, falhas altas, verify).
 - [x] **Pages por artefato**: nada a corrigir. O `pages-deploy.yml` já é build → deploy em dois jobs (Q61) e os 6 últimos runs na main passaram (o mais recente em 2026-10-24). A recusa do deploy
   a partir da develop é a política do ambiente `github-pages` (só `main`), o desenho esperado; o workflow só dispara em push na `main`.
-- [ ] **Antes do release**: `pages-guard check` está vermelho (fontes da vitrine mudaram com o CHANGELOG das três funcionalidades). É o passo do agente `vitrine` + `stamp`, feito no release como nas 3.10.x.
+- [x] **Antes do release**: `pages-guard check` estava vermelho; feito no release 3.11.0 (vitrine + stamp). Conferido em 2026-10-26: `pages-guard check` OK, 2 páginas.
 
 ## Boss não compactou antes do prompt frio com 788 mil tokens (pedido do orquestrador, 2026-10-23) — liberado na 3.10.2
 
