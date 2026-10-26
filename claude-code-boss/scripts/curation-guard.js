@@ -251,7 +251,12 @@ async function cascade(event) {
 
 async function cascadeSteps(event, notes) {
   try {
-    if (!event || event.tool_name !== 'Bash') {
+    // `PowerShell` takes the same cascade (redirect / whitelist / denyUnknown) — its rewrites
+    // are PowerShell-valid and it is composed with the 5.1 chain fix by powershell-guard.js,
+    // the ONE hook on that matcher (two hooks returning updatedInput overwrite each other).
+    // The Bash-only steps (graph-guard's grep patterns, the `set -o pipefail` shaper) are skipped.
+    const isPs = !!event && event.tool_name === 'PowerShell';
+    if (!event || (event.tool_name !== 'Bash' && !isPs)) {
       return PASS;
     }
 
@@ -291,14 +296,14 @@ async function cascadeSteps(event, notes) {
       reportPath = rr.newReportPath();
     } catch (err) { console.error(`[curation-guard] raw report off for this run: ${err.message}`); }
     const reportId = reportPath ? require('./lib/raw-report.js').reportIdOf(reportPath) : '';
-    const plan = planRedirect(command, shells, projectRoot, { reportPath });
+    const plan = planRedirect(command, shells, projectRoot, { reportPath, ps: isPs });
     const mctx = { sessionId: event.session_id, cwd: event.cwd };
     if (plan.bypass) {
       metrics.fire('curation.bypass', {}, mctx);
     } else if (plan.rewritten) {
       const mode = event.permission_mode === 'bypassPermissions' ? 'allow' : 'ask';
       const list = plan.replaced.map((r) => `\`${r.from}\` → \`${r.to}\``).join('; ');
-      const ctx = `[curadoria] Redirecionado para o script curado do projeto: ${list}. A saída é o resumo curado (não a crua). Se precisar da saída crua, rode de novo com \`CCB_RAW=1\` na frente do comando.`;
+      const ctx = `[curadoria] Redirecionado para o script curado do projeto: ${list}. A saída é o resumo curado (não a crua). Se precisar da saída crua, rode de novo com ${isPs ? '`$env:CCB_RAW=1;`' : '`CCB_RAW=1`'} na frente do comando.`;
       for (const r of plan.replaced) {
         let sig = ''; try { sig = canonicalSig(r.from); } catch (err) { void err; }
         metrics.fire('curation.redirected', { shellId: r.shellId, sig, mode, compound: plan.replaced.length > 1 || r.from !== command.trim(), ...(reportId ? { reportId } : {}) }, mctx);
@@ -321,7 +326,7 @@ async function cascadeSteps(event, notes) {
     // to the normal cascade below.
     try {
       const ggCfg = require('./lib/hooks-config.js').getGraphGuard();
-      if (ggCfg.enabled) {
+      if (ggCfg.enabled && !isPs) {
         const core = require('./lib/graph-guard-core.js');
         const broad = core.matchBroadBashSearch(command);
         if (broad) {
@@ -366,7 +371,7 @@ async function cascadeSteps(event, notes) {
     //     Only under bypassPermissions: in the other modes Claude Code lets read-only
     //     commands (cat/grep/ls) through without asking, and a rewrite needs `ask` —
     //     every exploration command would start prompting.
-    const shaped = plan.bypass || event.permission_mode !== 'bypassPermissions' ? null : planShaping(command, projectRoot);
+    const shaped = isPs || plan.bypass || event.permission_mode !== 'bypassPermissions' ? null : planShaping(command, projectRoot);
     if (shaped) {
       const ctx = '[boss] Saída de exploração limitada pelo boss (Token Guard não instalado): o comando roda igual; se passar do limite, o resto fica salvo em arquivo. `CCB_RAW=1` na frente desliga o corte.';
       return decision('allow', { updatedInput: { command: shaped }, additionalContext: ctx });

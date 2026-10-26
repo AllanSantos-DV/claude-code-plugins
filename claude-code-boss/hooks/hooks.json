@@ -90,7 +90,7 @@
               "permission_mode": "${permission_mode}",
               "project_dir": "${CLAUDE_PROJECT_DIR}"
             },
-            "timeout": 5
+            "timeout": 8
           },
           {
             "type": "mcp_tool",
