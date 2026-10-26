@@ -24,6 +24,8 @@ let _circuitOpenUntil = 0;
 const CIRCUIT_COOLDOWN_MS = Number.parseInt(process.env.CCB_MCP_MEMORY_CIRCUIT_MS, 10) || 15000;
 
 function isTransportFailure(err) {
+  // DAEMON_RESTART: mcp-client already retried once and could not re-reach the daemon.
+  if (err && err.code === 'DAEMON_RESTART') return true;
   return /timed out|timeout|ECONNREFUSED|ECONNRESET|ENOTFOUND|EHOSTUNREACH|socket hang up|fetch failed/i
     .test((err && err.message) || '');
 }
