@@ -1,5 +1,25 @@
 # Changelog
 
+## [3.11.1] - 2026-10-26
+
+### Added
+- **Ferramenta PowerShell com a mesma cobertura do Bash** (`scripts/curated-run.js`, `scripts/curation-guard.js`, `scripts/curation-detect.js`, `scripts/error-guard.js`, `scripts/decision-detect.js`, `scripts/powershell-guard.js`, `scripts/lib/shell-tool.js`, `hooks/hooks.json`): a curadoria (com o redirecionamento para o script curado), a detecção de comandos ruidosos, o error-guard e a detecção de decisão passam a valer também para a ferramenta PowerShell. O redirecionamento e a correção da cadeia do PowerShell 5.1 saem compostos num único `updatedInput` por `curated-run.js`.
+- **MultiEdit no `file-edit-detect`** (`hooks/hooks.json`, `scripts/lib/hook-tools.js`): o matcher passa a incluir `MultiEdit`.
+- **Card "Results" na Home** (`dashboard/index.html`, `scripts/dashboard.js`, `scripts/lib/outcome-metrics.js`, rota `/api/metrics/outcome`): mostra, nos últimos 30 dias, o que o Boss entrega em resultados que crescem com o uso (lições aprendidas e citadas, saída ruidosa tratada por script curado, decisões tomadas por regra) — os mesmos números de `scripts/outcome-report.js`. `retrieve.injected` agora grava os `entryIds` injetados (limite de 20), então uma lição promovida passa a ter taxa de citação real.
+- **Doctor: checks `claude-compat` e `subagent-contexts`** (`scripts/doctor.js`): só rodam na auditoria (leem arquivos grandes). `claude-compat` confere se o Claude Code instalado ainda contém os nomes de que o plugin depende (prova presença, não comportamento); `subagent-contexts` mede, nos últimos 30 dias, o pico de contexto por tipo de subagente e avisa onde uma `autoCompactWindow` menor compensaria (nada é aplicado sozinho).
+
+### Fixed
+- **Disjuntor do mcp-memory abre em `DAEMON_RESTART`** (`engine/brain-backend.js`): a reinicialização do daemon de memória passa a contar como falha para o disjuntor, em vez de seguir tentando chamadas que não chegam.
+- **Corte do stream do plano B não descarta o texto já escrito** (`servers/model-router/index.js`, `cutStream`): ao cortar o stream, os bytes que já tinham sido enviados ao cliente são mantidos.
+- **Carimbo semanal da promoção de lições atômico, `apply` simultâneo recusado** (`scripts/lib/promotion-registry.js`, `scripts/curation-session.js`, `scripts/lesson-promote.js`): duas execuções ao mesmo tempo não promovem a mesma lição duas vezes; a segunda é recusada.
+- **`scope-bulk-reclassify` não copia mais `files`/`source` e filtra as tags** (`scripts/scope-bulk-reclassify.js`).
+- **Stop hook não despeja o bloco de captura na tela** (`scripts/capture-dispatch.js`, `scripts/lib/capture-queue.js`, `servers/brain-server/lib/mcp-server.js`): o CLI imprimia por inteiro o motivo do Stop, com a conversa redigida inline (mediana de 70 linhas). O motivo agora é uma linha com o `windowId`; o bloco fica no arquivo `.runtime/capture-window-<windowId>.txt` e é lido pela tool `capture_window` (somente leitura), cujo resultado o terminal recolhe. O arquivo é limpo no `ack`/`relent` e podado após 24 h. Se não der para gravá-lo, o Stop não bloqueia (fica no log) e o próximo Stop tenta de novo.
+
+### Changed
+- **`boss-summary` com leitura incremental** (`scripts/boss-summary.js`, `engine/lib/metrics-store.js`): lê por projeto só as linhas novas (`sinceId` em `getEventLogIsolated`) em vez de reler tudo.
+- **Promoção de lições com cache de vetores** (`scripts/lesson-promote.js`): o vetor de cada lição é guardado por `entryId` e hash do texto.
+- **Desafio HMAC no `/health` do daemon** (`scripts/lib/module-daemon.mjs`, `servers/brain-server/lib/http-daemon.js`, `servers/brain-server/lib/daemon-common.js`, `docs/SECURITY.md`): o cliente manda um nonce e confere a prova HMAC antes de usar o token; um daemon antigo, sem a prova, é aceito com um aviso explícito.
+
 ## [3.11.0] - 2026-10-24
 
 ### Added
