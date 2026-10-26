@@ -31068,6 +31068,95 @@ test('module-daemon: /health HMAC challenge — the real daemon proves the token
   }
 });
 
+// ─── dev-only scripts (gitignored: .claude/scripts/lib/*.mjs) ────────────────
+// install-local step 5c and the isolated-session env were extracted into importable modules so their
+// decisions are testable. The files are local-only (absent in CI / a fresh clone): the tests then
+// SKIP with an explicit message instead of failing.
+const DEV_LIB = path.resolve(__dirname, '..', '..', '.claude', 'scripts', 'lib');
+async function loadDevLib(file) {
+  const p = path.join(DEV_LIB, file);
+  if (!fs.existsSync(p)) { console.log(`skip: dev-only script ausente (${file})`); return null; }
+  return import(require('url').pathToFileURL(p).href);
+}
+
+// Fake world for bringUpNewDaemon: `script[i]` = what the port holds after round i's ensure (the first health()
+// before round 1 is `initial`). Clock advances only through sleep(), so the 15 s poll window costs no time.
+function fakeDaemonWorld({ initial, afterRound }) {
+  const NEW = { pid: 900, pluginRoot: '/cache/new' };
+  const w = { events: [], t: 0, round: 0, port: initial, NEW };
+  w.isNew = (x) => !!x && x.pluginRoot === NEW.pluginRoot;
+  w.health = async () => w.port;
+  w.stopOld = async (h, round) => { w.events.push(`stop:${h.pid}@${round}`); w.port = null; };
+  w.ensure = async (round) => { w.round = round; w.events.push(`ensure@${round}`); w.port = afterRound(round); return `exit 0: round ${round}`; };
+  w.sleep = async (ms) => { w.t += ms; };
+  w.now = () => w.t;
+  return w;
+}
+const OLD = (pid) => ({ pid, pluginRoot: '/cache/old', dataDir: '/d' });
+
+test('install-local 5c: right daemon on the first round → one ensure, no stop', async () => {
+  const lib = await loadDevLib('daemon-5c.mjs'); if (!lib) return;
+  const w = fakeDaemonWorld({ initial: null, afterRound: () => w.NEW });
+  const r = await lib.bringUpNewDaemon(w);
+  assert(r.ok && r.rounds === 1, JSON.stringify(r));
+  assertEq(w.events.join(','), 'ensure@1');
+});
+
+test('install-local 5c: wrong daemon is stopped and replaced in round 2', async () => {
+  const lib = await loadDevLib('daemon-5c.mjs'); if (!lib) return;
+  const w = fakeDaemonWorld({ initial: OLD(1), afterRound: (n) => (n === 1 ? OLD(2) : w.NEW) });
+  const r = await lib.bringUpNewDaemon(w);
+  assert(r.ok && r.rounds === 2, JSON.stringify(r));
+  assertEq(w.events.join(','), 'stop:1@1,ensure@1,stop:2@2,ensure@2');
+});
+
+test('install-local 5c: lock held by an old session until round 3 → still succeeds', async () => {
+  const lib = await loadDevLib('daemon-5c.mjs'); if (!lib) return;
+  // Rounds 1 and 2: ensure lost the lock, nothing answers or an old daemon wins; round 3 comes up ours.
+  const w = fakeDaemonWorld({ initial: null, afterRound: (n) => (n === 1 ? null : n === 2 ? OLD(3) : w.NEW) });
+  const r = await lib.bringUpNewDaemon(w);
+  assert(r.ok && r.rounds === 3, JSON.stringify(r));
+  assertEq(w.events.join(','), 'ensure@1,ensure@2,stop:3@3,ensure@3');
+});
+
+test('install-local 5c: never ours after round 4 → ok:false with the last observation (no 5th round)', async () => {
+  const lib = await loadDevLib('daemon-5c.mjs'); if (!lib) return;
+  const w = fakeDaemonWorld({ initial: OLD(1), afterRound: (n) => OLD(10 + n) });
+  const r = await lib.bringUpNewDaemon(w);
+  assert(r.ok === false && r.rounds === 4, JSON.stringify(r));
+  assertEq(r.up.pid, 14);
+  assertEq(r.lastEnsure, 'exit 0: round 4');
+  assertEq(w.events.filter((e) => e.startsWith('ensure')).length, 4);
+});
+
+test('install-local 5c: a stopOld that throws propagates (fail-loud, no silent retry)', async () => {
+  const lib = await loadDevLib('daemon-5c.mjs'); if (!lib) return;
+  const w = fakeDaemonWorld({ initial: OLD(1), afterRound: () => w.NEW });
+  w.stopOld = async () => { throw new Error('could not stop'); };
+  let err = null;
+  try { await lib.bringUpNewDaemon(w); } catch (e) { err = e; }
+  assert(err && /could not stop/.test(err.message), String(err));
+  assertEq(w.events.length, 0, 'ensure must not run after a failed stop');
+});
+
+test('isolated-env: always DISABLE_CLAUDE_MDS=1 and never the real HOME/USERPROFILE/CLAUDE_CONFIG_DIR', async () => {
+  const lib = await loadDevLib('isolated-env.mjs'); if (!lib) return;
+  const s = { home: path.join(os.tmpdir(), 'sbx-home'), config: path.join(os.tmpdir(), 'sbx-cfg') };
+  const real = { HOME: '/real/home', USERPROFILE: 'C:\\real', CLAUDE_CONFIG_DIR: '/real/cfg', CLAUDE_CODE_DISABLE_CLAUDE_MDS: '', CLAUDE_PLUGIN_ROOT: '/x', CLAUDE_PLUGIN_DATA: '/y', CLAUDE_PROJECT_DIR: '/z', CLAUDECODE: '1', CLAUDE_CODE_ENTRYPOINT: 'cli', PATH: 'keep' };
+  for (const base of [real, {}, { CLAUDE_CODE_DISABLE_CLAUDE_MDS: '0' }]) {
+    const env = lib.isolatedEnv(s, 38219, base);
+    assertEq(env.CLAUDE_CODE_DISABLE_CLAUDE_MDS, '1');
+    assertEq(env.HOME, s.home); assertEq(env.USERPROFILE, s.home); assertEq(env.CLAUDE_CONFIG_DIR, s.config);
+    assertEq(env.BRAIN_HTTP_PORT, '38219'); assertEq(env.CCB_ISOLATED, '1');
+    for (const k of ['CLAUDE_PLUGIN_ROOT', 'CLAUDE_PLUGIN_DATA', 'CLAUDE_PROJECT_DIR', 'CLAUDECODE', 'CLAUDE_CODE_ENTRYPOINT']) assert(!(k in env), `${k} must be dropped`);
+  }
+  assertEq(lib.isolatedEnv(s, 1, real).PATH, 'keep', 'unrelated vars are inherited');
+  assertEq(real.HOME, '/real/home', 'the base env is not mutated');
+  let err = null;
+  try { lib.isolatedEnv({ home: s.home }, 1, real); } catch (e) { err = e; }
+  assert(err, 'a sandbox without config must throw instead of inheriting the real CLAUDE_CONFIG_DIR');
+});
+
 // ─── Runner ──────────────────────────────────────────────────────────────────
 (async () => {
   // A suíte mexe em singletons de módulo, process.env e servidores HTTP locais.
