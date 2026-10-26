@@ -41,7 +41,7 @@ function main(argv) {
     console.error(`[curated-run] no runner for "${script || ''}" (only .mjs/.cjs/.js/.ps1)`);
     return 2;
   }
-  const r = spawnSync(cmd[0], cmd[1], { stdio: 'inherit', env: { ...process.env, ...env } });
+  const r = spawnSync(cmd[0], cmd[1], { stdio: 'inherit', windowsHide: true, env: { ...process.env, ...env } });
   if (r.error) {
     console.error(`[curated-run] could not run ${script}: ${r.error.message}`);
     return 127;
