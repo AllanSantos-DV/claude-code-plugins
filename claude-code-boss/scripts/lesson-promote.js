@@ -14,6 +14,8 @@
  * can be read together. All I/O is injected into `run*` so tests use fakes and a temp data dir.
  */
 const crypto = require('crypto');
+const fs = require('fs');
+const path = require('path');
 const planner = require('./lib/lesson-promotion.js');
 const registry = require('./lib/promotion-registry.js');
 const { USER_SENTINEL } = require('../engine/lib/scope-sanitizer.js');
@@ -21,18 +23,60 @@ const { buildEmbedText } = require('../engine/lib/embed-text.js');
 
 const newPromotionId = () => `prom-${crypto.randomBytes(4).toString('hex')}`;
 
+// Vector cache: `<dataDir>/promotions/embed-cache.json`, one vector per project+entryId, valid while the embedded text
+// (and the embedder's provider/model) is the same. The weekly run re-embedded every lesson (~36 s for 2300).
+const CACHE_FILE = 'embed-cache.json';
+const textHash = (text) => crypto.createHash('sha256').update(text).digest('hex').slice(0, 24);
+
+function loadVectorCache(dataDir, embedderId) {
+  const file = path.join(dataDir, 'promotions', CACHE_FILE);
+  try {
+    const c = JSON.parse(fs.readFileSync(file, 'utf8'));
+    if (c && c.embedder === embedderId && c.entries && typeof c.entries === 'object') return { file, embedder: embedderId, entries: c.entries };
+  } catch (err) {
+    if (err.code !== 'ENOENT') console.error(`[lesson-promote] vector cache unreadable, starting empty: ${err.message}`);
+  }
+  return { file, embedder: embedderId, entries: {} };
+}
+
+function saveVectorCache(cache) {
+  try {
+    fs.mkdirSync(path.dirname(cache.file), { recursive: true });
+    const tmp = `${cache.file}.${process.pid}.tmp`;
+    fs.writeFileSync(tmp, JSON.stringify({ embedder: cache.embedder, entries: cache.entries }));
+    fs.renameSync(tmp, cache.file);
+  } catch (err) {
+    console.error(`[lesson-promote] vector cache not saved (the next run re-embeds): ${err.message}`);
+  }
+}
+
 /** Project-scope lessons of every project and what the user scope holds, each embedded locally (title + summary, as the capture dedup does). */
-async function gather({ backend, embedder, cfg }) {
+async function gather({ backend, embedder, cfg, dataDir }) {
   await backend.init({ project: USER_SENTINEL, skipEmbedder: true });
   await embedder.init();
-  if (!embedder.getStatus().ready) throw new Error(`embedder unavailable: ${embedder.getStatus().error || 'not ready'}`);
+  const status = embedder.getStatus();
+  if (!status.ready) throw new Error(`embedder unavailable: ${status.error || 'not ready'}`);
   const types = new Set(cfg.types);
+  const cache = dataDir ? loadVectorCache(dataDir, `${status.provider || '?'}|${status.model || '?'}`) : null;
+  const live = new Set();
+  let dirty = false;
+  const vectorOf = async (project, d) => {
+    const text = buildEmbedText({ title: d.title, summary: d.summary });
+    if (!cache) return embedder.embed(text);
+    const key = `${project}|${d.id}`; const h = textHash(text);
+    live.add(key);
+    const hit = cache.entries[key];
+    if (hit && hit.h === h && Array.isArray(hit.v)) return hit.v;
+    const v = await embedder.embed(text);
+    cache.entries[key] = { h, v: Array.from(v) }; dirty = true;
+    return v;
+  };
   const embedAll = async (docs, project) => {
     const out = [];
     for (const d of docs) {
       // Only documents this plugin wrote (title+type metadata): never ones the server distilled itself.
       if (!d.bossWritten || !types.has(d.type)) continue;
-      out.push({ id: d.id, project, type: d.type, title: d.title, summary: d.summary, recurrence: d.recurrence || 1, confidence: d.confidence, createdAt: d.created_at, tags: d.tags || [], vector: await embedder.embed(buildEmbedText({ title: d.title, summary: d.summary })) });
+      out.push({ id: d.id, project, type: d.type, title: d.title, summary: d.summary, recurrence: d.recurrence || 1, confidence: d.confidence, createdAt: d.created_at, tags: d.tags || [], vector: await vectorOf(project, d) });
     }
     return out;
   };
@@ -40,6 +84,10 @@ async function gather({ backend, embedder, cfg }) {
   const entries = [];
   for (const p of projects) entries.push(...await embedAll(await backend.listDocuments({ projectId: p }), p));
   const userEntries = await embedAll(await backend.listDocuments({ projectId: USER_SENTINEL }), USER_SENTINEL);
+  if (cache) {
+    for (const k of Object.keys(cache.entries)) if (!live.has(k)) { delete cache.entries[k]; dirty = true; } // lessons that no longer exist
+    if (dirty) saveVectorCache(cache);
+  }
   return { projects, entries, userEntries };
 }
 

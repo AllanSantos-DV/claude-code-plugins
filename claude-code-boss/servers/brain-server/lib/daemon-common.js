@@ -2,6 +2,7 @@
  * lib/daemon-common.js — shared helpers for the HTTP daemon + its supervisor.
  */
 import path from 'node:path';
+import { createHmac } from 'node:crypto';
 import { createRequire } from 'node:module';
 import { fileURLToPath } from 'node:url';
 
@@ -86,6 +87,16 @@ export function lockFile(dataDir) {
 }
 
 export const HEALTH_PATH = '/health';
+
+/**
+ * Challenge on the open /health: `GET /health?nonce=<hex>` also answers `proof = HMAC-SHA256(token, nonce)`. A client
+ * that is about to send the token checks the proof first — whoever holds the port without knowing the token cannot
+ * produce it, however well it repeats the dataDir. Clients that send no nonce get the old answer.
+ */
+export const HEALTH_NONCE_RE = /^[0-9a-f]{16,128}$/;
+export function healthProof(token, nonce) {
+  return createHmac('sha256', String(token)).update(String(nonce)).digest('hex');
+}
 export const MCP_PATH = '/mcp';
 
 // ─── Auth (same pattern as the dashboard: local token + host/origin guard) ───

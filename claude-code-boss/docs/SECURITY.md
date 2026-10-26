@@ -42,8 +42,12 @@ O módulo de compactação (`hooks/compaction.mjs`) fala com a mesma porta pela 
 `~/.claude/claude-code-boss/active-data-dir.json`), recusa caminho que não seja local e absoluto, e só envia o
 token se o `/health` da porta nomear essa MESMA pasta. O `/health` é aberto: confiar no caminho que ele diz
 permitiria a um ocupante da porta apontar um caminho de rede (UNC), e ler um caminho UNC faz o Windows entregar o
-hash NTLM do usuário a esse host (auditoria de pré-release 3.1.0). O risco que resta é o mesmo de cima (quem
-atende a porta), e exige adivinhar o caminho exato da pasta de dados.
+hash NTLM do usuário a esse host (auditoria de pré-release 3.1.0). Além do caminho, o módulo faz um desafio
+HMAC: manda `GET /health?nonce=<hex>`, o daemon responde `proof = HMAC-SHA256(token, nonce)` e o módulo só
+usa o token depois de conferir a prova — quem ocupa a porta sem conhecer o token não a produz, mesmo repetindo a
+pasta de dados. Um daemon de build antiga (sem o campo `proof`) continua aceito pelo comportamento anterior, com aviso
+explícito no log do módulo (um impostor poderia imitar um daemon antigo omitindo o campo: reiniciar o daemon
+fecha esse caso). O cliente MCP e o `headersHelper` continuam sem esse desafio (risco aceito de cima).
 
 Nenhuma variável é gravada em escopo User/sistema do Windows — roteamento vive só no bloco `env` do settings.json do Claude Code (resíduos globais de versões antigas são limpos pelo self-heal).
 
