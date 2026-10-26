@@ -128,6 +128,7 @@ function summarizeOutcomes(rows, { since = 0, maturitySince = since, backfillPer
   const curation = { redirected: 0, flagged: 0, used: 0, uncovered: 0, bypass: 0, scripts: new Map() };
   const proj = new Map(); // project -> { sessions: Map(sid -> {first, mech, back, lessons, injected, redirected, flagged}) }
   const projects = new Set(); const sessions = new Set();
+  const loops = { denied: 0, sessions: new Set() }; // error-guard denials: a command re-run blind after it already failed
   // An event with no session id (a lesson capture does not carry one) belongs to no session: it feeds the totals, not the per-session rates.
   const cell = (r) => {
     if (!r.sessionId) return { first: 0, mech: 0, back: 0, lessons: 0, injected: 0, redirected: 0, flagged: 0 };
@@ -163,6 +164,7 @@ function summarizeOutcomes(rows, { since = 0, maturitySince = since, backfillPer
         const e = learning.citedEntries.get(p.entryId); e.sessions.add(r.sessionId || ''); e.projects.add(r.project || '');
       }
     }
+    if (n === 'error-guard.denied') { loops.denied++; if (r.sessionId) loops.sessions.add(`${r.project}|${r.sessionId}`); }
     if (MECHANICAL[n]) { mechByKind[n] = (mechByKind[n] || 0) + 1; w.mechanical++; c.mech++; }
     if (HANDED_BACK[n]) { backByKind[n] = (backByKind[n] || 0) + 1; w.handedBack++; c.back++; }
     if (n === 'curation.redirected') { firstRedirect = firstRedirect == null ? num(r.ts) : Math.min(firstRedirect, num(r.ts)); curation.redirected++; w.redirected++; c.redirected++; const id = `${r.project}|${p.shellId}`; if (!curation.scripts.has(id)) curation.scripts.set(id, num(r.ts)); }
@@ -204,6 +206,7 @@ function summarizeOutcomes(rows, { since = 0, maturitySince = since, backfillPer
       scripts: curation.scripts.size,
     },
     mechanical: { byKind: mechByKind, handedBackByKind: backByKind, mechanical: mechTotal, handedBack: backTotal, share: round(share(mechTotal, backTotal)) },
+    loopsAvoided: { denied: loops.denied, sessions: loops.sessions.size },
     promotions: summarizePromotions(rows, { since, universe: learning.captured + learning.imported }),
     byWeek,
     maturity: buckets.filter((b) => b.sessions).map((b) => ({
@@ -213,6 +216,7 @@ function summarizeOutcomes(rows, { since = 0, maturitySince = since, backfillPer
     labels: {
       measured: 'counts of recorded events',
       notInferred: 'a recall is an opportunity to avoid a repeat; a citation is evidence the answer used the lesson; neither proves a correction was avoided',
+      loopsAvoided: 'each denial stopped a re-run of a command that had already failed in that session with no file edited since; counted, not proof the loop would have continued',
       maturity: 'cross-sectional: projects with more sessions also differ in size and kind of work',
       shares: 'weeks before the rule events were recorded show no share (n/a), not 0%',
       imported: `lessons of a project-week above ${BACKFILL_PER_WEEK} captures are backfill, counted apart`,

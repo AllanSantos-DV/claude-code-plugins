@@ -2917,6 +2917,7 @@ async function loadOutcomePanel() {
   }
   if (s && s.error) { el.innerHTML = `<p class="text-muted">Results: ${escapeHtml(s.error)}</p>`; return null; }
   const pct = x => (x == null ? 'n/a' : Math.round(x * 100) + '%');
+  const fmtTok = n => n >= 1000 ? (n / 1000).toFixed(1).replace(/\.0$/, '') + 'k' : String(n);
   const stat = (value, label, badge, cls) => `<div class="stat"><div class="value">${value}</div><div class="label">${label}</div><span class="badge ${cls}">${badge}</span></div>`;
   const l = s.learning, c = s.curation, m = s.mechanical;
   let html = '<div class="grid">'
@@ -2924,6 +2925,8 @@ async function loadOutcomePanel() {
     + stat(pct(l.citationRate), 'Recalled lessons cited', `${l.cited} of ${l.injected} recalled`, l.injected ? 'badge-green' : 'badge-yellow')
     + stat(pct(c.share), 'Noisy commands handled by a script', `${c.scripts} scripts · ${c.uncovered} without one yet`, c.redirected ? 'badge-green' : 'badge-yellow')
     + stat(pct(m.share), 'Decisions taken by a rule', `${m.mechanical} by rule · ${m.handedBack} handed to the model`, m.mechanical ? 'badge-green' : 'badge-yellow')
+    + stat(String(s.loopsAvoided.denied), 'Loops avoided (blind re-runs denied)', `${s.loopsAvoided.sessions} sessions · a command that already failed, nothing edited since`, s.loopsAvoided.denied ? 'badge-green' : 'badge-yellow')
+    + stat(!s.compaction.enabled ? 'Off' : (s.compaction.mechanicalCut ? 'On' : 'On (model summary)'), 'Compaction', s.compaction.measured ? `~${fmtTok(s.compaction.tokensCut)} tokens cut (measured on ${s.compaction.measured} next turns)` : (s.compaction.runs ? `${s.compaction.runs} runs · savings not measured yet` : 'no compaction yet'), s.compaction.enabled ? (s.compaction.measured ? 'badge-green' : 'badge-yellow') : 'badge-red')
     + '</div>';
   const weeks = (s.byWeek || []).slice(-8);
   if (weeks.length) {

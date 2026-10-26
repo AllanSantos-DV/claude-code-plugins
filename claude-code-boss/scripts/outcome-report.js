@@ -53,6 +53,7 @@ function render(s) {
   L.push('DECISIONS TAKEN BY A RULE');
   L.push(`  ${m.mechanical} by rule (${Object.entries(m.byKind).map(([k, v]) => `${k} ${v}`).join(', ')})`);
   L.push(`  ${m.handedBack} handed back to the model (${Object.entries(m.handedBackByKind).map(([k, v]) => `${k} ${v}`).join(', ')}) → mechanical share ${pct(m.share)}`);
+  L.push(`  loops avoided: ${s.loopsAvoided.denied} blind re-run(s) denied in ${s.loopsAvoided.sessions} session(s) — ${s.labels.loopsAvoided}`);
   L.push('');
   L.push('BY WEEK (captured/recurring | recalled/cited | by rule/handed back = share | curated share)');
   for (const w of s.byWeek) L.push(`  ${w.week}  ${String(w.captured).padStart(4)}/${String(w.merged).padStart(3)} | ${String(w.injected).padStart(4)}/${String(w.cited).padStart(3)} | ${String(w.mechanical).padStart(5)}/${String(w.handedBack).padStart(5)} = ${pct(w.mechanicalShare).padStart(4)} | ${pct(w.curationShare).padStart(4)}`);

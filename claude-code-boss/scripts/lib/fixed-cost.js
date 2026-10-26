@@ -549,7 +549,7 @@ function auditBossConfig(f) {
   // 1,000,000 = the largest window of any model: compaction at 967k is the engine default for a 1M model, not a squeeze.
   const squeezes = w !== undefined && !(Number(w) >= 1000000);
   if (squeezes && !optedIn) {
-    items.push({ id: 'boss-fixed-window', label: 'Fixed auto-compact window', status: 'warn', detail: `settings.json env has ${WINDOW_KEY}=${w}: the engine compacts at ${Number(w) ? Number(w) - 33000 : '?'} tokens whatever the model window, mid-turn, with a warm cache (the 153000 case)`, fix: 'Run `node scripts/doctor.js --fix` to remove it (saved to the undo journal; `--undo` puts it back), or delete the key by hand. Compaction then follows the percent above.' });
+    items.push({ id: 'boss-fixed-window', label: 'Fixed auto-compact window', status: 'warn', detail: `settings.json env has ${WINDOW_KEY}=${w}: the engine compacts at ${Number(w) ? Number(w) - 33000 : '?'} tokens whatever the model window, mid-turn, with a warm cache (the 153000 case); the variable also outranks your /autocompact`, fix: 'Run `node scripts/doctor.js --fix` to remove it (saved to the undo journal; `--undo` puts it back), or delete the key by hand. Compaction then follows the percent above.' });
     actions.push({ kind: 'env-set', target: WINDOW_KEY, value: undefined, tokens: 0, why: 'fixed window instead of a percent of the model window' });
   } else items.push({ id: 'boss-fixed-window', label: 'Fixed auto-compact window', status: 'ok', detail: w === undefined ? 'none set (the engine follows the model window)' : (optedIn ? `${w}, opted in through costTuning.autoCompactWindow` : `${w}: not below the largest model window, so it does not force earlier compaction`), fix: '' });
   const ts = env[TOOL_SEARCH_KEY];
