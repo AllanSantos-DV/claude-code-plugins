@@ -21230,10 +21230,10 @@ test('capture-dispatch: run offers from the queue, then acks when capture_lesson
   const res = cd.run({ session_id: sid, cwd, transcript_path: tp });
   assert(res && res.block === true, 'offers a block');
   assert(/capture_lesson/.test(res.reason), 'instruction present');
-  assert(res.reason.includes('answer 6'), 'carries recent content');
   assert(queue.getState(project, sid).offer, 'offer opened on the queue');
   // agent acks via the tool (capture_lesson(windowId) or capture_ack) → next Stop drains, no re-offer.
   const wid = queue.getState(project, sid).offer.windowId;
+  assert(queue.readWindow(wid).includes('answer 6'), 'the staged window carries recent content');
   queue.recordAck(wid, 'captured');
   const res2 = cd.run({ session_id: sid, cwd, transcript_path: tp });
   assert(!res2.block, 'after ack, no re-offer this Stop');
@@ -21259,7 +21259,7 @@ test('capture-dispatch: com outro bloqueio ja neste Stop a oferta pega carona (i
   _writeTurnsAsStops(tp, project, sid, [...all, ...turns(7, 12)]);
   assert(!cd.run({ session_id: sid, cwd, transcript_path: tp }).block, 'alone, inside the cooldown: waits');
   const ride = cd.run({ session_id: sid, cwd, transcript_path: tp }, { blockPending: true });
-  assert(ride.block && /answer 12/.test(ride.reason), 'rides the Stop another detector already blocks');
+  assert(ride.block && /answer 12/.test(queue.readWindow(queue.getState(project, sid).offer.windowId)), 'rides the Stop another detector already blocks');
   queue.reset(project, sid);
   const seen = [];
   const sd = require('./stop-dispatcher.js');
@@ -21381,8 +21381,9 @@ test('capture-dispatch: over-budget window is offered in chunks, never skipping 
   for (let stop = 0; stop < 30; stop++) {
     const res = cd.run({ session_id: sid, cwd, transcript_path: tp }, deps);
     if (!(res && res.block)) break;
-    for (let i = 1; i <= 12; i++) if (res.reason.includes('MARK' + i + '_')) seen.add(i);
     const off = cq.getState(project, sid).offer;
+    const block = (off && cq.readWindow(off.windowId)) || '';
+    for (let i = 1; i <= 12; i++) if (block.includes('MARK' + i + '_')) seen.add(i);
     if (off) cq.recordAck(off.windowId, 'captured');
   }
   // No-skip invariant: offers start at the OLDEST cycle and are a CONTIGUOUS prefix
@@ -21722,6 +21723,48 @@ test('capture-queue: offer windowId is a random nonce — identical content acro
   // re-offering the same window after a reset also yields a fresh nonce
   q.reset(a.project, a.sid);
   q.reset(b.project, b.sid);
+});
+
+test('capture-dispatch: the Stop reason (printed in full by the CLI) carries no conversation text; the REAL capture_window tool hands the block to the model', async () => {
+  const url = require('url');
+  const cd = require('./capture-dispatch.js');
+  const queue = require('./lib/capture-queue.js');
+  const sd = require('./stop-dispatcher.js');
+  const mod = await import(url.pathToFileURL(path.join(process.env.CLAUDE_PLUGIN_ROOT, 'servers', 'brain-server', 'lib', 'mcp-server.js')).href);
+  const server = mod.createBrainServer({ pluginRoot: process.env.CLAUDE_PLUGIN_ROOT, mode: 'stdio' });
+  const sid = 'cap-quiet-' + Date.now();
+  const cwd = process.env.CLAUDE_PLUGIN_DATA;
+  const project = require('../engine/lib/project-id.js').resolveProjectId({ cwd });
+  const tp = path.join(cwd, `capquiet-${sid}.jsonl`);
+  queue.reset(project, sid);
+  const lines = [];
+  for (let i = 1; i <= 6; i++) {
+    lines.push(JSON.stringify({ type: 'user', promptId: 'p' + i, message: { role: 'user', content: 'question ' + i } }));
+    lines.push(JSON.stringify({ type: 'assistant', message: { role: 'assistant', model: 'claude-sonnet-5', content: [{ type: 'text', text: 'INGESTED-MARKER answer ' + i }] } }));
+  }
+  _writeTurnsAsStops(tp, project, sid, lines);
+  const out = await sd.dispatch({ session_id: sid, cwd, transcript_path: tp }, { profile: 'dev', shadowRate: 0, resolveProjectId: () => project, detectors: [{ name: 'capture-dispatch', mod: cd }] });
+  const visible = sd.mergeBlocks(out.blocks).reason || '';
+  const offer = queue.getState(project, sid).offer;
+  assert(offer, 'the Stop opened an offer');
+  const wid = offer.windowId;
+  const staged = queue.readWindow(wid);
+  assert(!visible.includes('INGESTED-MARKER') && !visible.includes('CONVERSATION_BLOCK'), `the visible Stop reason must not carry the block: ${visible}`);
+  assert(visible.length < 500 && visible.split('\n').length <= 2, `the visible reason stays short, got ${visible.length} chars`);
+  assert(visible.includes(wid) && /capture_window/.test(visible) && /capture_ack/.test(visible), 'the reason names the window and the tools');
+  const res = await server.handleTool('capture_window', { windowId: wid });
+  const text = res.content[0].text;
+  assert(!res.isError, `capture_window answers: ${text}`);
+  assertEq(text, staged, 'the tool returns the staged window verbatim');
+  assertEq(text, cd.buildInstruction(text.split('<<<CONVERSATION_BLOCK\n')[1].split('\nCONVERSATION_BLOCK>>>')[0], wid), 'same instruction + block the reason used to inline');
+  assert(text.includes('INGESTED-MARKER answer 6') && /UNTRUSTED/.test(text), 'the model gets the whole block, still framed as untrusted');
+  // Ack → the next Stop drains it and the window is gone.
+  server.handleTool('capture_ack', { windowId: wid, outcome: 'none' });
+  assert(!cd.run({ session_id: sid, cwd, transcript_path: tp }).block, 'ack releases the Stop');
+  assertEq(queue.readWindow(wid), null, 'the staged window is cleared on ack');
+  const gone = await server.handleTool('capture_window', { windowId: wid });
+  assert(gone.isError && /no open review window/.test(gone.content[0].text), 'a closed window fails loud');
+  queue.reset(project, sid);
 });
 
 test('capture bridge: the REAL capture_ack MCP tool writes the marker the queue drains (no fiction)', async () => {

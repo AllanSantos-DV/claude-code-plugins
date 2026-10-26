@@ -162,6 +162,44 @@ function clearAck(windowId) {
   try { fs.unlinkSync(_ackFile(windowId)); } catch (err) { void err; }
 }
 
+// The offered block, keyed by windowId like the ack marker, read back by the
+// capture_window MCP tool. The Stop hook's `reason` is printed in full in the
+// terminal ("Stop hook feedback: …" — anthropics/claude-code#104867), so the
+// block goes to the agent as a tool result (collapsed on screen) and the reason
+// only names the window. Already-redacted text, the same as the queue at rest.
+function _windowFile(windowId) {
+  return path.join(_runtimeDir(), `capture-window-${sanitizeSessionId(windowId)}.txt`);
+}
+function writeWindow(windowId, text) {
+  if (!windowId || !text) return false;
+  try {
+    const dir = _runtimeDir();
+    if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+    _pruneWindows(dir);
+    writeFileAtomic(_windowFile(windowId), text);
+    return true;
+  } catch (err) {
+    console.error(`[capture-queue] writeWindow failed: ${err.message}`);
+    return false;
+  }
+}
+function readWindow(windowId) {
+  if (!windowId) return null;
+  try { return fs.readFileSync(_windowFile(windowId), 'utf-8'); } catch (err) { void err; return null; }
+}
+function clearWindow(windowId) {
+  try { fs.unlinkSync(_windowFile(windowId)); } catch (err) { void err; }
+}
+/** A window whose session ended without ack or relent stays behind; drop it once stale. */
+function _pruneWindows(dir) {
+  const now = Date.now();
+  for (const name of fs.readdirSync(dir)) {
+    if (!name.startsWith('capture-window-')) continue;
+    const p = path.join(dir, name);
+    try { if (now - fs.statSync(p).mtimeMs > ORPHAN_STALE_MS) fs.unlinkSync(p); } catch (err) { void err; }
+  }
+}
+
 /**
  * Open an offer over the OLDEST queued cycles that fit maxChars (FIFO). Cycles
  * are NOT removed until ack(). Returns { windowId, text, cycles } or null.
@@ -240,11 +278,12 @@ function releaseOffer(project, sid) {
   for (let i = 0; i < 5; i++) {
     const state = _load(project, sid);
     if (!state.offer) return false;
+    const wid = state.offer.windowId;
     const expect = state.rev;
     state.offer = null;
     state.paused = true;
     state.rev = expect + 1;
-    if (_save(project, sid, state, expect)) return true;
+    if (_save(project, sid, state, expect)) { clearWindow(wid); return true; }
   }
   return false;
 }
@@ -327,7 +366,9 @@ function ack(project, sid, windowId, outcome) {
   state.queue = state.queue.filter(c => !ids.has(c.id));
   state.offer = null;
   state.rev = expect + 1;
-  return _save(project, sid, state, expect);
+  const saved = _save(project, sid, state, expect);
+  if (saved) clearWindow(windowId);
+  return saved;
 }
 
 /**
@@ -361,6 +402,7 @@ function reconcile(project, sid, deps) {
     state.rev = expect + 1;
     if (!save(project, sid, state, expect)) return { acked: false, dropped: false }; // commit failed → keep marker + offer for a retry
     clearAck(wid); // consume the marker only after the drain is durably committed
+    clearWindow(wid);
     return { acked: true, dropped: false, outcome, windowId: wid, afterBlocks };
   }
   // No ack → re-block (offer stays open, cycles stay queued). attempts is metrics-only.
@@ -371,4 +413,4 @@ function reconcile(project, sid, deps) {
   return { acked: false, dropped: false, retry: state.offer.attempts };
 }
 
-module.exports = { ingest, getState, reset, offer, currentOfferText, noteBlock, releaseOffer, adoptOrphans, ORPHAN_STALE_MS, ack, reconcile, recordAck, readAck, clearAck, _hash, _load, _save, _file };
+module.exports = { ingest, getState, reset, offer, currentOfferText, noteBlock, releaseOffer, adoptOrphans, ORPHAN_STALE_MS, ack, reconcile, recordAck, readAck, clearAck, writeWindow, readWindow, clearWindow, _hash, _load, _save, _file };
