@@ -9,6 +9,7 @@ const store = require('../engine/brain-store.js');
 const index = require('../engine/brain-index.js');
 const graph = require('../engine/brain-graph.js');
 const { inferDefaultScope, prepareForUserScope, USER_SENTINEL } = require('../engine/lib/scope-sanitizer.js');
+const { safeTags } = require('./lib/lesson-promotion.js');
 
 function parseArgs(argv) {
   const args = { project: '', commit: false, type: '' };
@@ -18,6 +19,25 @@ function parseArgs(argv) {
     else if (!args.project && !a.startsWith('--')) args.project = a;
   }
   return args;
+}
+
+/**
+ * The entry written to the user scope: title/summary/detail from the sanitizer, tags filtered like the automatic promotion
+ * (never one naming the source project), and NEVER `content.files` (paths of the source project) or its `source`.
+ */
+function toUserEntry(e, safeText, project) {
+  const safe = {
+    ...e,
+    title: safeText.title,
+    summary: safeText.summary,
+    content: { detail: safeText.detail },
+    tags: safeTags([e], [project]),
+    source: {},
+    scope: 'user',
+    project: USER_SENTINEL,
+  };
+  delete safe.id;
+  return safe;
 }
 
 async function main() {
@@ -77,15 +97,7 @@ async function main() {
         rejected++;
         continue;
       }
-      const safe = {
-        ...e,
-        title: prep.safe.title,
-        summary: prep.safe.summary,
-        content: { ...(e.content || {}), detail: prep.safe.detail },
-        scope: 'user',
-        project: USER_SENTINEL,
-      };
-      delete safe.id;
+      const safe = toUserEntry(e, prep.safe, project);
 
       await store.init({ project });
       await index.init({ project });
@@ -110,4 +122,5 @@ async function main() {
   console.log(`\npromoted=${promoted} rejected=${rejected} failed=${failed}`);
 }
 
-main().catch(err => { console.error(err); process.exit(1); });
+if (require.main === module) main().catch(err => { console.error(err); process.exit(1); });
+module.exports = { toUserEntry };

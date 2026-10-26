@@ -180,8 +180,15 @@ async function runCommand(cmd, args, deps) {
   if (cmd !== 'scan' && cmd !== 'apply') return { code: 2, out: 'usage: lesson-promote.js scan | apply | list | undo <id>...|--all  [--json] [--data-dir <dir>] [--auto]' };
   if (deps.backend.peekMode() !== 'mcp-memory') return { code: 0, out: 'skipped: lesson promotion reads the lessons of every project together, which only the mcp-memory backend allows', data: { ok: true, skipped: 'backend-not-mcp-memory' } };
   if (args.auto && !cfg.enabled) return { code: 0, out: 'skipped: kb.promotion.enabled is false', data: { ok: true, skipped: 'disabled' } };
-  const built = await buildPlan(deps);
   const mode = args.auto ? cfg.mode : (cmd === 'apply' ? 'apply' : 'dry-run');
+  if (mode === 'dry-run') return planAndRun(deps, args, cmd, mode);
+  const run = await registry.withRunLock(dataDir, () => planAndRun(deps, args, cmd, mode));
+  return run.busy ? { code: 1, out: `another promotion run is in progress (${run.reason}) — nothing was copied`, data: { ok: false, busy: true } } : run;
+}
+
+async function planAndRun(deps, args, cmd, mode) {
+  const { cfg, dataDir } = deps;
+  const built = await buildPlan(deps);
   if (mode === 'dry-run') {
     const out = renderScan(built, cfg);
     if (args.auto) {

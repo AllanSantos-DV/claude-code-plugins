@@ -1,5 +1,14 @@
 # Backlog
 
+## Triagem do backlog e ganhos puros da lente de feature-irmã (pedido do orquestrador, 2026-10-26) — na develop, aguardando o dono, sem release
+
+Decidido (Jarvis, 26/10): os ~32 itens abertos foram triados (cada um ganhou a linha "Decidido" abaixo do seu texto); sobraram abertos só os que mudam o que o usuário vê/decide (Desktop, nome do plugin, `mode: apply`, painel) e os técnicos não feitos, listados com esforço.
+
+- [x] **Lente 1 — PowerShell com a mesma cobertura do Bash** (`hooks/hooks.json`, `scripts/lib/shell-tool.js`): `curation-detect`, `decision-detect`, `error-guard` e o índice de falhas da sessão (`session-failures`) tratam `PowerShell` como `Bash`; `hooks.json` liga o dispatcher PostToolUse e o `error-guard` ao matcher PowerShell. O `curation-guard` (dono do `updatedInput` no Bash) continua fora: no PowerShell o dono é o `powershell-guard`. Teste: `PowerShell parity: …`.
+- [x] **Lente 2 — painel "Results" na Home** (`scripts/dashboard.js` `getOutcomeSummary`, `/api/metrics/outcome`; `dashboard/index.html` `loadOutcomePanel`): mesmo carregador e mesmo resumo do `outcome-report.js`. Teste: `dashboard /api/metrics/outcome: …`.
+- [x] **Lente 3 — `compat-check` e `subagent-report` no Doctor** (`scripts/doctor.js`, checks `claude-compat` e `subagent-contexts`, só com `--cost`/auditoria; binário não achado = aviso, nunca "ok"). O "card" é o item do Doctor, que o painel já exibe. Teste: `doctor: claude-compat and subagent-contexts …`.
+- [x] **Lente 7 — `file-edit-detect` com `MultiEdit` no matcher** (`hooks/hooks.json`). Coberto pelo teste de paridade.
+
 ## Stop hook despejava o bloco de captura na tela do CLI (pedido do orquestrador, 2026-10-26) — na develop, aguardando o dono, sem release
 
 - [x] **Corrigido — o `reason` do Stop levava o bloco `CONVERSATION_BLOCK` inteiro** (`scripts/capture-dispatch.js`): o Claude Code mostra o `reason` (e também o
@@ -60,8 +69,9 @@ Origem: relato do dono de várias máquinas; Logs do painel: `memory server unre
   e uma recusa do próprio `list_projects` vira erro claro com o texto do servidor. Falha de transporte continua lançando. Teste: `dashboard scanServerKb: a project id the server refuses…`
   (falha antes com o erro do print, passa depois); smoke do painel real contra daemon falso: `smoke/dashboard-kb-refused-project.mjs`.
 - [x] **Pedido do dono (complemento) — o painel diz qual projeto está com erro** (`scripts/dashboard.js` `scanServerKb(client, issues)` → `/api/status` `brain.issues`; `dashboard/index.html` `brainIssuesHtml`): aviso na Home com id, pasta e motivo do servidor e botão Copy; resposta não-JSON de um projeto vai pelo mesmo caminho. Testes: `dashboard scanServerKb…` (issues) e `dashboard Home: o aviso de projetos recusados…`.
-- [ ] **Fora de escopo — as memórias desses ids ficam invisíveis**: os documentos sob a pasta home/raiz continuam no servidor, mas nenhuma leitura os alcança. Proposta (projeto mcp-memory,
+- [x] **Fora de escopo — as memórias desses ids ficam invisíveis**: os documentos sob a pasta home/raiz continuam no servidor, mas nenhuma leitura os alcança. Proposta (projeto mcp-memory,
   não editado): oferecer a migração com `memory_reclassify` (`from_project_id` → `clear_project_id` ou um projeto real) ou o painel apontar o caminho; decidir com o dono do servidor.
+  **Decidido (Jarvis, 26/10): é do projeto mcp-memory (`memory_reclassify`); este repo não tem o que corrigir. Reportado ao orquestrador; sem edição lá.**
 
 ## Cache de 5 min por pasta sem o corte (pedido do orquestrador, 2026-10-22) — publicado na v3.10.1 (tag a partir da main; smoke interativo real no HEAD fadc224: troca para 5m, gate compact cache-cold, poda 97.753 → 32.813 tokens)
 
@@ -94,15 +104,19 @@ Origem: `docs/research/compreensao-de-intencao-2026-10-17.md` (projeto orchestra
 - [x] **Achado e corrigido na hora — `kinds` não filtrava nada no mcp-memory**: o `search_memory` devolve hits sem `type` (viravam `memory`), então `kinds:["lesson"]` esvaziava todo resultado (visto na chamada real no ambiente instalado). Agora o filtro vai ao servidor (um `search_memory` por tipo, `metadata.type`) e cada hit sai marcado com o tipo que casou. Continua sem idade no remoto: o servidor não devolve `createdAt` na busca, então `ageDays` é `null` ali.
 - [x] **Marcadores conferidos contra transcripts reais** (2026-10-17): não há turno de espelho (`mirror_*` é ferramenta de saída, não vira turno de entrada); o que existe são as entregas do whatsapp-bridge, cobertas. Formato novo do orquestrador que fuja dos padrões passa e vira lição: ajustar `NON_LESSON_PATTERNS` em `scripts/lib/prompt-kind.js`.
 - [x] **Falso achado: turnos "Base directory for this skill:…" NÃO entram na fila de captura.** Medido em 120 sessões reais: as 36 expansões de skill são `user` com `isMeta:true` + `sourceToolUseID`, que `transcript-block` já exclui; 0 em 114 ciclos reais. O achado anterior vinha de ler `user-text` sem olhar `isMeta`. Sem defeito, sem correção; teste fixa o comportamento.
-- [ ] **Remoto sem piso lexical**: com o mcp-memory fora, o recall continua vazio (agora marcado `degraded`). Um piso local exigiria um índice local do que está no servidor.
+- [x] **Remoto sem piso lexical**: com o mcp-memory fora, o recall continua vazio (agora marcado `degraded`). Um piso local exigiria um índice local do que está no servidor.
+  **Decidido (Jarvis, 26/10): não será feito: exigiria indexar localmente o conteúdo do servidor (esforço G) para um caso em que o recall já sai marcado `degraded` e o disjuntor evita espera. Revisitar só se o dono relatar recall vazio recorrente.**
 
 ## Faixa acima do prompt e `/boss` — mod do Desktop, etapa 1 (pedido do orquestrador, 2026-10-16) — em validação pelo dono
 
 Pesquisa: `docs/research/mods-desktop-2026-10-16.md` (local). Feito em `develop`: `hooks/boss.mjs`, `scripts/lib/boss-band.mjs`, `scripts/boss-summary.js`,
 `GET /hook/boss-summary` (`servers/brain-server/lib/http-daemon.js`), `hook_boss_summary` (`scripts/lib/hook-tools.js`), testes em `scripts/test-units.js`.
 
+
+  **Decidido (Jarvis, 26/10): fica: só o dono valida no Desktop dele.**
 - [ ] **Validação no Desktop real** (dono): faixa aparecendo depois de `/reload-plugins`, fetch ao 127.0.0.1:38217 de lá, `/boss` respondendo, faixa sumindo com `disableAllHooks`.
 - [ ] **Etapa 2 (pane)**: só se o uso da faixa justificar (decisão do dono).
+  **Decidido (Jarvis, 26/10): fica: decisão de produto do dono; recomendação: esperar o uso da faixa aparecer nas métricas antes de abrir a etapa 2.**
 - [x] **Achado e corrigido na hora — a faixa não aparecia no Desktop** (relato do dono, 2026-10-16). Causa: o Desktop roda as sessões da aba Code pelo SDK
   (`claude.exe --input-format stream-json ...`, engine 2.1.299) e lá o `session.start` chega com `isInteractive: false` — provado com um mod de sonda no
   binário do Desktop (`PROBE isInteractive=false` no debug log). O `session.start` da faixa tinha matcher `{ isInteractive: true }`: no Desktop não registrava
@@ -126,11 +140,14 @@ Pesquisa: `docs/research/mods-desktop-2026-10-16.md` (local). Feito em `develop`
   de uma sessão aberta pegou o lock de spawn e subiu o daemon da pasta ANTIGA (`/health` → `pluginRoot` `...\f1d1c21f6e96`); o script saiu com
   "brain daemon did not come up cleanly ... another process holds the spawn lock" depois de já ter gravado o registry. Proposta: no 5c, esperar o lock e,
   se o daemon que subiu não for desta instalação, pará-lo e subir de novo (o mesmo `if` que já existe antes do ensure), em vez de falhar.
-- [ ] **Fora de escopo — o Desktop mostra "/boss não é um comando aqui." e executa o `/boss` mesmo assim** (captura da sessão nova, 2026-10-16). O aviso vem
+  **Decidido (Jarvis, 26/10): técnico, NÃO feito nesta passada (ferramenta local gitignorada em `.claude/scripts/`; proposta no item). Esforço P.**
+- [x] **Fora de escopo — o Desktop mostra "/boss não é um comando aqui." e executa o `/boss` mesmo assim** (captura da sessão nova, 2026-10-16). O aviso vem
   do próprio Desktop, que monta a lista de comandos numa consulta temporária (`[CCD] temporary query` no main.log). Comando registrado por módulo
   (`$.command.register` no `session.start`) aparentemente não entra nessa lista. Investigar se é limite do Desktop 2.42304 (reportar) ou se há outro jeito de declarar o comando.
-- [ ] **Fora de escopo — pastas `3.9.0-dev.<sha>` com o código do marketplace ficaram no cache** (`~/.claude/plugins/cache/allansantos-plugins/claude-code-boss/`,
+  **Decidido (Jarvis, 26/10): é limite do Claude Desktop (lista de comandos montada fora dos módulos); não há como corrigir no plugin. Reportado ao orquestrador para levar à Anthropic.**
+- [x] **Fora de escopo — pastas `3.9.0-dev.<sha>` com o código do marketplace ficaram no cache** (`~/.claude/plugins/cache/allansantos-plugins/claude-code-boss/`,
   criadas pelos reloads antes da correção). Não são apagadas porque um processo pode estar rodando delas (`.in_use`). Limpar quando nenhuma sessão as usar.
+  **Decidido (Jarvis, 26/10): é limpeza de estado da máquina do dono (cache do Claude Code, `.in_use`), não código; nenhum usuário do plugin as tem. Sem ação no repo.**
 - [x] **RESOLVIDO em 2026-10-17 — curadoria sem saída para um script `.ps1` rodado por caminho.** Duas causas: `timeout N` não era wrapper na assinatura
   (`engine/lib/command-signature.js` `WRAPPER_PREFIX`), então o `100` entrava no alias e era recusado como valor único; e o caminho de um script numa pasta
   NOMEADA sob um temp (`C:\tmp\diag-scripts\x.ps1`) era tratado como arquivo temporário (`scripts/lib/shell-register.js` `tempPathIsVolatile`: agora só é volátil
@@ -150,8 +167,10 @@ Pesquisa: `docs/research/mods-desktop-2026-10-16.md` (local). Feito em `develop`
   `.claude-plugin/plugin.json` e `marketplace.json` `plugins[0].name`). Visto rodando `claude plugin validate claude-code-boss` e `claude plugin validate .` em 2026-10-16. Hoje o
   plugin instala e carrega (a compactação roda em produção), mas o validador oficial falha e uma regra futura do engine pode passar a barrar a instalação. Proposta: o dono
   decidir um nome novo (afeta `enabledPlugins`, `CLAUDE_PLUGIN_DATA`, o id `claude-code-boss@...`, servidor MCP `plugin:claude-code-boss:brain-server`, páginas) e planejar a migração.
+  **Decidido (Jarvis, 26/10): fica: renomear muda o que o usuário vê (id `claude-code-boss@…`, `enabledPlugins`, pasta de dados, servidor MCP). Pesquisa: a regra é oficial — "Starts with `claude-`, `anthropic-`, `anthropics-`, or `cc-plugin-` → Error" (https://code.claude.com/docs/en/plugins-reference, acessado em 26/10/2026). Recomendação: planejar a migração para um nome sem o prefixo antes de o engine passar a barrar a instalação; só com ordem do dono.**
 - [ ] **Risco aberto — a rota roda na fila pesada do hook worker**: ~0,7 s a cada 30 s com sessão aberta (230 projetos de métricas aqui); um Stop que chegue nesse
   instante espera até 0,7 s. Proposta se incomodar: ler as métricas de forma incremental (último `id` por projeto) ou subir o cache para 60 s.
+  **Decidido (Jarvis, 26/10): técnico, NÃO feito nesta passada (leitura incremental por projeto). Esforço M; só se algum Stop atrasado for observado.**
 
 ## Brain "fora do ar" com "Invalid JSON generated" (pedido do orquestrador, 2026-10-16) — achado e corrigido na hora, aguardando instalação local
 
@@ -180,24 +199,36 @@ Relatório com fontes: `docs/research/compat-2.1.300/relatorio.md` (local) e `do
   disparo semanal em `curation-session.js`; eventos `lesson.promoted`/`lesson.promotion.reverted` e seção PROMOÇÕES do `outcome-report.js`. Copia, nunca move; reversível; testes com
   backend, embedder e métricas falsos e `dataDir` temporário. Riscos conhecidos abertos, cada um com a proposta:
   - [ ] **Depende do dono confirmar o padrão `mode: apply`** (promove sozinha, com aviso e `undo`). Alternativa conservadora: `dry-run` por padrão e o dono liga. Não instalado, não aplicado em dado real.
+    **Decidido (Jarvis, 26/10): fica: muda o fluxo de dados do usuário. Recomendação: `dry-run` por padrão e o dono liga (padrão da casa para o que move dado), com o aviso do SessionStart mostrando o que o `scan` promoveria.**
   - [ ] **O recall não grava quais lições entraram** (`retrieve.injected` só tem contagens), então a taxa de citação das promovidas contra as demais é aproximada. Proposta: gravar os `entryId` injetados (ou só os de origem `other`) em `retrieve.injected`.
-  - [ ] **O texto copiado pode citar outro projeto** de forma que a limpeza não pega (ela remove só id e nome, com >= 5 caracteres, dos projetos-fonte). Proposta: lista de nomes de todos os projetos conhecidos na limpeza, ou revisão do dono no primeiro ciclo (`scan`).
-  - [ ] **"Projeto distinto" é aproximado**: último segmento do id (dois repos de mesmo nome e donos diferentes contam como um, lado conservador); projeto pai e filho de monorepo contam como dois em R2. Proposta: usar a cadeia de ancestrais do `project-id` para unificar.
+    **Decidido (Jarvis, 26/10): técnico, NÃO feito nesta passada: mexe no caminho quente do recall (`retrieve.injected`). Esforço M.**
+  - [x] **O texto copiado pode citar outro projeto** de forma que a limpeza não pega (ela remove só id e nome, com >= 5 caracteres, dos projetos-fonte). Proposta: lista de nomes de todos os projetos conhecidos na limpeza, ou revisão do dono no primeiro ciclo (`scan`).
+    **Decidido (Jarvis, 26/10): aceito: a limpeza cobre os projetos-fonte; qualquer citação a um terceiro é pega na revisão do primeiro `scan` (modo dry-run recomendado acima). Não vale lista global de nomes (falso positivo em nomes comuns).**
+  - [x] **"Projeto distinto" é aproximado**: último segmento do id (dois repos de mesmo nome e donos diferentes contam como um, lado conservador); projeto pai e filho de monorepo contam como dois em R2. Proposta: usar a cadeia de ancestrais do `project-id` para unificar.
+    **Decidido (Jarvis, 26/10): aceito: o erro é para o lado conservador (conta menos projetos distintos), não promove lição indevida.**
   - [ ] **Cada execução refaz o embedding de todas as lições** (~36 s para 2300 lições aqui). Proposta: cache de vetor por `entryId` + hash do texto em `promotions/`.
-  - [ ] **Só o backend mcp-memory.** No backend local não há leitura de todos os projetos num lugar só; a CLI diz que não se aplica. Proposta: ler cada `brain.db` por `scripts/lib/brain-projects.js` se algum usuário local pedir.
-  - [ ] **Duas execuções manuais simultâneas** podem disputar o registro (o disparo semanal tem carimbo). Proposta: `engine/lib/process-lock.js` em volta do `apply`.
-  - [ ] **`scripts/scope-bulk-reclassify.js` ainda copia `content.files` e as tags sem sanitizar** (achado junto; a promoção automática não tem essa falha). Proposta: reaproveitar `safeTags` e o corte de `files` de `lesson-promotion.js`.
+    **Decidido (Jarvis, 26/10): técnico, NÃO feito nesta passada (cache de vetor por `entryId`+hash). Esforço M; roda 1×/semana em segundo plano.**
+  - [x] **Só o backend mcp-memory.** No backend local não há leitura de todos os projetos num lugar só; a CLI diz que não se aplica. Proposta: ler cada `brain.db` por `scripts/lib/brain-projects.js` se algum usuário local pedir.
+    **Decidido (Jarvis, 26/10): não será feito: nenhum usuário do backend local pediu e o backend padrão é mcp-memory (YAGNI).**
+  - [x] **Duas execuções manuais simultâneas** podem disputar o registro (o disparo semanal tem carimbo). Proposta: `engine/lib/process-lock.js` em volta do `apply`.
+    **Decidido (Jarvis, 26/10): resolvido: `registry.withRunLock` (`scripts/lib/promotion-registry.js`) recusa um segundo `apply` enquanto um roda (`lesson-promote.js`). Teste: `lesson promotion: the weekly stamp is claimed atomically, a second apply is refused…`.**
+  - [x] **`scripts/scope-bulk-reclassify.js` ainda copia `content.files` e as tags sem sanitizar** (achado junto; a promoção automática não tem essa falha). Proposta: reaproveitar `safeTags` e o corte de `files` de `lesson-promotion.js`.
+    **Decidido (Jarvis, 26/10): resolvido: `toUserEntry` não copia `content.files` nem `source` e filtra tags com `safeTags`. Mesmo teste acima.**
 - [x] **Subagentes: TTL de 1 h não compensa** (medido: 37 regravações a frio = 5 milhões de tokens contra 63 milhões de escrita; ganho 6 M × custo extra 47 M equivalentes)
   e **janela de compactação**: o engine corta a ~167 mil (janela de 200 mil de subagente); 7% passam de 150 mil. `subagent-report.js` só recomenda ajuste por tipo.
-- [ ] **Cobertura dos eventos de regra**: só existem desde ~3/10 e a retenção do ruído é de 14 dias; a curva por tempo de uso só fica estável repetindo `outcome-report.js` daqui a semanas.
+- [x] **Cobertura dos eventos de regra**: só existem desde ~3/10 e a retenção do ruído é de 14 dias; a curva por tempo de uso só fica estável repetindo `outcome-report.js` daqui a semanas.
   O `lesson.captured` não carrega `session_id`, então lições por sessão não são medidas; usar o limite de carga em massa (40 por projeto-semana) é uma heurística.
+  **Decidido (Jarvis, 26/10): é acompanhamento de dados, não defeito; o painel "Results" da Home (`/api/metrics/outcome`) agora mostra a curva sem rodar o CLI.**
 - [x] **Subagentes têm TTL de cache próprio** (`subagentPromptCacheTtl`): medido em 681 execuções — 1 h não compensa (ver o item de subagentes acima). Nada a mudar.
 - [ ] **`CLAUDE_CODE_AUTO_COMPACT_WINDOW` (opt-in do boss, desligado) ganha do `/autocompact` do usuário** (a env tem precedência sobre comando, flag e
   settings; fonte: docs/en/env-vars). Se alguém ligar a opção, o `/autocompact` deixa de valer sem aviso. Avisar no painel ou migrar para `modelSettings`.
-- [ ] **Outro dono (reportado ao orquestrador): hook HTTP `127.0.0.1:8765/hooks/pretool?client=claude` estourou o prazo 76 vezes** (PreToolUse Write/Edit/Bash,
+  **Decidido (Jarvis, 26/10): fica: avisar no painel muda o que o usuário vê. Recomendação: migrar para `modelSettings` (não perde para o `/autocompact`) em vez de só avisar.**
+- [x] **Outro dono (reportado ao orquestrador): hook HTTP `127.0.0.1:8765/hooks/pretool?client=claude` estourou o prazo 76 vezes** (PreToolUse Write/Edit/Bash,
   9–15/10; 19 em 15/10, já na 2.1.300 — continua); não é do boss (os timeouts do boss nos mesmos transcripts: 6 em 9/10 e 52 em 11/10, nenhum de 12 a 16/10).
-- [ ] **Compactação ociosa e o gate de cache frio**: quando o engine compactar sozinho, o gate do boss deixa de agir nessas sessões (o contexto já
+  **Decidido (Jarvis, 26/10): é de outro projeto (hook HTTP em 127.0.0.1:8765, não do boss); já reportado ao orquestrador.**
+- [x] **Compactação ociosa e o gate de cache frio**: quando o engine compactar sozinho, o gate do boss deixa de agir nessas sessões (o contexto já
   cai abaixo do limiar). Remedir `compaction-report` quando a flag ligar: o boss pode ficar redundante nas sessões de 1 h.
+  **Decidido (Jarvis, 26/10): é medição futura condicionada a uma flag do engine; o `compaction-report` e o painel já mostram o efeito quando ela ligar. Sem trabalho de código agora.**
 
 ## Check-up do motor (2026-10-15, branch `fix/checkup-engine`) — achados corrigidos na hora e o que ficou
 
@@ -234,14 +265,16 @@ Relatórios: `docs/research/checkup/` (local). Tudo abaixo marcado [x] tem teste
   desfecho por `windowId`, uma vez por oferta, só para ofertas marcadas `ackTracked` (gravado pelo `capture-dispatch` a partir de agora);
   as anteriores aparecem como "não registradas". Teste `leitores:` (janela que re-desiste conta 1; oferta sem marca não vira "não
   respondida") e `capture-dispatch: emits capture.offered`. `docs/research/checkup/s4-capture-ack.txt`.
-- [ ] **SessionStart real do build novo, amostra pequena** (n=7 depois das 19:30Z de 15/10): dispatcher p50 de 2.954 ms no startup (n=3)
+- [x] **SessionStart real do build novo, amostra pequena** (n=7 depois das 19:30Z de 15/10): dispatcher p50 de 2.954 ms no startup (n=3)
   e 3.088 ms no resume (n=4), contra 2.177/2.318 ms antes (n=109/55). O comando no transcript não diz o build. Remedir com n ≥ 30
   (`.claude/scripts/transcript-sessionstart.cjs`) antes de concluir melhora ou piora. **4ª sessão (15/10 ~22:00Z):** o script agora
   data o build de cada sessão pela linha do tempo dos backups do registro (`installed_plugins.json.bak.<ts>` = estado antes de cada
   instalação). Ainda sem amostra: d9617389efbd startup n=3 (p50 4.190 ms), 53deb016d32c n=0; o recall depois do corte de 300 chars tem
   5 consultas (1 timeout, p50 3,5 s) e 1 evento de citação. A 1ª sessão de cada build roda o doctor completo (p95 de 10-14 s nos três
   últimos builds), então o p95 de um build só vale com n bem acima de 1. Remedir com uso real (`s4-remeasure.txt`).
+  **Decidido (Jarvis, 26/10): é remedição com n ≥ 30, dependente de uso real; sem defeito conhecido. Repetir o `doctor`/`hookLatency` quando houver amostra.**
 - [ ] **P13 (proposta, não implementar sem o Allan):** expor `mechanicalCut`, `briefTailTokens` e `folderTtl` na Home do painel.
+  **Decidido (Jarvis, 26/10): fica: muda a Home que o usuário vê. Recomendação: esperar o painel "Results" ser usado; só então decidir quais dos três valores merecem tile.**
 - [x] **Smoke `smoke-decision` desatualizado** (4 de 8 asserções falham já antes da mudança; movido para `smoke/plugin-smokes/`). Visto ao
   rodá-lo depois de mover. Eram duas causas: o smoke não passava `session_id` (o decision-promote só mostra a entrada da própria sessão
   desde a 3.x) e um `CLAUDE_PLUGIN_DATA` vazio segue o ponteiro da pasta ativa sob o HOME até a pasta real, então os hooks gravavam fora
@@ -302,7 +335,8 @@ Relatórios: `docs/research/checkup/` (local). Tudo abaixo marcado [x] tem teste
 - [x] **Retenção do one-off store**: teto de 500 entradas por projeto (na criação e no `prune`), despejando primeiro as menos
   recorrentes e mais antigas; marcação one-hit e a entrada recém-criada nunca saem. Real: 13.894 entradas em 120 arquivos, 97 % vistas
   uma vez, 3.215 num só projeto. Um comando despejado que volta recomeça a contagem em 1. Teste `oneoff-store: teto por projeto`.
-- [ ] **Medir depois de instalar**: precisão do recall (era 17,6 % com a chave errada), recall-health por braço, SessionStart real.
+- [x] **Medir depois de instalar**: precisão do recall (era 17,6 % com a chave errada), recall-health por braço, SessionStart real.
+  **Decidido (Jarvis, 26/10): é remedição pós-instalação (precisão do recall, recall-health por braço); a precisão aparece nos cards da Home. Sem trabalho de código.**
 
 ## Vitrine em três camadas: changelog fora da apresentação (pedido do Allan via orquestrador, 2026-10-15) — achado e corrigido na hora, aguardando a validação do Allan
 
@@ -314,8 +348,10 @@ Relatórios: `docs/research/checkup/` (local). Tudo abaixo marcado [x] tem teste
   para o changelog. Provado: a página antiga falha (`3.1.0, 2.1.274, …; "Novo na 3"`), a nova passa; 6 testes em `test-units.js` (filtro `pages-guard`). Regra gravada no `vitrine.agent.md` e no `AGENTS.md`.
 - [x] **Detalhe técnico na apresentação, corrigido junto**: os cards de compactação diziam "30% de 200K = 60k; 30% de 1M = 300k", "`--resume`" e "corta 85% ou mais"; viraram texto simples
   nos dois temas. Fica o pré-requisito "Node.js 22.13+" da instalação (informação que quem instala precisa).
-- [ ] **Limite do guard, registrado**: ele não pega detalhe técnico sem número de versão (não há regra exata, só julgamento); isso fica com o agente da vitrine, que tem a regra nas instruções.
-- [ ] **Fora do escopo, registrado**: `rf-reviewer` não tem `changelog.html` próprio; passa a regra porque linka o `CHANGELOG.md` do GitHub no rodapé.
+- [x] **Limite do guard, registrado**: ele não pega detalhe técnico sem número de versão (não há regra exata, só julgamento); isso fica com o agente da vitrine, que tem a regra nas instruções.
+  **Decidido (Jarvis, 26/10): limite aceito e documentado: sem regra exata não há como o guard mecânico julgar; fica com o agente `vitrine`.**
+- [x] **Fora do escopo, registrado**: `rf-reviewer` não tem `changelog.html` próprio; passa a regra porque linka o `CHANGELOG.md` do GitHub no rodapé.
+  **Decidido (Jarvis, 26/10): aceito: o rodapé linka o `CHANGELOG.md` do GitHub e a regra das três camadas passa.**
 
 ## Contexto pronto nas rajadas de leitura — protótipo opt-in e medição com sessões reais (PEDIDO 413, pendência 4009a9, 2026-10-15)
 
@@ -2589,11 +2625,15 @@ Lacunas conhecidas do gate de project id (2.29.1):
 - [x] **Reinício em fases por dia e sessões paralelas (pedido do orquestrador, 2026-10-19)**: medido nas transcrições reais, com o dia inteiro e todas as sessões. A 400k, 1,07 cruzamento por sessão-dia; reiniciar com handoff na fronteira de tarefa (commit) e cache quente economiza ~1% (US$ 3–7 por aviso); compactar no lugar empata. Relatório: `docs/research/fases-handoff/fases-handoff-2026-10-19.md`.
 - [x] **Reinício em fases como opção desligada por padrão (pedido do orquestrador, 2026-10-19)**: `compaction.phaseRestart` + `phaseRestartTokens` (400k); aviso < 80 tokens e toast no primeiro prompt depois de um turno com `git commit`, cache quente, uma vez por cruzamento (`hooks/compaction.mjs` → `phaseRestart`). Ligar no painel roda antes `scripts/phase-restart-measure.js` (replay só leitura das transcrições de 30 dias); sem ganho medido fica desligado e oferece "ligar mesmo assim". Testes em `test-units.js` (núcleo, módulo com engine falso, medição só leitura, rota do painel).
 - [ ] **Smokes locais do plugin desatualizados (achado em 2026-10-19, fora do escopo do reinício em fases)**: `claude-code-boss/smoke/self-review.mjs` carrega `scripts/brain-store.js`/`brain-index.js`, que moveram para `engine/`; `smoke/doctor.mjs` falha em "healthy env" porque o fixture não tem `config/brain-config.json` (`[brain-config] load failed … ENOENT`). Os dois são gitignored (não rodam no CI) e os comportamentos têm cobertura em `test-units.js`; corrigir os caminhos/fixtures ou aposentar os smokes. Além disso, `smoke/` da raiz acumulou scripts de uso único (`patch-*`, `mutate*`, `recover-*`) que não devem rodar em laço: o README lista só os smokes de verdade.
+  **Decidido (Jarvis, 26/10): técnico, NÃO feito nesta passada (smokes gitignorados, fora do CI; caminhos/fixtures ou aposentar). Esforço P.**
 
 ## Auditoria pré-release 3.10.0 (release-auditor, 2026-10-19) — consultiva, sem bloqueio
 - [ ] **Promoção de lição para o escopo do usuário nasce ligada em `apply`** (`config/brain-config.json:63-64`, `engine/lib/brain-config.js:186`, disparo em `scripts/curation-session.js:116`): decisão de produto — o primeiro ciclo poderia ser `dry-run` até o dono ligar (o padrão da casa para o que muda o fluxo de dados é desligado). Documentado no CHANGELOG 3.10.0; reversível com `lesson-promote.js undo`.
-- [ ] **Registro de promoções sem lock e carimbo semanal não atômico** (`scripts/curation-session.js:116-117`, `scripts/lib/promotion-registry.js:41-43,55-60`): duas sessões abrindo juntas podem passar pelo `promotionDue` antes do `markPromotionRun`, duplicando a cópia em `__user__`; o JSON é last-writer-wins. Correção: reivindicar o carimbo com `wx`/mkdir atômico e lock ou CAS no registro.
+  **Decidido (Jarvis, 26/10): fica: decisão de produto, mesmo item de `mode: apply` acima; recomendação `dry-run` por padrão.**
+- [x] **Registro de promoções sem lock e carimbo semanal não atômico** (`scripts/curation-session.js:116-117`, `scripts/lib/promotion-registry.js:41-43,55-60`): duas sessões abrindo juntas podem passar pelo `promotionDue` antes do `markPromotionRun`, duplicando a cópia em `__user__`; o JSON é last-writer-wins. Correção: reivindicar o carimbo com `wx`/mkdir atômico e lock ou CAS no registro.
+  **Decidido (Jarvis, 26/10): resolvido: o registro já usa `withLock` em toda leitura-e-escrita; o carimbo agora é reivindicado por `claimPromotionRun` (checa e grava sob o mesmo lock) em `curation-session.js`. Teste do item "Duas execuções manuais simultâneas".**
 - [ ] **Checagem de identidade do daemon por `dataDir` em `/health` aberto** (`scripts/lib/module-daemon.mjs:51-59`): um processo na porta fixa poderia repetir o `dataDir` e receber o token; risco já declarado em `docs/SECURITY.md`; fechar com desafio HMAC no `/health`.
+  **Decidido (Jarvis, 26/10): técnico, NÃO feito nesta passada (desafio HMAC no `/health` muda o protocolo cliente↔daemon). Esforço M; risco já declarado em `docs/SECURITY.md`.**
 
 - [x] **Achado (sessão smart-tool) — graph-guard negava o primeiro `grep -r`/`rg` e vencia o redirect do Smart Tool 0.9.23** (`scripts/lib/graph-guard-core.js` `decideBroadSearch`, `scripts/curation-guard.js` passo 2.5, `scripts/graph-guard.js`). **RESOLVIDO em 2026-10-20 (develop, sem release)**: a ladder devolve `advise` (additionalContext, uma vez por busca única/sessão), nunca `deny`; testes de `test-hooks.js` atualizados (sem `permissionDecision`, aviso com `[graph-guard]`/`graph_search`/`graph_analyze`, retry silencioso). Suíte: 136/136; eslint limpo.
 
@@ -2605,6 +2645,8 @@ Lacunas conhecidas do gate de project id (2.29.1):
 - [x] **Achado (fora do escopo): pasta crua sem `.memory/project.json` e sem remoto git desliga a memória nos dois backends (local e mcp-memory) e instrui o agente a perguntar o nome do projeto** (visto numa sonda de isolamento: a resposta ao prompt foi a pergunta, não a tarefa). É o desenho do contrato de `project_id`, mas num `claude -p` ou num usuário que ignora a pergunta a memória fica desligada em silêncio. Proposta: o Doctor listar "memória desligada nesta pasta" no mapa do setup.
   **RESOLVIDO em 2026-10-23**: o Doctor ganhou a linha "Memory in this folder" (`setup-memory-scope`, `scripts/doctor.js` + `memory.scope` em `scripts/lib/setup-map.js`): sem id e sem opt-out é `warn` NÃO opcional ("OFF: ... nothing is remembered or saved here" + como nomear o projeto ou desligar de propósito), entra no aviso da 1ª sessão; com opt-out ou id aparece ok. Criação automática do id NÃO foi feita de propósito: sem remoto git nem marcador não há id derivável, e inventar um (nome da pasta) é o scope-junk que o contrato de `project_id` proíbe (e o `migrationHint` registra "o Boss nunca cria `.memory/project.json`"); onde o id é derivável (remoto git, marcador legado) a memória já está ligada. O aviso por sessão (`project-identity-advisory`/`project-id-stop`) segue. Testes em `test-units.js`.
 - [ ] **Achado (fora do escopo, ferramenta de medição): no Windows o `CLAUDE.md` do usuário é lido do perfil real mesmo com `CLAUDE_CONFIG_DIR`/`HOME`/`USERPROFILE` trocados** (só `CLAUDE_CODE_DISABLE_CLAUDE_MDS=1` fecha). Qualquer teste do Boss que prometa "ambiente limpo" por pasta temporária carrega as regras do dono. Proposta: os smokes que isolam o `claude -p` passarem a setar a variável e rodar uma sonda de isolamento.
-- [ ] **Achado (fora do escopo, Smart Tool): com `smart_search` disponível e até nomeado na instrução, o agente o usou em 15 de 72 execuções** (as consultas ficaram em Grep/Bash). Para o Smart Tool: a ferramenta não é descoberta como primeira escolha em projeto de ~260 arquivos.
+  **Decidido (Jarvis, 26/10): técnico, NÃO feito nesta passada (smokes de medição locais: setar `CLAUDE_CODE_DISABLE_CLAUDE_MDS=1`). Esforço P.**
+- [x] **Achado (fora do escopo, Smart Tool): com `smart_search` disponível e até nomeado na instrução, o agente o usou em 15 de 72 execuções** (as consultas ficaram em Grep/Bash). Para o Smart Tool: a ferramenta não é descoberta como primeira escolha em projeto de ~260 arquivos.
+  **Decidido (Jarvis, 26/10): é do Smart Tool (descoberta da ferramenta); reportado ao orquestrador, sem edição lá.**
 
 - [x] **Achado e corrigido (2026-10-23): `smoke/doctor.mjs` (local, gitignored) falhava no cenário "healthy env"**: a raiz de fixture não tinha `node_modules`, então a checagem `native-deps` (crítica) falhava numa máquina saudável. A fixture agora aponta um junction para o `node_modules` real (removido antes do `rm` recursivo para nunca tocar no original). 4/4 verdes.

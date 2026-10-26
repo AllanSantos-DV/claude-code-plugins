@@ -25,6 +25,7 @@
  * parsed (memo per thread). A shrunk file (compaction rewrite) restarts the scan;
  * a cold start reads at most the last COLD_MAX_BYTES.
  */
+const { isShellTool } = require('./shell-tool.js');
 const fs = require('fs');
 const path = require('path');
 const { canonicalSig } = require('../../engine/lib/command-signature.js');
@@ -75,7 +76,7 @@ function _ingestLine(st, line) {
     if (!b) continue;
     if (b.type === 'tool_use') {
       if (EDIT_TOOLS.has(b.name)) st.editSeq++;
-      else if (b.name === 'Bash' && b.input && b.input.command) st.uses.set(b.id, keyOf(b.input.command, o.cwd));
+      else if (isShellTool(b.name) && b.input && b.input.command) st.uses.set(b.id, keyOf(b.input.command, o.cwd));
     } else if (b.type === 'tool_result' && st.uses.has(b.tool_use_id)) {
       const key = st.uses.get(b.tool_use_id);
       st.uses.delete(b.tool_use_id);

@@ -41,6 +41,7 @@
  */
 'use strict';
 
+const { isShellTool } = require('./lib/shell-tool.js');
 const { hookLog } = require('./hook-logger.js');
 const { runPreToolUseCli, preToolUseDecision } = require('./lib/hook-io.js');
 const sessionFailures = require('./lib/session-failures.js');
@@ -60,7 +61,7 @@ const decision = preToolUseDecision; // lib/hook-io
  */
 async function run(event) {
   try {
-    if (!event || event.tool_name !== 'Bash') return null;
+    if (!event || !isShellTool(event.tool_name)) return null;
 
     const command = event.tool_input?.command || '';
     if (!command) return null;
