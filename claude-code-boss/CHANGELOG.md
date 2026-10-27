@@ -1,5 +1,10 @@
 # Changelog
 
+## [3.11.2] - 2026-10-27
+
+### Fixed
+- **Corte a frio também antes de mensagem de outra sessão** (`hooks/compaction.mjs`): o portão de compactação só julga prompt de pessoa, e uma mensagem de outra sessão (ou notificação de tarefa) não pode ser segurada e reenviada com o remetente. Uma sessão grande, parada por horas e reaberta, que recebia primeiro uma dessas mensagens regravava o histórico inteiro a frio. Agora a sessão reaberta é julgada ao abrir (idade e tamanho lidos do transcript): acima do limiar com cache frio, o corte mecânico vem antes de qualquer entrada. O re-check do fim de turno passa a valer também depois de turno de pessoa, então numa sessão aberta o corte vem quando o cache esfria, antes da próxima entrada, qualquer que seja a origem. Medido em ambiente isolado: a primeira chamada depois da mensagem caiu de 102 mil tokens (histórico inteiro) para 21 mil.
+
 ## [3.11.1] - 2026-10-26
 
 ### Added
