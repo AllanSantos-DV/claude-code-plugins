@@ -26351,6 +26351,22 @@ test('update-notice: no version notice builds a GitHub link — the source holds
   } finally { fs.rmSync(dir, { recursive: true, force: true }); fs.rmSync(root, { recursive: true, force: true }); }
 });
 
+test('links a person follows: no plugin homepage and no dashboard link points at the repository (blob/README); each goes to its Pages page', () => {
+  const root = path.join(ROOT, '..');
+  const pages = 'https://allansantos-dv.github.io/claude-code-plugins/';
+  const market = JSON.parse(fs.readFileSync(path.join(root, '.claude-plugin', 'marketplace.json'), 'utf8')).plugins;
+  for (const name of ['claude-code-boss', 'rf-reviewer']) {
+    const manifest = JSON.parse(fs.readFileSync(path.join(root, name, '.claude-plugin', 'plugin.json'), 'utf8')).homepage;
+    const listed = market.find((p) => p.name === name).homepage;
+    assertEq(manifest, `${pages}${name}/`, `${name} plugin.json homepage`);
+    assertEq(listed, manifest, `${name} marketplace homepage matches plugin.json`);
+  }
+  const html = fs.readFileSync(path.join(ROOT, 'dashboard', 'index.html'), 'utf8');
+  assert(!/github\.com\/[^"'\s]*\/blob\//.test(html), 'dashboard has no link to a repository blob');
+  assert(html.includes(`${pages}claude-code-boss/tech.html#cobranca-router`), 'billing guide link goes to the Pages technical page');
+  assert(fs.readFileSync(path.join(root, 'pages', 'claude-code-boss', 'tech.html'), 'utf8').includes('id="cobranca-router"'), 'the technical page has the billing section the link targets');
+});
+
 test('update-notice: "version available" cached 6h and told once per version; "plugin updated" told once; first run silent; env opt-out stops switch-on and check', async () => {
   const u = require('./lib/update-notice.js');
   const m = require('./lib/marketplace-autoupdate.js');
