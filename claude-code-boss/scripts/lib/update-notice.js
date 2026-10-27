@@ -15,6 +15,9 @@ const fs = require('fs');
 const path = require('path');
 
 const STATE = 'update-state.json';
+// The notice is read by a person: link the public Pages site, never the repository (README / blob).
+const PAGES_URL = 'https://allansantos-dv.github.io/claude-code-plugins/claude-code-boss/';
+const CHANGELOG_URL = `${PAGES_URL}changelog.html`;
 const CHECK_EVERY_MS = 6 * 3600 * 1000;
 const OFF = /^(0|false|off|no)$/i;
 
@@ -75,7 +78,7 @@ function takeUpdateNotices({ root, dir, env = process.env } = {}) {
   const installed = installedVersion(root);
   const out = [];
   if (st.seenVersion && st.seenVersion !== installed && compareSemver(installed, st.seenVersion) > 0) {
-    out.push(`claude-code-boss foi atualizado: ${st.seenVersion} → ${installed}. Novidades: https://github.com/AllanSantos-DV/claude-code-plugins/releases/tag/v${installed}`);
+    out.push(`claude-code-boss foi atualizado: ${st.seenVersion} → ${installed}. Novidades: ${CHANGELOG_URL}`);
   }
   const next = { ...st, seenVersion: installed };
   if (!autoUpdateDisabled(env) && st.latest && compareSemver(st.latest, installed) > 0 && st.announcedLatest !== st.latest) {
@@ -86,4 +89,4 @@ function takeUpdateNotices({ root, dir, env = process.env } = {}) {
   return out;
 }
 
-module.exports = { refreshLatest, takeUpdateNotices, autoUpdateDisabled, stateFile, STATE, CHECK_EVERY_MS };
+module.exports = { refreshLatest, takeUpdateNotices, autoUpdateDisabled, stateFile, STATE, CHECK_EVERY_MS, PAGES_URL };
