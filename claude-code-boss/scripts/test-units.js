@@ -22964,6 +22964,65 @@ test('PowerShell parity: error-guard, curation-detect and decision-detect treat 
   assert(tools('PostToolUse', 'MultiEdit').includes('hook_file_edit_detect'), 'file-edit-detect matches MultiEdit');
 });
 
+// ─── session-practices: a conduct practice at its trigger, once per session/agent ───
+test('session-practices: long foreground waits are recognised, short/quoted/backgrounded ones are not', () => {
+  const { longWait } = require('./session-practices.js');
+  for (const c of ['sleep 60', 'sleep 2m; cat x', 'sleep 10; sleep 25', 'while ! test -f x; do sleep 5; done', 'until curl -s x; do sleep 2; done',
+    'for i in 1 2 3; do sleep 15; done', 'powershell -Command "Start-Sleep -Seconds 45"', 'Start-Sleep 40', 'while ($true) { Get-Process x; Start-Sleep 3 }', 'timeout /t 60']) {
+    assert(longWait(c), `long wait: ${c}`);
+  }
+  for (const c of ['sleep 5 && echo ok', 'Start-Sleep -Milliseconds 500', 'git commit -m "add sleep 60 support"', 'echo sleep 90', 'timeout 60 npm test', 'npm test', '']) {
+    assertEq(longWait(c), null, `not a long wait: ${c}`);
+  }
+});
+
+test('session-practices: test-suite commands are recognised at a command position only', () => {
+  const { runsTests } = require('./session-practices.js');
+  for (const c of ['npm test', 'npm t', 'yarn test', 'npm run test:units', 'cd x && npm test -- tests/a.test.mjs', 'npm --prefix claude-code-boss test',
+    'node scripts/test-units.js', 'node --test tests/', 'node a.spec.js', 'npx vitest run', 'NODE_ENV=test jest', 'python -m pytest -q', 'pytest',
+    'go test ./...', './mvnw -q test', 'gradlew.bat check', 'make test', 'Invoke-Pester']) {
+    assert(runsTests(c), `runs tests: ${c}`);
+  }
+  for (const c of ['npm install', 'pnpm run lint', 'node scripts/build.js', 'git log --grep test', 'echo npm test', 'cargo build', '']) {
+    assert(!runsTests(c), `not a test run: ${c}`);
+  }
+});
+
+test('session-practices: injected once per session and per sub-agent, only at the trigger, never deciding', async () => {
+  const sp = require('./session-practices.js');
+  const sid = `sp-${Date.now()}`;
+  const ev = (command, extra = {}) => ({ hook_event_name: 'PreToolUse', tool_name: 'Bash', session_id: sid, tool_input: { command }, ...extra });
+  const ctx = (out) => (out.hookSpecificOutput && out.hookSpecificOutput.additionalContext) || '';
+  assertEq(await sp.run(ev('git status'), { platform: 'win32' }), {}, 'no trigger → nothing (the text never shows outside its trigger)');
+  assertEq(await sp.run(ev('sleep 120', { tool_input: { command: 'sleep 120', run_in_background: true } }), { platform: 'win32' }), {}, 'a backgrounded wait is the good practice itself');
+  const first = await sp.run(ev('sleep 120'), { platform: 'win32' });
+  assert(/run_in_background: true/.test(ctx(first)) && /Monitor/.test(ctx(first)) && /encerre o turno/.test(ctx(first)), `wait practice covers Monitor and the no-Monitor path: ${ctx(first)}`);
+  assertEq(first.hookSpecificOutput.hookEventName, 'PreToolUse');
+  assert(!('permissionDecision' in first.hookSpecificOutput) && !('updatedInput' in first.hookSpecificOutput), 'advisory only: no decision, no rewrite');
+  assertEq(await sp.run(ev('while true; do sleep 5; done'), { platform: 'win32' }), {}, 'second long wait in the same session → silent');
+  assert(/espera/.test(ctx(await sp.run(ev('sleep 90', { agent_id: 'agent-1' }), { platform: 'win32' }))), 'a sub-agent (own context) gets it once too');
+  assertEq(await sp.run(ev('sleep 90', { agent_id: 'agent-1' }), { platform: 'win32' }), {}, '…and only once');
+  const tests = await sp.run(ev('npm test'), { platform: 'win32' });
+  assert(/windowsHide: true/.test(ctx(tests)) && /CREATE_NO_WINDOW/.test(ctx(tests)) && !/run_in_background/.test(ctx(tests)), `test practice alone: ${ctx(tests)}`);
+  assertEq(await sp.run(ev('node --test'), { platform: 'win32' }), {}, 'second test run → silent');
+  const ps = await sp.run({ ...ev('Invoke-Pester; Start-Sleep 60'), tool_name: 'PowerShell', session_id: `${sid}-ps` }, { platform: 'win32' });
+  assert(/espera/.test(ctx(ps)) && /testes sem janela/.test(ctx(ps)), 'PowerShell tool: both practices in one reply');
+  assertEq(await sp.run({ ...ev('npm test'), session_id: `${sid}-linux` }, { platform: 'linux' }), {}, 'no console windows off Windows → no test practice');
+  assertEq(await sp.run({ ...ev('sleep 120'), tool_name: 'Read' }, { platform: 'win32' }), {}, 'non-shell tool → nothing');
+  assertEq(await sp.run({ ...ev('sleep 120'), session_id: undefined }, { platform: 'win32' }), {}, 'no session id → no "once" to keep → silent, not repeated');
+});
+
+test('session-practices: wired as an mcp_tool sibling on Bash and PowerShell, with agent_id', () => {
+  const hooks = JSON.parse(fs.readFileSync(path.join(ROOT, 'hooks', 'hooks.json'), 'utf8')).hooks;
+  for (const tool of ['Bash', 'PowerShell']) {
+    const hs = hooks.PreToolUse.filter((g) => new RegExp(`^(?:${g.matcher})$`).test(tool)).flatMap((g) => g.hooks).filter((h) => h.tool === 'hook_session_practices');
+    assertEq(hs.length, 1, `registered once on ${tool}`);
+    assertEq(hs[0].type, 'mcp_tool');
+    assertEq(hs[0].input.agent_id, '${agent_id}', 'sub-agent id reaches the hook');
+  }
+  assert(require('./lib/hook-tools.js').HOOKS.hook_session_practices, 'served by the daemon');
+});
+
 // ─── U8: a capability pointer with nothing to name it is dropped, not "(unnamed)" ───
 test('U8: splitComposeBlocks drops nameless empty capability pointers; derives a name from the description', () => {
   const { splitComposeBlocks } = require('../engine/brain-backend.js').__testHooks;
@@ -27740,6 +27799,8 @@ test('plugin-updater.killStale: so casa modulos da PASTA DE CACHE do plugin, nao
     ['hook_policy_inject', 'policy-inject.js', { ...base, hook_event_name: 'SubagentStart' }],
     ['hook_powershell_guard', 'powershell-guard.js', { ...base, hook_event_name: 'PreToolUse', tool_name: 'PowerShell', tool_input: { command: 'git pull && git push' } }],
     ['hook_file_format_guard', 'file-format-guard.js', { ...base, hook_event_name: 'PreToolUse', tool_name: 'Write', tool_input: { file_path: path.join(proj, 'ffg-parity-missing.txt') } }],
+    // No trigger here on purpose: a triggered practice is once per session, so the second path would differ.
+    ['hook_session_practices', 'session-practices.js', { ...base, hook_event_name: 'PreToolUse', tool_name: 'Bash', tool_input: { command: 'echo phase-g' } }],
   ];
   for (const [tool, script, ev] of PARITY) {
     test(`Phase G parity: ${tool} == ${script} stdout (${ev.prompt || (ev.tool_input && JSON.stringify(ev.tool_input)) || ev.hook_event_name})`, async () => {
@@ -27757,6 +27818,13 @@ test('plugin-updater.killStale: so casa modulos da PASTA DE CACHE do plugin, nao
     const out = JSON.parse(await viaTool('hook_correction_detect', PARITY[8][2], proj));
     assertEq(out.hookSpecificOutput.hookEventName, 'UserPromptSubmit');
     assert(/capture_lesson/.test(out.hookSpecificOutput.additionalContext), 'correction nudge must come through');
+  });
+
+  test('Phase G: hook_session_practices delivers a triggered practice through the tool, once', async () => {
+    const ev = { ...base, session_id: `phase-g-sp-${Date.now()}`, hook_event_name: 'PreToolUse', tool_name: 'Bash', tool_input: { command: 'sleep 300' }, agent_id: '' };
+    const out = JSON.parse(await viaTool('hook_session_practices', ev, proj));
+    assert(/run_in_background: true/.test(out.hookSpecificOutput.additionalContext), `got ${JSON.stringify(out)}`);
+    assertEq(await viaTool('hook_session_practices', ev, proj), '{}');
   });
 
   test('Phase G: hook_error_guard abstains with {} (deny-only sibling of hook_curation_guard)', async () => {
