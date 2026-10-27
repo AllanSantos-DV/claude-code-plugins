@@ -2,7 +2,8 @@
 
 Todas as mudanças relevantes do **rf-reviewer** são documentadas aqui. O formato
 segue [Keep a Changelog](https://keepachangelog.com/pt-BR/1.1.0/); a versão vive
-em `servers/rf-engine/rf_engine/__init__.py` (`__version__`).
+em `servers/rf-engine/rf_engine/__init__.py` (`__version__`) e em
+`.claude-plugin/plugin.json` — os dois têm de ser iguais (checado pelo `release-audit`).
 
 ## [0.2.6] - 2026-10-27
 

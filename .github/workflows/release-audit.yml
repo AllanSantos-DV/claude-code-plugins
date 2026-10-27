@@ -1,7 +1,9 @@
 name: Release Audit
 
 # Camada MECÂNICA do gate de release (determinística, sem cota de modelo): checa
-# docs-drift de hooks, CHANGELOG vs versão e marcadores de conflito. Roda em PR e
+# os 7 checks de release-audit.mjs (docs-drift de hooks, CHANGELOG vs versão,
+# marcadores de conflito, tile de versão, arquivo ignorado rastreado, cópias de
+# agente, manifest vs __version__ do rf-reviewer). Roda em PR e
 # na main — marque como required na branch protection para barrar merge com drift.
 # A camada de RACIOCÍNIO (auth/credencial, privacidade, concorrência) é o auditor
 # adversarial .github/agents/release-auditor.agent.md (consultivo, fora do CI).

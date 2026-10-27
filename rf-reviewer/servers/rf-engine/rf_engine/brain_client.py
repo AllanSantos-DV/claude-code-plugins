@@ -12,7 +12,7 @@ Isto é a PARTE MECÂNICA da referência cruzada: dado um RF, traz os top-K trec
 candidatos do banco escopado por project_id. O JULGAMENTO (o que usar, virar gap,
 severidade) continua sendo do AGENTE.
 
-Uso:
+Uso (sempre como módulo: o import relativo da versão não vale rodando o arquivo por caminho):
   python -m rf_engine.brain_client --url http://127.0.0.1:38080 --project <seu-projeto> --query "..."
   python -m rf_engine.brain_client --enrich analysis.json --url ... --project <seu-projeto> --top-k 5
 """
