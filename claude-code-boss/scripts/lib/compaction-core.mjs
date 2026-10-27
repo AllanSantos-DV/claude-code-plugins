@@ -240,8 +240,8 @@ export function decideTiming(s, options = {}) {
 }
 
 /**
- * The END of a turn no person's prompt went through the gate for (a peer message, a task
- * notification, a queued command — autonomous sessions). Same rule as the gate — NEVER compact
+ * The END of a turn, or the reopen of a session: the cut done before inputs the gate never sees (a
+ * peer message, a task notification, a queued command). Same rule as the gate — NEVER compact
  * a warm cache (owner, 08/10; measured 14/10: warm compactions cost a summary plus a ~32k
  * cache re-write each, 15 of them in one session): past the threshold it compacts only when the
  * cache is already cold, otherwise it answers `wait` with the time left so the caller can
