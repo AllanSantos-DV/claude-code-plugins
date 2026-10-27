@@ -28,6 +28,13 @@ Origem: dono, duas máquinas; sessão com 875 mil tokens parada > 1 h recarregou
 - [x] **Resolvido — o dashboard linkava `blob/main/…/ROUTER-BILLING.md`** (`dashboard/index.html`, dois links). Agora vai para `…/claude-code-boss/tech.html#cobranca-router`, seção nova da página técnica (escrita pelo agente `vitrine`, hash selado). Teste: `links a person follows: …`.
 - [x] **Resolvido — `homepage` do `rf-reviewer` apontava para a raiz do repositório** (`rf-reviewer/.claude-plugin/plugin.json`, `.claude-plugin/marketplace.json`). Agora `…/rf-reviewer/` (Pages). Mesmo teste.
 
+- [ ] **Lente de feature irmã da develop (subagente haiku/high, só código e docs, 2026-10-27) — achados a tratar antes do release:**
+  - [ ] **`hook_session_practices` ignora o perfil `free` e `disabledHooks`, e a espera longa agora nega** (`scripts/session-practices.js:116-142`; README:235-238 diz que `free` não bloqueia nada; comentário falso em `scripts/lib/hook-tools.js:124`). Proposta: getter por perfil em `hooks-config.js`, `{}` sob `free`/desligado, corrigir o comentário.
+  - [ ] **O `contextTuning` do roteador ainda grava `CLAUDE_CODE_AUTO_COMPACT_WINDOW` no `env`** (`scripts/model-router-ensure.js:243`, `:640`, `:651-669`; dica do painel `dashboard/index.html:1714`; o doctor marca essa variável como aviso, `fixed-cost.js:552`). Mesmo item do pacote de 26/10; proposta: gravar a chave `autoCompactWindow` com a mesma regra de posse.
+  - [ ] **`docs/FUNCOES.md:121,126` diz que a promoção de lição aplica por padrão e não cita o aviso do dry-run** (padrão real: dry-run, `config/brain-config.json:64`). Proposta: corrigir as duas linhas.
+  - [ ] **`docs/CONFIGURATION.md:239` não lista o hook `session-practices` (PreToolUse `Bash|PowerShell`).** Proposta: incluir na linha.
+  - [ ] **CHANGELOG sem entrada para os recursos da develop** (já anotado: entra no bump do release; a página de changelog do Pages é refeita pelo `vitrine`).
+
 ## Pacote recomendado dos pontos abertos do Boss (pedido do orquestrador, 2026-10-26) — na develop, aguardando a validação do dono, sem release
 
 Decidido (Jarvis, 2026-10-26): o dono aprovou o pacote recomendado do quadro `claude-code-decisoes-boss.html`. Itens 1, 4, 5, 6 e 7 implementados com teste (detalhe em cada entrada abaixo: dry-run da promoção, janela de auto-compact fora do env, tile Compaction, tile Loops avoided); item 1 (validar a faixa) é só olhar na máquina do dono, ambiente preparado pelo orquestrador; itens 2 (etapa 2 da faixa) e 3 (renomear) registrados com gatilho nas entradas respectivas, nada implementado.
