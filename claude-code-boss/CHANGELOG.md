@@ -1,5 +1,23 @@
 # Changelog
 
+## [3.12.0] - 2026-10-27
+
+### Added
+- **Boas práticas de sessão no gatilho** (`scripts/session-practices.js`, `hook_session_practices`, `hooks/hooks.json`): no PreToolUse de `Bash|PowerShell`, uma vez por sessão e por subagente, o Boss orienta a espera longa em primeiro plano (relançar com `run_in_background` e Monitor, ou encerrar o turno e esperar a notificação) e os testes no Windows (processos sem janela). A PRIMEIRA espera longa em primeiro plano é negada uma vez, com aviso visível; as seguintes passam. Respeita o perfil `free` e `disabledHooks`.
+- **Corte a frio endurecido**: o prompt segurado para o `/compact` é gravado em disco antes e reaparece na abertura se a sessão fechar no meio; a pasta de sessões já reporta o lado real do limiar na reabertura; o daemon varre o TTL da pasta a cada 2 min; prompt de pessoa com anexo segue sem corte, mas avisa.
+- **Tiles "Compaction" e "Loops avoided" no card Results** e aviso do dry-run da promoção de lições no SessionStart.
+- **Seção de cobrança do roteador na página técnica** e link do painel para ela.
+
+### Changed
+- **Promoção de lições nasce em `dry-run`** (antes aplicava por padrão); reversível com `lesson-promote.js undo`.
+- **Janela opt-in de auto-compact usa a chave `autoCompactWindow` do settings, não mais a variável de ambiente**: `contextTuning` e o pacote do roteador ligado gravam a chave só se ausente, removem a nossa ao desligar e migram para fora do `env` o valor que versões anteriores gravaram; o valor do usuário nunca é tocado.
+- **Os avisos de versão e o `homepage` (plugin.json, marketplace.json, rf-reviewer) apontam para o site do Pages**, não para o repositório; o aviso "plugin atualizado" leva à página de changelog.
+- **Docs**: `FUNCOES.md` (padrão `dry-run` da promoção) e `CONFIGURATION.md` (hook `session-practices`).
+
+### Fixed
+- **Mensagem de falha do `/compact` legível** (`hooks/compaction.mjs`): o log do hook falho mostra a causa, não `[object Object]`.
+- **O resumo do `/compact` não ficava menor com um resultado enorme na janela da cauda** (`scripts/lib/compaction-core.mjs` `buildBrief`): uma mensagem mais velha que o orçamento vai para a parte condensada, e um brief que não corta pelo menos metade devolve `cutMessages: 0` (cai no resumo do engine). Teste de liga/desliga do roteador contra um `settings.json` real.
+
 ## [3.11.2] - 2026-10-27
 
 ### Fixed
