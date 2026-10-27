@@ -469,6 +469,54 @@ html{scroll-behavior:auto}
         <li><b>Fail-loud:</b> regra inválida no fallback responde com a causa em vez de ceder à NVIDIA; em <code>always</code> vira <code>502 proxy_error</code>. Erros do endpoint citam o modelo enviado e a regra aplicada.</li>
       </ul>
     </div>
+
+    <div class="panel" id="cobranca-router" style="margin-top:16px">
+      <h3>Cobrança: assinatura vs API</h3>
+      <p style="color:var(--muted); font-size:13.5px">Quando o uso continua na sua assinatura Claude e quando pode virar cobrança de API. O router vem <b>desativado por padrão</b>. Ligar qualquer modo coloca um proxy local (<code>127.0.0.1:13456</code>) entre o Claude Code e a Anthropic. Segundo a documentação oficial, um proxy com <b>apenas</b> <code>ANTHROPIC_BASE_URL</code> preserva a cobrança da assinatura, desde que os headers de OAuth cheguem intactos ao upstream (o nosso repassa). Os cenários que realmente viram cobrança de API são outros, listados abaixo.</p>
+
+      <div class="table-scroll">
+        <table>
+          <thead><tr><th>Cenário</th><th>Cobrança</th><th>Por quê</th></tr></thead>
+          <tbody>
+            <tr><td>Router OFF (default)</td><td>Assinatura</td><td>Conexão direta, sem proxy.</td></tr>
+            <tr><td>Router ON, passthrough/sticky/fallback → Anthropic</td><td>Assinatura*</td><td>Doc oficial: <em>"setting only ANTHROPIC_BASE_URL... a saved claude.ai login stays the active credential"</em>.</td></tr>
+            <tr><td>Rota BYOK (<code>on-limit</code> ou <code>always</code>)</td><td><b>Endpoint do usuário</b></td><td>O router remove a credencial da assinatura e envia só os seus headers configurados (<code>byok.js:120-127</code>); é o propósito do BYOK.</td></tr>
+            <tr><td>Fallback NVIDIA (429)</td><td>NVIDIA (grátis/conta própria)</td><td>O request vai à NVIDIA, não à Anthropic.</td></tr>
+            <tr><td><code>ANTHROPIC_API_KEY</code> ou <code>ANTHROPIC_AUTH_TOKEN</code> no ambiente</td><td><b>API pay-as-you-go</b></td><td>O env vence a assinatura: causa nº 1 de cobrança inesperada (<a href="https://support.claude.com/en/articles/12304248-manage-api-key-environment-variables-in-claude-code" target="_blank" rel="noopener">Help Center</a>).</td></tr>
+            <tr><td>Bug silencioso upstream (#65227)</td><td>Pode virar API após update/re-auth</td><td>Reportado pela comunidade; o re-login restaura. Não é causado pelo proxy.</td></tr>
+          </tbody>
+        </table>
+      </div>
+      <p style="color:var(--muted); font-size:13px; margin-top:10px">* Condição oficial: o gateway deve repassar a OAuth capability no header <code>anthropic-beta</code>. O router repassa <code>anthropic-beta</code>, <code>authorization</code> e <code>x-api-key</code> intactos na rota Anthropic (<code>servers/model-router/byok.js:118,129-131</code>).</p>
+
+      <h3 style="margin-top:22px">Como auditar a sua cobrança hoje</h3>
+      <ol style="margin:8px 0 0; padding-left:22px; color:var(--muted); display:grid; gap:7px">
+        <li><b style="color:var(--ink)">Anthropic Console → Usage:</b> se sessões interativas aparecem lá, algo está cobrando API; sob assinatura elas não aparecem.</li>
+        <li><code>/status</code> dentro do Claude Code: confira o método de autenticação ativo.</li>
+        <li>Ambiente: <code>Get-ChildItem Env: | Where-Object Name -like "ANTHROPIC*"</code>. Nenhuma <code>*_API_KEY</code>/<code>AUTH_TOKEN</code> deve existir se você quer assinatura.</li>
+        <li>Spend limit no Console como rede de segurança (o bug #65227 só foi notado porque havia limit).</li>
+      </ol>
+
+      <h3 style="margin-top:22px">Checklist para ficar na assinatura com o router ligado</h3>
+      <ul class="tight" style="list-style:none; padding-left:0">
+        <li>☐ Sem <code>ANTHROPIC_API_KEY</code> / <code>ANTHROPIC_AUTH_TOKEN</code> no env do usuário/sistema.</li>
+        <li>☐ <code>byok.enabled = false</code> (ou modo <code>on-limit</code> sem endpoint configurado).</li>
+        <li>☐ <code>/status</code> mostra login de assinatura ativo.</li>
+        <li>☐ O dashboard de API Usage não mostra sessões interativas.</li>
+        <li>☐ Após updates/re-auth do Claude Code, reconfira os três primeiros (o bug #65227 é silencioso).</li>
+      </ul>
+
+      <h3 style="margin-top:22px">Por que o router é opt-in</h3>
+      <p style="color:var(--muted); font-size:13.5px">Mesmo preservando a assinatura nos caminhos Anthropic, o proxy adiciona uma superfície (daemon na porta fixa, shim no Windows) e o ganho de custo depende do seu mix de tarefas. Por isso ele nasce desligado: ligue se quiser sticky-routing, fallback ou BYOK, por conta e risco, com restart do Claude Code para aplicar.</p>
+
+      <h3 style="margin-top:22px">Fontes oficiais</h3>
+      <ul class="tight">
+        <li><a href="https://code.claude.com/docs/en/gateways" target="_blank" rel="noopener">Gateways — code.claude.com</a>: <em>"The exception is setting only ANTHROPIC_BASE_URL, with no gateway credential... subscription's usage limits and billing apply"</em>.</li>
+        <li><a href="https://code.claude.com/docs/en/llm-gateway" target="_blank" rel="noopener">Other LLM gateways</a>: exigência de forward da OAuth capability em <code>anthropic-beta</code>.</li>
+        <li><a href="https://support.claude.com/en/articles/12304248" target="_blank" rel="noopener">Managing API key environment variables</a>: a env key vence a assinatura.</li>
+        <li><a href="https://github.com/anthropics/claude-code/issues/65227" target="_blank" rel="noopener">anthropics/claude-code#65227</a>: troca silenciosa pós-update/re-auth.</li>
+      </ul>
+    </div>
   </section>
 
   <section id="graph">
