@@ -4,6 +4,11 @@ Todas as mudanças relevantes do **rf-reviewer** são documentadas aqui. O forma
 segue [Keep a Changelog](https://keepachangelog.com/pt-BR/1.1.0/); a versão vive
 em `servers/rf-engine/rf_engine/__init__.py` (`__version__`).
 
+## [0.2.5] - 2026-10-27
+
+### Changed
+- **`homepage` do plugin aponta para o site do Pages** (`.claude-plugin/plugin.json`), não para a raiz do repositório: o `/plugin` passa a levar a pessoa à página de apresentação do rf-reviewer. Nenhuma mudança de comportamento no motor.
+
 ## [0.2.4] - 2026-07-24
 
 ### Added — auto-reinício do daemon quando o plugin atualiza
