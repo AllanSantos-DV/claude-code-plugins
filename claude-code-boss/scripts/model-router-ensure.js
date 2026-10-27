@@ -194,6 +194,9 @@ function resolveAutoCompactWindow(config) {
 // ENABLE_TOOL_SEARCH/AUTO_COMPACT que o usuário fixou (== null → só preenche
 // ausente). base_url custom de terceiro → { foreign:true } (preserva o do usuário).
 // `isOurs(url)` é injetado (o real é isOurProxyUrl) p/ testes herméticos.
+// A janela de auto-compact NÃO vai para o env (a variável vence o `/autocompact`): ela é a chave
+// `autoCompactWindow` do settings (planTuningWindow). Uma variável igual à nossa, gravada por versões
+// anteriores, é removida aqui (migração); a do usuário sobrevive.
 function planEnableEnv(currentEnv, url, autoCompactValue, isOurs) {
   const env = { ...(currentEnv || {}) };
   const cur = env.ANTHROPIC_BASE_URL;
@@ -201,7 +204,7 @@ function planEnableEnv(currentEnv, url, autoCompactValue, isOurs) {
   const next = { ...env };
   next.ANTHROPIC_BASE_URL = url;
   if (next.ENABLE_TOOL_SEARCH == null) next.ENABLE_TOOL_SEARCH = 'true';
-  if (next.CLAUDE_CODE_AUTO_COMPACT_WINDOW == null) next.CLAUDE_CODE_AUTO_COMPACT_WINDOW = String(autoCompactValue);
+  if (next.CLAUDE_CODE_AUTO_COMPACT_WINDOW === String(autoCompactValue)) delete next.CLAUDE_CODE_AUTO_COMPACT_WINDOW;
   // O bloco de atribuição (versão do cliente + fingerprint do prompt) abre o system
   // prompt e MUDA entre versões/sessões — atrás de um gateway isso invalida o prefixo
   // cacheado. A doc é explícita: desligá-lo "improves prompt-cache hit rates when
@@ -654,11 +657,13 @@ function enableSettingsRouting(url) {
     log(`AVISO: settings.json já tem ANTHROPIC_BASE_URL custom ("${s.env.ANTHROPIC_BASE_URL}") — preservado, roteador NÃO sobrescreve.`);
     return false;
   }
-  if (!plan.changed) return true; // os 3 já no estado desejado → no-op (não reescreve)
+  const win = planTuningWindow(s, acw.value);
+  if (!plan.changed && !win.changed) return true; // já no estado desejado → no-op (não reescreve)
   s.env = plan.env;
+  if (win.changed) s.autoCompactWindow = win.value;
   try {
     writeSettings(s);
-    log(`settings.json: ANTHROPIC_BASE_URL → ${url}; ENABLE_TOOL_SEARCH=${s.env.ENABLE_TOOL_SEARCH}; CLAUDE_CODE_AUTO_COMPACT_WINDOW=${s.env.CLAUDE_CODE_AUTO_COMPACT_WINDOW}; CLAUDE_CODE_ATTRIBUTION_HEADER=${s.env.CLAUDE_CODE_ATTRIBUTION_HEADER}`);
+    log(`settings.json: ANTHROPIC_BASE_URL → ${url}; ENABLE_TOOL_SEARCH=${s.env.ENABLE_TOOL_SEARCH}; autoCompactWindow=${s.autoCompactWindow}; CLAUDE_CODE_ATTRIBUTION_HEADER=${s.env.CLAUDE_CODE_ATTRIBUTION_HEADER}`);
     return true;
   } catch (e) {
     log(`AVISO: não foi possível escrever settings.json: ${e.message}`);
@@ -755,6 +760,7 @@ function disableSettingsRouting() {
   const plan = planDisableEnv(s.env, acw.value, isOurProxyUrl);
   if (!plan.changed) return; // base_url não é nossa (ou nada nosso p/ remover) → não mexe
   if (Object.keys(plan.env).length === 0) delete s.env; else s.env = plan.env;
+  if (planTuningWindowRemoval(s, acw.value).remove) delete s.autoCompactWindow;
   try {
     writeSettings(s);
     log('settings.json: bundle do roteador removido (ANTHROPIC_BASE_URL + tool-search/auto-compact nossos → Claude direto).');

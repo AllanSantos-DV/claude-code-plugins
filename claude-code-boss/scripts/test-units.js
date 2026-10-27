@@ -10021,22 +10021,31 @@ test('Q24 run(): sessão com gateway próprio → o roteador NÃO se liga por ci
     assertEq(r.value, 200000); assertEq(r.clamped, true);
   });
 
-  test('planEnableEnv: env vazio → seta os 3, changed', () => {
+  test('planEnableEnv: env vazio → seta base_url, tool search e atribuição, NUNCA a janela no env, changed', () => {
     const p = routerEnsure.planEnableEnv({}, OUR, 200000, isOurs);
     assertEq(p.changed, true);
     assertEq(p.env.ANTHROPIC_BASE_URL, OUR);
     assertEq(p.env.ENABLE_TOOL_SEARCH, 'true');
-    assertEq(p.env.CLAUDE_CODE_AUTO_COMPACT_WINDOW, '200000');
+    assertEq('CLAUDE_CODE_AUTO_COMPACT_WINDOW' in p.env, false, 'a variável vence o /autocompact: a janela vai na chave do settings');
   });
-  test('planEnableEnv: os 4 já corretos → no-op (changed=false)', () => {
-    const cur = { ANTHROPIC_BASE_URL: OUR, ENABLE_TOOL_SEARCH: 'true', CLAUDE_CODE_AUTO_COMPACT_WINDOW: '200000', CLAUDE_CODE_ATTRIBUTION_HEADER: '0' };
+  test('planEnableEnv: já corretos → no-op (changed=false)', () => {
+    const cur = { ANTHROPIC_BASE_URL: OUR, ENABLE_TOOL_SEARCH: 'true', CLAUDE_CODE_ATTRIBUTION_HEADER: '0' };
     assertEq(routerEnsure.planEnableEnv(cur, OUR, 200000, isOurs).changed, false);
+  });
+  test('planEnableEnv: a variável que uma versão anterior gravou (igual à nossa) é migrada para fora do env; a do usuário sobrevive', () => {
+    const old = { ANTHROPIC_BASE_URL: OUR, ENABLE_TOOL_SEARCH: 'true', CLAUDE_CODE_ATTRIBUTION_HEADER: '0', CLAUDE_CODE_AUTO_COMPACT_WINDOW: '200000' };
+    const mine = routerEnsure.planEnableEnv(old, OUR, 200000, isOurs);
+    assertEq('CLAUDE_CODE_AUTO_COMPACT_WINDOW' in mine.env, false, 'migrada');
+    assertEq(mine.changed, true);
+    const theirs = routerEnsure.planEnableEnv({ ...old, CLAUDE_CODE_AUTO_COMPACT_WINDOW: '900000' }, OUR, 200000, isOurs);
+    assertEq(theirs.env.CLAUDE_CODE_AUTO_COMPACT_WINDOW, '900000', 'o valor do usuário não é tocado');
+    assertEq(theirs.changed, false);
   });
   test('planEnableEnv: base_url ok mas os env ausentes → preenche (changed) — conserta o no-op', () => {
     const p = routerEnsure.planEnableEnv({ ANTHROPIC_BASE_URL: OUR }, OUR, 200000, isOurs);
     assertEq(p.changed, true);
     assertEq(p.env.ENABLE_TOOL_SEARCH, 'true');
-    assertEq(p.env.CLAUDE_CODE_AUTO_COMPACT_WINDOW, '200000');
+    assertEq('CLAUDE_CODE_AUTO_COMPACT_WINDOW' in p.env, false);
   });
   test('planEnableEnv: base_url custom de terceiro → foreign (não sobrescreve)', () => {
     const p = routerEnsure.planEnableEnv({ ANTHROPIC_BASE_URL: 'https://api.anthropic.com' }, OUR, 200000, isOurs);
