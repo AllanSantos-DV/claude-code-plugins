@@ -2710,6 +2710,9 @@ Lacunas conhecidas do gate de project id (2.29.1):
   **Decidido (Jarvis, 26/10): é do Smart Tool (descoberta da ferramenta); reportado ao orquestrador, sem edição lá.**
 
 - [x] **Achado e corrigido (2026-10-23): `smoke/doctor.mjs` (local, gitignored) falhava no cenário "healthy env"**: a raiz de fixture não tinha `node_modules`, então a checagem `native-deps` (crítica) falhava numa máquina saudável. A fixture agora aponta um junction para o `node_modules` real (removido antes do `rm` recursivo para nunca tocar no original). 4/4 verdes.
-## Release 3.12.0 (pedido do orquestrador, 2026-10-27)
 
-- [ ] **Release Guard fica vermelho depois da tag v3.12.0: drift do `rf-reviewer`** (`rf-reviewer/.claude-plugin/plugin.json`, `.github/scripts/release-guard.mjs`). Visto na run do Release Guard pós-tag (`código mudou depois da tag rf-v0.2.4 SEM subir a versão`). Causa: o commit 7ffc346 trocou só o `homepage` do rf-reviewer para o site do Pages, e o guard conta `plugin.json` como comportamento entregue. Fora do escopo (nenhuma release do rf-reviewer foi pedida): decisão do dono/orquestrador entre (a) cortar `rf-v0.2.5` (bump + CHANGELOG + tag da main) ou (b) ensinar o `shipsBehavior` a ignorar mudança só de `homepage`. Recomendação: (a), é o caminho do AGENTS.md e nada fica sem receber.
+## Release rf-reviewer 0.2.5 (pedido do orquestrador, 2026-10-27)
+
+- [x] **Achado e corrigido na hora — o README da raiz dizia rf-reviewer 0.1.0** (`README.md:10`). Agora 0.2.5.
+- [ ] **Nenhum guard iguala `plugin.json` e `__version__` do rf-reviewer** (`.github/scripts/version-stamp.mjs:22` lê o `plugin.json`; `release-guard.mjs:56` e `release-audit.mjs:151` leem `rf_engine/__init__.py`). Hoje as duas versões batem, mas uma deriva passaria despercebida. Proposta: check de igualdade no `release-audit.mjs`. Visto na lente de feature irmã (haiku/high, 2026-10-27).
+- [ ] **Cosmético — `clientInfo.version` fixo em "0.1.0"** (`rf-reviewer/servers/rf-engine/rf_engine/brain_client.py:83`): é a versão do cliente MCP, não a do plugin; ler de `__version__` se alguém quiser rastrear. Mesma lente.
