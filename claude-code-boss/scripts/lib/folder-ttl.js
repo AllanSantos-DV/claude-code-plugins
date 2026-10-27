@@ -33,6 +33,7 @@ const { writeJsonAtomic } = require('../../engine/lib/atomic-write.js');
 const KEY = 'CLAUDE_CODE_PROMPT_CACHE_TTL';
 const SWITCHED = '5m';
 const LIVE_MS = 5 * 60000;       // the module heartbeats every 2 min; 5 min without a report = gone
+const SWEEP_MS = 2 * 60000;      // the daemon's own sweep (no report needed), at the heartbeat's pace
 const LOCAL_REL = path.join('.claude', 'settings.local.json');
 
 function hiddenSpawnSync(cmd, args, opts) { return spawnSync(cmd, args, { ...opts, windowsHide: true }); }
@@ -164,21 +165,10 @@ function reconcile(entry, now, { run = hiddenSpawnSync, liveMs = LIVE_MS, stepAs
 }
 
 /**
- * One report from a session's module (or its end), then the sweep of every folder (dead owners restored).
- * @param {{sessionId:string, folder:string, above?:boolean, end?:boolean}} r
- * @param {{now?:number, file?:string, run?:Function, liveMs?:number}} [opts]
- * @returns {{folder:string, live:number, allAbove:boolean, ttl:('5m'|null), action:string, detail:(string|null), swept:Array}}
+ * Reconcile every folder of the state (dead owners restored, empty entries dropped). Mutates the state.
+ * @returns {{mine: (object|null), swept: Array, errors: string[]}} `mine` = the outcome of `key`'s folder
  */
-function report(r, { now = Date.now(), file = statePath(), run = hiddenSpawnSync, liveMs = LIVE_MS, engineIdle = require('./engine-flags.js').idleCompaction } = {}) {
-  if (!r || typeof r.sessionId !== 'string' || !r.sessionId) throw new Error('folder-ttl: sessionId is required');
-  const key = folderKey(r.folder);
-  const idle = engineIdle();
-  if (!idle.known) console.error(`[folder-ttl] ${idle.reason}`);
-  const stepAside = idle.active ? idle.reason : false;
-  const state = loadState(file);
-  const entry = state.folders[key] || (state.folders[key] = { dir: path.resolve(r.folder), sessions: {} });
-  if (r.end) delete entry.sessions[r.sessionId];
-  else entry.sessions[r.sessionId] = { above: r.above === true, seenAt: now };
+function reconcileAll(state, key, now, { run, liveMs, stepAside }) {
   let mine = null;
   const swept = [];
   const errors = [];
@@ -193,9 +183,49 @@ function report(r, { now = Date.now(), file = statePath(), run = hiddenSpawnSync
     }
     if (!Object.keys(e.sessions || {}).length && !e.owned) delete state.folders[k];
   }
+  return { mine, swept, errors };
+}
+
+function stepAsideFor(engineIdle) {
+  const idle = engineIdle();
+  if (!idle.known) console.error(`[folder-ttl] ${idle.reason}`);
+  return idle.active ? idle.reason : false;
+}
+
+/**
+ * One report from a session's module (or its end), then the sweep of every folder (dead owners restored).
+ * @param {{sessionId:string, folder:string, above?:boolean, end?:boolean}} r
+ * @param {{now?:number, file?:string, run?:Function, liveMs?:number}} [opts]
+ * @returns {{folder:string, live:number, allAbove:boolean, ttl:('5m'|null), action:string, detail:(string|null), swept:Array}}
+ */
+function report(r, { now = Date.now(), file = statePath(), run = hiddenSpawnSync, liveMs = LIVE_MS, engineIdle = require('./engine-flags.js').idleCompaction } = {}) {
+  if (!r || typeof r.sessionId !== 'string' || !r.sessionId) throw new Error('folder-ttl: sessionId is required');
+  const key = folderKey(r.folder);
+  const stepAside = stepAsideFor(engineIdle);
+  const state = loadState(file);
+  const entry = state.folders[key] || (state.folders[key] = { dir: path.resolve(r.folder), sessions: {} });
+  if (r.end) delete entry.sessions[r.sessionId];
+  else entry.sessions[r.sessionId] = { above: r.above === true, seenAt: now };
+  const { mine, swept, errors } = reconcileAll(state, key, now, { run, liveMs, stepAside });
   writeJsonAtomic(file, state);
   if (errors.length && (!mine || mine.action !== 'error')) swept.push(...errors.map((m) => ({ action: 'error', detail: m })));
   return { folder: entry.dir, live: mine.live.length, allAbove: mine.allAbove, ttl: mine.ttl, action: mine.action, detail: mine.detail, swept };
 }
 
-module.exports = { KEY, SWITCHED, LIVE_MS, folderKey, planFolder, applySwitch, restore, reconcile, report, excludeFromGit, statePath };
+/**
+ * The sweep without a report: a folder left at 5m by sessions that stopped reporting is restored even when no
+ * interactive session is around to report (a headless session never does). Writes only when something changed.
+ * @param {{now?:number, file?:string, run?:Function, liveMs?:number}} [opts]
+ * @returns {{swept: Array}}
+ */
+function sweep({ now = Date.now(), file = statePath(), run = hiddenSpawnSync, liveMs = LIVE_MS, engineIdle = require('./engine-flags.js').idleCompaction } = {}) {
+  const state = loadState(file);
+  if (!Object.keys(state.folders).length) return { swept: [] };
+  const before = JSON.stringify(state);
+  const { swept, errors } = reconcileAll(state, null, now, { run, liveMs, stepAside: stepAsideFor(engineIdle) });
+  if (JSON.stringify(state) !== before) writeJsonAtomic(file, state);
+  swept.push(...errors.map((m) => ({ action: 'error', detail: m })));
+  return { swept };
+}
+
+module.exports = { KEY, SWITCHED, LIVE_MS, SWEEP_MS, folderKey, planFolder, applySwitch, restore, reconcile, report, sweep, excludeFromGit, statePath };

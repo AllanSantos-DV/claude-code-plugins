@@ -18,6 +18,9 @@
  *   tail     → when the transcript's last API call happened and how large the context was (a session the module
  *              has seen no turn of: reopened, resumed, or whose SessionStart never arrived); records nothing
  *   gate | run | resume | settled | error → `compaction.<kind>` (the trail)
+ *   held | held-clear | held-recover → the person's prompt the gate holds while the cut runs: kept on disk
+ *              (`.runtime/held-prompt-<session>.json`) until it is re-sent, so a session that dies during the `/compact`
+ *              does not lose it; `held-recover` hands it back once (and removes it) when the session is opened again
  *   folder | folder-end → the folder's shared cache TTL (lib/folder-ttl.js): 5m while every live session of the
  *              launch folder is past the threshold, restored after the cut / at the end; `compaction.folder` on change
  *
@@ -31,6 +34,7 @@ const metrics = require('../engine/lib/metrics.js');
 
 const RECORDED = new Set(['gate', 'run', 'resume', 'settled', 'error']);
 const TAIL_BYTES = 512 * 1024;
+const HELD_PREFIX = 'held-prompt-';
 const TTL_LOOKBACK = 500; // cache.turn rows read to judge a host's window
 
 /** The plugin version this daemon runs: what a session's module is compared with. */
@@ -145,6 +149,15 @@ function storedCacheTurns() {
   return store.getEventLog({ eventName: 'cache.turn', limit: TTL_LOOKBACK });
 }
 
+function heldFile(sessionId) {
+  if (!sessionId) throw new Error('compaction-event: held prompt without session_id');
+  return path.join(require('../engine/lib/data-dir.js').dataDir(), '.runtime', `${HELD_PREFIX}${String(sessionId).replace(/[^A-Za-z0-9_-]/g, '_')}.json`);
+}
+
+function removeHeld(file) {
+  try { fs.unlinkSync(file); } catch (err) { if (err.code !== 'ENOENT') throw err; }
+}
+
 async function run(ev) {
   const p = ev && ev.payload && typeof ev.payload === 'object' ? ev.payload : null;
   if (!p || typeof p.kind !== 'string') throw new Error('compaction-event: payload.kind is required');
@@ -214,6 +227,23 @@ async function run(ev) {
     };
   }
 
+  if (kind === 'held') {
+    if (typeof data.text !== 'string' || !data.text) throw new Error('compaction-event: held prompt without text');
+    require('../engine/lib/atomic-write.js').writeJsonAtomic(heldFile(ctx.sessionId), { text: data.text, reason: data.reason || null, heldAt: Date.now() });
+    return {};
+  }
+  if (kind === 'held-clear') {
+    removeHeld(heldFile(ctx.sessionId));
+    return {};
+  }
+  if (kind === 'held-recover') {
+    const file = heldFile(ctx.sessionId);
+    if (!fs.existsSync(file)) return { held: null };
+    const held = JSON.parse(fs.readFileSync(file, 'utf8'));
+    removeHeld(file);
+    return { held };
+  }
+
   // The folder's shared cache TTL (lib/folder-ttl.js): every live session of a folder reports whether it is past
   // the threshold; 5m only while all are, restored after the cut or when a session ends / stops reporting.
   if (kind === 'folder' || kind === 'folder-end') {
@@ -226,4 +256,4 @@ async function run(ev) {
   throw new Error(`compaction-event: unknown kind '${kind}'`);
 }
 
-module.exports = { run, readNewApiCalls, ttlVerdictFor };
+module.exports = { run, readNewApiCalls, ttlVerdictFor, HELD_PREFIX };
