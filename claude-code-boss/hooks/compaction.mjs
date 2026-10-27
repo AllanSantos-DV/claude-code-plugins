@@ -4,8 +4,10 @@
 // the session idle, if the context is past the threshold (a % of the window the engine
 // applies now — 200K and 1M models alike) and the provider cache has already gone cold, the
 // prompt is held, the engine's /compact runs, and the same text is sent again as the
-// person's. If the cache never cools, the engine's own auto-compaction runs at its limit —
-// through the same choice. WHAT: our pruning (scripts/lib/compaction-core.mjs: text intact, stale
+// person's. Inputs the gate cannot hold (a peer message, a task notification) are covered by the
+// same cold cut done before they arrive: at the end of every turn once the cache goes cold, and
+// when a session is reopened over a cold history. If the cache never cools, the engine's own
+// auto-compaction runs at its limit — through the same choice. WHAT: our pruning (scripts/lib/compaction-core.mjs: text intact, stale
 // tool results truncated) when it cuts >= 85%; else, with a COLD cache and not a person's /compact,
 // the model-free brief (user text verbatim, one line per tool call, a 2k verbatim tail); else the
 // engine's own summary. FOLDER TTL: every session reports whether it is past the threshold; while
@@ -298,19 +300,21 @@ async function currentWindow($, ctx) {
   return { context, windowTokens, windowSource, engineAutoCompactAt, thr };
 }
 
-// End of a turn no person's prompt went through the gate for (peer message, task notification,
-// queued command): past the threshold, compact once the cache is COLD (waiting for it, never
-// compacting a warm one) — the prompt gate never sees these. Nothing is held or re-sent.
-async function turnEnd($, ctx) {
+// End of every turn (and the reopen of a session): past the threshold, compact once the cache is COLD (waiting for it,
+// never compacting a warm one), so the cut is done before whatever comes next — a peer message, a task notification or a
+// queued command is never seen by the prompt gate (it cannot be held and re-sent with its sender). Nothing is held or
+// re-sent. `trigger` 'reopen' only names the cut in the trail.
+async function turnEnd($, ctx, trigger = 'turn-end') {
   ctx.turnEndWaitTtlMs = 0;
   try {
     if (!ctx.interactive || !ctx.configLoaded || !ctx.config.enabled) return;
     if (ctx.awaitCallAfterCut) return; // just compacted: the size reading is the pre-cut one
     const now = await $.clock.now();
     const { context, windowTokens, windowSource, engineAutoCompactAt, thr } = await currentWindow($, ctx);
-    const tokens = context.tokens ?? ctx.measuredTokens;
+    const tokens = context.tokens ?? ctx.measuredTokens ?? ctx.tailTokens ?? (ctx.start && ctx.start.lastTokens > 0 ? ctx.start.lastTokens : undefined);
     const { ttlMs, ttlSource } = ttlInUse(ctx);
     const d = decideTurnEnd({ tokens, now, lastAnswerAt: ctx.lastAnswerAt, lastCompactAt: ctx.lastCompactAt, busy: ctx.busy, gated: false, ttlMs }, { ...ctx.config, thresholdTokens: thr.thresholdTokens });
+    if (d.action === 'compact' && trigger === 'reopen') d.reason = 'reopen-cache-cold';
     if (d.action === 'wait') {
       // Over the threshold with a warm cache: never compact it. Re-check when the cache is due
       // to be cold (a newer turn moves lastAnswerAt, so the re-check then waits again or stands down).
@@ -331,8 +335,9 @@ async function turnEnd($, ctx) {
       thresholdPercent: thr.percent, thresholdTokens: thr.thresholdTokens, windowTokens: windowTokens ?? null, windowSource,
       engineAutoCompactAt, thresholdAboveEngine: thr.aboveEngine,
     });
-    ctx.pendingSettle = { reason: d.reason, trigger: 'turn-end', tokensBefore: tokens ?? null };
+    ctx.pendingSettle = { reason: d.reason, trigger, tokensBefore: tokens ?? null };
     ctx.compactReason = d.reason;
+    ctx.resumeChecked = true; // the resumed history is the one being cut: the gate must not cut it again
     try {
       await $.command.run({ command: 'compact' });
       ctx.lastCompactAt = await $.clock.now();
@@ -350,6 +355,19 @@ async function transcriptTail($, ctx) {
     $.ui.log(`compaction: transcript reading failed, the gate has no age/size for this session: ${String(err && err.message ? err.message : err)}`);
     return null;
   }
+}
+
+// A session opened over an existing history (resume, or a startup on an old transcript) is judged right away, before any
+// input: its first input is often a peer message, which the gate lets through — the whole cold history re-written.
+async function reopenCut($, ctx) {
+  if (!ctx.interactive || !ctx.configLoaded || !ctx.config.enabled) return;
+  if (ctx.start && ctx.start.source === 'compact') return;
+  const tail = await transcriptTail($, ctx);
+  if (!tail) return; // no call yet: a new session, nothing to cut
+  if (tail.model) ctx.model = tail.model;
+  if (tail.tokens != null) ctx.tailTokens = tail.tokens;
+  if (ctx.lastAnswerAt == null && tail.at != null) ctx.lastAnswerAt = tail.at;
+  await turnEnd($, ctx, 'reopen');
 }
 
 async function gate($, ctx, e, next) {
@@ -413,6 +431,7 @@ async function gate($, ctx, e, next) {
     ? { reason: d.reason, trigger: 'prompt-gate', tokensBefore: null, prevented: true }
     : { reason: d.reason, trigger: 'prompt-gate', tokensBefore: tokens ?? null };
   const text = e.text;
+  ctx.gated = 'held'; // this turn closes with the cut under way: the turn-end rule stays out of it
   $.clock.after(1, () => scheduleCompactThenResend($, ctx, text, d.reason));
   return { drop: 'compacting first: the cache went cold and the context is past the threshold — your prompt follows right after' };
 }
@@ -551,11 +570,16 @@ export const register = (on) => {
     // The launch cwd is the folder whose settings.local.json this session reads (measured: a subfolder session
     // reads its own, not the git root's) — captured before anything can move the working directory.
     try { ctx.folder = await $.session.cwd(); } catch (err) { $.ui.log(`compaction: launch folder unknown, folder TTL off: ${String(err && err.message ? err.message : err)}`); }
-    if (ctx.interactive && ctx.folder) {
-      // Join the folder now (below the threshold): a folder switched to 5m by the others goes back to 1h.
+    if (ctx.interactive) {
       $.clock.after(1, () => {
-        void (async () => { await ensureConfig($, ctx); await reportFolder($, ctx); startHeartbeat($, ctx); })()
-          .catch((err) => $.ui.log(`compaction: folder join failed: ${String(err && err.message ? err.message : err)}`));
+        void (async () => {
+          await ensureConfig($, ctx);
+          // Join the folder now (below the threshold): a folder switched to 5m by the others goes back to 1h.
+          if (ctx.folder) {
+            try { await reportFolder($, ctx); startHeartbeat($, ctx); } catch (err) { $.ui.log(`compaction: folder join failed: ${String(err && err.message ? err.message : err)}`); }
+          }
+          await reopenCut($, ctx);
+        })().catch((err) => $.ui.log(`compaction: session start check failed: ${String(err && err.message ? err.message : err)}`));
       });
     }
     return next(e);
@@ -581,10 +605,11 @@ export const register = (on) => {
     if (!ctx.config.enabled) return r;
     // Interactive: off the turn's path (the next prompt is not delayed). Headless: the
     // process ends right after the turn, so a deferred observation would never run.
-    const gated = ctx.gated;
+    // After a person's turn too: the next input may be a peer message the gate never judges.
+    const held = ctx.gated === 'held';
     ctx.gated = false;
     if (ctx.interactive) {
-      $.clock.after(1, () => { void afterTurn($, ctx).then(() => (gated ? null : turnEnd($, ctx))); });
+      $.clock.after(1, () => { void afterTurn($, ctx).then(() => (held ? null : turnEnd($, ctx))); });
     } else await afterTurn($, ctx);
     return r;
   });
