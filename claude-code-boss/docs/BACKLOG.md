@@ -2714,5 +2714,4 @@ Lacunas conhecidas do gate de project id (2.29.1):
 ## Release rf-reviewer 0.2.5 (pedido do orquestrador, 2026-10-27)
 
 - [x] **Achado e corrigido na hora — o README da raiz dizia rf-reviewer 0.1.0** (`README.md:10`). Agora 0.2.5.
-- [ ] **Nenhum guard iguala `plugin.json` e `__version__` do rf-reviewer** (`.github/scripts/version-stamp.mjs:22` lê o `plugin.json`; `release-guard.mjs:56` e `release-audit.mjs:151` leem `rf_engine/__init__.py`). Hoje as duas versões batem, mas uma deriva passaria despercebida. Proposta: check de igualdade no `release-audit.mjs`. Visto na lente de feature irmã (haiku/high, 2026-10-27).
-- [ ] **Cosmético — `clientInfo.version` fixo em "0.1.0"** (`rf-reviewer/servers/rf-engine/rf_engine/brain_client.py:83`): é a versão do cliente MCP, não a do plugin; ler de `__version__` se alguém quiser rastrear. Mesma lente.
+- [x] **Resolvido no 0.2.6 — `release-audit` não igualava `plugin.json` e `__version__` do rf-reviewer; `clientInfo.version` fixo em "0.1.0"** (`.github/scripts/release-audit.mjs` check `rf-version-aligned`, `rf_engine/brain_client.py`). Testes: `release-audit.rfVersionsAligned: …`, `rf brain_client: clientInfo.version …`; mutação do manifest para 0.2.6 reprova o check.
