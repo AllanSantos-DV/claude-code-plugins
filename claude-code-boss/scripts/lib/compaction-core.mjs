@@ -360,6 +360,9 @@ export function classifyResume(s) {
 }
 
 const BRIEF_ARG_CHARS = 160;
+// The brief must at least halve the history to replace the engine's summary (real cold cuts take 81-86%): when the
+// newest message is the bulk, the summary does better.
+export const BRIEF_MIN_CUT_RATIO = 0.5;
 const BRIEF_ERROR_CHARS = 200;
 
 /** One-line description of a tool call's main argument (file, command, pattern, url…), whitespace-collapsed and cut. */
@@ -390,7 +393,13 @@ export function buildBrief(messages, options = {}) {
   if (Number(o.briefTailTokens) > 0) { // the tail by size: newest messages until briefTailTokens (4 chars/token)
     let acc = 0;
     tailStart = n;
-    while (tailStart > 1 && acc < o.briefTailTokens) { tailStart--; acc += size(list[tailStart]) / 4; }
+    while (tailStart > 1 && acc < o.briefTailTokens) {
+      const tokens = size(list[tailStart - 1]) / 4;
+      // The newest message always stays (the API needs it); an older one bigger than the whole budget is condensed
+      // instead of riding along — it is what the brief exists to drop.
+      if (tailStart < n && tokens > o.briefTailTokens) break;
+      tailStart--; acc += tokens;
+    }
   }
   while (tailStart > 1) { // an orphan result at the cut: pull its call into the tail
     const uses = new Set();
@@ -418,11 +427,12 @@ export function buildBrief(messages, options = {}) {
   const text = head + lines.join('\n');
   const out = middle.length ? [list[0], { role: 'user', text }, ...list.slice(tailStart)] : list.slice();
   const userTextIntact = middle.every((m) => m.role !== 'user' || !m.text || text.includes(`USER: ${m.text}`));
-  return {
-    messages: out, briefChars: middle.length ? text.length : 0,
-    charsBefore: list.reduce((c, m) => c + size(m), 0), charsAfter: out.reduce((c, m) => c + size(m), 0),
-    cutMessages: middle.length, userTextIntact,
-  };
+  const charsBefore = list.reduce((c, m) => c + size(m), 0);
+  const charsAfter = out.reduce((c, m) => c + size(m), 0);
+  // A brief that does not cut enough (the newest message alone is the bulk) is not a cut: the caller reads
+  // cutMessages 0 as "nothing to condense" and the engine's summary runs.
+  if (charsAfter > charsBefore * (1 - BRIEF_MIN_CUT_RATIO)) return { messages: list.slice(), briefChars: 0, charsBefore, charsAfter: charsBefore, cutMessages: 0, userTextIntact: true };
+  return { messages: out, briefChars: middle.length ? text.length : 0, charsBefore, charsAfter, cutMessages: middle.length, userTextIntact };
 }
 
 /** Rough tokens of a message list read as JSON (4 chars/token: sizing, never billing). */

@@ -28434,6 +28434,82 @@ test('compaction-core.buildBrief: the verbatim tail by tokens (briefTailTokens, 
   assertEq(all.cutMessages, 0, 'a budget past the whole history condenses nothing');
 });
 
+function hugeTailSession(hugeAt) {
+  const user = (text) => ({ role: 'user', text, toolUses: [] });
+  const call = (id, text = '') => ({ role: 'assistant', text, toolUses: [{ tool_use_id: id, tool: 'Read', input: { file_path: `f-${id}.js` } }] });
+  const result = (id, text) => ({ role: 'user', text: '', toolUses: [], toolResults: [{ tool_use_id: id, text, isError: false }] });
+  const msgs = [user('Plan: start')];
+  for (let i = 0; i < 6; i++) msgs.push(call(`s${i}`, `step ${i}`), result(`s${i}`, 'x'.repeat(2000)));
+  const huge = [call('big'), result('big', 'H'.repeat(400000))];
+  if (hugeAt === 'middle') msgs.push(...huge, user('ok, now the small ones'), call('t1', 'small'), result('t1', 'tiny'));
+  else msgs.push(...huge);
+  return msgs;
+}
+
+test('compaction-core.buildBrief: a huge result inside the tail window does not ride along — the brief shrinks, the newest messages stay', () => {
+  const msgs = hugeTailSession('middle');
+  const b = cmpCore.buildBrief(msgs, {});
+  assert(b.cutMessages > 0, 'something was condensed');
+  assert(b.charsAfter < b.charsBefore / 10, `the 400k result went into the condensed part: ${b.charsAfter} of ${b.charsBefore}`);
+  const last = msgs[msgs.length - 1];
+  assert(b.messages[b.messages.length - 1] === last, 'the newest message is still the engine object');
+  assertEq(b.userTextIntact, true);
+  const uses = new Set(); for (const m of b.messages.slice(2)) for (const u of m.toolUses || []) uses.add(u.tool_use_id);
+  for (const m of b.messages.slice(2)) for (const r of m.toolResults || []) assert(uses.has(r.tool_use_id), `no orphan result ${r.tool_use_id}`);
+});
+
+test('compaction-core.buildBrief: when the newest message is the huge result the brief cannot halve the history — it says so (cuts nothing) so the engine summary runs', () => {
+  const msgs = hugeTailSession('newest');
+  const b = cmpCore.buildBrief(msgs, {});
+  assertEq(b.cutMessages, 0, 'a brief that does not make the history smaller is not applied');
+  assertEq(b.messages.length, msgs.length, 'history unchanged');
+  assert(b.charsAfter <= b.charsBefore, 'never bigger than what it replaces');
+  assert(msgs.every((m, i) => b.messages[i] === m), 'the very same objects, untouched');
+  assertEq(cmpCore.buildBrief(cmpSession(), { preserveRecentMessages: 3, briefTailTokens: 0 }).cutMessages > 0, true, 'an ordinary history is still condensed');
+});
+
+test('router enable/disable against a real settings.json: autoCompactWindow written when absent, the user\'s value untouched, removed on disable only when ours', () => {
+  const { spawnSync } = require('child_process');
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-rsettings-'));
+  const settingsFile = path.join(home, '.claude', 'settings.json');
+  const child = path.join(home, 'child.js');
+  fs.mkdirSync(path.dirname(settingsFile), { recursive: true });
+  fs.writeFileSync(child, `
+    const fs = require('fs');
+    const ens = require(${JSON.stringify(path.join(ROOT, 'scripts', 'model-router-ensure.js'))});
+    const file = ${JSON.stringify(settingsFile)};
+    const read = () => JSON.parse(fs.readFileSync(file, 'utf8'));
+    const url = 'http://127.0.0.1:13456';
+    const out = {};
+    const scenario = (name, initial) => {
+      if (initial === null) { try { fs.unlinkSync(file); } catch (e) { if (e.code !== 'ENOENT') throw e; } } else fs.writeFileSync(file, JSON.stringify(initial));
+      out[name] = { enabled: ens.enableSettingsRouting(url) };
+      out[name].afterEnable = read();
+      ens.disableSettingsRouting();
+      out[name].afterDisable = read();
+    };
+    scenario('absent', {});
+    scenario('user', { autoCompactWindow: 500000 });
+    scenario('legacyEnv', { env: { CLAUDE_CODE_AUTO_COMPACT_WINDOW: '200000', KEEP: '1' } });
+    scenario('userEnv', { env: { CLAUDE_CODE_AUTO_COMPACT_WINDOW: '900000' } });
+    console.log(JSON.stringify(out));
+  `);
+  try {
+    const r = spawnSync(process.execPath, [child], { encoding: 'utf8', windowsHide: true, timeout: 60000, env: { ...process.env, HOME: home, USERPROFILE: home, CLAUDE_PLUGIN_ROOT: ROOT, CLAUDE_PLUGIN_DATA: path.join(home, 'data'), CCB_TEST_SANDBOX: '1' } });
+    assertEq(r.status, 0, `child failed: ${r.stderr}`);
+    const out = JSON.parse(r.stdout.trim().split('\n').pop());
+    assertEq(out.absent.enabled, true);
+    assertEq(out.absent.afterEnable.autoCompactWindow, 200000, 'written when absent');
+    assert(!('CLAUDE_CODE_AUTO_COMPACT_WINDOW' in (out.absent.afterEnable.env || {})), 'never in the env');
+    assertEq(out.absent.afterDisable.autoCompactWindow, undefined, 'ours → removed on disable');
+    assertEq(out.user.afterEnable.autoCompactWindow, 500000, 'the user value is untouched');
+    assertEq(out.user.afterDisable.autoCompactWindow, 500000, 'and survives the disable');
+    assert(!('CLAUDE_CODE_AUTO_COMPACT_WINDOW' in (out.legacyEnv.afterEnable.env || {})), 'our old env value is migrated out');
+    assertEq(out.legacyEnv.afterEnable.env.KEEP, '1', 'foreign env intact');
+    assertEq(out.userEnv.afterEnable.env.CLAUDE_CODE_AUTO_COMPACT_WINDOW, '900000', 'the user\'s own env value is never touched');
+  } finally { fs.rmSync(home, { recursive: true, force: true }); }
+});
+
 test('compaction-core.isMechanicalCut + chooseCompaction: the brief only with a COLD cache and never for a person\'s own /compact', () => {
   const plan = (ratio) => ({ ratio, duplicatesDropped: 0, verbatimTextIntact: true });
   assertEq(cmpCore.isMechanicalCut({ warm: true, trigger: 'manual', reason: 'over-threshold-cache-cold' }), false, 'warm: never');
