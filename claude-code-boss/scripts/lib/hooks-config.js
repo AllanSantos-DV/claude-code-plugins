@@ -103,6 +103,7 @@ const PROFILE_PRESETS = {
     // graph-guard stays in dev+standard (it protects MACHINE resources, not a
     // learning nag) but free's contract is "no blocking, ever" — so off here.
     graphGuard:       { enabled: false },
+    sessionPractices: { enabled: false }, // its first long foreground wait is a deny
     compaction:       { enabled: false },
     costTuning:       { enabled: false },
   },
@@ -199,6 +200,12 @@ function getErrorGuard() {
     // the old 90-day `windowDays` is gone with the project-wide store.
     threshold: Number.isInteger(eg.threshold) && eg.threshold > 0 ? eg.threshold : 2,
   };
+}
+
+// Profile-resolved (free disables it). session-practices: the once-per-session conduct hint on shell calls,
+// and its single deny of the first long foreground wait.
+function getSessionPractices() {
+  return { enabled: (_resolved().sessionPractices || {}).enabled !== false };
 }
 
 // Profile-resolved (free disables it). PowerShell 5.1×7 guard (lib/powershell-compat.js): exact
@@ -645,6 +652,7 @@ module.exports = {
   getShellEscapeGuard,
   getPowershellGuard,
   getFileFormatGuard,
+  getSessionPractices,
   getPolicyInject,
   getSpecFunnel,
   getCaptureTriggerEvidence,

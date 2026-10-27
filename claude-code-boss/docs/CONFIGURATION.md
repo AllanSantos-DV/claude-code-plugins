@@ -236,7 +236,7 @@ Trocar perfil: `/dashboard` → aba Hooks, ou `/boss-profile <standard|dev|free>
 |--------|---------|
 | `SessionStart` | model-router-ensure, memory-rotate, session-whitelist, brain-health, project-snapshot, curation-session, doctor-advisory, review-checklist-advisory, tuning-advisory, project-identity-advisory, graph-warm, powershell-advisory, policy-inject |
 | `UserPromptSubmit` | model-router-ensure, brain-health, correction-detect, active-research-detect, brain_retrieve_context (MCP) |
-| `PreToolUse` | curation-guard + error-guard (Bash); powershell-guard (PowerShell); file-format-guard (Write); policy-enforce-shadow (Edit); graph-guard (Grep/Glob) |
+| `PreToolUse` | curation-guard + error-guard (Bash); session-practices (Bash, PowerShell; desligado no perfil `free`); powershell-guard (PowerShell); file-format-guard (Write); policy-enforce-shadow (Edit); graph-guard (Grep/Glob) |
 | `PostToolUse` | curation-detect, decision-detect (Bash); file-format-guard (Write); file-edit-detect (Edit/Write/NotebookEdit); policy-glob-inject (Edit/Write/MultiEdit/NotebookEdit) |
 | `Stop` | stop-dispatcher (coordena 17 detectors in-process, incl. project-id-stop) |
 | `SubagentStart` | policy-inject |

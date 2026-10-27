@@ -236,14 +236,35 @@ function contextTuningEnabled(config) {
 // PURA: env desejado com APENAS o tuning (sem proxy). Nunca toca ANTHROPIC_BASE_URL
 // (nem escreve, nem remove: uma base_url de terceiro que já esteja lá é preservada).
 // `== null` → só preenche o ausente, nunca clobbera o valor explícito do usuário.
+// A janela de auto-compact NÃO vai para o env: a variável vence o `/autocompact`, a flag e toda
+// chave do settings (planTuningWindow grava a chave `autoCompactWindow`). Uma variável igual à
+// nossa, gravada por versões anteriores, é removida aqui (migração); a do usuário sobrevive.
 function planTuningEnv(currentEnv, autoCompactValue) {
   const env = { ...(currentEnv || {}) };
   const next = { ...env };
   if (next.ENABLE_TOOL_SEARCH == null) next.ENABLE_TOOL_SEARCH = 'true';
-  if (next.CLAUDE_CODE_AUTO_COMPACT_WINDOW == null) next.CLAUDE_CODE_AUTO_COMPACT_WINDOW = String(autoCompactValue);
+  if (next.CLAUDE_CODE_AUTO_COMPACT_WINDOW === String(autoCompactValue)) delete next.CLAUDE_CODE_AUTO_COMPACT_WINDOW;
   const changed = next.ENABLE_TOOL_SEARCH !== env.ENABLE_TOOL_SEARCH
     || next.CLAUDE_CODE_AUTO_COMPACT_WINDOW !== env.CLAUDE_CODE_AUTO_COMPACT_WINDOW;
   return { env: next, changed };
+}
+
+// Faixa da chave top-level `autoCompactWindow` do settings (a do env/roteador começa em 50000).
+const WINDOW_SETTING_MIN = 100000;
+
+// PURA: a janela do tuning como chave top-level `autoCompactWindow` do settings.json — o
+// `/autocompact` do usuário (modelSettings) vence a chave. `== null` → só preenche o ausente.
+function planTuningWindow(settings, autoCompactValue) {
+  const cur = settings && settings.autoCompactWindow;
+  if (cur != null) return { value: cur, changed: false };
+  return { value: Math.max(WINDOW_SETTING_MIN, autoCompactValue), changed: true };
+}
+
+// PURA: remove a chave só quando bate o valor que TERÍAMOS gravado; um valor do usuário fica.
+function planTuningWindowRemoval(settings, autoCompactValue) {
+  const cur = settings && settings.autoCompactWindow;
+  const ours = cur != null && cur === Math.max(WINDOW_SETTING_MIN, autoCompactValue);
+  return { remove: ours, changed: ours };
 }
 
 // PURA: remove os 2 env de tuning SÓ quando batem o valor que TERÍAMOS gravado
@@ -654,13 +675,15 @@ function applySettingsTuning(on) {
   const acw = resolveAutoCompactWindow(readConfig());
   if (on && acw.clamped) log(`AVISO: autoCompactWindow ${acw.original} fora de [${AUTO_COMPACT_MIN}, ${AUTO_COMPACT_MAX}] — ajustado para ${acw.value}.`);
   const plan = on ? planTuningEnv(s.env || {}, acw.value) : planTuningRemoval(s.env || {}, acw.value);
-  if (!plan.changed) return true;
-  if (Object.keys(plan.env).length === 0) delete s.env; else s.env = plan.env;
+  const win = on ? planTuningWindow(s, acw.value) : planTuningWindowRemoval(s, acw.value);
+  if (!plan.changed && !win.changed) return true;
+  if (plan.changed) { if (Object.keys(plan.env).length === 0) delete s.env; else s.env = plan.env; }
+  if (win.changed) { if (on) s.autoCompactWindow = win.value; else delete s.autoCompactWindow; }
   try {
     writeSettings(s);
     log(on
-      ? `settings.json: env-tuning SEM proxy — ENABLE_TOOL_SEARCH=${plan.env.ENABLE_TOOL_SEARCH}; CLAUDE_CODE_AUTO_COMPACT_WINDOW=${plan.env.CLAUDE_CODE_AUTO_COMPACT_WINDOW} (ANTHROPIC_BASE_URL NÃO é publicada — a janela de 1M é preservada).`
-      : 'settings.json: env-tuning removido (só o que era nosso).');
+      ? `settings.json: tuning SEM proxy — ENABLE_TOOL_SEARCH=${(s.env || {}).ENABLE_TOOL_SEARCH}; autoCompactWindow=${s.autoCompactWindow} (ANTHROPIC_BASE_URL NÃO é publicada — a janela de 1M é preservada).`
+      : 'settings.json: tuning removido (só o que era nosso).');
     return true;
   } catch (e) {
     log(`AVISO: não foi possível escrever settings.json (tuning): ${e.message}`);
@@ -1104,6 +1127,6 @@ if (require.main === module) {
 // healthCheck/probeAlive/readRouterToken exportados p/ os testes de verify-before-trust.
 module.exports = { run, mergeRouterConfig, readConfig, healthCheck, probeAlive, readRouterToken,
   resolveAutoCompactWindow, planEnableEnv, planDisableEnv, enableSettingsRouting, disableSettingsRouting,
-  contextTuningEnabled, planTuningEnv, planTuningRemoval, applySettingsTuning, applyCostTuning, planCostTuningNow,
+  contextTuningEnabled, planTuningEnv, planTuningRemoval, planTuningWindow, planTuningWindowRemoval, applySettingsTuning, applyCostTuning, planCostTuningNow,
   // servesThisBuild/processCommandLine/normPath exportados p/ os testes de troca-de-build no boot.
   servesThisBuild, processCommandLine, normPath, sessionGateway, isOurProxyUrl, cleanupGlobalEnv };
