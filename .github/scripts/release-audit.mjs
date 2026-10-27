@@ -28,6 +28,8 @@
  *                          matches its in-repo version.
  *   5. no-tracked-ignored — no tracked file matches .gitignore (a later rule
  *                          does not untrack what was already committed).
+ *   6. claude-agents-synced — .claude/agents copies equal .github/agents.
+ *   7. rf-version-aligned — rf-reviewer plugin.json version equals rf_engine __version__.
  *
  * Usage:
  *   node .github/scripts/release-audit.mjs check   # exit 1 if any check fails
@@ -40,7 +42,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { execFileSync } from 'node:child_process';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = path.resolve(__dirname, '..', '..'); // .github/scripts -> repo root
@@ -137,6 +139,15 @@ function noConflictMarkers() {
 // v0.2.2 enquanto o repo estava em 2.19.1 e 0.2.4. Um visitante lia uma versão
 // que não existe mais. Exato e de baixo falso-positivo: compara o tile com a
 // versão in-repo (a MESMA fonte que o release-guard usa).
+const RF_INIT = path.join(REPO_ROOT, 'rf-reviewer', 'servers', 'rf-engine', 'rf_engine', '__init__.py');
+const RF_MANIFEST = path.join(REPO_ROOT, 'rf-reviewer', '.claude-plugin', 'plugin.json');
+
+/** The engine's `__version__` (the source of truth the release-guard and the daemon restart compare). */
+function readRfPyVersion() {
+  const m = fs.readFileSync(RF_INIT, 'utf8').match(/__version__\s*=\s*["']([^"']+)["']/);
+  return m ? m[1] : null;
+}
+
 const INDEX_TILES = [
   {
     plugin: 'claude-code-boss',
@@ -146,14 +157,7 @@ const INDEX_TILES = [
   },
   {
     plugin: 'rf-reviewer',
-    version: () => {
-      const src = fs.readFileSync(
-        path.join(REPO_ROOT, 'rf-reviewer', 'servers', 'rf-engine', 'rf_engine', '__init__.py'),
-        'utf8',
-      );
-      const m = src.match(/__version__\s*=\s*["']([^"']+)["']/);
-      return m ? m[1] : null;
-    },
+    version: () => readRfPyVersion(),
   },
 ];
 
@@ -227,6 +231,26 @@ function claudeAgentsSynced() {
     : { ok: true, details: [`${names.length} agent(s) identical in .github/agents and .claude/agents`] };
 }
 
+// ── Check 7: the rf-reviewer manifest version equals its Python __version__ ──────
+// Claude Code updates users by the manifest version; the daemon restarts by __version__ and the
+// release-guard/index tile read __version__. Bumping only one ships a plugin that updates without
+// restarting its engine (or the reverse). Pure comparison is exported for the unit test.
+function rfVersionsAligned(manifestVersion, pyVersion) {
+  if (!manifestVersion) return { ok: false, details: ['rf-reviewer plugin.json has no version'] };
+  if (!pyVersion) return { ok: false, details: ['rf-reviewer __init__.py has no __version__'] };
+  if (manifestVersion !== pyVersion) {
+    return {
+      ok: false,
+      details: [`rf-reviewer plugin.json is ${manifestVersion} but rf_engine __version__ is ${pyVersion} — bump both`],
+    };
+  }
+  return { ok: true, details: [`rf-reviewer manifest and __version__ are both ${pyVersion}`] };
+}
+
+function rfVersionAligned() {
+  return rfVersionsAligned(JSON.parse(fs.readFileSync(RF_MANIFEST, 'utf8')).version, readRfPyVersion());
+}
+
 const CHECKS = [
   { name: 'hooks-doc-drift', run: hooksDocumented },
   { name: 'changelog-current', run: changelogCurrent },
@@ -234,6 +258,7 @@ const CHECKS = [
   { name: 'index-version-current', run: indexVersionCurrent },
   { name: 'no-tracked-ignored', run: noTrackedIgnored },
   { name: 'claude-agents-synced', run: claudeAgentsSynced },
+  { name: 'rf-version-aligned', run: rfVersionAligned },
 ];
 
 function runAll() {
@@ -268,9 +293,17 @@ function cmdList() {
   process.stdout.write(JSON.stringify(runAll(), null, 2) + '\n');
 }
 
-const [cmd] = process.argv.slice(2);
-switch (cmd || 'check') {
-  case 'check': cmdCheck(); break;
-  case 'list': cmdList(); break;
-  default: abort(`comando desconhecido: ${cmd} (use check|list)`);
+export { rfVersionsAligned, runAll, CHECKS };
+
+// CLI only when run directly: an `import` (a unit test) must not run the audit and process.exit.
+const invokedDirectly = process.argv[1]
+  && import.meta.url === pathToFileURL(process.argv[1]).href;
+
+if (invokedDirectly) {
+  const [cmd] = process.argv.slice(2);
+  switch (cmd || 'check') {
+    case 'check': cmdCheck(); break;
+    case 'list': cmdList(); break;
+    default: abort(`comando desconhecido: ${cmd} (use check|list)`);
+  }
 }

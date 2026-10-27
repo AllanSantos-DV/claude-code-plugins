@@ -25,6 +25,8 @@ import urllib.error
 import urllib.request
 from pathlib import Path
 
+from . import __version__
+
 
 class BrainClient:
     def __init__(self, server_url: str, project_id: str = "", timeout: int = 30):
@@ -80,7 +82,7 @@ class BrainClient:
         params = {
             "protocolVersion": "2025-06-18",
             "capabilities": {},
-            "clientInfo": {"name": "rf-engine-brain", "version": "0.1.0"},
+            "clientInfo": {"name": "rf-engine-brain", "version": __version__},
         }
         if self.project_id:
             params["projectId"] = self.project_id
