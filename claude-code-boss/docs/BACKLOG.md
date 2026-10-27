@@ -1,5 +1,10 @@
 # Backlog
 
+## Mensagem de falha ilegível e link do aviso "disponível" (pedidos do orquestrador, 2026-10-27) — na develop, sem release
+
+- [x] **Achado e corrigido — `compaction: pruning failed … [object Object]`** (`hooks/compaction.mjs` `compactFailed`, `gateFailed`). `next.error` chega ao `.catch` como dado simples `{kind, message?, budget}`, não como `Error`; `String()` dava `[object Object]`. Novo `describeFailure` (`scripts/lib/compaction-core.mjs`). Teste: `compaction hook: a failed hook is logged with its readable cause …`. **A causa da falha da poda em si não foi achada**: sem log do erro original; a próxima ocorrência já mostra o motivo.
+- [x] **Link do aviso "versão disponível" → Pages** (`scripts/lib/update-notice.js`). Ganhou "Novidades:" com o changelog do Pages. O link do GitHub vinha no v3.11.2 publicado; a troca de 163eacd está só na develop, sai com o próximo release. Teste: `update-notice: no version notice builds a GitHub link …`.
+
 ## Compactação a frio não vinha antes de mensagem de outra sessão (pedido do orquestrador t-056bb9, 2026-10-27)
 
 Origem: dono, duas máquinas; sessão com 875 mil tokens parada > 1 h recarregou tudo no prompt seguinte; reincidência da 3.10.2. Pesquisa: `docs/research/2026-10-27-compactacao-frio-mensagem-de-peer.md`.
