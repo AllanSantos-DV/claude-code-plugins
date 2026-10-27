@@ -2710,3 +2710,6 @@ Lacunas conhecidas do gate de project id (2.29.1):
   **Decidido (Jarvis, 26/10): é do Smart Tool (descoberta da ferramenta); reportado ao orquestrador, sem edição lá.**
 
 - [x] **Achado e corrigido (2026-10-23): `smoke/doctor.mjs` (local, gitignored) falhava no cenário "healthy env"**: a raiz de fixture não tinha `node_modules`, então a checagem `native-deps` (crítica) falhava numa máquina saudável. A fixture agora aponta um junction para o `node_modules` real (removido antes do `rm` recursivo para nunca tocar no original). 4/4 verdes.
+## Release 3.12.0 (pedido do orquestrador, 2026-10-27)
+
+- [ ] **Release Guard fica vermelho depois da tag v3.12.0: drift do `rf-reviewer`** (`rf-reviewer/.claude-plugin/plugin.json`, `.github/scripts/release-guard.mjs`). Visto na run do Release Guard pós-tag (`código mudou depois da tag rf-v0.2.4 SEM subir a versão`). Causa: o commit 7ffc346 trocou só o `homepage` do rf-reviewer para o site do Pages, e o guard conta `plugin.json` como comportamento entregue. Fora do escopo (nenhuma release do rf-reviewer foi pedida): decisão do dono/orquestrador entre (a) cortar `rf-v0.2.5` (bump + CHANGELOG + tag da main) ou (b) ensinar o `shipsBehavior` a ignorar mudança só de `homepage`. Recomendação: (a), é o caminho do AGENTS.md e nada fica sem receber.
