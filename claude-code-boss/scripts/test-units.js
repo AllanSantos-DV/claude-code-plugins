@@ -29747,6 +29747,7 @@ test('compaction hook: a failed hook is logged with its readable cause — the e
       const next = Object.assign(async (e) => { replayed = e; return 'engine'; }, { error });
       const r = await handlers[event]({ ui: { log: (t) => logs.push(t) } }, { x: 1 }, next);
       assertEq(r, 'engine', `${event}: the engine's own path still runs`);
+      assertEq(replayed, { x: 1 }, `${event}: the engine gets the original event`);
       assertEq(logs, [`compaction: ${label}: ${readable}`], `${event}: ${JSON.stringify(error)}`);
       assert(!logs[0].includes('[object Object]'), 'never the default object string');
     }
