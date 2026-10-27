@@ -121,6 +121,8 @@ const HOOKS = {
   },
   // warn-only twin for the PowerShell tool (no updatedInput, so no conflict with curation-guard)
   hook_powershell_guard: { script: 'powershell-guard.js', call: async (m, ev) => json(await m.run(ev)) },
+  // additionalContext-only sibling on Bash|PowerShell: never decides, so it composes with the guards above
+  hook_session_practices: { script: 'session-practices.js', call: async (m, ev) => json(await m.run(ev)) },
   hook_file_format_guard: { script: 'file-format-guard.js', call: async (m, ev) => json(m.run(ev)) },
   hook_graph_guard: { script: 'graph-guard.js', call: async (m, ev) => m.run(ev) },
   // Stop stays ONE consolidated tool: sibling Stop hooks do not merge reasons (spike S4-iii).

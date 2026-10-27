@@ -110,6 +110,26 @@
         ]
       },
       {
+        "matcher": "Bash|PowerShell",
+        "hooks": [
+          {
+            "type": "mcp_tool",
+            "server": "plugin:claude-code-boss:brain-server",
+            "tool": "hook_session_practices",
+            "input": {
+              "hook_event_name": "${hook_event_name}",
+              "session_id": "${session_id}",
+              "cwd": "${cwd}",
+              "tool_name": "${tool_name}",
+              "tool_input": "${tool_input}",
+              "agent_id": "${agent_id}",
+              "project_dir": "${CLAUDE_PROJECT_DIR}"
+            },
+            "timeout": 5
+          }
+        ]
+      },
+      {
         "matcher": "Write",
         "hooks": [
           {
