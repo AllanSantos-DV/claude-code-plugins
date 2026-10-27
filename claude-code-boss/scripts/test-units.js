@@ -26332,6 +26332,25 @@ test('update-notice: the plugin homepage shown with an update (plugin.json + mar
   }
 });
 
+test('update-notice: no version notice builds a GitHub link — the source holds no repository URL and both notices link the Pages changelog', () => {
+  const u = require('./lib/update-notice.js');
+  const src = fs.readFileSync(path.join(__dirname, 'lib', 'update-notice.js'), 'utf8');
+  assert(!/github\.com|\/releases\b|\/blob\//i.test(src.replace(/^\s*(\/\/|\*|\/\*).*$/gm, '')), 'update-notice.js (code, comments aside) names no GitHub URL');
+  assertEq(u.PAGES_URL, 'https://allansantos-dv.github.io/claude-code-plugins/claude-code-boss/');
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-un-'));
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-unr-'));
+  try {
+    fs.writeFileSync(path.join(root, 'package.json'), JSON.stringify({ version: '3.5.0' }));
+    fs.writeFileSync(path.join(dir, u.STATE), JSON.stringify({ seenVersion: '3.4.0', latest: '3.6.0' }));
+    const notices = u.takeUpdateNotices({ root, dir, env: {} });
+    assertEq(notices.length, 2, 'updated + available');
+    for (const text of notices) {
+      assert(text.includes(`${u.PAGES_URL}changelog.html`), `links the Pages changelog: ${text}`);
+      assert(!/github\.com|\/releases\b|\/blob\//i.test(text), `no GitHub link: ${text}`);
+    }
+  } finally { fs.rmSync(dir, { recursive: true, force: true }); fs.rmSync(root, { recursive: true, force: true }); }
+});
+
 test('update-notice: "version available" cached 6h and told once per version; "plugin updated" told once; first run silent; env opt-out stops switch-on and check', async () => {
   const u = require('./lib/update-notice.js');
   const m = require('./lib/marketplace-autoupdate.js');
@@ -29573,6 +29592,33 @@ test('compaction hook: a person\'s prompt WITH attachments over a cold cache goe
       assertEq(out.compacts, 1, 'cut as soon as the cache went cold again');
     } finally { fs.rmSync(dir, { recursive: true, force: true }); }
   });
+});
+
+test('compaction hook: a failed hook is logged with its readable cause — the engine\'s plain-data failure, an Error, a string — never "[object Object]"', async () => {
+  const cmp = await import(require('url').pathToFileURL(path.join(ROOT, 'hooks', 'compaction.mjs')).href);
+  const core = await import(require('url').pathToFileURL(path.join(SCRIPTS, 'lib', 'compaction-core.mjs')).href);
+  const handlers = {};
+  cmp.register((event) => ({ catch(fn) { handlers[event] = fn; return this; } }));
+  const cases = [
+    [{ kind: 'throw', message: 'daemon answered 500', budget: 1000 }, 'throw: daemon answered 500'],
+    [{ kind: 'timeout', budget: 1000 }, 'timed out after 1000 ms'],
+    [{ kind: 'timeout', message: 'rejected', budget: 1000 }, 'timed out after 1000 ms: rejected'],
+    [new Error('boom'), 'boom'],
+    ['plain', 'plain'],
+    [{ weird: 1 }, '{"weird":1}'],
+  ];
+  for (const [event, label] of [['session.compact', "pruning failed, the engine's own compaction runs"], ['prompt.submit', 'prompt gate failed, the prompt goes on uncompacted']]) {
+    for (const [error, readable] of cases) {
+      const logs = [];
+      let replayed = null;
+      const next = Object.assign(async (e) => { replayed = e; return 'engine'; }, { error });
+      const r = await handlers[event]({ ui: { log: (t) => logs.push(t) } }, { x: 1 }, next);
+      assertEq(r, 'engine', `${event}: the engine's own path still runs`);
+      assertEq(logs, [`compaction: ${label}: ${readable}`], `${event}: ${JSON.stringify(error)}`);
+      assert(!logs[0].includes('[object Object]'), 'never the default object string');
+    }
+  }
+  assertEq(core.describeFailure(undefined), 'unknown error');
 });
 
 test('folder-ttl.sweep: a folder left at 5m by sessions that stopped reporting is restored with no report from anyone (headless-only machine); a quiet state is not rewritten', () => {

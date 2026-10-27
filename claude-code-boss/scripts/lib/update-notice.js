@@ -82,7 +82,7 @@ function takeUpdateNotices({ root, dir, env = process.env } = {}) {
   }
   const next = { ...st, seenVersion: installed };
   if (!autoUpdateDisabled(env) && st.latest && compareSemver(st.latest, installed) > 0 && st.announcedLatest !== st.latest) {
-    out.push(`claude-code-boss: versão ${st.latest} disponível (instalada: ${installed}). Com a atualização automática ligada ela chega sozinha na próxima sessão; senão, /plugin → Marketplaces → Update. Desligar os avisos e a atualização automática: CLAUDE_CODE_BOSS_AUTO_UPDATE=0.`);
+    out.push(`claude-code-boss: versão ${st.latest} disponível (instalada: ${installed}). Com a atualização automática ligada ela chega sozinha na próxima sessão; senão, /plugin → Marketplaces → Update. Novidades: ${CHANGELOG_URL}. Desligar os avisos e a atualização automática: CLAUDE_CODE_BOSS_AUTO_UPDATE=0.`);
     next.announcedLatest = st.latest;
   }
   if (next.seenVersion !== st.seenVersion || next.announcedLatest !== st.announcedLatest) writeState(file, next);
