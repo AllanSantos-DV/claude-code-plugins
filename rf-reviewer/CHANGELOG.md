@@ -4,6 +4,11 @@ Todas as mudanças relevantes do **rf-reviewer** são documentadas aqui. O forma
 segue [Keep a Changelog](https://keepachangelog.com/pt-BR/1.1.0/); a versão vive
 em `servers/rf-engine/rf_engine/__init__.py` (`__version__`).
 
+## [0.2.6] - 2026-10-27
+
+### Fixed
+- **O cliente de memória informa a versão real do pacote** (`rf_engine/brain_client.py`): o `initialize` do MCP mandava `clientInfo.version` fixo em `0.1.0`; agora envia o `__version__` do motor, para o servidor de memória enxergar qual versão do rf-reviewer está falando com ele.
+
 ## [0.2.5] - 2026-10-27
 
 ### Changed

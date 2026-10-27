@@ -10255,6 +10255,70 @@ test('release-guard: importar o modulo NAO executa o CLI (senao mata o processo 
   assertEq(typeof rg.GRACE_MS, 'number', 'janela de acomodacao exportada');
 });
 
+// ─── rf-reviewer: manifest × __version__ no release-audit; clientInfo.version real ───
+const RA_PATH = path.resolve(ROOT, '..', '.github', 'scripts', 'release-audit.mjs');
+const loadReleaseAudit = () => import(require('url').pathToFileURL(RA_PATH).href);
+const RF_ENGINE_DIR = path.resolve(ROOT, '..', 'rf-reviewer', 'servers', 'rf-engine');
+
+test('release-audit: importar o modulo NAO executa o CLI e o check rf-version-aligned esta registrado', async () => {
+  const ra = await loadReleaseAudit();
+  assertEq(typeof ra.rfVersionsAligned, 'function', 'comparacao pura exportada');
+  assert(ra.CHECKS.some((c) => c.name === 'rf-version-aligned'), 'o check esta na lista que o CI roda');
+});
+
+test('release-audit.rfVersionsAligned: manifest e __version__ diferentes REPROVAM (os dois numeros na mensagem); iguais passam; ausente reprova', async () => {
+  const { rfVersionsAligned } = await loadReleaseAudit();
+  const ok = rfVersionsAligned('0.2.5', '0.2.5');
+  assertEq(ok.ok, true);
+  const bad = rfVersionsAligned('0.2.6', '0.2.5');
+  assertEq(bad.ok, false, 'bump so do manifest atualiza o plugin sem reiniciar o motor');
+  assert(bad.details.join(' ').includes('0.2.6') && bad.details.join(' ').includes('0.2.5'), 'a mensagem mostra os dois numeros');
+  assertEq(rfVersionsAligned('0.2.5', '0.2.6').ok, false, 'o inverso tambem');
+  assertEq(rfVersionsAligned(undefined, '0.2.5').ok, false);
+  assertEq(rfVersionsAligned('0.2.5', null).ok, false);
+});
+
+test('release-audit: o repositorio de verdade esta com manifest == __version__ do rf-reviewer', async () => {
+  const ra = await loadReleaseAudit();
+  const r = ra.runAll().find((c) => c.name === 'rf-version-aligned');
+  assertEq(r.ok, true, r.details.join(' '));
+});
+
+test('rf brain_client: clientInfo.version do initialize e o __version__ do pacote, nao um literal', async () => {
+  const cp = require('child_process');
+  const initPy = fs.readFileSync(path.join(RF_ENGINE_DIR, 'rf_engine', '__init__.py'), 'utf8');
+  const want = initPy.match(/__version__\s*=\s*["']([^"']+)["']/)[1];
+  const src = fs.readFileSync(path.join(RF_ENGINE_DIR, 'rf_engine', 'brain_client.py'), 'utf8');
+  assert(!/"version":\s*"\d/.test(src), 'nenhum literal de versao no clientInfo');
+  const py = ['python3', 'python'].find((c) => { const r = cp.spawnSync(c, ['--version'], { windowsHide: true }); return !r.error && r.status === 0; });
+  assert(py, 'python3/python nao encontrado: o teste do cliente MCP precisa dele (falha alta, nao pula)');
+  const seen = [];
+  const http = require('http');
+  const srv = http.createServer((req, res) => {
+    let b = '';
+    req.on('data', (d) => { b += d; });
+    req.on('end', () => {
+      const msg = JSON.parse(b);
+      seen.push(msg);
+      res.setHeader('Content-Type', 'application/json');
+      res.end(JSON.stringify({ jsonrpc: '2.0', id: msg.id, result: {} }));
+    });
+  });
+  await new Promise((r) => srv.listen(0, '127.0.0.1', r));
+  try {
+    const code = `from rf_engine.brain_client import BrainClient\nBrainClient('http://127.0.0.1:${srv.address().port}').connect()`;
+    const run = await new Promise((resolve) => {
+      cp.execFile(py, ['-c', code], { cwd: RF_ENGINE_DIR, windowsHide: true, timeout: 30000 }, (err, so, se) => resolve({ err, se }));
+    });
+    assert(!run.err, `python falhou: ${run.err && run.err.message} ${run.se}`);
+  } finally {
+    await new Promise((r) => srv.close(r));
+  }
+  const init = seen.find((m) => m.method === 'initialize');
+  assert(init, 'o servidor falso recebeu o initialize');
+  assertEq(init.params.clientInfo.version, want, 'a versao enviada e a do pacote');
+});
+
 test('release-guard.classify: versao COM tag e ok, independente da idade', async () => {
   const { classify } = await loadReleaseGuard();
   const p = { name: 'boss', version: '2.20.0', tag: 'v2.20.0' };
