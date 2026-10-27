@@ -60,6 +60,7 @@ function newCtx() {
     pendingSettle: null,     // a compaction whose effect the next turn measures
     lastMessageId: null,     // newest API call already recorded as cache.turn
     turnEndTimer: 0,         // token of the pending turn-end re-check (a newer one supersedes)
+    holding: false,          // this process holds a person's prompt for the cut (its copy on disk is live, not an orphan)
     turnEndWaitTtlMs: 0,     // the TTL the pending turn-end re-check was armed with (0 = none pending)
     folder: null,            // the launch cwd: the folder whose .claude/settings.local.json this session reads
     folderAbove: false,      // past the threshold at the last look (what the folder report says)
@@ -261,6 +262,10 @@ async function afterTurn($, ctx) {
 
 async function compactThenResend($, ctx, text, reason) {
   ctx.compactReason = reason;
+  try { await cutAndResend($, ctx, text, reason); } finally { ctx.holding = false; }
+}
+
+async function cutAndResend($, ctx, text, reason) {
   try {
     // Not $.session.compact(): it skips our own session.compact hook (the engine's summary would run).
     await $.command.run({ command: 'compact' });
@@ -272,6 +277,8 @@ async function compactThenResend($, ctx, text, reason) {
   ctx.compactReason = null;
   try {
     await $.prompt.submit({ text, asUser: true }); // never lose the person's prompt
+    // Sent: the copy kept for a session that dies during the cut is no longer needed. Kept on a failure to clear.
+    await send($, ctx, 'held-clear', {}).catch((err) => $.ui.log(`compaction: held prompt copy not removed: ${String(err && err.message ? err.message : err)}`));
   } catch (err) {
     // The original was already dropped: hand the text back in the log so nothing is lost.
     $.ui.log(`compaction: could not re-send your prompt (${String(err && err.message ? err.message : err)}) — here it is:
@@ -359,15 +366,38 @@ async function transcriptTail($, ctx) {
 
 // A session opened over an existing history (resume, or a startup on an old transcript) is judged right away, before any
 // input: its first input is often a peer message, which the gate lets through — the whole cold history re-written.
-async function reopenCut($, ctx) {
-  if (!ctx.interactive || !ctx.configLoaded || !ctx.config.enabled) return;
-  if (ctx.start && ctx.start.source === 'compact') return;
+// The look comes first so the folder join already carries the session's real side of the threshold (a warm reopen is
+// above it); a cold one is about to be cut, so it does not claim "above" for the seconds the cut takes.
+async function reopenLook($, ctx) {
+  if (!ctx.interactive || !ctx.configLoaded || !ctx.config.enabled) return null;
+  if (ctx.start && ctx.start.source === 'compact') return null;
   const tail = await transcriptTail($, ctx);
-  if (!tail) return; // no call yet: a new session, nothing to cut
+  if (!tail) return null; // no call yet: a new session, nothing to cut
   if (tail.model) ctx.model = tail.model;
   if (tail.tokens != null) ctx.tailTokens = tail.tokens;
   if (ctx.lastAnswerAt == null && tail.at != null) ctx.lastAnswerAt = tail.at;
-  await turnEnd($, ctx, 'reopen');
+  try {
+    const { context, thr } = await currentWindow($, ctx);
+    const tokens = context.tokens ?? ctx.measuredTokens ?? tail.tokens;
+    const warm = isCacheWarm({ now: await $.clock.now(), lastAnswerAt: ctx.lastAnswerAt, ttlMs: ttlInUse(ctx).ttlMs });
+    ctx.folderAbove = thr.thresholdTokens != null && tokens != null && tokens >= thr.thresholdTokens && warm;
+  } catch (err) { $.ui.log(`compaction: folder threshold at reopen failed: ${String(err && err.message ? err.message : err)}`); }
+  return tail;
+}
+
+// Join the folder (below or at its real side of the threshold): a folder switched to 5m by the others goes back to 1h.
+async function joinFolder($, ctx) {
+  if (!ctx.folder) return;
+  try { await reportFolder($, ctx); startHeartbeat($, ctx); } catch (err) { $.ui.log(`compaction: folder join failed: ${String(err && err.message ? err.message : err)}`); }
+}
+
+// The prompt a previous run of this session held for the cut and never re-sent (the session closed during the /compact).
+async function recoverHeld($, ctx) {
+  if (!ctx.configLoaded || ctx.holding) return;
+  const { held } = await send($, ctx, 'held-recover', {});
+  if (!held || !held.text) return;
+  $.ui.toast('Boss: your last prompt was held for a cut when this session closed and never sent — it is in the log, copy it back if you still want it');
+  $.ui.log(`compaction: your last prompt never went out (the session closed during the cut) — here it is:\n${held.text}`);
 }
 
 async function gate($, ctx, e, next) {
@@ -423,6 +453,9 @@ async function gate($, ctx, e, next) {
   if (d.action !== 'compact') return phaseRestart($, ctx, e, next, { tokens, now, ttlMs });
   if (e.attachments && e.attachments.length) {
     emit($, ctx, 'gate', { action: 'pass', reason: 'attachments-would-be-lost', tokens: tokens ?? null, idleMs, ttlMs, ttlSource });
+    // Said, not silent: the engine cannot re-send attachments, so this prompt goes on over the cold history; the turn-end
+    // rule (this turn is not 'held') cuts as soon as the cache is cold again.
+    $.ui.toast('Boss: this prompt has attachments, so it cannot wait for the cold cut — it goes as is and the context is cut right after the turn');
     return next(e);
   }
   // Resumed + re-expanded: the bloated request never happens (we prevent it), so there is no
@@ -431,6 +464,13 @@ async function gate($, ctx, e, next) {
     ? { reason: d.reason, trigger: 'prompt-gate', tokensBefore: null, prevented: true }
     : { reason: d.reason, trigger: 'prompt-gate', tokensBefore: tokens ?? null };
   const text = e.text;
+  // The held text lives in this process only: kept on disk until it is re-sent, so a session closed during the cut does not
+  // lose it (shown again at the next open). If it cannot be kept, the prompt goes on uncut rather than risk losing it.
+  try { await send($, ctx, 'held', { text, reason: d.reason }); } catch (err) {
+    $.ui.log(`compaction: could not keep your prompt safe during the cut, sending it on uncut: ${String(err && err.message ? err.message : err)}`);
+    return next(e);
+  }
+  ctx.holding = true;
   ctx.gated = 'held'; // this turn closes with the cut under way: the turn-end rule stays out of it
   $.clock.after(1, () => scheduleCompactThenResend($, ctx, text, d.reason));
   return { drop: 'compacting first: the cache went cold and the context is past the threshold — your prompt follows right after' };
@@ -574,11 +614,10 @@ export const register = (on) => {
       $.clock.after(1, () => {
         void (async () => {
           await ensureConfig($, ctx);
-          // Join the folder now (below the threshold): a folder switched to 5m by the others goes back to 1h.
-          if (ctx.folder) {
-            try { await reportFolder($, ctx); startHeartbeat($, ctx); } catch (err) { $.ui.log(`compaction: folder join failed: ${String(err && err.message ? err.message : err)}`); }
-          }
-          await reopenCut($, ctx);
+          const tail = await reopenLook($, ctx);
+          await joinFolder($, ctx);
+          try { await recoverHeld($, ctx); } catch (err) { $.ui.log(`compaction: held prompt recovery failed: ${String(err && err.message ? err.message : err)}`); }
+          if (tail) await turnEnd($, ctx, 'reopen');
         })().catch((err) => $.ui.log(`compaction: session start check failed: ${String(err && err.message ? err.message : err)}`));
       });
     }

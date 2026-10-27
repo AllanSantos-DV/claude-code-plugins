@@ -92,6 +92,14 @@ try {
 }
 try {
   await startHttpDaemon({ pluginRoot: PLUGIN_ROOT, dataDir: DATA_DIR, port, version });
+  // A folder left at 5m by sessions that stopped reporting is restored by the sweep a report triggers — and a headless
+  // session never reports. The daemon is the folder state's single writer, so the periodic sweep lives here.
+  const folderTtl = createRequire(import.meta.url)('../../scripts/lib/folder-ttl.js');
+  setInterval(() => {
+    try {
+      for (const s of folderTtl.sweep().swept) console.error(`[folder-ttl] sweep: ${s.folder || ''} ${s.action} ${s.detail || ''}`.trim());
+    } catch (err) { console.error(`[folder-ttl] sweep failed: ${err.message}`); }
+  }, folderTtl.SWEEP_MS).unref();
 } catch (err) {
   if (err && err.code === 'EADDRINUSE') {
     console.error(`[brain-http] port ${port} already in use — another daemon owns it; exiting 0.`);

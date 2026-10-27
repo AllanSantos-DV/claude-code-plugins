@@ -22988,28 +22988,38 @@ test('session-practices: test-suite commands are recognised at a command positio
   }
 });
 
-test('session-practices: injected once per session and per sub-agent, only at the trigger, never deciding', async () => {
+test('session-practices: the first long foreground wait is denied once (one sentence + visible notice); tests stay advisory', async () => {
   const sp = require('./session-practices.js');
   const sid = `sp-${Date.now()}`;
   const ev = (command, extra = {}) => ({ hook_event_name: 'PreToolUse', tool_name: 'Bash', session_id: sid, tool_input: { command }, ...extra });
   const ctx = (out) => (out.hookSpecificOutput && out.hookSpecificOutput.additionalContext) || '';
-  assertEq(await sp.run(ev('git status'), { platform: 'win32' }), {}, 'no trigger → nothing (the text never shows outside its trigger)');
-  assertEq(await sp.run(ev('sleep 120', { tool_input: { command: 'sleep 120', run_in_background: true } }), { platform: 'win32' }), {}, 'a backgrounded wait is the good practice itself');
-  const first = await sp.run(ev('sleep 120'), { platform: 'win32' });
-  assert(/run_in_background: true/.test(ctx(first)) && /Monitor/.test(ctx(first)) && /encerre o turno/.test(ctx(first)), `wait practice covers Monitor and the no-Monitor path: ${ctx(first)}`);
-  assertEq(first.hookSpecificOutput.hookEventName, 'PreToolUse');
-  assert(!('permissionDecision' in first.hookSpecificOutput) && !('updatedInput' in first.hookSpecificOutput), 'advisory only: no decision, no rewrite');
-  assertEq(await sp.run(ev('while true; do sleep 5; done'), { platform: 'win32' }), {}, 'second long wait in the same session → silent');
-  assert(/espera/.test(ctx(await sp.run(ev('sleep 90', { agent_id: 'agent-1' }), { platform: 'win32' }))), 'a sub-agent (own context) gets it once too');
-  assertEq(await sp.run(ev('sleep 90', { agent_id: 'agent-1' }), { platform: 'win32' }), {}, '…and only once');
-  const tests = await sp.run(ev('npm test'), { platform: 'win32' });
+  const w = { platform: 'win32' };
+  assertEq(await sp.run(ev('git status'), w), {}, 'no trigger → nothing (the text never shows outside its trigger)');
+  assertEq(await sp.run(ev('sleep 120', { tool_input: { command: 'sleep 120', run_in_background: true } }), w), {}, 'a backgrounded wait is the good practice itself');
+  const first = await sp.run(ev('sleep 120'), w);
+  const h = first.hookSpecificOutput;
+  assertEq(h.hookEventName, 'PreToolUse');
+  assertEq(h.permissionDecision, 'deny', 'the first long foreground wait is refused');
+  assert(/run_in_background: true/.test(h.permissionDecisionReason) && /Monitor/.test(h.permissionDecisionReason) && /encerre o turno/.test(h.permissionDecisionReason), `reason covers Monitor and the no-Monitor path: ${h.permissionDecisionReason}`);
+  assertEq(h.permissionDecisionReason.split(/[.;]\s/).filter((x) => x.trim()).length >= 1, true);
+  assert(!/\n/.test(h.permissionDecisionReason), 'the reason is one paragraph, one sentence');
+  assert(!('additionalContext' in h) && !('updatedInput' in h), 'deny only: no context, no rewrite');
+  assert(/^\[boss\] /.test(first.systemMessage) && /segundo plano/.test(first.systemMessage), `the user sees a notice: ${first.systemMessage}`);
+  assertEq(await sp.run(ev('while true; do sleep 5; done'), w), {}, 'second long wait in the same session → silent (deny only once)');
+  const sub = await sp.run(ev('sleep 90', { agent_id: 'agent-1' }), w);
+  assertEq(sub.hookSpecificOutput.permissionDecision, 'deny', 'a sub-agent (own context) gets it once too');
+  assertEq(await sp.run(ev('sleep 90', { agent_id: 'agent-1' }), w), {}, '…and only once');
+  const tests = await sp.run(ev('npm test'), w);
   assert(/windowsHide: true/.test(ctx(tests)) && /CREATE_NO_WINDOW/.test(ctx(tests)) && !/run_in_background/.test(ctx(tests)), `test practice alone: ${ctx(tests)}`);
-  assertEq(await sp.run(ev('node --test'), { platform: 'win32' }), {}, 'second test run → silent');
-  const ps = await sp.run({ ...ev('Invoke-Pester; Start-Sleep 60'), tool_name: 'PowerShell', session_id: `${sid}-ps` }, { platform: 'win32' });
-  assert(/espera/.test(ctx(ps)) && /testes sem janela/.test(ctx(ps)), 'PowerShell tool: both practices in one reply');
+  assert(!tests.hookSpecificOutput.permissionDecision && !tests.systemMessage, 'the test practice stays advisory');
+  assertEq(await sp.run(ev('node --test'), w), {}, 'second test run → silent');
+  const ps = await sp.run({ ...ev('Invoke-Pester; Start-Sleep 60'), tool_name: 'PowerShell', session_id: `${sid}-ps` }, w);
+  assertEq(ps.hookSpecificOutput.permissionDecision, 'deny', 'PowerShell tool: the wait is denied');
+  assert(!/testes sem janela/.test(ps.hookSpecificOutput.permissionDecisionReason), 'the denied call never ran: the test practice is not spent on it');
+  assert(/testes sem janela/.test(ctx(await sp.run({ ...ev('npm test'), session_id: `${sid}-ps` }, w))), '…it comes with the next call that does run');
   assertEq(await sp.run({ ...ev('npm test'), session_id: `${sid}-linux` }, { platform: 'linux' }), {}, 'no console windows off Windows → no test practice');
-  assertEq(await sp.run({ ...ev('sleep 120'), tool_name: 'Read' }, { platform: 'win32' }), {}, 'non-shell tool → nothing');
-  assertEq(await sp.run({ ...ev('sleep 120'), session_id: undefined }, { platform: 'win32' }), {}, 'no session id → no "once" to keep → silent, not repeated');
+  assertEq(await sp.run({ ...ev('sleep 120'), tool_name: 'Read' }, w), {}, 'non-shell tool → nothing');
+  assertEq(await sp.run({ ...ev('sleep 120'), session_id: undefined }, w), {}, 'no session id → no "once" to keep → silent, not repeated');
 });
 
 test('session-practices: wired as an mcp_tool sibling on Bash and PowerShell, with agent_id', () => {
@@ -27837,7 +27847,8 @@ test('plugin-updater.killStale: so casa modulos da PASTA DE CACHE do plugin, nao
   test('Phase G: hook_session_practices delivers a triggered practice through the tool, once', async () => {
     const ev = { ...base, session_id: `phase-g-sp-${Date.now()}`, hook_event_name: 'PreToolUse', tool_name: 'Bash', tool_input: { command: 'sleep 300' }, agent_id: '' };
     const out = JSON.parse(await viaTool('hook_session_practices', ev, proj));
-    assert(/run_in_background: true/.test(out.hookSpecificOutput.additionalContext), `got ${JSON.stringify(out)}`);
+    assertEq(out.hookSpecificOutput.permissionDecision, 'deny', `got ${JSON.stringify(out)}`);
+    assert(/run_in_background: true/.test(out.hookSpecificOutput.permissionDecisionReason) && /boss/.test(out.systemMessage), `got ${JSON.stringify(out)}`);
     assertEq(await viaTool('hook_session_practices', ev, proj), '{}');
   });
 
@@ -29256,7 +29267,7 @@ async function reopenedRun(ce, o) {
     fs.writeFileSync(transcript, row('msg-old', o.lastCallAgoMs, REOPEN_CALL) + (o.boundaryAfter ? JSON.stringify({ type: 'system', subtype: 'compact_boundary' }) + '\n' : ''));
   }
   const config = { enabled: true, thresholdPercent: 30, minIntervalMs: 600000, folderTtl: true };
-  const out = { logs: [], gates: [], timers: [], compacts: 0, toasts: [], hello: null };
+  const out = { logs: [], gates: [], timers: [], compacts: 0, toasts: [], hello: null, folders: [] };
   const env = { CLAUDE_PLUGIN_DATA: dir, BRAIN_HTTP_PORT: '1', CLAUDE_CONFIG_DIR: cfgDir };
   const prevCfgDir = process.env.CLAUDE_CONFIG_DIR;
   process.env.CLAUDE_CONFIG_DIR = cfgDir;
@@ -29270,9 +29281,9 @@ async function reopenedRun(ce, o) {
       const payload = JSON.parse(body.payload);
       let reply = {};
       if (payload.kind === 'hello') { out.hello = payload; reply = { config, installedVersion: o.installedVersion }; }
-      else if (payload.kind === 'folder' || payload.kind === 'folder-end') reply = { folderTtl: { ttl: '5m', live: 1, allAbove: true, action: 'none' } };
+      else if (payload.kind === 'folder' || payload.kind === 'folder-end') { out.folders.push(payload); reply = { folderTtl: { ttl: '5m', live: 1, allAbove: true, action: 'none' } }; }
       else if (payload.kind === 'gate') out.gates.push(payload);
-      else if (payload.kind === 'turn' || payload.kind === 'tail') reply = { ...(await ce.run({ ...body, payload })), config };
+      else if (payload.kind === 'turn' || payload.kind === 'tail' || payload.kind.startsWith('held')) reply = { ...(await ce.run({ ...body, payload })), config };
       return { status: 200, ok: true, text: JSON.stringify(reply) };
     } },
     session: {
@@ -29389,6 +29400,218 @@ test('compaction hook, reopened session: a person\'s first prompt after the cut 
       assertEq(r.compactsBeforePrompt, 0, `${label}: nothing cut at reopen — ${heldOrWhy(r)}`);
     }
   });
+});
+
+// ── Hardening of the cold cut (lens findings of the cold-cut fix): the held prompt survives the process, the folder report
+// carries the real side of the threshold at reopen, a prompt with attachments is said, not silent.
+test('compaction hook, reopened session: the first folder report carries the real side of the threshold — warm and above → above; cold (about to be cut) or small → not', async () => {
+  await withCmpStore(async (ce) => {
+    const warm = await reopenedRun(ce, { source: 'startup', usageTokens: 875000, lastCallAgoMs: 60000 });
+    assertEq(warm.folders[0] && warm.folders[0].above, true, `a warm reopen above the threshold joins its folder as above — ${warm.logs.join(' | ')}`);
+    const cold = await reopenedRun(ce, { source: 'startup', usageTokens: 875000, lastCallAgoMs: H1 });
+    assertEq(cold.folders[0] && cold.folders[0].above, false, 'a cold reopen is cut at once: it does not claim above while the cut runs');
+    assertEq(cold.compactsBeforePrompt, 1, 'and it is cut');
+    const small = await reopenedRun(ce, { source: 'startup', usageTokens: 50000, lastCallAgoMs: 60000 });
+    assertEq(small.folders[0] && small.folders[0].above, false, 'below the threshold → not above');
+  });
+});
+
+// A session whose person's prompt the gate holds for the cut: opened warm, idle past the cache window, then the prompt.
+async function heldPromptRun(ce, { failHeld = false, dieBeforeResend = false } = {}) {
+  const cmp = await import(require('url').pathToFileURL(path.join(ROOT, 'hooks', 'compaction.mjs')).href);
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-held-'));
+  fs.writeFileSync(path.join(dir, 'brain-http.token'), 'tok');
+  const now0 = Date.now();
+  let now = now0;
+  const transcript = path.join(dir, 'session.jsonl');
+  fs.writeFileSync(transcript, JSON.stringify({ type: 'assistant', timestamp: new Date(now0 - 30000).toISOString(), message: { id: 'msg-1', model: 'claude-opus-5-5[1m]', usage: REOPEN_CALL } }) + '\n');
+  const config = { enabled: true, thresholdPercent: 30, minIntervalMs: 600000, folderTtl: true };
+  const heldDir = path.join(require('../engine/lib/data-dir.js').dataDir(), '.runtime');
+  const heldFile = path.join(heldDir, 'held-prompt-sid-held-0123.json');
+  const mk = () => {
+    const out = { timers: [], compacts: 0, submitted: [], logs: [], toasts: [] };
+    const $ = {
+      env: { get: async (k) => ({ CLAUDE_PLUGIN_DATA: dir, BRAIN_HTTP_PORT: '1' })[k] },
+      fs: { read: async (p) => fs.readFileSync(p, 'utf8') },
+      http: { fetch: async (url, init) => {
+        if (url.split('?')[0].endsWith('/health')) return { status: 200, ok: true, text: JSON.stringify({ dataDir: dir }) };
+        const body = JSON.parse(init.body); const payload = JSON.parse(body.payload);
+        let reply = {};
+        if (payload.kind === 'hello') reply = { config };
+        else if (payload.kind === 'folder' || payload.kind === 'folder-end') reply = { folderTtl: { ttl: '1h', live: 1, allAbove: false, action: 'none' } };
+        else if (payload.kind === 'held' && failHeld) return { status: 500, ok: false, text: 'disk full' };
+        else if (payload.kind === 'turn' || payload.kind === 'tail' || payload.kind.startsWith('held')) reply = { ...(await ce.run({ ...body, payload })), config };
+        return { status: 200, ok: true, text: JSON.stringify(reply) };
+      } },
+      session: {
+        id: async () => 'sid-held-0123', cwd: async () => dir, root: async () => dir, authorize: async () => ({ kind: 'api-key' }),
+        usage: async () => ({ context: { tokens: 875000, window: 1000000, breakdown: { rawMaxTokens: 1000000, autoCompactThreshold: 967000 } } }),
+        messages: async () => [],
+      },
+      clock: { now: async () => now, after: (ms, fn) => { out.timers.push({ ms, fn }); } },
+      ui: { log: (t) => out.logs.push(t), toast: (t) => out.toasts.push(t) },
+      command: { run: async () => { out.compacts++; } },
+      prompt: { submit: async (a) => { out.submitted.push(a.text); } },
+    };
+    return { out, $, hooks: collectModuleHooks(cmp.register) };
+  };
+  const flush = async () => { for (let i = 0; i < 20; i++) await new Promise((r) => setImmediate(r)); };
+  const fireShort = async (out) => { for (const t of out.timers.filter((x) => x.ms === 1)) { out.timers.splice(out.timers.indexOf(t), 1); t.fn(); } await flush(); };
+  const open = async (m, source) => {
+    await findHook(m.hooks, 'classic.SessionStart').fn(m.$, { transcript_path: transcript, source }, async (e) => e);
+    await findHook(m.hooks, 'session.start').fn(m.$, { isInteractive: true }, async (e) => e);
+    await fireShort(m.out);
+  };
+  try {
+    const m = mk();
+    await open(m, 'startup');
+    const result = { m, heldFile, exists: () => fs.existsSync(heldFile), read: () => JSON.parse(fs.readFileSync(heldFile, 'utf8')) };
+    now = now0 + H1; // past the cache window: the person's prompt is held for the cut
+    let nextCalled = false;
+    result.held = await findHook(m.hooks, 'prompt.submit').fn(m.$, { text: 'my careful prompt', origin: { kind: 'composer' } }, async (e) => { nextCalled = true; return e; });
+    result.nextCalled = nextCalled;
+    result.existsAfterHold = fs.existsSync(heldFile);
+    result.textAfterHold = result.existsAfterHold ? JSON.parse(fs.readFileSync(heldFile, 'utf8')).text : null;
+    if (!dieBeforeResend) { await fireShort(m.out); result.existsAfterResend = fs.existsSync(heldFile); }
+    else {
+      // The process dies during the cut (its timers never run); the session is opened again by a new one.
+      const m2 = mk();
+      await open(m2, 'resume');
+      result.m2 = m2;
+      result.existsAfterRecover = fs.existsSync(heldFile);
+      const m3 = mk();
+      await open(m3, 'resume');
+      result.m3 = m3;
+    }
+    return result;
+  } finally { fs.rmSync(dir, { recursive: true, force: true }); fs.rmSync(heldFile, { force: true }); }
+}
+
+test('compaction hook, held prompt: kept on disk while the cut runs and removed once it is re-sent', async () => {
+  await withCmpStore(async (ce) => {
+    const r = await heldPromptRun(ce);
+    assert(r.held && /compacting first/.test(r.held.drop || ''), `the prompt is held — ${JSON.stringify(r.held)} ${r.m.out.logs.join(' | ')}`);
+    assertEq(r.textAfterHold, 'my careful prompt', 'its text is on disk before the original is dropped');
+    assertEq(r.m.out.submitted, ['my careful prompt'], 'and re-sent after the cut');
+    assertEq(r.existsAfterResend, false, 'the copy is removed once it went out');
+  });
+});
+
+test('compaction hook, held prompt: a session that dies during the cut shows the text at the next open, once', async () => {
+  await withCmpStore(async (ce) => {
+    const r = await heldPromptRun(ce, { dieBeforeResend: true });
+    assertEq(r.m.out.submitted, [], 'the dead process never re-sent it');
+    assert(r.m2.out.logs.some((l) => l.includes('my careful prompt')) && r.m2.out.toasts.some((t) => /never sent/.test(t)), `the next open gives it back — ${r.m2.out.logs.join(' | ')}`);
+    assertEq(r.existsAfterRecover, false, 'taken back: removed');
+    assert(!r.m3.out.logs.some((l) => l.includes('my careful prompt')), 'and said only once');
+  });
+});
+
+test('compaction hook, held prompt: if its copy cannot be kept the prompt goes on uncut — it is never dropped unprotected', async () => {
+  await withCmpStore(async (ce) => {
+    const r = await heldPromptRun(ce, { failHeld: true });
+    assert(!(r.held && r.held.drop) && r.nextCalled, `not dropped — ${JSON.stringify(r.held)}`);
+    assert(r.m.out.logs.some((l) => /could not keep your prompt safe/.test(l)), 'said');
+    assertEq(r.m.out.compacts, 0, 'no cut it could not stand behind');
+  });
+});
+
+test('compaction hook: a person\'s prompt WITH attachments over a cold cache goes on (they cannot be re-sent), says so, and the turn-end rule cuts right after', async () => {
+  await withCmpStore(async (ce) => {
+    const cmp = await import(require('url').pathToFileURL(path.join(ROOT, 'hooks', 'compaction.mjs')).href);
+    const hooks = collectModuleHooks(cmp.register);
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-attach-'));
+    fs.writeFileSync(path.join(dir, 'brain-http.token'), 'tok');
+    let now = Date.now();
+    const transcript = path.join(dir, 'session.jsonl');
+    const call = (id, at) => JSON.stringify({ type: 'assistant', timestamp: new Date(at).toISOString(), message: { id, model: 'claude-opus-5-5[1m]', usage: REOPEN_CALL } }) + '\n';
+    fs.writeFileSync(transcript, call('msg-1', now - 30000));
+    const config = { enabled: true, thresholdPercent: 30, minIntervalMs: 600000, folderTtl: true };
+    const out = { timers: [], compacts: 0, toasts: [], logs: [] };
+    const $ = {
+      env: { get: async (k) => ({ CLAUDE_PLUGIN_DATA: dir, BRAIN_HTTP_PORT: '1' })[k] },
+      fs: { read: async (p) => fs.readFileSync(p, 'utf8') },
+      http: { fetch: async (url, init) => {
+        if (url.split('?')[0].endsWith('/health')) return { status: 200, ok: true, text: JSON.stringify({ dataDir: dir }) };
+        const body = JSON.parse(init.body); const payload = JSON.parse(body.payload);
+        let reply = {};
+        if (payload.kind === 'hello') reply = { config };
+        else if (payload.kind === 'folder' || payload.kind === 'folder-end') reply = { folderTtl: { ttl: '1h', live: 1, allAbove: false, action: 'none' } };
+        else if (payload.kind === 'turn' || payload.kind === 'tail') reply = { ...(await ce.run({ ...body, payload })), config };
+        return { status: 200, ok: true, text: JSON.stringify(reply) };
+      } },
+      session: {
+        id: async () => 'sid-attach', cwd: async () => dir, root: async () => dir, authorize: async () => ({ kind: 'api-key' }),
+        usage: async () => ({ context: { tokens: 875000, window: 1000000, breakdown: { rawMaxTokens: 1000000, autoCompactThreshold: 967000 } } }),
+        messages: async () => [],
+      },
+      clock: { now: async () => now, after: (ms, fn) => { out.timers.push({ ms, fn }); } },
+      ui: { log: (t) => out.logs.push(t), toast: (t) => out.toasts.push(t) },
+      command: { run: async () => { out.compacts++; } },
+      prompt: { submit: async () => {} },
+    };
+    const flush = async () => { for (let i = 0; i < 20; i++) await new Promise((r) => setImmediate(r)); };
+    const fireShort = async () => { for (const t of out.timers.filter((x) => x.ms === 1)) { out.timers.splice(out.timers.indexOf(t), 1); t.fn(); } await flush(); };
+    try {
+      await findHook(hooks, 'classic.SessionStart').fn($, { transcript_path: transcript, source: 'startup' }, async (e) => e);
+      await findHook(hooks, 'session.start').fn($, { isInteractive: true }, async (e) => e);
+      await fireShort();
+      now += H1; // cold
+      let passed = false;
+      const held = await findHook(hooks, 'prompt.submit').fn($, { text: 'see this', attachments: [{ type: 'image' }], origin: { kind: 'composer' } }, async (e) => { passed = true; return e; });
+      assert(passed && !(held && held.drop), 'the prompt goes on with its attachments');
+      assert(out.toasts.some((t) => /attachments/.test(t)), `the person is told — ${out.toasts.join(' | ')}`);
+      await findHook(hooks, 'turn.start').fn($, {}, async (e) => e);
+      fs.appendFileSync(transcript, call('msg-2', now));
+      await findHook(hooks, 'turn.complete').fn($, {}, async () => ({}));
+      await fireShort();
+      const due = out.timers.filter((t) => t.ms > 120000);
+      assert(due.length, `the turn-end re-check is armed (timers ${out.timers.map((t) => t.ms)})`);
+      now += H1;
+      for (const t of due) { out.timers.splice(out.timers.indexOf(t), 1); t.fn(); }
+      await flush();
+      assertEq(out.compacts, 1, 'cut as soon as the cache went cold again');
+    } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+  });
+});
+
+test('folder-ttl.sweep: a folder left at 5m by sessions that stopped reporting is restored with no report from anyone (headless-only machine); a quiet state is not rewritten', () => {
+  const ft = require('./lib/folder-ttl.js');
+  const sb = folderTtlSandbox();
+  try {
+    const p = path.join(sb.root, 'p'); fs.mkdirSync(p);
+    const run = () => ({ status: 128, stdout: '', stderr: '' });
+    const o = (now) => ({ now, file: sb.state, run, engineIdle: ENGINE_IDLE_OFF });
+    assertEq(ft.sweep(o(1)), { swept: [] }, 'no state at all: nothing, no file');
+    assert(!fs.existsSync(sb.state), 'no state file is created by a sweep');
+    ft.report({ sessionId: 'A', folder: p, above: true }, o(1000));
+    assertEq(sb.read(p), { env: { CLAUDE_CODE_PROMPT_CACHE_TTL: '5m' } }, 'switched');
+    assertEq(ft.sweep(o(1000 + ft.LIVE_MS - 1)).swept, [], 'its owner still reports within LIVE_MS: left alone');
+    assertEq(sb.read(p), { env: { CLAUDE_CODE_PROMPT_CACHE_TTL: '5m' } });
+    const r = ft.sweep(o(1000 + ft.LIVE_MS + 1));
+    assertEq(r.swept.map((s) => s.action), ['restored'], 'the owner is gone → restored');
+    assert(!fs.existsSync(sb.local(p)), 'the file we created is removed');
+    const mtime = fs.statSync(sb.state).mtimeMs;
+    assertEq(ft.sweep(o(1000 + ft.LIVE_MS + 2)).swept, [], 'a second sweep finds nothing');
+    assertEq(fs.statSync(sb.state).mtimeMs, mtime, 'and does not rewrite the state');
+  } finally { sb.done(); }
+});
+
+test('brain daemon: the folder sweep runs on a timer inside the daemon (the single writer of the folder state), no report needed', () => {
+  const src = fs.readFileSync(path.join(ROOT, 'servers', 'brain-server', 'index.js'), 'utf8');
+  assert(/folder-ttl\.js/.test(src) && /folderTtl\.sweep\(\)/.test(src) && /folderTtl\.SWEEP_MS\)\.unref\(\)/.test(src), 'periodic, unref\'d sweep wired after the daemon starts');
+});
+
+test('runtime-sweep: a held-prompt copy nobody came back for is removed after the state TTL, a young one stays', () => {
+  const { sweepSessionState } = require('./runtime-sweep.js');
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-rt-held-'));
+  try {
+    const old = path.join(dir, 'held-prompt-a.json'); const young = path.join(dir, 'held-prompt-b.json'); const other = path.join(dir, 'unrelated.json');
+    for (const f of [old, young, other]) fs.writeFileSync(f, '{}');
+    const past = new Date(Date.now() - 8 * 86400000); fs.utimesSync(old, past, past); fs.utimesSync(other, past, past);
+    assertEq(sweepSessionState(dir), 1);
+    assert(!fs.existsSync(old) && fs.existsSync(young) && fs.existsSync(other), 'only the old held copy went');
+  } finally { fs.rmSync(dir, { recursive: true, force: true }); }
 });
 
 // Open session: a PERSON's turn, then idle past the TTL, then a peer message. The turn-end re-check used to be armed only

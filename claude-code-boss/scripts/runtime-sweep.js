@@ -15,7 +15,7 @@ const { dataDir } = require('../engine/lib/data-dir.js');
 const DAY_MS = 86400000;
 const STATE_TTL_MS = 7 * DAY_MS;
 // Per-session state files nobody removes when the session ends (no timestamp in the name: age by mtime).
-const STATE_PREFIXES = ['session-start-', 'session-summary-', 'skill-outcome-settled-', 'research-followup-'];
+const STATE_PREFIXES = ['session-start-', 'session-summary-', 'skill-outcome-settled-', 'research-followup-', 'held-prompt-'];
 
 /** Delete per-session state files older than `maxAgeMs`; returns how many went. */
 function sweepSessionState(dir, maxAgeMs = STATE_TTL_MS, now = Date.now()) {

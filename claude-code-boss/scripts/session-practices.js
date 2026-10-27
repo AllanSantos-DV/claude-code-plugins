@@ -4,16 +4,21 @@
  *
  * Teaches the session a good conduct practice AT THE MOMENT it is about to break it,
  * once per session (and once per sub-agent: its context is separate), never on every
- * prompt and never outside the trigger. Advisory only: it adds `additionalContext`
- * (delivered next to the tool result) and decides nothing — the sibling guards on the
- * same matcher keep owning deny / updatedInput (Claude Code hands Claude every
- * hook's additionalContext).
+ * prompt and never outside the trigger. A practice is advisory by default: it adds
+ * `additionalContext` (delivered next to the tool result, i.e. after the command ran).
+ * A practice with `deny` stops the call instead — exactly once — with a one-sentence
+ * `permissionDecision` reason and a `systemMessage` the user sees: the first long
+ * foreground wait is refused so the session relaunches it in the background (nothing
+ * else about the call changes; updatedInput stays with the sibling guards). Claude Code
+ * 2.1.310+ blocks a foreground `sleep` natively; whichever block comes first wins, and
+ * this one never repeats after its single use.
  *
  * The text does not depend on the Claude Code version: where the Monitor tool does not
  * exist (older builds) the same instruction says "run in background and end the turn".
  *
  * Extensible: a practice is one entry of PRACTICES — { id, platforms?, applies(cmd,
- * toolInput), text }. The once-per-session record is lib/cooldown-store.js (key
+ * toolInput), text, deny?, notice? } (`deny`: `text` is the deny reason, `notice` the
+ * line shown to the user). The once-per-session record is lib/cooldown-store.js (key
  * `practice:<id>:<agent>` under the session).
  */
 'use strict';
@@ -84,13 +89,12 @@ function runsTests(cmd) {
 const PRACTICES = [
   {
     id: 'background-wait',
+    deny: true,
     applies: (cmd, input) => !(input && input.run_in_background === true) && !!longWait(cmd),
-    text: '[boss · boa prática: espera] Não espere em primeiro plano (sleep, Start-Sleep, timeout ou laço de polling): '
-      + 'a sessão fica travada até o comando acabar (o Bash corta em 10 min) e nada mais anda. '
-      + 'Lance o processo demorado com run_in_background: true. Se a ferramenta Monitor estiver na sua lista de ferramentas, '
-      + 'use-a para acompanhar a saída ou esperar a condição; se não estiver (Claude Code mais antigo), encerre o turno logo '
-      + 'depois de lançar em segundo plano: você é notificado quando o processo terminar. Subagente também avisa ao concluir; '
-      + `não faça sleep esperando por ele. Pausas curtas (até ~${LONG_WAIT_S} s no total) não têm problema.`,
+    text: '[boss · boa prática: espera] Espera longa em primeiro plano trava a sessão: relance o comando com run_in_background: true '
+      + 'e acompanhe com a ferramenta Monitor (sem ela, encerre o turno: você é notificado ao terminar); '
+      + `pausas curtas (até ~${LONG_WAIT_S} s no total) não têm problema.`,
+    notice: '[boss] Barrei uma vez a espera longa em primeiro plano desta sessão: o comando volta em segundo plano, sem travar a conversa.',
   },
   {
     id: 'hidden-test-processes',
@@ -126,8 +130,16 @@ async function run(event, deps = {}) {
   const agent = event.agent_id || 'main';
   const fresh = hits.filter((p) => !store.has(event.session_id, `practice:${p.id}:${agent}`));
   if (!fresh.length) return {};
-  for (const p of fresh) store.add(event.session_id, `practice:${p.id}:${agent}`);
-  return { hookSpecificOutput: { hookEventName: 'PreToolUse', additionalContext: fresh.map((p) => p.text).join('\n\n') } };
+  // A denied call never runs: only the deny practice is consumed, the others wait for a call that does.
+  const denied = fresh.filter((p) => p.deny);
+  const delivered = denied.length ? denied : fresh;
+  for (const p of delivered) store.add(event.session_id, `practice:${p.id}:${agent}`);
+  const text = delivered.map((p) => p.text).join('\n\n');
+  if (!denied.length) return { hookSpecificOutput: { hookEventName: 'PreToolUse', additionalContext: text } };
+  return {
+    systemMessage: denied.map((p) => p.notice).filter(Boolean).join('\n'),
+    hookSpecificOutput: { hookEventName: 'PreToolUse', permissionDecision: 'deny', permissionDecisionReason: text },
+  };
 }
 
 if (require.main === module) {
