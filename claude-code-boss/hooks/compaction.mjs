@@ -28,7 +28,7 @@
 // daemon (POST /hook/compaction-event → tool hook_compaction_event → scripts/compaction-event.js).
 
 import { daemon as sharedDaemon } from '../scripts/lib/module-daemon.mjs';
-import { planCompaction, buildBrief, decideTiming, decideTurnEnd, classifyResume, estimateTokens, thresholdFor, fallbackWindow, chooseCompaction, isCacheWarm, isMechanicalCut, resumedAnswerAt, decidePhaseRestart, lastTurnDelivered, phaseRestartNotice, DEFAULTS } from '../scripts/lib/compaction-core.mjs';
+import { planCompaction, buildBrief, decideTiming, decideTurnEnd, classifyResume, estimateTokens, thresholdFor, fallbackWindow, chooseCompaction, isCacheWarm, isMechanicalCut, resumedAnswerAt, decidePhaseRestart, lastTurnDelivered, phaseRestartNotice, describeFailure, DEFAULTS } from '../scripts/lib/compaction-core.mjs';
 
 // Kept equal to package.json by scripts/sync-version.js. The daemon compares it with the installed plugin: a session
 // started before an update keeps running this file, so the person is told to reopen it.
@@ -497,7 +497,7 @@ async function phaseRestart($, ctx, e, next, { tokens, now, ttlMs }) {
 }
 
 async function gateFailed($, e, next) {
-  $.ui.log(`compaction: prompt gate failed, the prompt goes on uncompacted: ${String(next.error)}`);
+  $.ui.log(`compaction: prompt gate failed, the prompt goes on uncompacted: ${describeFailure(next.error)}`);
   return next(e); // replay-safe: if our next() already ran, this replays its result
 }
 
@@ -587,7 +587,7 @@ async function briefCut($, ctx, e, next, { plan, warm, mechanical, t0, why }) {
 }
 
 async function compactFailed($, e, next) {
-  $.ui.log(`compaction: pruning failed, the engine's own compaction runs: ${String(next.error)}`);
+  $.ui.log(`compaction: pruning failed, the engine's own compaction runs: ${describeFailure(next.error)}`);
   return next(e); // never a broken transcript
 }
 

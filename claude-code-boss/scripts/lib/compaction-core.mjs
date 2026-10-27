@@ -479,3 +479,23 @@ export function phaseRestartNotice(tokens) {
   return `[boss] Phase restart: context ~${k}k tokens, cache warm, last task committed. If this request starts a new phase, `
     + 'write a short handoff (goal, state, next step, key files) to a file and suggest the person continue in a new session from it. Otherwise carry on.';
 }
+
+/**
+ * A hook failure as text. The engine hands a `.catch` handler `next.error` as plain data
+ * (`{ kind: 'throw' | 'timeout', message?, budget }`), so `String()` on it prints "[object Object]".
+ * Also reads a real Error and any other thrown value.
+ */
+export function describeFailure(err) {
+  if (err == null) return 'unknown error';
+  if (typeof err === 'string') return err;
+  if (err instanceof Error) return err.message || String(err);
+  if (typeof err === 'object') {
+    const parts = [];
+    if (err.kind === 'timeout') parts.push(`timed out${Number.isFinite(err.budget) ? ` after ${err.budget} ms` : ''}`);
+    else if (err.kind) parts.push(String(err.kind));
+    if (err.message) parts.push(String(err.message));
+    if (parts.length) return parts.join(': ');
+    try { return JSON.stringify(err); } catch { return Object.prototype.toString.call(err); }
+  }
+  return String(err);
+}
