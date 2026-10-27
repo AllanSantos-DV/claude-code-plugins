@@ -26313,6 +26313,15 @@ test('marketplace auto-update: turned on once when nobody chose (known_marketpla
   } finally { fs.rmSync(base, { recursive: true, force: true }); }
 });
 
+test('update-notice: the plugin homepage shown with an update (plugin.json + marketplace.json) is the Pages site, not README/blob', () => {
+  const { PAGES_URL } = require('./lib/update-notice.js');
+  const market = JSON.parse(fs.readFileSync(path.join(ROOT, '..', '.claude-plugin', 'marketplace.json'), 'utf8')).plugins.find((p) => p.name === 'claude-code-boss');
+  for (const [where, url] of [['plugin.json', JSON.parse(fs.readFileSync(path.join(ROOT, '.claude-plugin', 'plugin.json'), 'utf8')).homepage], ['marketplace.json', market.homepage]]) {
+    assertEq(url, PAGES_URL, `${where} homepage`);
+    assert(!/readme/i.test(url) && !url.includes('/blob/'), `${where} homepage is not the repository README/blob: ${url}`);
+  }
+});
+
 test('update-notice: "version available" cached 6h and told once per version; "plugin updated" told once; first run silent; env opt-out stops switch-on and check', async () => {
   const u = require('./lib/update-notice.js');
   const m = require('./lib/marketplace-autoupdate.js');
@@ -26337,6 +26346,11 @@ test('update-notice: "version available" cached 6h and told once per version; "p
     setVer('3.5.0');
     const upd = u.takeUpdateNotices({ root, dir, env: {} });
     assert(upd.length === 1 && /atualizado: 3\.4\.0 → 3\.5\.0/.test(upd[0]), JSON.stringify(upd));
+    // Read by a person: every link goes to the public Pages site, never to the repository README or a blob.
+    for (const url of [...avail, ...upd].flatMap((t) => t.match(/https?:\/\/\S+/g) || [])) {
+      assert(url.startsWith(u.PAGES_URL) && !/readme/i.test(url) && !url.includes('/blob/'), `update notice links the Pages site, got ${url}`);
+    }
+    assert(upd[0].includes(`${u.PAGES_URL}changelog.html`), `"updated" points at the Pages changelog: ${upd[0]}`);
     assertEq(u.takeUpdateNotices({ root, dir, env: {} }), [], 'updated told once');
     setVer('3.4.0');
     assertEq(u.takeUpdateNotices({ root, dir, env: {} }).length, 0, 'a downgrade is not announced as an update');
