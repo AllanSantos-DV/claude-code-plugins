@@ -9833,12 +9833,31 @@ test('router-config.json shipped: sticky.enabled === false + ttlMs shipado (opt-
 // rebaixar modelos de 1M para 200K. Aqui o tuning existe SEM proxy: nunca escreve
 // base_url. Opt-in (default OFF) para não capar em 200K quem usa 1M sem pedir.
 
-test('planTuningEnv: grava os 2 env de tuning e NUNCA a base_url (sem proxy no caminho)', () => {
+test('planTuningEnv: grava o tool search e NUNCA a base_url nem a janela no env (sem proxy no caminho)', () => {
   const r = routerEnsure.planTuningEnv({}, 200000);
   assertEq(r.changed, true);
   assertEq(r.env.ENABLE_TOOL_SEARCH, 'true');
-  assertEq(r.env.CLAUDE_CODE_AUTO_COMPACT_WINDOW, '200000');
+  assertEq('CLAUDE_CODE_AUTO_COMPACT_WINDOW' in r.env, false, 'a variável vence o /autocompact: a janela vai na chave do settings');
   assertEq('ANTHROPIC_BASE_URL' in r.env, false, 'tuning JAMAIS publica base_url — é o que custa a janela de 1M');
+});
+
+test('contextTuning: a janela de auto-compact vai para a chave autoCompactWindow do settings, preenche só o ausente e some só quando é a nossa', () => {
+  const set = routerEnsure.planTuningWindow({}, 200000);
+  assertEq(set, { value: 200000, changed: true }, 'ausente → grava');
+  assertEq(routerEnsure.planTuningWindow({}, 60000).value, 100000, 'a chave do settings começa em 100000');
+  assertEq(routerEnsure.planTuningWindow({ autoCompactWindow: 500000 }, 200000), { value: 500000, changed: false }, 'o valor do usuário fica');
+  assertEq(routerEnsure.planTuningWindowRemoval({ autoCompactWindow: 200000 }, 200000).remove, true, 'o nosso valor sai ao desligar');
+  assertEq(routerEnsure.planTuningWindowRemoval({ autoCompactWindow: 500000 }, 200000).remove, false, 'o do usuário fica');
+  assertEq(routerEnsure.planTuningWindowRemoval({}, 200000).changed, false);
+});
+
+test('contextTuning: a variável que uma versão anterior gravou (igual à nossa) é migrada para fora do env; a do usuário sobrevive', () => {
+  const mine = routerEnsure.planTuningEnv({ ENABLE_TOOL_SEARCH: 'true', CLAUDE_CODE_AUTO_COMPACT_WINDOW: '200000' }, 200000);
+  assertEq('CLAUDE_CODE_AUTO_COMPACT_WINDOW' in mine.env, false, 'migrada');
+  assertEq(mine.changed, true);
+  const theirs = routerEnsure.planTuningEnv({ ENABLE_TOOL_SEARCH: 'true', CLAUDE_CODE_AUTO_COMPACT_WINDOW: '900000' }, 200000);
+  assertEq(theirs.env.CLAUDE_CODE_AUTO_COMPACT_WINDOW, '900000', 'o valor do usuário não é tocado');
+  assertEq(theirs.changed, false);
 });
 
 test('planTuningEnv: NÃO clobbera valor explícito do usuário (só preenche ausente)', () => {
@@ -23020,6 +23039,19 @@ test('session-practices: the first long foreground wait is denied once (one sent
   assertEq(await sp.run({ ...ev('npm test'), session_id: `${sid}-linux` }, { platform: 'linux' }), {}, 'no console windows off Windows → no test practice');
   assertEq(await sp.run({ ...ev('sleep 120'), tool_name: 'Read' }, w), {}, 'non-shell tool → nothing');
   assertEq(await sp.run({ ...ev('sleep 120'), session_id: undefined }, w), {}, 'no session id → no "once" to keep → silent, not repeated');
+});
+
+test('session-practices: the free profile and a hook switched off in the dashboard make it passthrough ({}), even for the first long wait', async () => {
+  const sp = require('./session-practices.js');
+  const hc = require('./lib/hooks-config.js');
+  assertEq(hc.resolveProfileConfig({ profile: 'free' }).sessionPractices, { enabled: false }, 'free preset switches it off');
+  assertEq(hc.resolveProfileConfig({ profile: 'standard' }).sessionPractices, undefined, 'standard keeps it on');
+  assertEq(hc.resolveProfileConfig({ profile: 'free', sessionPractices: { enabled: true } }).sessionPractices.enabled, true, 'an explicit file value beats the preset');
+  const ev = (sid) => ({ hook_event_name: 'PreToolUse', tool_name: 'Bash', session_id: sid, tool_input: { command: 'sleep 120' } });
+  const cfg = (enabled, disabled) => ({ getSessionPractices: () => ({ enabled }), isHookDisabled: (id) => disabled && id === 'hook_session_practices' });
+  assertEq(await sp.run(ev('sp-free'), { platform: 'win32', config: cfg(false, false) }), {}, 'free → nothing');
+  assertEq(await sp.run(ev('sp-off'), { platform: 'win32', config: cfg(true, true) }), {}, 'switched off → nothing');
+  assertEq((await sp.run(ev('sp-on'), { platform: 'win32', config: cfg(true, false) })).hookSpecificOutput.permissionDecision, 'deny', 'on → the deny still comes');
 });
 
 test('session-practices: wired as an mcp_tool sibling on Bash and PowerShell, with agent_id', () => {

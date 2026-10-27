@@ -1128,7 +1128,7 @@ table{font-variant-numeric:tabular-nums}
           <input type="checkbox" id="router-context-tuning" onchange="updateRouterSaveState()">
           <span>
             <span class="switch-title"><span data-i18n="router.contextTuningEnable">Context tuning sem proxy (economia de token)</span></span>
-            <span class="text-muted" style="display:block;font-size:.78rem;margin-top:.25rem" data-i18n="router.contextTuningHint">Grava ENABLE_TOOL_SEARCH + teto de auto-compact no settings.json SEM publicar ANTHROPIC_BASE_URL — ganho de token mantendo a janela de 1M disponível. Funciona com o router em off.</span>
+            <span class="text-muted" style="display:block;font-size:.78rem;margin-top:.25rem" data-i18n="router.contextTuningHint">Grava ENABLE_TOOL_SEARCH + a chave autoCompactWindow (o seu /autocompact continua valendo) no settings.json SEM publicar ANTHROPIC_BASE_URL — ganho de token mantendo a janela de 1M disponível. Funciona com o router em off.</span>
           </span>
         </label>
 
@@ -1481,7 +1481,7 @@ const I18N = {
 'router.applying': 'Applying...',
 'router.error': 'Error',
     'router.contextTuningEnable': 'Context tuning without proxy (token savings)',
-    'router.contextTuningHint': 'Writes ENABLE_TOOL_SEARCH + auto-compact ceiling to settings.json WITHOUT publishing ANTHROPIC_BASE_URL — token savings while keeping the 1M window available. Works with the router off.',
+    'router.contextTuningHint': 'Writes ENABLE_TOOL_SEARCH + the autoCompactWindow setting (your /autocompact still wins) to settings.json WITHOUT publishing ANTHROPIC_BASE_URL — token savings while keeping the 1M window available. Works with the router off.',
 'router.billingNoticeTitle': 'Billing',
 'router.billingNoticeBody': 'The router ships disabled; enabling it is opt-in at your own risk. Passthrough/sticky on the Anthropic route preserves your subscription, but BYOK, NVIDIA fallback and an ANTHROPIC_API_KEY in the environment become API billing. See the guide for how to audit it.',
 'router.billingNoticeLink': 'Billing guide →',
@@ -1715,7 +1715,7 @@ const I18N = {
 'router.applying': 'Aplicando...',
 'router.error': 'Erro',
     'router.contextTuningEnable': 'Context tuning sem proxy (economia de token)',
-    'router.contextTuningHint': 'Grava ENABLE_TOOL_SEARCH + teto de auto-compact no settings.json SEM publicar ANTHROPIC_BASE_URL — ganho de token mantendo a janela de 1M disponível. Funciona com o router em off.',
+    'router.contextTuningHint': 'Grava ENABLE_TOOL_SEARCH + a chave autoCompactWindow (o seu /autocompact continua valendo) no settings.json SEM publicar ANTHROPIC_BASE_URL — ganho de token mantendo a janela de 1M disponível. Funciona com o router em off.',
 'router.billingNoticeTitle': 'Cobrança',
 'router.billingNoticeBody': 'O router vem desativado por padrão; ligá-lo é opt-in por conta e risco. Passthrough/sticky na rota Anthropic preserva sua assinatura, mas BYOK, fallback NVIDIA e uma ANTHROPIC_API_KEY no ambiente viram cobrança de API. Confira como auditar no guia.',
 'router.billingNoticeLink': 'Guia de cobrança →',

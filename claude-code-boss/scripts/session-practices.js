@@ -110,7 +110,7 @@ const PRACTICES = [
 
 /**
  * @param {object} event PreToolUse payload
- * @param {{platform?:string, practices?:object[], store?:{has:Function, add:Function}}} [deps] test seams
+ * @param {{platform?:string, practices?:object[], store?:{has:Function, add:Function}, config?:{getSessionPractices:Function, isHookDisabled:Function}}} [deps] test seams
  * @returns {Promise<object>} {} or an additionalContext-only reply
  */
 async function run(event, deps = {}) {
@@ -118,6 +118,9 @@ async function run(event, deps = {}) {
   const input = event.tool_input || {};
   const cmd = input.command;
   if (typeof cmd !== 'string' || !cmd) return {};
+  // `free` and a hook switched off in the dashboard are passthrough: this hook can deny, so it must not run there.
+  const cfg = deps.config || require('./lib/hooks-config.js');
+  if (!cfg.getSessionPractices().enabled || cfg.isHookDisabled('hook_session_practices')) return {};
   const platform = deps.platform || process.platform;
   const hits = (deps.practices || PRACTICES).filter((p) => (!p.platforms || p.platforms.includes(platform)) && p.applies(cmd, input));
   if (!hits.length) return {};
