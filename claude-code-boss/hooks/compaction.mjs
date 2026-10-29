@@ -28,11 +28,11 @@
 // daemon (POST /hook/compaction-event → tool hook_compaction_event → scripts/compaction-event.js).
 
 import { daemon as sharedDaemon } from '../scripts/lib/module-daemon.mjs';
-import { planCompaction, buildBrief, decideTiming, decideTurnEnd, classifyResume, estimateTokens, thresholdFor, fallbackWindow, chooseCompaction, isCacheWarm, isMechanicalCut, resumedAnswerAt, decidePhaseRestart, lastTurnDelivered, phaseRestartNotice, describeFailure, DEFAULTS } from '../scripts/lib/compaction-core.mjs';
+import { planCompaction, buildBrief, decideTiming, decideTurnEnd, classifyResume, estimateTokens, thresholdFor, fallbackWindow, chooseCompaction, isCacheWarm, isMechanicalCut, resumedAnswerAt, decidePhaseRestart, lastTurnDelivered, phaseRestartNotice, describeFailure, compactResultError, DEFAULTS } from '../scripts/lib/compaction-core.mjs';
 
 // Kept equal to package.json by scripts/sync-version.js. The daemon compares it with the installed plugin: a session
 // started before an update keeps running this file, so the person is told to reopen it.
-const MODULE_VERSION = '3.12.0';
+const MODULE_VERSION = '3.12.1';
 
 const PERSON_ORIGINS = new Set(['composer', 'bridge', 'sdk']);
 // Folder TTL (scripts/lib/folder-ttl.js): the daemon drops a session that stops reporting for 5 min; this keeps an
@@ -517,7 +517,10 @@ async function compact($, ctx, e, next) {
   const mechanical = isMechanicalCut({ warm, trigger: e.trigger, reason: ctx.compactReason });
   const choice = chooseCompaction({ plan, trigger: e.trigger, warm, mechanical }, ctx.config);
   if (choice.kind === 'brief') return briefCut($, ctx, e, next, { plan, warm, mechanical, t0, why: choice.why });
-  const ours = choice.ours;
+  // A pruned list the engine would refuse is never handed back: recorded as what really runs (its summary).
+  const invalid = choice.ours ? compactResultError(plan.messages) : null;
+  if (invalid) $.ui.log(`compaction: the pruned history breaks the engine's contract (${invalid}); the engine's summary runs`);
+  const ours = choice.ours && !invalid;
   const byReason = {};
   for (const p of plan.pruned) byReason[p.reason] = (byReason[p.reason] || 0) + 1;
   const { context } = await $.session.usage();
@@ -534,7 +537,7 @@ async function compact($, ctx, e, next) {
     } catch (err) { $.ui.log(`compaction: brief shadow failed: ${String(err)}`); }
   }
   emit($, ctx, 'run', {
-    trigger: e.trigger, reason, outcome: ours ? 'pruned' : 'native-summary', why: choice.why, cacheWarm: warm,
+    trigger: e.trigger, reason, outcome: ours ? 'pruned' : 'native-summary', why: invalid ? `result-invalid: ${invalid}` : choice.why, cacheWarm: warm,
     // what chose the cut: without these, "the brief never fires" and "no cold mechanical cut happened yet" read the same
     mechanical, mechanicalCut: ctx.config.mechanicalCut !== false,
     messages: e.messages.length, charsBefore: plan.charsBefore, charsAfter: ours ? plan.charsAfter : null,
@@ -571,8 +574,11 @@ async function briefCut($, ctx, e, next, { plan, warm, mechanical, t0, why }) {
   const tokensBefore = context.tokens ?? ctx.measuredTokens ?? null;
   const reason = ctx.compactReason || e.trigger;
   const base = { trigger: e.trigger, reason, why, cacheWarm: warm, mechanical, mechanicalCut: ctx.config.mechanicalCut !== false, messages: e.messages.length, charsBefore: b.charsBefore, tokensBefore };
-  if (!b.cutMessages || !b.userTextIntact) {
-    emit($, ctx, 'run', { ...base, outcome: 'native-summary', why: !b.cutMessages ? 'brief-cuts-nothing' : 'brief-user-text-not-intact', ratio: Number(plan.ratio.toFixed(3)), durationMs: (await $.clock.now()) - t0 });
+  // Checked BEFORE the run event: a brief the engine refuses is not a brief, it is the engine's summary.
+  const invalid = b.cutMessages && b.userTextIntact ? compactResultError(b.messages) : null;
+  if (!b.cutMessages || !b.userTextIntact || invalid) {
+    if (invalid) $.ui.log(`compaction: the brief breaks the engine's contract (${invalid}); the engine's summary runs`);
+    emit($, ctx, 'run', { ...base, outcome: 'native-summary', why: invalid ? `result-invalid: ${invalid}` : !b.cutMessages ? 'brief-cuts-nothing' : 'brief-user-text-not-intact', ratio: Number(plan.ratio.toFixed(3)), durationMs: (await $.clock.now()) - t0 });
     return next(e);
   }
   if (!ctx.pendingSettle) ctx.pendingSettle = { reason, trigger: e.trigger, tokensBefore };
@@ -586,8 +592,11 @@ async function briefCut($, ctx, e, next, { plan, warm, mechanical, t0, why }) {
   return { messages: b.messages };
 }
 
-async function compactFailed($, e, next) {
-  $.ui.log(`compaction: pruning failed, the engine's own compaction runs: ${describeFailure(next.error)}`);
+async function compactFailed($, ctx, e, next) {
+  const cause = describeFailure(next.error);
+  $.ui.log(`compaction: pruning failed, the engine's own compaction runs: ${cause}`);
+  // In the trail too: the run event of the refused cut is already recorded, and this is what really ran.
+  if (ctx.configLoaded) emit($, ctx, 'error', { stage: 'session.compact', outcome: 'native-summary', cause, trigger: e && e.trigger });
   return next(e); // never a broken transcript
 }
 
@@ -653,7 +662,7 @@ export const register = (on) => {
     return r;
   });
 
-  on('session.compact', async ($, e, next) => compact($, ctx, e, next)).catch(compactFailed);
+  on('session.compact', async ($, e, next) => compact($, ctx, e, next)).catch(($, e, next) => compactFailed($, ctx, e, next));
 
   // The session's last API call often lands in the transcript after its turn.complete
   // (interactive): one more observation at the end, inside session.end's short budget.

@@ -425,7 +425,9 @@ export function buildBrief(messages, options = {}) {
     + 'assistant text is shortened; tool outputs were dropped.'
     + `${o.memoryNote ? ` ${o.memoryNote}` : ''}]\n`;
   const text = head + lines.join('\n');
-  const out = middle.length ? [list[0], { role: 'user', text }, ...list.slice(tailStart)] : list.slice();
+  // toolUses is required on every returned message (compactResultError): the engine refuses the list without it and
+  // runs its own summary instead.
+  const out = middle.length ? [list[0], { role: 'user', text, toolUses: [] }, ...list.slice(tailStart)] : list.slice();
   const userTextIntact = middle.every((m) => m.role !== 'user' || !m.text || text.includes(`USER: ${m.text}`));
   const charsBefore = list.reduce((c, m) => c + size(m), 0);
   const charsAfter = out.reduce((c, m) => c + size(m), 0);
@@ -433,6 +435,35 @@ export function buildBrief(messages, options = {}) {
   // cutMessages 0 as "nothing to condense" and the engine's summary runs.
   if (charsAfter > charsBefore * (1 - BRIEF_MIN_CUT_RATIO)) return { messages: list.slice(), briefChars: 0, charsBefore, charsAfter: charsBefore, cutMessages: 0, userTextIntact: true };
   return { messages: out, briefChars: middle.length ? text.length : 0, charsBefore, charsAfter, cutMessages: middle.length, userTextIntact };
+}
+
+const isObj = (v) => v !== null && typeof v === 'object' && !Array.isArray(v);
+
+/**
+ * Why the engine would refuse this list as a session.compact result, or null. The same rules Claude Code applies
+ * (read from its 2.1.312 build): a non-empty list; each message has role user|assistant, a string `text`, a string or
+ * absent `handle`, `toolUses` a LIST of { tool_use_id, tool, input } (required, empty allowed) and `toolResults` absent
+ * or a list of { tool_use_id, text }. A refused result is not an error the person sees: the engine runs its own model
+ * summary instead, on whatever cache state the cut was meant to spare.
+ * @param {unknown} messages
+ * @returns {string|null}
+ */
+export function compactResultError(messages) {
+  if (!Array.isArray(messages)) return 'messages that are not a list';
+  if (!messages.length) return 'an empty messages (a compaction leaves at least one)';
+  for (let i = 0; i < messages.length; i++) {
+    const m = messages[i];
+    const why = !isObj(m) ? 'is not an object'
+      : m.role !== 'user' && m.role !== 'assistant' ? 'has a role that is neither user nor assistant'
+        : typeof m.text !== 'string' ? 'has no text (a string)'
+          : !(m.handle === undefined || typeof m.handle === 'string') ? 'has a handle that is not a string'
+            : !(Array.isArray(m.toolUses) && m.toolUses.every((u) => isObj(u) && typeof u.tool_use_id === 'string' && typeof u.tool === 'string' && isObj(u.input)))
+              ? 'has toolUses that are not a list of { tool_use_id, tool, input }'
+              : !(m.toolResults === undefined || (Array.isArray(m.toolResults) && m.toolResults.every((r) => isObj(r) && typeof r.tool_use_id === 'string' && typeof r.text === 'string')))
+                ? 'has toolResults that are not a list of { tool_use_id, text, isError }' : null;
+    if (why) return `messages[${i}] that ${why}`;
+  }
+  return null;
 }
 
 /** Rough tokens of a message list read as JSON (4 chars/token: sizing, never billing). */
@@ -451,7 +482,8 @@ const COMMIT_RE = /\bgit\s+(?:-\S+(?:\s+[^-\s]\S*)?\s+)*commit\b/; // options (a
 /**
  * Did the last finished turn deliver a task? The turn = everything after the last person message (a user message
  * with text and no tool results); delivered = it ran a `git commit` (the same task boundary the measurement uses).
- * @param {Array<{role:string, text?:string, toolUses?:Array<{name:string, input?:object}>, toolResults?:Array}>} messages
+ * The engine names the tool `tool` ($.session.messages()); `name` is read too.
+ * @param {Array<{role:string, text?:string, toolUses?:Array<{tool?:string, name?:string, input?:object}>, toolResults?:Array}>} messages
  */
 export function lastTurnDelivered(messages) {
   const list = Array.isArray(messages) ? messages : [];
@@ -460,7 +492,7 @@ export function lastTurnDelivered(messages) {
     if (m.role === 'user' && m.text && !(m.toolResults && m.toolResults.length)) return false;
     if (m.role !== 'assistant') continue;
     for (const u of m.toolUses || []) {
-      if (u && u.name === 'Bash' && COMMIT_RE.test(String((u.input && u.input.command) || ''))) return true;
+      if (u && (u.tool ?? u.name) === 'Bash' && COMMIT_RE.test(String((u.input && u.input.command) || ''))) return true;
     }
   }
   return false;

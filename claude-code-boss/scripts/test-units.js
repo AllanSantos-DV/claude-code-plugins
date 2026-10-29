@@ -28532,6 +28532,34 @@ test('compaction-core.buildBrief: when the newest message is the huge result the
   assertEq(cmpCore.buildBrief(cmpSession(), { preserveRecentMessages: 3, briefTailTokens: 0 }).cutMessages > 0, true, 'an ordinary history is still condensed');
 });
 
+// Regression (2026-10-28): every real brief (27 in 14 days) was refused by the engine — "returned messages[1] that has
+// toolUses that are not a list of { tool_use_id, tool, input }" — and Claude Code ran its own model summary on the cold
+// cache (52–270 s each) while the metrics recorded 'brief'.
+test('compaction-core.compactResultError: the engine contract for a session.compact result — the brief and the pruned history pass it, the old brief message did not', () => {
+  const msgs = cmpSession();
+  assertEq(cmpCore.compactResultError(msgs), null, 'the engine\'s own history passes');
+  for (const opts of [{ preserveRecentMessages: 3, briefTailTokens: 0 }, { briefTailTokens: 1 }]) {
+    const b = cmpCore.buildBrief(msgs, opts);
+    assert(b.cutMessages > 0, `the brief cuts (${JSON.stringify(opts)})`);
+    assertEq(cmpCore.compactResultError(b.messages), null, `the brief is accepted (${JSON.stringify(opts)})`);
+    assertEq(b.messages[1].toolUses, [], 'the brief message carries an empty toolUses list');
+  }
+  assertEq(cmpCore.compactResultError(cmpCore.planCompaction(msgs).messages), null, 'the pruned history is accepted');
+  assertEq(cmpCore.compactResultError([msgs[0], { role: 'user', text: 'brief' }]), 'messages[1] that has toolUses that are not a list of { tool_use_id, tool, input }', 'the shape every real brief had: refused, word for word as the engine says it');
+  assertEq(cmpCore.compactResultError([]), 'an empty messages (a compaction leaves at least one)');
+  assertEq(cmpCore.compactResultError(null), 'messages that are not a list');
+  assertEq(cmpCore.compactResultError([{ role: 'system', text: '', toolUses: [] }]), 'messages[0] that has a role that is neither user nor assistant');
+  assertEq(cmpCore.compactResultError([{ role: 'user', toolUses: [] }]), 'messages[0] that has no text (a string)');
+  assertEq(cmpCore.compactResultError([{ role: 'user', text: '', toolUses: [], handle: 7 }]), 'messages[0] that has a handle that is not a string');
+  assertEq(cmpCore.compactResultError([{ role: 'assistant', text: '', toolUses: [{ tool_use_id: 'x', tool: 'Read' }] }]), 'messages[0] that has toolUses that are not a list of { tool_use_id, tool, input }', 'input is required');
+  assertEq(cmpCore.compactResultError([{ role: 'user', text: '', toolUses: [], toolResults: [{ tool_use_id: 'x' }] }]), 'messages[0] that has toolResults that are not a list of { tool_use_id, text, isError }');
+});
+
+test('compaction-core.lastTurnDelivered: reads the engine\'s tool name field (`tool`), not only `name`', () => {
+  assertEq(cmpCore.lastTurnDelivered([{ role: 'user', text: 'do it', toolUses: [] }, { role: 'assistant', text: '', toolUses: [{ tool_use_id: 'b', tool: 'Bash', input: { command: 'git commit -m x' } }] }]), true, 'engine shape');
+  assertEq(cmpCore.lastTurnDelivered([{ role: 'assistant', text: '', toolUses: [{ tool_use_id: 'b', tool: 'Read', input: { command: 'git commit -m x' } }] }]), false, 'another tool');
+});
+
 test('router enable/disable against a real settings.json: autoCompactWindow written when absent, the user\'s value untouched, removed on disable only when ours', () => {
   const { spawnSync } = require('child_process');
   const home = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-rsettings-'));
@@ -28587,7 +28615,7 @@ test('compaction-core.isMechanicalCut + chooseCompaction: the brief only with a 
   const hook = fs.readFileSync(path.join(ROOT, 'hooks', 'compaction.mjs'), 'utf8');
   assert(/isMechanicalCut\(\{ warm, trigger: e\.trigger, reason: ctx\.compactReason \}\)/.test(hook), 'the hook judges the brief by warm + trigger + our reason');
   assertEq((hook.match(/mechanical, mechanicalCut: ctx\.config\.mechanicalCut !== false/g) || []).length, 2, 'both run events (summary/prune and brief) record what chose the cut (compactacao-router-07: 0 briefs in 315 runs could not tell "never fires" from "not yet")');
-  assert(/if \(!b\.cutMessages \|\| !b\.userTextIntact\)[\s\S]{0,300}return next\(e\);/.test(hook), 'a brief that cuts nothing or loses user text → the engine summary');
+  assert(/if \(!b\.cutMessages \|\| !b\.userTextIntact \|\| invalid\)[\s\S]{0,500}return next\(e\);/.test(hook), 'a brief that cuts nothing, loses user text or breaks the engine contract → the engine summary');
   assert(/await leaveAbove\(\$, ctx\);\s*emit\(\$, ctx, 'run', \{/.test(hook), 'the folder TTL is released BEFORE the brief is handed back');
   assert(/const r = await next\(e\);[^\n]*\n\s*await leaveAbove\(\$, ctx\);/.test(hook) && /await leaveAbove\(\$, ctx\);\s*\$\.ui\.toast\(`compaction: every message kept/.test(hook), 'pruning and the engine summary release it too (any compaction leaves the session below)');
   assert(/if \(!reply \|\| !\(reply\.recorded > 0\)\) return;/.test(hook) && /const tokens = \(Number\(o\.input\) \|\| 0\) \+ \(Number\(o\.read\) \|\| 0\) \+ \(Number\(o\.write\) \|\| 0\);/.test(hook), '"above" comes from the last REAL call (a held prompt\'s turn has none and usage() is stale)');
@@ -28795,7 +28823,7 @@ test('compaction-core.chooseCompaction: the engine SUMMARY unless pruning cuts >
   const hook = fs.readFileSync(path.join(ROOT, 'hooks', 'compaction.mjs'), 'utf8');
   assert(/chooseCompaction\(\{ plan, trigger: e\.trigger, warm, mechanical \}/.test(hook) && /isCacheWarm\(/.test(hook) && !/plan\.ratio >= ctx\.config\.minReductionRatio/.test(hook), 'the session.compact hook decides through chooseCompaction (the old ratio-only rule is gone)');
   assert(/const warm = ctx\.busy \|\| isCacheWarm\(/.test(hook), 'an auto-compaction in the middle of a turn counts as warm (the turn keeps the cache alive, whatever the last answer\'s age)');
-  assert(/why: choice\.why, cacheWarm: warm/.test(hook), 'the run event records why and whether the cache was warm');
+  assert(/why: invalid \? `result-invalid: \$\{invalid\}` : choice\.why, cacheWarm: warm/.test(hook), 'the run event records why (a refused pruned list included) and whether the cache was warm');
 });
 
 test('compaction-core.planCompaction: a resumed history rebuilt with the engine\'s copies — exact tool-id duplicates dropped, text never matched', () => {
@@ -29817,6 +29845,123 @@ test('compaction hook: a failed hook is logged with its readable cause — the e
     }
   }
   assertEq(core.describeFailure(undefined), 'unknown error');
+});
+
+// Claude Code 2.1.312's own check of a session.compact result, transcribed from its build independently of
+// compaction-core (so the end-to-end test does not grade the hook with the hook's own rule).
+function engineRefusal(list) {
+  const D = (v) => v !== null && typeof v === 'object' && !Array.isArray(v);
+  if (!Array.isArray(list)) return 'messages that are not a list';
+  if (!list.length) return 'an empty messages (a compaction leaves at least one)';
+  for (let i = 0; i < list.length; i++) {
+    const { role, text, handle, toolUses, toolResults } = list[i] || {};
+    let why = null;
+    if (role !== 'user' && role !== 'assistant') why = 'has a role that is neither user nor assistant';
+    else if (typeof text !== 'string') why = 'has no text (a string)';
+    else if (!(handle === undefined || typeof handle === 'string')) why = 'has a handle that is not a string';
+    else if (!(Array.isArray(toolUses) && toolUses.every((c) => D(c) && typeof c.tool_use_id === 'string' && typeof c.tool === 'string' && D(c.input)))) why = 'has toolUses that are not a list of { tool_use_id, tool, input }';
+    else if (!(toolResults === undefined || (Array.isArray(toolResults) && toolResults.every((c) => D(c) && typeof c.tool_use_id === 'string' && typeof c.text === 'string')))) why = 'has toolResults that are not a list of { tool_use_id, text, isError }';
+    if (why) return `messages[${i}] that ${why}`;
+  }
+  return null;
+}
+
+// The engine's side of session.compact, as Claude Code does it: a returned list is checked against its contract; a
+// refused one goes to the hook's .catch with next.error, and next() there is the engine's model summary.
+async function engineCompactRun({ messages, trigger = 'auto', coldMs = 2 * 3600000, config = { enabled: true, folderTtl: false } }) {
+  const cmp = await import(require('url').pathToFileURL(path.join(ROOT, 'hooks', 'compaction.mjs')).href);
+  const reg = {};
+  cmp.register((event, fn) => { reg[event] = { fn }; return { catch(c) { reg[event].catch = c; return this; } }; });
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-engine-compact-'));
+  fs.writeFileSync(path.join(dir, 'brain-http.token'), 'tok');
+  const out = { summaries: 0, events: [], logs: [], toasts: [], refused: null, result: null };
+  let now = 1_000_000_000;
+  const env = { CLAUDE_PLUGIN_DATA: dir, BRAIN_HTTP_PORT: '1' };
+  const $ = {
+    env: { get: async (k) => env[k] },
+    fs: { read: async (p) => fs.readFileSync(p, 'utf8') },
+    http: { fetch: async (url, init) => {
+      if (url.split('?')[0].endsWith('/health')) return { status: 200, ok: true, text: JSON.stringify({ dataDir: dir }) };
+      const payload = JSON.parse(JSON.parse(init.body).payload);
+      out.events.push(payload);
+      return { status: 200, ok: true, text: JSON.stringify(payload.kind === 'hello' ? { config } : {}) };
+    } },
+    session: { id: async () => 'sid-engine', cwd: async () => dir, root: async () => dir, authorize: async () => null,
+      usage: async () => ({ context: { tokens: 400000, window: 1000000, breakdown: { rawMaxTokens: 1000000, autoCompactThreshold: 967000 } } }),
+      messages: async () => messages },
+    clock: { now: async () => now, after: () => {} },
+    ui: { log: (t) => out.logs.push(t), toast: (t) => out.toasts.push(t) },
+  };
+  try {
+    await reg['session.start'].fn($, { isInteractive: true }, async (e) => e);
+    await reg['turn.complete'].fn($, {}, async () => ({}));
+    now += coldMs;
+    const e = { trigger, messages };
+    const summary = async () => { out.summaries++; return { messages: [{ role: 'user', text: 'MODEL SUMMARY', toolUses: [] }] }; };
+    try {
+      const r = await reg['session.compact'].fn($, e, summary);
+      const refused = r && r.messages ? engineRefusal(r.messages) : null;
+      if (refused) throw Object.assign(new Error(refused), { refused });
+      out.result = r;
+    } catch (err) {
+      out.refused = err.refused || String(err);
+      out.result = await reg['session.compact'].catch($, e, Object.assign(summary, { error: { kind: 'throw', message: `returned ${err.refused || err}` } }));
+    }
+    await new Promise((res) => setImmediate(res));
+    return out;
+  } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+}
+
+function briefOnlySession() { // pruning cannot reach 85% here (no stale big results): the cold cut is the brief
+  const msgs = [{ role: 'user', text: 'Plan: KEEP-ME-7', toolUses: [], handle: 'h0' }];
+  for (let i = 0; i < 40; i++) {
+    msgs.push({ role: 'user', text: `step ${i}: ${'detail '.repeat(40)}`, toolUses: [], handle: `u${i}` });
+    msgs.push({ role: 'assistant', text: `done ${i}: ${'answer '.repeat(400)}`, toolUses: [{ tool_use_id: `t${i}`, tool: 'Bash', input: { command: `echo ${i}` } }], handle: `a${i}` });
+    msgs.push({ role: 'user', text: '', toolUses: [], toolResults: [{ tool_use_id: `t${i}`, text: `out ${i}`, isError: false }], handle: `r${i}` });
+  }
+  return msgs;
+}
+
+test('compaction hook end to end (fake engine with Claude Code\'s contract): a cold auto-compaction is answered by the brief — accepted, no model summary; the trail says brief', async () => {
+  const msgs = briefOnlySession();
+  assert(cmpCore.planCompaction(msgs).ratio < cmpCore.DEFAULTS.minReductionRatio, 'pruning alone cannot answer: the brief path is the one exercised');
+  const r = await engineCompactRun({ messages: msgs });
+  assertEq(r.refused, null, `the engine accepts the hook's history (refused: ${r.refused})`);
+  assertEq(r.summaries, 0, 'no model summary ran');
+  assert(r.result && Array.isArray(r.result.messages) && r.result.messages.length < msgs.length, 'the brief replaced the history');
+  assert(r.result.messages[1].text.startsWith('[Compaction brief:') && r.result.messages[1].text.includes('USER: step 0'), 'the brief text, user messages verbatim');
+  const runs = r.events.filter((e) => e.kind === 'run');
+  assertEq(runs.map((e) => [e.outcome, e.why]), [['brief', 'cold-mechanical']], 'one run, recorded as what really happened');
+  assert(!r.logs.some((l) => /pruning failed|breaks the engine's contract/.test(l)), `nothing failed: ${r.logs.join(' | ')}`);
+});
+
+test('compaction hook: a cut the engine refuses anyway is recorded as the engine\'s summary (error event), never only as a brief', async () => {
+  const msgs = briefOnlySession();
+  const cmp = await import(require('url').pathToFileURL(path.join(ROOT, 'hooks', 'compaction.mjs')).href);
+  const reg = {};
+  cmp.register((event, fn) => { reg[event] = { fn }; return { catch(c) { reg[event].catch = c; return this; } }; });
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-engine-refuse-'));
+  try {
+    fs.writeFileSync(path.join(dir, 'brain-http.token'), 'tok');
+    const events = []; const logs = [];
+    const $ = { env: { get: async (k) => ({ CLAUDE_PLUGIN_DATA: dir, BRAIN_HTTP_PORT: '1' })[k] }, fs: { read: async (p) => fs.readFileSync(p, 'utf8') },
+      http: { fetch: async (url, init) => {
+        if (url.split('?')[0].endsWith('/health')) return { status: 200, ok: true, text: JSON.stringify({ dataDir: dir }) };
+        const payload = JSON.parse(JSON.parse(init.body).payload); events.push(payload);
+        return { status: 200, ok: true, text: JSON.stringify(payload.kind === 'hello' ? { config: { enabled: true, folderTtl: false } } : {}) };
+      } },
+      session: { id: async () => 'sid-refuse', cwd: async () => dir, root: async () => dir, authorize: async () => null, usage: async () => ({ context: {} }), messages: async () => msgs },
+      clock: { now: async () => 1, after: () => {} }, ui: { log: (t) => logs.push(t), toast: () => {} } };
+    await reg['session.start'].fn($, { isInteractive: true }, async (e) => e);
+    let summaries = 0;
+    const next = Object.assign(async () => { summaries++; return 'engine-summary'; }, { error: { kind: 'throw', message: 'returned messages[1] that has toolUses that are not a list of { tool_use_id, tool, input }' } });
+    await reg['session.compact'].fn($, { trigger: 'manual', messages: msgs }, async () => 'engine'); // loads the config (warm → engine path)
+    const res = await reg['session.compact'].catch($, { trigger: 'manual', messages: msgs }, next);
+    await new Promise((resolve) => setImmediate(resolve));
+    assertEq([res, summaries], ['engine-summary', 1], 'never a broken transcript: the engine path runs');
+    const err = events.find((e) => e.kind === 'error');
+    assert(err && err.stage === 'session.compact' && err.outcome === 'native-summary' && /toolUses/.test(err.cause), `refusal recorded: ${JSON.stringify(events.map((e) => e.kind))}`);
+  } finally { fs.rmSync(dir, { recursive: true, force: true }); }
 });
 
 test('folder-ttl.sweep: a folder left at 5m by sessions that stopped reporting is restored with no report from anyone (headless-only machine); a quiet state is not rewritten', () => {
