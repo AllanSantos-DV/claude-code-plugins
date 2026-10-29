@@ -67,6 +67,9 @@ async function pump() {
       continue;
     }
     const t0 = Date.now();
+    // Progress signal: the client measures a stall from the start of the job that is running,
+    // not from deadlines that expired while it was queued (hook-worker-client.js).
+    parentPort.postMessage({ started: id, name });
     try {
       let text = await runHookInline(pluginRoot, name, args);
       if (background) {

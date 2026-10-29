@@ -9,11 +9,13 @@
 // → scripts/boss-summary.js). Polled every POLL_MS from each session that draws the band; the daemon
 // caches its answer, so N open sessions cost one computation.
 // FAILURES are shown, not hidden: a daemon that does not answer puts its reason in the band and
-// in /boss instead of stale numbers. A reply of {} means hook_boss_summary was switched off in
+// in /boss instead of stale numbers. A daemon that answers with the hook's fail-open (deadline
+// missed in its worker) is not a failure the person can act on: the last numbers stay, silently.
+// A reply of {} means hook_boss_summary was switched off in
 // the dashboard: no band at all.
 // The engine turns every module off under disableAllHooks (and allowManagedModsOnly).
 
-import { daemon } from '../scripts/lib/module-daemon.mjs';
+import { daemon, isDaemonDegraded } from '../scripts/lib/module-daemon.mjs';
 import { bandLine, bossMarkdown } from '../scripts/lib/boss-band.mjs';
 
 // At least 5 s between reads of one session; the daemon reuses its answer for 30 s.
@@ -60,11 +62,16 @@ export async function refresh($, ctx) {
     ctx.error = null;
     ctx.loggedError = '';
   } catch (err) {
-    ctx.error = msg(err);
-    ctx.daemon = null; // the next read checks /health again (a restarted daemon, another install on the port)
-    if (ctx.error !== ctx.loggedError) {
-      ctx.loggedError = ctx.error;
-      $.ui.log(`boss: ${ctx.error}`);
+    // The daemon answered; only this read fail-opened there (missed deadline, recycled worker). The band
+    // keeps its last numbers and the next poll tries again — nothing on the screen (the daemon's log and
+    // /health keep the trail).
+    if (!isDaemonDegraded(err)) {
+      ctx.error = msg(err);
+      ctx.daemon = null; // the next read checks /health again (a restarted daemon, another install on the port)
+      if (ctx.error !== ctx.loggedError) {
+        ctx.loggedError = ctx.error;
+        $.ui.log(`boss: ${ctx.error}`);
+      }
     }
   }
   const line = ctx.disabled ? '' : bandLine(ctx);

@@ -3,6 +3,29 @@
 - **Achado e corrigido na hora:** `hooks/compaction.mjs` `startHeartbeat` — a 3.13.0 inseriu a linha do `watchCold` entre o `if (ctx.transcriptPath) {...}` e o `else`, então o `else` passou a pertencer ao `if` do `watchCold` e o aviso "folder heartbeat has no transcript path" saía a cada batida (2 min) mesmo com o caminho presente. Agora o aviso sai só sem caminho e uma vez por sessão (`ctx.noTranscriptSaid`). Dois testes novos falham antes e passam depois (`test-units.js`). Varredura do diff de 7d82886 e dos hooks: nenhum outro `if/else` sem chaves.
 - **Depois, achado na máquina do dono (pedido t-15d11a):** as sessões abertas dele seguiam com o módulo 3.13.0 em memória (o instalado era 3.13.0 até o build de teste), então o aviso continuava. E uma sessão recarregada/retomada que nunca viu o SessionStart não tem o que o dono possa fazer com o aviso: o heartbeat agora grava `error` (stage `heartbeat`, outcome `no-transcript-path`, uma vez por sessão) na trilha em vez de escrever na tela.
 
+## Hook-worker: prazo de 9 s e "exited (code 1)" na tela (pedido do orquestrador, 2026-10-29) — na develop, aguardando a validação do dono, sem release
+
+- [x] **Achado e corrigido na hora — o próprio daemon matava o worker sob carga.** Medido no daemon real (pid 31348, build 3.13.0-dev.63c1b55):
+  `/health` com `recycled: 5`, todos entre 16:19 e 16:31, na mesma janela em que até o braço local do KB estourava 8 s (`project-arm-timeout`).
+  `servers/brain-server/lib/hook-worker-client.js` reciclava o worker após "3 prazos seguidos sem mensagem": os polls de 9 s da banda do Boss
+  (`hook_boss_summary`, de 9 sessões) enfileirados atrás de um job lento batiam isso, o `terminate()` saía com código 1, derrubava o
+  `hook_compaction_event` em voo e jogava fora o cache quente do leitor de métricas (253 projetos, 68 mil linhas: 0,6 s quente, 1,5 s frio
+  sem carga), e a leitura a frio seguinte era mais lenta — ciclo. Agora o worker avisa `started` a cada job e a reciclagem é por **tempo sem
+  progresso** (`stallMs`, 60 s = 2× o maior prazo), não por contagem de prazos. Testes: worker lento não é reciclado e os polls respondem no
+  prazo; worker que sai com código 1 responde o fail-open na hora (`test-units.js`).
+- [x] **Achado e corrigido na hora — fail-open do daemon na tela.** `hooks/boss.mjs` (o `GET /hook/boss-summary answered 503 …`) e
+  `hooks/compaction.mjs` (heartbeat, eventos da trilha, relatórios de pasta, observações) escreviam no `$.ui.log` a resposta degradada do
+  daemon. Agora `isDaemonDegraded` (`scripts/lib/module-daemon.mjs`) a mantém fora da tela: o daemon já a registra no log e no `hookLatency`
+  do `/health`; a banda mantém os últimos números. Falha de outro tipo (daemon fora, 500) continua dita. Testes: banda e heartbeat com 503 e
+  `systemMessage` degradado não escrevem nada; 500 continua na tela.
+- [x] **Achado e corrigido na hora — um relatório de pasta falho na entrada desligava o heartbeat da sessão.** `hooks/compaction.mjs`
+  `joinFolder` só chamava `startHeartbeat` se o `reportFolder` da entrada desse certo: um prazo perdido no daemon nessa hora deixava a
+  sessão sem nunca mais contar na pasta (TTL de pasta). Agora o heartbeat começa mesmo assim e a próxima batida relata de novo. Visto pelo
+  teste do heartbeat degradado (falhava com "timer expected").
+- [ ] **Fora de escopo, decisão do dono — fail-open dos hooks do `hooks.json` continua visível.** Um hook `mcp_tool` degradado (ex.: Stop que
+  perde o prazo) devolve `systemMessage` que o Claude Code mostra; é a regra P2 do ADR-015 ("fail-open visível"). Com o ciclo de reciclagem
+  fechado deve ficar raro. Se o dono quiser silenciar também: trocar `systemMessage` por log do daemon em `scripts/lib/hook-tools.js` `degraded`.
+
 # Backlog
 
 ## Log do esfriamento do cache × compactação (pedido do orquestrador, 2026-10-29) — 3.13.0

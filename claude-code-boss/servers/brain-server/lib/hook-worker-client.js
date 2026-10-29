@@ -16,11 +16,16 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
 // A job that never settles (a detector waiting on I/O with no deadline) used to wedge the
 // strict-FIFO worker for EVERY session until a daemon restart — each later heavy hook just
-// expired (pre-release audit). After STALL_TIMEOUTS deadlines in a row with no message from
-// the worker in between, it is recycled; the death path re-queues background jobs once.
-const STALL_TIMEOUTS = 3;
+// expired (pre-release audit). When a deadline passes and the worker has said nothing for
+// STALL_MS (no job started or finished), it is recycled; the death path re-queues background
+// jobs once. Time, not a count of deadlines: polls queued behind ONE slow job on a loaded
+// machine expire in a row without anything being stuck, and a recycle (exit code 1) fails the
+// unrelated hooks in flight and drops the worker's warm caches — the cold worker is slower and
+// the polls expire again. Twice the longest hook deadline (Stop, 30 s): a job running that long
+// is stuck, not slow.
+const STALL_MS = 60_000;
 
-export function createHookWorker({ pluginRoot, callTimeoutMs = 60000, stallTimeouts = STALL_TIMEOUTS, workerPath, onBackgroundDone, resourceLimits = WORKER_RESOURCE_LIMITS } = {}) {
+export function createHookWorker({ pluginRoot, callTimeoutMs = 60000, stallMs = STALL_MS, workerPath, onBackgroundDone, resourceLimits = WORKER_RESOURCE_LIMITS } = {}) {
   if (!pluginRoot) throw new Error('createHookWorker: pluginRoot is required');
   let worker = null;
   let nextId = 1;
@@ -35,7 +40,12 @@ export function createHookWorker({ pluginRoot, callTimeoutMs = 60000, stallTimeo
   const bgPending = new Map();
   let requeued = 0;
   let recycled = 0;
-  let silentTimeouts = 0; // deadlines in a row with no message from the worker
+  let lastProgressAt = 0; // last message from the worker, or when it got work while idle
+  let runningName = '';   // the job the worker said it started (named in the recycle log)
+  // Awaited jobs the worker has not answered yet — including those whose caller already
+  // gave up at the deadline: the worker is still busy with them (or must skip them).
+  const outstanding = new Set();
+  const idle = () => !outstanding.size && !bgPending.size;
 
   function failAll(err) {
     for (const [, p] of pending) { clearTimeout(p.timer); p.reject(err); }
@@ -47,7 +57,9 @@ export function createHookWorker({ pluginRoot, callTimeoutMs = 60000, stallTimeo
     const w = new Worker(workerPath || path.join(__dirname, 'hook-worker.js'), { workerData: { pluginRoot }, resourceLimits });
     spawned++;
     w.on('message', (msg) => {
-      silentTimeouts = 0;
+      lastProgressAt = Date.now();
+      if (msg.started !== undefined) { runningName = msg.name || ''; return; }
+      runningName = '';
       if (msg.bgDone !== undefined) {
         const job = bgPending.get(msg.bgDone);
         bgPending.delete(msg.bgDone);
@@ -56,6 +68,7 @@ export function createHookWorker({ pluginRoot, callTimeoutMs = 60000, stallTimeo
         }
         return;
       }
+      outstanding.delete(msg.id);
       if (msg.expired) expired++;
       const p = pending.get(msg.id);
       if (!p) return;
@@ -68,6 +81,8 @@ export function createHookWorker({ pluginRoot, callTimeoutMs = 60000, stallTimeo
       if (worker !== w) return;
       worker = null;
       failAll(err);
+      outstanding.clear();
+      runningName = '';
       const lost = [...bgPending.values()];
       bgPending.clear();
       if (closed || !lost.length) return;
@@ -100,13 +115,16 @@ export function createHookWorker({ pluginRoot, callTimeoutMs = 60000, stallTimeo
         if (!pending.delete(id)) return;
         if (pending.size === 0) w.unref();
         reject(new Error(`prazo de ${timeoutMs}ms estourado no hook-worker (${name})`));
-        if (++silentTimeouts >= stallTimeouts && worker === w) {
-          silentTimeouts = 0; recycled++;
-          console.error(`[hook-worker] ${stallTimeouts} deadlines in a row with no progress — recycling the stuck worker`);
+        const silentMs = Date.now() - lastProgressAt;
+        if (silentMs >= stallMs && worker === w) {
+          recycled++;
+          console.error(`[hook-worker] no progress for ${silentMs}ms (running: ${runningName || 'unknown'}) — recycling the stuck worker`);
           w.terminate().catch((err) => console.error(`[hook-worker] terminate failed: ${err.message}`));
         }
       }, timeoutMs);
       timer.unref();
+      if (idle()) lastProgressAt = Date.now(); // idle until now: the silence starts here
+      outstanding.add(id);
       pending.set(id, { resolve, reject, timer });
       w.ref();
       w.postMessage({ id, name, args, deadline: Date.now() + timeoutMs });
@@ -122,6 +140,7 @@ export function createHookWorker({ pluginRoot, callTimeoutMs = 60000, stallTimeo
     if (closed) { console.error(`[hook-worker] shut down; dropped ${name}`); return; }
     try {
       const id = nextId++;
+      if (idle()) lastProgressAt = Date.now();
       bgPending.set(id, { name, args, attempt, queuedAt: Date.now() });
       ensure().postMessage({ id, name, args, background: true });
     } catch (err) {

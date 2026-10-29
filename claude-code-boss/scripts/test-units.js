@@ -28296,11 +28296,11 @@ test('plugin-updater.killStale: so casa modulos da PASTA DE CACHE do plugin, nao
     }
   });
 
-  test('audit: a job that never settles no longer wedges the heavy lane — after N silent deadlines the worker is recycled', async () => {
+  test('audit: a job that never settles no longer wedges the heavy lane — a deadline after stallMs of silence recycles the worker', async () => {
     const wp = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-stuck-')), 'stuck-worker.cjs');
     fs.writeFileSync(wp, "const { parentPort } = require('worker_threads');\n"
       + "parentPort.on('message', (m) => { if (m.name === 'hang') return; parentPort.postMessage({ id: m.id, ok: true, text: 'ok:' + m.name }); });\n");
-    const hw = (await loadHookWorker())({ pluginRoot: ROOT, workerPath: wp, stallTimeouts: 3 });
+    const hw = (await loadHookWorker())({ pluginRoot: ROOT, workerPath: wp, stallMs: 150 });
     try {
       assertEq(await hw.run('a', {}, { timeoutMs: 2000 }), 'ok:a', 'healthy job answered');
       for (let i = 0; i < 3; i++) {
@@ -28308,7 +28308,7 @@ test('plugin-updater.killStale: so casa modulos da PASTA DE CACHE do plugin, nao
         assert(err && /prazo/.test(err.message), `stuck job expires visibly (#${i + 1})`);
       }
       await new Promise((r) => setTimeout(r, 300)); // terminate → exit → replacement on next call
-      assertEq(hw.stats().recycled, 1, 'recycled once after 3 silent deadlines');
+      assertEq(hw.stats().recycled, 1, 'recycled once: 180 ms without a word from the worker, past stallMs');
       assertEq(await hw.run('b', {}, { timeoutMs: 2000 }), 'ok:b', 'the next heavy hook runs on a FRESH worker instead of queueing behind the stuck job');
       assertEq(hw.stats().spawned, 2, 'a replacement worker was spawned');
     } finally { await hw.shutdown(); }
@@ -28338,14 +28338,62 @@ test('plugin-updater.killStale: so casa modulos da PASTA DE CACHE do plugin, nao
     const wp = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-busy-')), 'busy-worker.cjs');
     fs.writeFileSync(wp, "const { parentPort } = require('worker_threads');\n"
       + "parentPort.on('message', (m) => { if (m.name === 'hang') return; parentPort.postMessage({ id: m.id, ok: true, text: 'ok' }); });\n");
-    const hw = (await loadHookWorker())({ pluginRoot: ROOT, workerPath: wp, stallTimeouts: 3 });
+    const hw = (await loadHookWorker())({ pluginRoot: ROOT, workerPath: wp, stallMs: 100 });
     try {
       for (let i = 0; i < 4; i++) {
         try { await hw.run('hang', {}, { timeoutMs: 40 }); } catch (e) { void e; }
-        if (i % 2 === 1) await hw.run('ok', {}, { timeoutMs: 2000 }); // progress resets the count
+        if (i % 2 === 1) await hw.run('ok', {}, { timeoutMs: 2000 }); // progress restarts the silence
       }
       assertEq(hw.stats().recycled, 0, 'progress between deadlines → never recycled');
     } finally { await hw.shutdown(); }
+  });
+
+  // Seen on the owner's machine (2026-10-29, 5 recycles in 11 min under load): the Boss band's polls queued behind one
+  // slow job expired 3 times, the "stuck" worker was terminated (exit code 1), the unrelated hook in flight failed with
+  // it, and the cold worker that replaced it was slower still.
+  test('hook-worker: a SLOW worker (a job longer than the deadlines queued behind it) is not recycled — the polls expire at their deadline, the job in flight finishes', async () => {
+    const wp = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-slow-')), 'slow-worker.cjs');
+    fs.writeFileSync(wp, "const { parentPort } = require('worker_threads');\n"
+      + "const q = []; let busy = false;\n"
+      + "const pump = () => { if (busy || !q.length) return; busy = true; const m = q.shift();\n"
+      + "  if (m.deadline && Date.now() > m.deadline) { parentPort.postMessage({ id: m.id, ok: false, expired: true, error: 'deadline passed while queued' }); busy = false; return pump(); }\n"
+      + "  parentPort.postMessage({ started: m.id, name: m.name });\n"
+      + "  setTimeout(() => { parentPort.postMessage({ id: m.id, ok: true, text: 'ok:' + m.name }); busy = false; pump(); }, m.name === 'slow' ? 400 : 5); };\n"
+      + "parentPort.on('message', (m) => { q.push(m); pump(); });\n");
+    const hw = (await loadHookWorker())({ pluginRoot: ROOT, workerPath: wp, stallMs: 1000 });
+    try {
+      const slow = hw.run('slow', {}, { timeoutMs: 5000 });
+      await new Promise((r) => setTimeout(r, 20));
+      const polls = [0, 1, 2].map(() => {
+        const t0 = Date.now();
+        return hw.run('boss', {}, { timeoutMs: 60 }).then(() => ({ ok: true, ms: Date.now() - t0 }), (e) => ({ err: e.message, ms: Date.now() - t0 }));
+      });
+      for (const p of await Promise.all(polls)) {
+        assert(p.err && /prazo de 60ms/.test(p.err), `the poll fails open at its deadline: ${JSON.stringify(p)}`);
+        assert(p.ms < 1000, `answered near the deadline, not after the slow job: ${p.ms} ms`);
+      }
+      assertEq(await slow, 'ok:slow', 'the job in flight finishes — no "hook-worker exited (code 1)"');
+      assertEq(hw.stats().recycled, 0, 'three expired polls behind a slow job are not a stuck worker');
+      assertEq(hw.stats().spawned, 1, 'the warm worker is kept');
+    } finally { await hw.shutdown(); }
+  });
+
+  test('hook-worker: a worker that EXITS with code 1 mid-hook → the hook answers its fail-open at once (within the deadline) and the next hook runs on a fresh worker', async () => {
+    const wp = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-exit1-')), 'exit-worker.cjs');
+    fs.writeFileSync(wp, "const { parentPort } = require('worker_threads');\n"
+      + "parentPort.on('message', (m) => { if (m.name === 'hook_test_exit') process.exit(1); parentPort.postMessage({ id: m.id, ok: true, text: '{}' }); });\n");
+    HOOK_SPECS.hook_test_exit = { lane: 'heavy', script: 'skill-metric.js', call: async () => '{}' };
+    const hw = (await loadHookWorker())({ pluginRoot: ROOT, workerPath: wp });
+    try {
+      const t = createHookTools({ pluginRoot: ROOT, hookWorker: hw, deadlines: { hook_test_exit: 3000 } });
+      const t0 = Date.now();
+      const out = JSON.parse((await t.handle('hook_test_exit', { project_dir: proj })).content[0].text);
+      assert(Date.now() - t0 < 3000, `answered before the deadline: ${Date.now() - t0} ms`);
+      assert(/hook_test_exit degradado no daemon \(fail-open\): hook-worker exited \(code 1\)/.test(out.systemMessage || ''), JSON.stringify(out));
+      assert(!out.decision && !out.hookSpecificOutput, 'a dead worker decides nothing');
+      assertEq(await hw.run('next', {}, { timeoutMs: 3000 }), '{}', 'the next hook runs');
+      assertEq(hw.stats().spawned, 2, 'on a fresh worker');
+    } finally { delete HOOK_SPECS.hook_test_exit; await hw.shutdown(); }
   });
 
   // ── G4: always-{} hooks are fire-and-forget ─────────────────────────────────
@@ -29485,7 +29533,8 @@ async function folderCutRun(ce, { gated }) {
 }
 
 // The heartbeat alone, against a fake engine: only the notices it logs over `beats` ticks (withTranscript: classic SessionStart seen).
-async function heartbeatNotices({ withTranscript, beats }) {
+// folderAnswer: what the daemon answers to the heartbeat's folder report ({status, text}), default a healthy reply.
+async function heartbeatNotices({ withTranscript, beats, folderAnswer }) {
   const cmp = await import(require('url').pathToFileURL(path.join(ROOT, 'hooks', 'compaction.mjs')).href);
   const hooks = collectModuleHooks(cmp.register);
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-heartbeat-'));
@@ -29499,9 +29548,13 @@ async function heartbeatNotices({ withTranscript, beats }) {
     env: { get: async (k) => env[k] },
     fs: { read: async (p) => fs.readFileSync(p, 'utf8') },
     http: { fetch: async (url, init) => {
-      if (url.split('?')[0].endsWith('/health')) return { status: 200, ok: true, text: JSON.stringify({ dataDir: dir }) };
+      if (url.split('?')[0].endsWith('/health')) {
+        const nonce = new URL(url).searchParams.get('nonce');
+        return { status: 200, ok: true, text: JSON.stringify({ dataDir: dir, proof: require('crypto').createHmac('sha256', 'tok').update(nonce).digest('hex') }) };
+      }
       const payload = JSON.parse(JSON.parse(init.body).payload);
       if (payload.kind === 'error') out.trail.push(payload);
+      if (folderAnswer && payload.kind === 'folder') { const a = folderAnswer(); return { status: a.status, ok: a.status === 200, text: a.text }; }
       const reply = payload.kind === 'hello' ? { config } : payload.kind === 'folder' || payload.kind === 'folder-end' ? { folderTtl: { ttl: '5m', live: 1, allAbove: true, action: 'none' } } : {};
       return { status: 200, ok: true, text: JSON.stringify(reply) };
     } },
@@ -29522,8 +29575,22 @@ async function heartbeatNotices({ withTranscript, beats }) {
   await fire((t) => t.ms === 1);
   for (let i = 0; i < beats; i++) await fire((t) => t.ms === 120000);
   fs.rmSync(dir, { recursive: true, force: true });
-  return { shown: out.logs.filter((l) => /no transcript path/.test(l)), trail: out.trail.filter((e) => e.stage === 'heartbeat') };
+  return { shown: out.logs.filter((l) => /no transcript path/.test(l)), trail: out.trail.filter((e) => e.stage === 'heartbeat'), logs: out.logs };
 }
+
+test('compaction hook: a daemon that fail-opens the heartbeat\'s folder report (deadline missed, worker exited with code 1) shows the person nothing; any other failure is still said', async () => {
+  const degradedMsg = (why) => `[claude-code-boss] hook hook_compaction_event degradado no daemon (fail-open): ${why}`;
+  const answers = [
+    () => ({ status: 200, text: JSON.stringify({ systemMessage: degradedMsg('hook-worker exited (code 1)') }) }),
+    () => ({ status: 200, text: JSON.stringify({ systemMessage: degradedMsg('prazo de 9000ms estourado no hook-worker (hook_compaction_event)') }) }),
+    () => ({ status: 503, text: degradedMsg('prazo de 9000ms estourado no hook-worker (hook_compaction_event)') }),
+  ];
+  let i = 0;
+  const r = await heartbeatNotices({ withTranscript: false, beats: 3, folderAnswer: () => answers[i++ % answers.length]() });
+  assertEq(r.logs, [], `a degraded daemon reply never reaches the screen, got ${JSON.stringify(r.logs)}`);
+  const other = await heartbeatNotices({ withTranscript: false, beats: 1, folderAnswer: () => ({ status: 500, text: 'boom' }) });
+  assert(other.logs.some((l) => /folder heartbeat failed: hook_compaction_event folder: daemon answered 500 boom/.test(l)), `a real failure is still shown: ${JSON.stringify(other.logs)}`);
+});
 
 test('compaction hook: the heartbeat does not warn about a missing transcript path when it has one (dangling else in 3.13.0)', async () => {
   const r = await heartbeatNotices({ withTranscript: true, beats: 3 });
@@ -30685,6 +30752,33 @@ test('boss.mjs: daemon down → the band says so (logged once, not per poll); a 
   await command(off.$, { command: 'boss' }, async () => ({}));
   const tree = await render(off.$, { component: 'AbovePrompt', props: { hasSurvey: false } }, async () => null);
   assertEq(tree.children[0].children[0], 'Boss · sessão US$ 1,23 · Token Guard −0 tokens na sessão (30d: −10) · Brain no ar');
+});
+
+test('boss.mjs: a daemon that fail-opens the summary (503: deadline missed / worker exited with code 1) shows the person nothing — the band keeps its last numbers', async () => {
+  const boss = await import(require('url').pathToFileURL(path.join(ROOT, 'hooks', 'boss.mjs')).href);
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-boss-degraded-'));
+  fs.writeFileSync(path.join(dir, 'brain-http.token'), 'tok');
+  const good = JSON.stringify({ tokenGuard: { days: 30, savedTokens: 10, sessionTokens: 0 }, brain: { connected: true } });
+  const degraded = (why) => `[claude-code-boss] hook hook_boss_summary degradado no daemon (fail-open): ${why}`;
+  const replies = [
+    { status: 200, text: good },
+    { status: 503, text: degraded('prazo de 9000ms estourado no hook-worker (hook_boss_summary)') },
+    { status: 503, text: degraded('hook-worker exited (code 1)') },
+  ];
+  let i = 0;
+  const b = fakeBoss$({ env: { CLAUDE_PLUGIN_DATA: dir, BRAIN_HTTP_PORT: '1' }, fetchImpl: async (url) => {
+    if (url.split('?')[0].endsWith('/health')) {
+      const nonce = new URL(url).searchParams.get('nonce');
+      return { status: 200, ok: true, text: JSON.stringify({ dataDir: dir, proof: require('crypto').createHmac('sha256', 'tok').update(nonce).digest('hex') }) };
+    }
+    const r = replies[Math.min(i++, replies.length - 1)];
+    return { status: r.status, ok: r.status === 200, text: r.text };
+  } });
+  const ctx = {};
+  for (let n = 0; n < 3; n++) await boss.refresh(b.$, ctx);
+  assertEq(b.calls.logs, [], `nothing on the screen, got ${JSON.stringify(b.calls.logs)}`);
+  assertEq(ctx.line, 'Boss · sessão US$ 1,23 · Token Guard −0 tokens na sessão (30d: −10) · Brain no ar', 'the last numbers stay in the band');
+  assertEq(b.calls.invalidations, 1, 'no redraw: the line did not change');
 });
 
 test('every shipped skill has a YAML frontmatter that PARSES, with a description (Claude Code skips a broken one)', () => {
