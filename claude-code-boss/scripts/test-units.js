@@ -32513,6 +32513,25 @@ test('isolated-env: always DISABLE_CLAUDE_MDS=1 and never the real HOME/USERPROF
   assert(err, 'a sandbox without config must throw instead of inheriting the real CLAUDE_CONFIG_DIR');
 });
 
+test('window-cmd: a test window resets the terminal modes after ANY claude exit, keeps the window, and opens its own', async () => {
+  const lib = await loadDevLib('window-cmd.mjs'); if (!lib) return;
+  const cmd = lib.windowCmd({ title: 'Boss TESTE', dir: 'C:\\x\\project', claudeArgs: '--plugin-dir "C:\\p"' });
+  const lines = cmd.split('\r\n');
+  const run = lines.findIndex((l) => l.startsWith('call claude '));
+  assert(run > 0, 'claude is an npm .cmd shim: without `call` the batch never resumes and nothing below runs');
+  const reset = lines.findIndex((l) => l.startsWith('echo %ESC%['));
+  assert(reset > run, 'the reset runs after claude returns');
+  for (const m of ['?1000l', '?1002l', '?1003l', '?1006l', '?1004l', '?2004l']) assert(lines[reset].includes(m), `mouse/focus/paste mode ${m} must be switched off`);
+  assert(lines[reset].includes('^<u') && lines[reset].includes('^>4;0m'), 'redirect characters in the sequences are escaped');
+  assert(lines.findIndex((l) => l.includes('%CCB_RC%')) > reset, 'the exit code is reported');
+  assert(!lines.some((l) => /^exit\b/i.test(l)), 'the window stays open for the owner to read');
+  let err = null; try { lib.windowCmd({ title: '', dir: 'x' }); } catch (e) { err = e; }
+  assert(err, 'missing title must throw');
+  const [exe, args] = lib.launchArgs('C:\\b.cmd', 'T', true);
+  assertEq(exe, 'wt.exe'); assertEq(args[0] + args[1], '-wnew');
+  assertEq(lib.launchArgs('C:\\b.cmd', 'T', false)[0], 'cmd.exe');
+});
+
 // ─── Runner ──────────────────────────────────────────────────────────────────
 (async () => {
   // A suíte mexe em singletons de módulo, process.env e servidores HTTP locais.
