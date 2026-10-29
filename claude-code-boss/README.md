@@ -1,6 +1,6 @@
 # claude-code-boss
 
-Plugin para Claude Code Desktop — **v3.12.1**
+Plugin para Claude Code Desktop — **v3.13.0**
 
 **Cada sessão rende mais que a anterior.** O claude-code-boss faz o seu Claude Code lembrar o que
 deu certo e errado em cada projeto, resolver por regra o que antes ele decidia no improviso
@@ -303,11 +303,16 @@ Módulo de *function hook* do Claude Code (`hooks/compaction.mjs`, registrado pe
   `minIntervalMinutes` 10, `preserveRecentMessages` 6); `GET/PUT /api/compaction/config`.
 - **Observabilidade**: o módulo envia cada evento ao daemon (`POST /hook/compaction-event`, mesmo
   token do `/mcp`) → metrics store: `compaction.gate` (decisão e motivo, idade e TTL do cache),
-  `compaction.run` (gatilho, caracteres cortados, cópias do engine removidas), `compaction.settled`
+  `compaction.run` (um por compactação — auto do engine, `/compact`, poda ou brief: estado do cache naquele momento
+  `cache` quente/frio com idade desde a última resposta e TTL, tamanho antes/depois, quem rodou `ranBy` boss/engine e se
+  o engine aceitou o corte `engineAccepted`; caracteres cortados, cópias do engine removidas), `compaction.cold` (cada
+  vez que o cache de uma sessão expira: hora da última resposta, ociosidade, TTL, tokens no contexto e quem viu —
+  o timer do fim do turno, a próxima entrada de qualquer origem, a reabertura da sessão ou a compactação), `compaction.settled`
   (tokens antes/depois, medidos no turno seguinte), `compaction.resume`, `compaction.error` e
   `cache.turn` (por chamada de API: host, tipo de credencial, modelo, cache lido/gravado, janela
   contratada, primeira chamada depois de uma compactação). Painel **Compaction & cache** na Home,
-  `GET /api/metrics/compaction` e o log de eventos do Insights.
+  `GET /api/metrics/compaction` e o log de eventos do Insights. `node scripts/compaction-report.js 14 --cache` cruza os
+  dois logs: por dia (ou `--period week`), compactações com cache quente × frio e a lista das quentes.
 - **Janela e validade do cache** (`costTuning`, `scripts/lib/cost-tuning.js`): no início de cada sessão o boss
   grava no `env` do `~/.claude/settings.json` `ENABLE_TOOL_SEARCH=true` (as definições das ferramentas MCP carregam sob
   demanda) e, só com chave de API, gateway ou provedor de nuvem, `CLAUDE_CODE_PROMPT_CACHE_TTL=1h` (com 5 min, cada

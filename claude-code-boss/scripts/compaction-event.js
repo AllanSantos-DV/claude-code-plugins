@@ -17,7 +17,7 @@
  *              for the REAL TTL of the host it talks to (subscription and API differ).
  *   tail     → when the transcript's last API call happened and how large the context was (a session the module
  *              has seen no turn of: reopened, resumed, or whose SessionStart never arrived); records nothing
- *   gate | run | resume | settled | error → `compaction.<kind>` (the trail)
+ *   gate | run | resume | settled | error | cold → `compaction.<kind>` (the trail; cold = a cache expiry)
  *   held | held-clear | held-recover → the person's prompt the gate holds while the cut runs: kept on disk
  *              (`.runtime/held-prompt-<session>.json`) until it is re-sent, so a session that dies during the `/compact`
  *              does not lose it; `held-recover` hands it back once (and removes it) when the session is opened again
@@ -32,7 +32,7 @@ const fs = require('fs');
 const path = require('path');
 const metrics = require('../engine/lib/metrics.js');
 
-const RECORDED = new Set(['gate', 'run', 'resume', 'settled', 'error']);
+const RECORDED = new Set(['gate', 'run', 'resume', 'settled', 'error', 'cold']);
 const TAIL_BYTES = 512 * 1024;
 const HELD_PREFIX = 'held-prompt-';
 const TTL_LOOKBACK = 500; // cache.turn rows read to judge a host's window

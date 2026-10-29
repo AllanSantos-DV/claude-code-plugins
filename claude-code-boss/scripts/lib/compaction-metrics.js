@@ -18,7 +18,7 @@ const path = require('path');
 
 const COMPACTION_EVENTS = [
   'compaction.session', 'compaction.gate', 'compaction.run', 'compaction.resume',
-  'compaction.settled', 'compaction.error', 'cache.turn',
+  'compaction.settled', 'compaction.error', 'compaction.cold', 'cache.turn',
 ];
 
 const num = (v) => (Number.isFinite(Number(v)) ? Number(v) : 0);
@@ -109,7 +109,7 @@ function summarizeCompaction(rows, { timeline = 20 } = {}) {
         break;
       case 'compaction.error':
         s.errors.total++;
-        bump(s.errors.byWhere, p.where || '?');
+        bump(s.errors.byWhere, p.where || p.stage || '?');
         break;
       case 'cache.turn': {
         const key = `${p.host || 'unknown'}|${p.auth || 'unknown'}`;

@@ -26,7 +26,7 @@ de que nada piorou. A descrição função por função, com os dois loops, est�
 | **Aprendizado** | `lesson.captured` (novo × recorrência × escopo), `retrieve.injected`, `retrieve.cited` | Lições novas, lições que reapareceram, quantas foram lembradas e quantas a resposta usou | Correção evitada: um recall é *oportunidade* de evitar a repetição, uma citação é *evidência de uso*; nenhum dos dois prova que o erro deixou de ocorrer |
 | **Reaproveitamento entre sessões e projetos** | `retrieve.cited` por `entryId`, sessão e projeto; origem do recall (`own`, `ancestor`, `other`, `home`) | Lições citadas em mais de uma sessão ou projeto; quanto do que é lembrado veio de outro projeto | O efeito de uma promoção para o escopo do usuário: a origem só é gravada a partir deste build |
 | **Promoção de lição ao escopo do usuário** | `lesson.promoted`, `lesson.promotion.reverted`; `retrieve.cited` com `origin: other` nas cópias | Quantas lições passaram a valer em todos os projetos (por regra, ativas e desfeitas) e se foram citadas em projetos que não eram fonte | Que a citação evitou um erro; a comparação com as demais lições é aproximada (não se grava o que entrou em cada recall) |
-| **Compactação** | `compaction-report.js`: cortes, contexto depois, custo da reescrita | O que cada corte custou | O ganho contra não compactar (isso é replay, um modelo) |
+| **Compactação** | `compaction-report.js`: cortes, contexto depois, custo da reescrita; `--cache`: `compaction.run` × `compaction.cold` | O que cada corte custou; quantas compactações rodaram com o cache quente e quantas com ele frio | O ganho contra não compactar (isso é replay, um modelo) |
 
 ```
 node scripts/outcome-report.js                 # os quatro resultados, por semana e por tempo de uso do projeto
