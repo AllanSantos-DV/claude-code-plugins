@@ -1,3 +1,21 @@
+## `brain_retrieve_context` lento: braço compose de 3 a 8 s (pedido do orquestrador, 2026-10-29) — investigado, sem defeito no cliente
+
+- [ ] **Causa medida: custo do `compose_recall` no mcp-memory (Java, fora deste repositório), que varia com a carga da máquina.** Evidência:
+  `recall-health.json` (50 últimas): compose 5–8 s em 90 min (16 estouraram 8 s), braço de projeto ~1 s, com picos de 4–5 s nos mesmos turnos
+  (servidor lento como um todo). Medido direto no servidor, sem o daemon do Boss no meio (`.claude/scripts/compose-ab.cjs`,
+  `compose-arm-ab.cjs`, `compose-idle.cjs`): compose 2,4 s com a máquina folgada e 3–7 s minutos depois, sem mudar nada do nosso lado.
+  Descartado como causa: `includeLifecycleState` (A/B intercalado, 2,4 s com e sem), rodar o braço de projeto em paralelo (2,8 s sozinho,
+  3,0 s em paralelo), ociosidade de 30 s (3–7 s igual a chamada logo após outra), sidecar de rerank/TEI (embed 0,21 s, GPU a 2 %, 18
+  avisos de rerank em 2 dias), erros no `daemon.log` (nenhum). O `compose_recall` não tem parâmetro para fazer menos trabalho
+  (schema: query, setup, includeLifecycleState, metadata, minScore). 3 compose em paralelo levam 5,3 s cada contra 2,4 s sozinho: o
+  servidor divide capacidade, então rajadas de várias sessões empilham.
+- [ ] **Pista de carga de outro projeto:** 186 handshakes de `whatsapp-bridge-videoteca` em 11 min (~17/min, uma sessão MCP nova a cada ~2 s)
+  contra 11 do claude-code-plugins (`daemon.log` do mcp-memory, 17:15–17:25). Causalidade com a lentidão não medida. Ação: o dono do
+  whatsapp-bridge reusar a sessão MCP em vez de abrir uma por chamada.
+- [ ] **Decisão do dono (muda o comportamento, não é ganho puro):** (a) subir o prazo do compose de 8 s para ~12 s (mais fatos, até +4 s de
+  espera em ~25 % dos turnos); (b) recall não bloqueante (injeta no turno seguinte); (c) reduzir o custo no servidor (embed da consulta
+  reaproveitado entre blocos) — repositório native-java. Nenhum aplicado.
+
 ## Aviso falso do heartbeat da pasta (pedido do orquestrador, 2026-10-29) — na develop, aguardando a validação do dono, sem release
 
 - **Achado e corrigido na hora:** `hooks/compaction.mjs` `startHeartbeat` — a 3.13.0 inseriu a linha do `watchCold` entre o `if (ctx.transcriptPath) {...}` e o `else`, então o `else` passou a pertencer ao `if` do `watchCold` e o aviso "folder heartbeat has no transcript path" saía a cada batida (2 min) mesmo com o caminho presente. Agora o aviso sai só sem caminho e uma vez por sessão (`ctx.noTranscriptSaid`). Dois testes novos falham antes e passam depois (`test-units.js`). Varredura do diff de 7d82886 e dos hooks: nenhum outro `if/else` sem chaves.
