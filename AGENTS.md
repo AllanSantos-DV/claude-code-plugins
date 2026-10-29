@@ -69,6 +69,10 @@ which.
 - Backlog items being worked are marked in progress, then marked resolved only
   after the test/validation that proves the fix has run.
 
+## Installed Boss on the owner's machine (Allan, 2026-10-29 — standing rule)
+
+Until the owner validates a change, the Boss installed on this machine — the one his real Claude Code sessions load — **is the `develop` build** (`node .claude/scripts/install-local.mjs`, silent, registration backup kept). Validation happens **in that real environment**, never in an isolated sandbox or a separate test build: the sandbox (`.claude/scripts/isolated-smoke.mjs`) is extra evidence only. Exercise the installed build with a hidden, driven session (`.claude/scripts/hidden-session.mjs`, closed afterwards), confirming the loaded plugin path and version (`/health` of the daemon, `installed_plugins.json`) and reading the real transcript and trail.
+
 ## Release flow
 
 **Owner validation gate (Allan, 2026-10-14, amended 2026-10-15, amended again
