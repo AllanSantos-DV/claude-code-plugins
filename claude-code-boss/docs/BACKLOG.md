@@ -15,6 +15,7 @@ Pesquisa: `docs/research/2026-10-28-compactacao-resumo-do-modelo-no-boss.md`.
   brief de resumo. Testes: `compaction hook: a cut the engine refuses anyway …`, `compaction-metrics: a brief is counted as a brief …`.
 - [x] **Achado e corrigido — `lastTurnDelivered` lia `u.name`, o engine entrega `u.tool`**: o reinício de fase (opcional) nunca via o
   commit. Teste: `compaction-core.lastTurnDelivered: reads the engine's tool name field …`.
+- [x] **Achado e corrigido (vitrine) — tabela "Destaques por versão" do changelog do Pages trazia o texto da 3.11.2 na linha v3.12.0** (`pages/claude-code-boss/changelog.html`): linha renomeada para v3.11.2 e linha v3.12.0 criada.
 - [x] **Fora deste repositório, repassado ao orquestrador** — 181 das 207 compactações de 7 dias são auto-compactações com resumo na janela
   do Jarvis: `orchestrador/src/orchestrator-window.mjs:84-86` grava `CLAUDE_CODE_AUTO_COMPACT_WINDOW=153000` e a janela não carrega o Boss.
 
