@@ -7,6 +7,10 @@ Pesquisa: `docs/research/2026-10-29-log-esfriamento-cache-x-compactacao.md`.
 - [x] **Feito — `compaction.cold` e o estado do cache em todo `compaction.run`, cruzados por `compaction-report.js --cache`.** Faltava:
   nenhum evento de expiração do cache; o `run` sem idade, TTL e tamanho depois, e emitido antes de o engine aceitar o corte (27 briefs
   recusados registrados como brief). Testes: `compaction run event: …` (2), `compaction.cold: …` (3), `compaction-cache-cross: …`.
+- [ ] **Achado, fora de escopo — teste instável** `compaction hook, reopened session: the first folder report carries the real side of the threshold`
+  (`scripts/test-units.js`, ~29661): falhou 1 vez no gate de 2026-10-29 ("below the threshold → not above: got true") e passou em 5 rodadas
+  seguidas, com e sem `CLAUDE_CODE_AUTO_COMPACT_WINDOW`. Causa não reproduzida; suspeita: o `flush` de `reopenedRun` (20 `setImmediate`) não espera E/S.
+  Correção proposta: esperar até o primeiro payload `folder` chegar em vez de um número fixo de voltas.
 - [x] **Achado e corrigido — erros da compactação contados como `?`** (`compaction-metrics.js`): o `compaction.error` da recusa do engine
   grava `stage`, e o painel contava por `where`. Conta pelos dois agora.
 
