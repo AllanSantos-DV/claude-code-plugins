@@ -29493,7 +29493,7 @@ async function heartbeatNotices({ withTranscript, beats }) {
   const transcript = path.join(dir, 'session.jsonl');
   fs.writeFileSync(transcript, '');
   const config = { enabled: true, thresholdPercent: 30, minIntervalMs: 600000, folderTtl: true };
-  const out = { timers: [], logs: [] };
+  const out = { timers: [], logs: [], trail: [] };
   const env = { CLAUDE_PLUGIN_DATA: dir, BRAIN_HTTP_PORT: '1' };
   const $ = {
     env: { get: async (k) => env[k] },
@@ -29501,6 +29501,7 @@ async function heartbeatNotices({ withTranscript, beats }) {
     http: { fetch: async (url, init) => {
       if (url.split('?')[0].endsWith('/health')) return { status: 200, ok: true, text: JSON.stringify({ dataDir: dir }) };
       const payload = JSON.parse(JSON.parse(init.body).payload);
+      if (payload.kind === 'error') out.trail.push(payload);
       const reply = payload.kind === 'hello' ? { config } : payload.kind === 'folder' || payload.kind === 'folder-end' ? { folderTtl: { ttl: '5m', live: 1, allAbove: true, action: 'none' } } : {};
       return { status: 200, ok: true, text: JSON.stringify(reply) };
     } },
@@ -29521,17 +29522,20 @@ async function heartbeatNotices({ withTranscript, beats }) {
   await fire((t) => t.ms === 1);
   for (let i = 0; i < beats; i++) await fire((t) => t.ms === 120000);
   fs.rmSync(dir, { recursive: true, force: true });
-  return out.logs.filter((l) => /folder heartbeat has no transcript path/.test(l));
+  return { shown: out.logs.filter((l) => /no transcript path/.test(l)), trail: out.trail.filter((e) => e.stage === 'heartbeat') };
 }
 
 test('compaction hook: the heartbeat does not warn about a missing transcript path when it has one (dangling else in 3.13.0)', async () => {
-  const notices = await heartbeatNotices({ withTranscript: true, beats: 3 });
-  assertEq(notices.length, 0, `a transcript path exists and no cold-watch condition holds: no notice, got ${JSON.stringify(notices)}`);
+  const r = await heartbeatNotices({ withTranscript: true, beats: 3 });
+  assertEq(r.shown.length, 0, `a transcript path exists and no cold-watch condition holds: no notice, got ${JSON.stringify(r.shown)}`);
+  assertEq(r.trail.length, 0, 'and nothing is recorded either');
 });
 
-test('compaction hook: without a transcript path the heartbeat says so once per session, not on every beat', async () => {
-  const notices = await heartbeatNotices({ withTranscript: false, beats: 3 });
-  assertEq(notices.length, 1, `one notice over 3 beats, got ${notices.length}`);
+test('compaction hook: without a transcript path (reloaded or resumed session) the heartbeat shows the person nothing and records it once in the trail', async () => {
+  const r = await heartbeatNotices({ withTranscript: false, beats: 3 });
+  assertEq(r.shown.length, 0, `nothing on the screen, got ${JSON.stringify(r.shown)}`);
+  assertEq(r.trail.length, 1, `one trail record over 3 beats, got ${r.trail.length}`);
+  assertEq(r.trail[0].outcome, 'no-transcript-path');
 });
 
 test('compaction hook + compaction-event: after the 5m folder switch, a person back after 6 min is cut (it waited for 1h before)', async () => {

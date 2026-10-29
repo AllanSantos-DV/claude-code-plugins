@@ -195,9 +195,9 @@ function startHeartbeat($, ctx) {
   const beat = () => $.clock.after(FOLDER_HEARTBEAT_MS, () => {
     (async () => {
       if (ctx.transcriptPath) { const { reply } = await observeCalls($, ctx); await folderFromReply($, ctx, reply); }
-      else if (!ctx.noTranscriptSaid) { // once per session: the same sentence every 2 min is noise, the first one is the signal
+      else if (!ctx.noTranscriptSaid) { // a reloaded or resumed session never sees SessionStart: nothing the person can act on, so it goes to the trail (once), not to the screen
         ctx.noTranscriptSaid = true;
-        $.ui.log('compaction: folder heartbeat has no transcript path (classic SessionStart not seen) — calls not observed');
+        emit($, ctx, 'error', { stage: 'heartbeat', outcome: 'no-transcript-path', cause: 'classic SessionStart not seen — calls not observed' });
       }
       if (ctx.coldWatchTtlMs && ttlInUse(ctx).ttlMs !== ctx.coldWatchTtlMs) await watchCold($, ctx);
       await reportFolder($, ctx);
