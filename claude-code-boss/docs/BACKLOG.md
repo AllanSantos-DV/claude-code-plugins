@@ -1,5 +1,15 @@
 # Backlog
 
+## Log do esfriamento do cache × compactação (pedido do orquestrador, 2026-10-29) — 3.13.0
+
+Pesquisa: `docs/research/2026-10-29-log-esfriamento-cache-x-compactacao.md`.
+
+- [x] **Feito — `compaction.cold` e o estado do cache em todo `compaction.run`, cruzados por `compaction-report.js --cache`.** Faltava:
+  nenhum evento de expiração do cache; o `run` sem idade, TTL e tamanho depois, e emitido antes de o engine aceitar o corte (27 briefs
+  recusados registrados como brief). Testes: `compaction run event: …` (2), `compaction.cold: …` (3), `compaction-cache-cross: …`.
+- [x] **Achado e corrigido — erros da compactação contados como `?`** (`compaction-metrics.js`): o `compaction.error` da recusa do engine
+  grava `stage`, e o painel contava por `where`. Conta pelos dois agora.
+
 ## Compactação com resumo do modelo em vez do corte mecânico (pedido do orquestrador, 2026-10-28) — 3.12.1
 
 Pesquisa: `docs/research/2026-10-28-compactacao-resumo-do-modelo-no-boss.md`.

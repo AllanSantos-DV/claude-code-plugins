@@ -1,5 +1,16 @@
 # Changelog
 
+## [3.13.0] - 2026-10-29
+
+### Added
+- **Cada esfriamento de cache e cada compactação ficam registrados, e um relatório cruza os dois** (`hooks/compaction.mjs`, `scripts/lib/compaction-cache-cross.js`, `scripts/compaction-report.js --cache`): pedido repetido do dono para ver se as compactações acontecem com o cache frio e não quente.
+  - `compaction.cold` (novo): toda vez que o cache de uma sessão expira — hora da última resposta, ociosidade, TTL usado e de onde veio, tokens no contexto e quem viu. O timer armado no fim do turno morre com o processo da sessão, então a expiração também é registrada na próxima entrada de qualquer origem (mensagem de outra sessão inclusive), na reabertura da sessão e na própria compactação. Uma por resposta; depois de `--resume` a idade registrada é a real, não a envelhecida que as regras usam.
+  - `compaction.run` passa a sair em toda compactação (auto do engine, `/compact`, poda, brief) com o estado do cache no momento (`cache` quente/frio/desconhecido, `warmBy` meio-de-turno/TTL, `lastAnswerAt`, `idleMs`, `ttlMs`, `ttlSource`), tamanho antes e depois (`tokensBefore`, `tokensAfter`), quem rodou (`ranBy` boss/engine, `engineMs` = tempo do resumo do engine) e se o engine aceitou o corte (`engineAccepted`). Antes o evento não tinha idade, TTL nem tamanho depois, e saía antes de o engine aceitar o corte: 29 cortes registrados como `brief` em 14 dias, 27 deles recusados pelo engine (ver 3.12.1). Agora o evento de um corte nosso espera a resposta do engine; uma recusa vira um único evento `native-summary` com `refusedOutcome` e `engineAccepted: false`, com o mesmo `compactionId` do `compaction.error`.
+  - `node scripts/compaction-report.js 14 --cache [--period week] [--json]`: por dia ou semana, compactações com cache quente × frio × desconhecido, boss × engine, cortes recusados e expirações registradas; a lista das quentes; e as que se disseram quentes depois de a expiração da mesma resposta ter sido registrada. Eventos antigos (só `cacheWarm`) entram marcados como sem idade.
+
+### Fixed
+- **Erros da compactação contados como `?` no painel** (`scripts/lib/compaction-metrics.js`): a recusa do engine grava `stage`, não `where`; agora conta pelos dois.
+
 ## [3.12.1] - 2026-10-28
 
 ### Fixed

@@ -32,12 +32,14 @@ import { planCompaction, buildBrief, decideTiming, decideTurnEnd, classifyResume
 
 // Kept equal to package.json by scripts/sync-version.js. The daemon compares it with the installed plugin: a session
 // started before an update keeps running this file, so the person is told to reopen it.
-const MODULE_VERSION = '3.12.1';
+const MODULE_VERSION = '3.13.0';
 
 const PERSON_ORIGINS = new Set(['composer', 'bridge', 'sdk']);
 // Folder TTL (scripts/lib/folder-ttl.js): the daemon drops a session that stops reporting for 5 min; this keeps an
 // idle but open session counted.
 const FOLDER_HEARTBEAT_MS = 2 * 60000;
+// A cut of ours the engine refuses reaches compactFailed right after the hook answers; its run event waits this long for it.
+const ACCEPT_WAIT_MS = 2000;
 
 function newCtx() {
   return {
@@ -73,6 +75,12 @@ function newCtx() {
     model: null,             // the transcript's last call's model (window fallback when the engine reports none)
     tailTokens: undefined,   // the transcript's size reading, same use
     staleWarned: false,      // the "old Boss in this session" notice was given
+    resumeAnswer: null,      // { synthetic, real }: lastAnswerAt is aged on resume (resumedAnswerAt); the trail says the real one
+    coldLoggedFor: null,     // the lastAnswerAt whose cache expiry is already recorded
+    coldTimer: 0,            // token of the pending expiry timer (a newer answer supersedes)
+    coldWatchTtlMs: 0,       // the TTL that timer was armed with
+    compactSeq: 0,
+    run: null,               // the current compaction's run event: { id, t0, state, ours, data, emitted }
   };
 }
 
@@ -186,6 +194,7 @@ function startHeartbeat($, ctx) {
   const beat = () => $.clock.after(FOLDER_HEARTBEAT_MS, () => {
     (async () => {
       if (ctx.transcriptPath) { const { reply } = await observeCalls($, ctx); await folderFromReply($, ctx, reply); }
+      if (ctx.coldWatchTtlMs && ttlInUse(ctx).ttlMs !== ctx.coldWatchTtlMs) await watchCold($, ctx);
       else $.ui.log('compaction: folder heartbeat has no transcript path (classic SessionStart not seen) — calls not observed');
       await reportFolder($, ctx);
       // A turn-end re-check armed by the 1h window while the turn's 5m writes had not landed yet would wait the hour
@@ -200,6 +209,56 @@ function ttlInUse(ctx) {
   if (ctx.sessionTtlMs) return { ttlMs: ctx.sessionTtlMs, ttlSource: 'session' };
   if (ctx.hostTtlMs) return { ttlMs: ctx.hostTtlMs, ttlSource: 'host' };
   return { ttlMs: ctx.config.unknownTtlMs, ttlSource: 'unknown-assumed-longest' };
+}
+
+/**
+ * The prompt cache at `now` as the compaction rules judge it: warm while a turn runs (its own calls keep it) or within the
+ * TTL of the last answer; 'unknown' without an answer time (the rules then assume warm — isCacheWarm). The age is the real
+ * one: after a resume the rules age lastAnswerAt on purpose (`resumed: true`), the trail does not.
+ */
+function cacheState(ctx, now) {
+  const { ttlMs, ttlSource } = ttlInUse(ctx);
+  const known = ctx.lastAnswerAt != null;
+  const resumed = known && ctx.resumeAnswer != null && ctx.resumeAnswer.synthetic === ctx.lastAnswerAt;
+  const answerAt = resumed ? ctx.resumeAnswer.real : known ? ctx.lastAnswerAt : null;
+  const cache = ctx.busy ? 'warm' : !known ? 'unknown' : isCacheWarm({ now, lastAnswerAt: ctx.lastAnswerAt, ttlMs }) ? 'warm' : 'cold';
+  return {
+    cache, warmBy: ctx.busy ? 'mid-turn' : cache === 'warm' ? 'ttl' : null, resumed,
+    lastAnswerAt: answerAt, idleMs: answerAt == null ? null : now - answerAt, ttlMs, ttlSource,
+  };
+}
+
+/**
+ * One `compaction.cold` per answer whose cache expired, said by whoever sees it first: the timer armed after the turn
+ * (it dies with the process), the next input of any origin, the reopen of the session, or a compaction. A reopened
+ * process can say again an expiry its previous run already said: the report counts one per session and answer.
+ */
+async function noteCold($, ctx, detectedBy, extra = {}) {
+  try {
+    if (!ctx.configLoaded || !ctx.config.enabled || ctx.busy || ctx.lastAnswerAt == null || ctx.coldLoggedFor === ctx.lastAnswerAt) return;
+    const now = await $.clock.now();
+    const s = cacheState(ctx, now);
+    if (s.cache !== 'cold') return;
+    ctx.coldLoggedFor = ctx.lastAnswerAt;
+    const { context } = await $.session.usage();
+    const tokens = context.tokens ?? ctx.measuredTokens ?? ctx.tailTokens ?? (ctx.start && ctx.start.lastTokens > 0 ? ctx.start.lastTokens : null);
+    const tokensSource = context.tokens != null ? 'session' : ctx.measuredTokens != null ? 'measure' : ctx.tailTokens != null ? 'transcript' : tokens != null ? 'session-start' : null;
+    emit($, ctx, 'cold', {
+      detectedBy, answerAt: s.lastAnswerAt, coldAt: s.lastAnswerAt == null ? null : s.lastAnswerAt + s.ttlMs, idleMs: s.idleMs,
+      ttlMs: s.ttlMs, ttlSource: s.ttlSource, resumed: s.resumed, tokens, tokensSource, ...extra,
+    });
+  } catch (err) { $.ui.log(`compaction: cache-cold event not recorded: ${String(err && err.message ? err.message : err)}`); }
+}
+
+// The expiry timer of the current answer (re-armed by a newer answer or a changed TTL).
+async function watchCold($, ctx) {
+  if (!ctx.interactive || ctx.lastAnswerAt == null || ctx.coldLoggedFor === ctx.lastAnswerAt) return;
+  const { ttlMs } = ttlInUse(ctx);
+  const token = ++ctx.coldTimer;
+  const answerAt = ctx.lastAnswerAt;
+  ctx.coldWatchTtlMs = ttlMs;
+  const dueIn = Math.max(0, answerAt + ttlMs - (await $.clock.now()));
+  $.clock.after(dueIn + 1000, () => { if (token === ctx.coldTimer && answerAt === ctx.lastAnswerAt) void noteCold($, ctx, 'timer'); });
 }
 
 async function hello($, ctx) {
@@ -244,6 +303,7 @@ async function afterTurn($, ctx) {
       }
       startHeartbeat($, ctx);
     }
+    await watchCold($, ctx); // after the observation: the TTL is the one this turn's writes proved
     if (settle) {
       const { context } = await $.session.usage();
       const after = context.tokens ?? ctx.measuredTokens ?? null;
@@ -401,6 +461,7 @@ async function recoverHeld($, ctx) {
 }
 
 async function gate($, ctx, e, next) {
+  if (!e.turnId) await noteCold($, ctx, 'next-input', { input: (e.origin && e.origin.kind) || null });
   if (e.turnId || !PERSON_ORIGINS.has(e.origin && e.origin.kind)) return next(e);
   // Headless (-p/SDK): the engine refuses a plugin's compaction ("not available in a headless
   // session yet") — holding the prompt there would only delay it. Manual /compact and the
@@ -508,6 +569,8 @@ async function compact($, ctx, e, next) {
   // the user had switched it off and the daemon was just not up yet).
   if (!ctx.configLoaded || !ctx.config.enabled) return next(e);
   const t0 = await $.clock.now();
+  const run = ctx.run = { id: `${t0}-${++ctx.compactSeq}`, t0, state: cacheState(ctx, t0), ours: false, data: null, emitted: false };
+  if (run.state.cache === 'cold') await noteCold($, ctx, 'compaction');
   const plan = planCompaction(e.messages, ctx.config);
   // Pruning vs the engine's summary (compaction-core.chooseCompaction): the summary unless pruning
   // cuts >= 85% — warm or cold. `warm` is still recorded on the run event.
@@ -536,7 +599,7 @@ async function compact($, ctx, e, next) {
       brief = { briefChars: b.briefChars, charsAfter: b.charsAfter, cutMessages: b.cutMessages, userTextIntact: b.userTextIntact };
     } catch (err) { $.ui.log(`compaction: brief shadow failed: ${String(err)}`); }
   }
-  emit($, ctx, 'run', {
+  run.data = {
     trigger: e.trigger, reason, outcome: ours ? 'pruned' : 'native-summary', why: invalid ? `result-invalid: ${invalid}` : choice.why, cacheWarm: warm,
     // what chose the cut: without these, "the brief never fires" and "no cold mechanical cut happened yet" read the same
     mechanical, mechanicalCut: ctx.config.mechanicalCut !== false,
@@ -544,15 +607,43 @@ async function compact($, ctx, e, next) {
     charsCut: ours ? plan.charsBefore - plan.charsAfter : 0, ratio: Number(plan.ratio.toFixed(3)),
     prunedResults: plan.pruned.length, byReason, duplicatesDropped: plan.duplicatesDropped, verbatimTextIntact: plan.verbatimTextIntact,
     tokensBefore, brief, durationMs: (await $.clock.now()) - t0,
-  });
+  };
   if (!ours) {
-    const r = await next(e); // the engine's summary: far below any threshold afterwards
+    const r = await engineRuns($, ctx, run, e, next); // the engine's summary: far below any threshold afterwards
     await leaveAbove($, ctx);
     return r;
   }
   await leaveAbove($, ctx);
+  oursRuns($, ctx, run, plan.messages);
   $.ui.toast(`compaction: every message kept, ${plan.pruned.length} stale tool results pruned (${Math.round(plan.ratio * 100)}% smaller), no summary`);
   return { messages: plan.messages };
+}
+
+const sizeOf = (r) => (r && Array.isArray(r.messages) ? estimateTokens(r.messages) : null);
+
+// The run event: the cache state at the compaction's start next to both sizes (after = chars/4 of the history handed on).
+function sayRun($, ctx, run, extra) {
+  run.emitted = true;
+  emit($, ctx, 'run', { compactionId: run.id, ...run.state, ...run.data, tokensAfterSource: 'estimate', ...extra });
+}
+
+// The engine's own summary runs; the event follows it, with its size and how long the engine took (a model call).
+async function engineRuns($, ctx, run, e, next) {
+  const t1 = await $.clock.now();
+  let r;
+  try {
+    r = await next(e);
+    return r;
+  } finally {
+    sayRun($, ctx, run, { ranBy: 'engine', engineAccepted: null, tokensAfter: sizeOf(r), engineMs: (await $.clock.now()) - t1 });
+  }
+}
+
+// Our cut is handed back: said as accepted unless compactFailed hears the engine refuse it first.
+function oursRuns($, ctx, run, messages) {
+  run.ours = true;
+  run.data = { ...run.data, ranBy: 'boss', tokensAfter: estimateTokens(messages) };
+  $.clock.after(ACCEPT_WAIT_MS, () => { if (!run.emitted) sayRun($, ctx, run, { engineAccepted: true }); });
 }
 
 /** After any compaction the session is below the threshold: say so now, so the folder TTL is restored at once. */
@@ -569,6 +660,7 @@ async function leaveAbove($, ctx) {
  * cuts nothing or would lose user text falls back to the engine's summary.
  */
 async function briefCut($, ctx, e, next, { plan, warm, mechanical, t0, why }) {
+  const run = ctx.run;
   const b = buildBrief(e.messages, ctx.config);
   const { context } = await $.session.usage();
   const tokensBefore = context.tokens ?? ctx.measuredTokens ?? null;
@@ -578,26 +670,42 @@ async function briefCut($, ctx, e, next, { plan, warm, mechanical, t0, why }) {
   const invalid = b.cutMessages && b.userTextIntact ? compactResultError(b.messages) : null;
   if (!b.cutMessages || !b.userTextIntact || invalid) {
     if (invalid) $.ui.log(`compaction: the brief breaks the engine's contract (${invalid}); the engine's summary runs`);
-    emit($, ctx, 'run', { ...base, outcome: 'native-summary', why: invalid ? `result-invalid: ${invalid}` : !b.cutMessages ? 'brief-cuts-nothing' : 'brief-user-text-not-intact', ratio: Number(plan.ratio.toFixed(3)), durationMs: (await $.clock.now()) - t0 });
-    return next(e);
+    run.data = { ...base, outcome: 'native-summary', why: invalid ? `result-invalid: ${invalid}` : !b.cutMessages ? 'brief-cuts-nothing' : 'brief-user-text-not-intact', ratio: Number(plan.ratio.toFixed(3)), durationMs: (await $.clock.now()) - t0 };
+    return engineRuns($, ctx, run, e, next);
   }
   if (!ctx.pendingSettle) ctx.pendingSettle = { reason, trigger: e.trigger, tokensBefore };
   await leaveAbove($, ctx);
-  emit($, ctx, 'run', {
+  run.data = {
     ...base, outcome: 'brief', charsAfter: b.charsAfter, charsCut: b.charsBefore - b.charsAfter, ratio: Number((1 - b.charsAfter / Math.max(1, b.charsBefore)).toFixed(3)),
     cutMessages: b.cutMessages, briefChars: b.briefChars, verbatimTextIntact: b.userTextIntact, folderTtl: ctx.folderTtl ? ctx.folderTtl.ttl : null,
     durationMs: (await $.clock.now()) - t0,
-  });
+  };
+  oursRuns($, ctx, run, b.messages);
   $.ui.toast(`compaction: cold cache — ${b.cutMessages} older messages condensed without a model call (user text kept verbatim), recent ones kept`);
   return { messages: b.messages };
 }
 
 async function compactFailed($, ctx, e, next) {
+  const run = ctx.run;
+  const unsaid = run && !run.emitted;
+  if (unsaid) run.emitted = true; // first, before any await: the acceptance timer must not say this cut was taken
   const cause = describeFailure(next.error);
   $.ui.log(`compaction: pruning failed, the engine's own compaction runs: ${cause}`);
-  // In the trail too: the run event of the refused cut is already recorded, and this is what really ran.
-  if (ctx.configLoaded) emit($, ctx, 'error', { stage: 'session.compact', outcome: 'native-summary', cause, trigger: e && e.trigger });
-  return next(e); // never a broken transcript
+  if (!ctx.configLoaded) return next(e); // never a broken transcript
+  emit($, ctx, 'error', { stage: 'session.compact', outcome: 'native-summary', cause, trigger: e && e.trigger, compactionId: run ? run.id : null });
+  if (!unsaid) return next(e);
+  // What really ran is the engine's summary: a refused cut of ours, or a hook that failed before answering.
+  run.data = run.ours
+    ? { ...run.data, outcome: 'native-summary', refusedOutcome: run.data.outcome, why: `engine-refused: ${cause}` }
+    : { trigger: e && e.trigger, reason: ctx.compactReason || (e && e.trigger), ...run.data, outcome: 'native-summary', why: `hook-failed: ${cause}` };
+  const t1 = await $.clock.now();
+  let r;
+  try {
+    r = await next(e);
+    return r;
+  } finally {
+    sayRun($, ctx, run, { ranBy: 'engine', engineAccepted: run.ours ? false : null, tokensAfter: sizeOf(r), engineMs: (await $.clock.now()) - t1 });
+  }
 }
 
 export const register = (on) => {
@@ -609,7 +717,11 @@ export const register = (on) => {
     ctx.transcriptPath = e.transcript_path || '';
     ctx.start = { source: e.source, lastTokens: e.context_tokens, secondsSince: e.seconds_since_last_response };
     if (e.source === 'resume') ctx.resumeChecked = false;
-    if (e.source === 'resume') ctx.lastAnswerAt = resumedAnswerAt(await $.clock.now(), e.seconds_since_last_response);
+    if (e.source === 'resume') {
+      const now = await $.clock.now();
+      ctx.lastAnswerAt = resumedAnswerAt(now, e.seconds_since_last_response);
+      ctx.resumeAnswer = { synthetic: ctx.lastAnswerAt, real: e.seconds_since_last_response == null ? null : now - e.seconds_since_last_response * 1000 };
+    }
     else if (e.seconds_since_last_response != null) ctx.lastAnswerAt = (await $.clock.now()) - e.seconds_since_last_response * 1000;
     return next(e);
   });
@@ -624,6 +736,7 @@ export const register = (on) => {
         void (async () => {
           await ensureConfig($, ctx);
           const tail = await reopenLook($, ctx);
+          if (tail) await noteCold($, ctx, 'reopen');
           await joinFolder($, ctx);
           try { await recoverHeld($, ctx); } catch (err) { $.ui.log(`compaction: held prompt recovery failed: ${String(err && err.message ? err.message : err)}`); }
           if (tail) await turnEnd($, ctx, 'reopen');
@@ -674,6 +787,7 @@ export const register = (on) => {
     if (ctx.config.enabled && ctx.transcriptPath) {
       try { await observeCalls($, ctx); } catch (err) { $.ui.log(`compaction: end-of-session observation failed: ${String(err && err.message ? err.message : err)}`); }
     }
+    if (ctx.run && ctx.run.ours && !ctx.run.emitted) sayRun($, ctx, ctx.run, { engineAccepted: null, acceptance: 'session-ended-before-confirmation' });
     return next(e);
   });
 };

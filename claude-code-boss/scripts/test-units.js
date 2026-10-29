@@ -28624,9 +28624,9 @@ test('compaction-core.isMechanicalCut + chooseCompaction: the brief only with a 
   const hook = fs.readFileSync(path.join(ROOT, 'hooks', 'compaction.mjs'), 'utf8');
   assert(/isMechanicalCut\(\{ warm, trigger: e\.trigger, reason: ctx\.compactReason \}\)/.test(hook), 'the hook judges the brief by warm + trigger + our reason');
   assertEq((hook.match(/mechanical, mechanicalCut: ctx\.config\.mechanicalCut !== false/g) || []).length, 2, 'both run events (summary/prune and brief) record what chose the cut (compactacao-router-07: 0 briefs in 315 runs could not tell "never fires" from "not yet")');
-  assert(/if \(!b\.cutMessages \|\| !b\.userTextIntact \|\| invalid\)[\s\S]{0,500}return next\(e\);/.test(hook), 'a brief that cuts nothing, loses user text or breaks the engine contract → the engine summary');
-  assert(/await leaveAbove\(\$, ctx\);\s*emit\(\$, ctx, 'run', \{/.test(hook), 'the folder TTL is released BEFORE the brief is handed back');
-  assert(/const r = await next\(e\);[^\n]*\n\s*await leaveAbove\(\$, ctx\);/.test(hook) && /await leaveAbove\(\$, ctx\);\s*\$\.ui\.toast\(`compaction: every message kept/.test(hook), 'pruning and the engine summary release it too (any compaction leaves the session below)');
+  assert(/if \(!b\.cutMessages \|\| !b\.userTextIntact \|\| invalid\)[\s\S]{0,500}return engineRuns\(\$, ctx, run, e, next\);/.test(hook), 'a brief that cuts nothing, loses user text or breaks the engine contract → the engine summary');
+  assert(/await leaveAbove\(\$, ctx\);\s*run\.data = \{\s*\.\.\.base, outcome: 'brief'/.test(hook), 'the folder TTL is released BEFORE the brief is handed back');
+  assert(/const r = await engineRuns\(\$, ctx, run, e, next\);[^\n]*\n\s*await leaveAbove\(\$, ctx\);/.test(hook) && /await leaveAbove\(\$, ctx\);\s*oursRuns\(\$, ctx, run, plan\.messages\);\s*\$\.ui\.toast\(`compaction: every message kept/.test(hook), 'pruning and the engine summary release it too (any compaction leaves the session below)');
   assert(/if \(!reply \|\| !\(reply\.recorded > 0\)\) return;/.test(hook) && /const tokens = \(Number\(o\.input\) \|\| 0\) \+ \(Number\(o\.read\) \|\| 0\) \+ \(Number\(o\.write\) \|\| 0\);/.test(hook), '"above" comes from the last REAL call (a held prompt\'s turn has none and usage() is stale)');
   assert(/ctx\.awaitCallAfterCut = true;/.test(hook) && /ctx\.awaitCallAfterCut = false; \/\/ a real call after the cut/.test(hook), 'after a cut, readings are stale until a real call is observed');
   assert(/if \(ctx\.transcriptPath\) \{ const \{ reply \} = await observeCalls\(\$, ctx\); await folderFromReply\(\$, ctx, reply\); \}/.test(hook), 'the heartbeat picks up calls that landed after their turn ended (the switch no longer waits a turn)');
@@ -28895,7 +28895,7 @@ test('compaction-core.resumedAnswerAt: a resumed session reads as cold under any
   assertEq(cmpCore.resumedAnswerAt(NOW, 5 * 3600), NOW - 5 * 3600000, 'an older real answer is kept');
   assertEq(cmpCore.resumedAnswerAt(NOW, null), NOW - cmpCore.RESUMED_CACHE_AGE_MS, 'no age reported: still cold');
   const hook = fs.readFileSync(path.join(__dirname, '..', 'hooks', 'compaction.mjs'), 'utf8');
-  assert(/e\.source === 'resume'\) ctx\.lastAnswerAt = resumedAnswerAt\(/.test(hook), 'the SessionStart handler applies it to resume only');
+  assert(/if \(e\.source === 'resume'\) \{[\s\S]{0,120}ctx\.lastAnswerAt = resumedAnswerAt\(now, e\.seconds_since_last_response\);/.test(hook), 'the SessionStart handler applies it to resume only');
 });
 
 test('compaction-core.decideTurnEnd: an autonomous turn (no person prompt gated) past the threshold compacts at its end ONLY with a cold cache — warm waits; person turns, busy, cooldown, no reading stay out', () => {
@@ -29361,6 +29361,7 @@ test('compaction-event.run: trail events land in the metrics store; turn records
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-cmp-proj-'));
     const base = { session_id: 'sid-cmp', cwd: dir };
     assertEq(await ce.run({ ...base, payload: { kind: 'run', trigger: 'manual', outcome: 'pruned', charsCut: 10 } }), {});
+    assertEq(await ce.run({ ...base, payload: { kind: 'cold', detectedBy: 'timer', answerAt: 1, idleMs: 3601000, ttlMs: 3600000 } }), {});
     const f = cmpTranscript(dir, [{ type: 'system', subtype: 'compact_boundary' }, { type: 'assistant', message: { id: 'msg-a', model: 'm1', usage: { input_tokens: 2, cache_read_input_tokens: 0, cache_creation_input_tokens: 500, cache_creation: { ephemeral_5m_input_tokens: 500, ephemeral_1h_input_tokens: 0 } } } }]);
     const reply = await ce.run({ ...base, transcript_path: f, payload: { kind: 'turn', host: 'gw.local', auth: 'api-key' } });
     assertEq(reply.observed.ttlMs, 300000, 'this call contracted a 5 min write');
@@ -29378,7 +29379,7 @@ test('compaction-event.run: trail events land in the metrics store; turn records
     assertEq((await ce.run({ ...base, payload: { kind: 'hello', host: 'other', auth: 'bearer' } })).ttl.observed, null, 'another host has no observation → null, never an assumed 5m');
     const s = store();
     const names = s.getEventLog({ limit: 50 }).map((r) => r.eventName);
-    for (const n of ['compaction.run', 'cache.turn', 'compaction.session']) assert(names.includes(n), `${n} recorded (got ${names})`);
+    for (const n of ['compaction.run', 'compaction.cold', 'cache.turn', 'compaction.session']) assert(names.includes(n), `${n} recorded (got ${names})`);
     const turn = s.getEventLog({ eventName: 'cache.turn', limit: 1 })[0];
     assertEq(turn.payload.afterCompaction, true);
     assertEq(turn.sessionId, 'sid-cmp');
@@ -29493,7 +29494,7 @@ test('compaction hook + compaction-event: after the 5m folder switch, a person b
 test('compaction hook: a turn-end re-check armed by the 1h window is re-armed by the heartbeat once the 5m write lands, and the cut comes', async () => {
   await withCmpStore(async (ce) => {
     const r = await folderCutRun(ce, { gated: false });
-    assertEq(r.armedMs, [3601000], 'armed by the 1h window (the turn\'s 5m call not in the transcript yet)');
+    assertEq(r.armedMs, [3601000, 3601000], 'the turn-end re-check and the expiry timer, both armed by the 1h window (the turn\'s 5m call not in the transcript yet)');
     assert(r.rearmedMs.some((ms) => ms < 300000), `re-armed by the 5m window (${r.rearmedMs}) ${r.logs.join(' | ')}`);
     assertEq(r.compacts, 1, 'compacted once the 5m cache went cold');
   });
@@ -29877,7 +29878,7 @@ function engineRefusal(list) {
 
 // The engine's side of session.compact, as Claude Code does it: a returned list is checked against its contract; a
 // refused one goes to the hook's .catch with next.error, and next() there is the engine's model summary.
-async function engineCompactRun({ messages, trigger = 'auto', coldMs = 2 * 3600000, config = { enabled: true, folderTtl: false } }) {
+async function engineCompactRun({ messages, trigger = 'auto', coldMs = 2 * 3600000, config = { enabled: true, folderTtl: false }, refuse = engineRefusal }) {
   const cmp = await import(require('url').pathToFileURL(path.join(ROOT, 'hooks', 'compaction.mjs')).href);
   const reg = {};
   cmp.register((event, fn) => { reg[event] = { fn }; return { catch(c) { reg[event].catch = c; return this; } }; });
@@ -29885,6 +29886,7 @@ async function engineCompactRun({ messages, trigger = 'auto', coldMs = 2 * 36000
   fs.writeFileSync(path.join(dir, 'brain-http.token'), 'tok');
   const out = { summaries: 0, events: [], logs: [], toasts: [], refused: null, result: null };
   let now = 1_000_000_000;
+  const timers = [];
   const env = { CLAUDE_PLUGIN_DATA: dir, BRAIN_HTTP_PORT: '1' };
   const $ = {
     env: { get: async (k) => env[k] },
@@ -29898,24 +29900,27 @@ async function engineCompactRun({ messages, trigger = 'auto', coldMs = 2 * 36000
     session: { id: async () => 'sid-engine', cwd: async () => dir, root: async () => dir, authorize: async () => null,
       usage: async () => ({ context: { tokens: 400000, window: 1000000, breakdown: { rawMaxTokens: 1000000, autoCompactThreshold: 967000 } } }),
       messages: async () => messages },
-    clock: { now: async () => now, after: () => {} },
+    clock: { now: async () => now, after: (ms, fn) => { timers.push({ ms, fn }); } },
     ui: { log: (t) => out.logs.push(t), toast: (t) => out.toasts.push(t) },
   };
   try {
     await reg['session.start'].fn($, { isInteractive: true }, async (e) => e);
     await reg['turn.complete'].fn($, {}, async () => ({}));
     now += coldMs;
+    const armed = timers.length; // only what the compaction itself arms runs (the acceptance wait)
     const e = { trigger, messages };
     const summary = async () => { out.summaries++; return { messages: [{ role: 'user', text: 'MODEL SUMMARY', toolUses: [] }] }; };
     try {
       const r = await reg['session.compact'].fn($, e, summary);
-      const refused = r && r.messages ? engineRefusal(r.messages) : null;
+      const refused = r && r.messages ? refuse(r.messages) : null;
       if (refused) throw Object.assign(new Error(refused), { refused });
       out.result = r;
     } catch (err) {
       out.refused = err.refused || String(err);
       out.result = await reg['session.compact'].catch($, e, Object.assign(summary, { error: { kind: 'throw', message: `returned ${err.refused || err}` } }));
     }
+    await new Promise((res) => setImmediate(res));
+    for (const t of timers.slice(armed)) t.fn();
     await new Promise((res) => setImmediate(res));
     return out;
   } finally { fs.rmSync(dir, { recursive: true, force: true }); }
@@ -29971,6 +29976,169 @@ test('compaction hook: a cut the engine refuses anyway is recorded as the engine
     const err = events.find((e) => e.kind === 'error');
     assert(err && err.stage === 'session.compact' && err.outcome === 'native-summary' && /toolUses/.test(err.cause), `refusal recorded: ${JSON.stringify(events.map((e) => e.kind))}`);
   } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+});
+
+const CACHE_STATE_KEYS = ['compactionId', 'cache', 'lastAnswerAt', 'idleMs', 'ttlMs', 'ttlSource', 'tokensBefore', 'tokensAfter', 'ranBy', 'engineAccepted'];
+
+test('compaction run event: every compaction says the cache state (warm/cold, idle age, TTL) next to the size before and after, who ran it and whether the engine took the cut', async () => {
+  const cold = await engineCompactRun({ messages: briefOnlySession() });
+  const [b] = cold.events.filter((e) => e.kind === 'run');
+  for (const key of CACHE_STATE_KEYS) assert(key in b, `the run event carries ${key}: ${JSON.stringify(b)}`);
+  assertEq([b.outcome, b.ranBy, b.cache, b.idleMs, b.ttlMs, b.ttlSource, b.engineAccepted], ['brief', 'boss', 'cold', 2 * 3600000, 3600000, 'unknown-assumed-longest', true], 'cold brief, 2 h idle, accepted');
+  assert(b.tokensBefore === 400000 && b.tokensAfter > 0 && b.tokensAfter < b.tokensBefore, `both sizes: ${b.tokensBefore} → ${b.tokensAfter}`);
+  assertEq(cold.events.filter((e) => e.kind === 'cold').map((e) => [e.detectedBy, e.idleMs, e.tokens]), [['compaction', 2 * 3600000, 400000]], 'the expiry is recorded before the cut, by the compaction that saw it');
+
+  const warm = await engineCompactRun({ messages: briefOnlySession(), coldMs: 60000 });
+  const [w] = warm.events.filter((e) => e.kind === 'run');
+  for (const key of CACHE_STATE_KEYS) assert(key in w, `the run event carries ${key}: ${JSON.stringify(w)}`);
+  assertEq([w.outcome, w.ranBy, w.cache, w.warmBy, w.idleMs, w.engineAccepted, warm.summaries], ['native-summary', 'engine', 'warm', 'ttl', 60000, null, 1], 'warm auto: the engine summary, 1 min idle');
+  assert(w.tokensAfter === cmpCore.estimateTokens([{ role: 'user', text: 'MODEL SUMMARY', toolUses: [] }]) && typeof w.engineMs === 'number', 'the summary\'s size and the engine\'s time');
+  assertEq(warm.events.filter((e) => e.kind === 'cold').length, 0, 'a warm cache has no expiry');
+});
+
+test('compaction run event: a cut the engine refuses is said once, as the engine\'s summary with engineAccepted false — never as the brief', async () => {
+  const r = await engineCompactRun({ messages: briefOnlySession(), refuse: () => 'messages[1] that has a contract this build does not know' });
+  assertEq(r.summaries, 1, 'the engine summary ran');
+  const runs = r.events.filter((e) => e.kind === 'run');
+  assertEq(runs.map((e) => [e.outcome, e.refusedOutcome, e.ranBy, e.engineAccepted, e.cache]), [['native-summary', 'brief', 'engine', false, 'cold']], `one run event: ${JSON.stringify(runs)}`);
+  assert(/^engine-refused: /.test(runs[0].why) && runs[0].tokensAfter > 0, runs[0].why);
+  const err = r.events.find((e) => e.kind === 'error');
+  assertEq(err && err.compactionId, runs[0].compactionId, 'the error and the run name the same compaction');
+});
+
+/** The module with a controllable clock and timers (runAll fires what is due) and a daemon that records every event. */
+async function cmpColdHarness({ tokens = 300000 } = {}) {
+  const cmp = await import(require('url').pathToFileURL(path.join(ROOT, 'hooks', 'compaction.mjs')).href);
+  const reg = {};
+  cmp.register((event, fn) => { reg[event] = { fn }; return { catch(c) { reg[event].catch = c; return this; } }; });
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-cold-'));
+  fs.writeFileSync(path.join(dir, 'brain-http.token'), 'tok');
+  const h = { reg, dir, now: 1_000_000_000, timers: [], events: [], logs: [] };
+  h.$ = {
+    env: { get: async (k) => ({ CLAUDE_PLUGIN_DATA: dir, BRAIN_HTTP_PORT: '1' })[k] },
+    fs: { read: async (p) => fs.readFileSync(p, 'utf8') },
+    http: { fetch: async (url, init) => {
+      if (url.split('?')[0].endsWith('/health')) return { status: 200, ok: true, text: JSON.stringify({ dataDir: dir }) };
+      const payload = JSON.parse(JSON.parse(init.body).payload);
+      h.events.push(payload);
+      return { status: 200, ok: true, text: JSON.stringify(payload.kind === 'hello' ? { config: { enabled: true, folderTtl: false } } : {}) };
+    } },
+    session: { id: async () => 'sid-cold', cwd: async () => dir, root: async () => dir, authorize: async () => null,
+      usage: async () => ({ context: { tokens, window: 1000000, breakdown: { rawMaxTokens: 1000000, autoCompactThreshold: 967000 } } }), messages: async () => [] },
+    clock: { now: async () => h.now, after: (ms, fn) => { h.timers.push({ at: h.now + ms, fn }); } },
+    ui: { log: (t) => h.logs.push(t), toast: () => {} },
+  };
+  h.settle = () => new Promise((res) => setImmediate(res));
+  h.runDue = async () => {
+    for (let round = 0; round < 5; round++) {
+      const due = h.timers.filter((t) => t.at <= h.now + 1); // after(1, …) = right away
+      h.timers = h.timers.filter((t) => t.at > h.now + 1);
+      for (const t of due) t.fn();
+      for (let i = 0; i < 20; i++) await h.settle();
+    }
+  };
+  h.colds = () => h.events.filter((e) => e.kind === 'cold');
+  h.done = () => fs.rmSync(dir, { recursive: true, force: true });
+  return h;
+}
+
+test('compaction.cold: the timer armed after a turn records the expiry once (answer time, idle, TTL, tokens); the next input does not repeat it', async () => {
+  const h = await cmpColdHarness();
+  try {
+    await h.reg['session.start'].fn(h.$, { isInteractive: true }, async (e) => e);
+    await h.runDue();
+    await h.reg['turn.complete'].fn(h.$, {}, async () => ({}));
+    const answerAt = h.now;
+    await h.runDue();
+    assertEq(h.colds().length, 0, 'warm until the TTL passes');
+    h.now += 3600000 + 1000;
+    await h.runDue();
+    assertEq(h.colds().map((e) => [e.detectedBy, e.answerAt, e.coldAt, e.idleMs, e.ttlMs, e.ttlSource, e.tokens]),
+      [['timer', answerAt, answerAt + 3600000, 3601000, 3600000, 'unknown-assumed-longest', 300000]], JSON.stringify(h.colds()));
+    await h.reg['prompt.submit'].fn(h.$, { text: 'hi', origin: { kind: 'peer' } }, async (e) => e);
+    assertEq(h.colds().length, 1, 'one event per answer');
+  } finally { h.done(); }
+});
+
+test('compaction.cold: with no timer alive (the session process was closed), the next input of any origin records the expiry; a warm input records nothing', async () => {
+  const h = await cmpColdHarness();
+  try {
+    await h.reg['session.start'].fn(h.$, { isInteractive: true }, async (e) => e);
+    await h.runDue();
+    await h.reg['turn.complete'].fn(h.$, {}, async () => ({}));
+    await h.runDue();
+    h.timers = []; // the timer died with the process
+    h.now += 60000;
+    await h.reg['prompt.submit'].fn(h.$, { text: 'warm', origin: { kind: 'peer' } }, async (e) => e);
+    assertEq(h.colds().length, 0, 'warm: nothing');
+    h.now += 2 * 3600000;
+    await h.reg['prompt.submit'].fn(h.$, { text: 'cold', origin: { kind: 'peer' } }, async (e) => e);
+    assertEq(h.colds().map((e) => [e.detectedBy, e.input, e.idleMs]), [['next-input', 'peer', 2 * 3600000 + 60000]]);
+  } finally { h.done(); }
+});
+
+test('compaction.cold: a session reopened over a cold history records the expiry at the reopen, with the real age (not the one the resume rules use)', async () => {
+  const h = await cmpColdHarness();
+  try {
+    h.$.http.fetch = (orig => async (url, init) => {
+      if (!url.split('?')[0].endsWith('/health') && JSON.parse(JSON.parse(init.body).payload).kind === 'tail') {
+        h.events.push({ kind: 'tail' });
+        return { status: 200, ok: true, text: JSON.stringify({ tail: { at: h.now - 5 * 60000, tokens: 250000, model: 'claude-opus-5-5' } }) };
+      }
+      return orig(url, init);
+    })(h.$.http.fetch);
+    await h.reg['classic.SessionStart'].fn(h.$, { source: 'resume', transcript_path: '', context_tokens: 250000, seconds_since_last_response: 300 }, async (e) => e);
+    await h.reg['session.start'].fn(h.$, { isInteractive: true }, async (e) => e);
+    await h.runDue();
+    const c = h.colds();
+    assertEq(c.map((e) => [e.detectedBy, e.resumed, e.idleMs]), [['reopen', true, 300000]], JSON.stringify(c));
+  } finally { h.done(); }
+});
+
+test('compaction-cache-cross: per day, compactions over a warm vs a cold cache, the warm ones listed; expiries once per session and answer; a warm run after its own expiry is a disagreement', () => {
+  const { crossCacheState, formatCross, periodOf } = require('./lib/compaction-cache-cross.js');
+  const day1 = new Date(2026, 9, 27, 10, 0).getTime();
+  const day2 = new Date(2026, 9, 28, 10, 0).getTime();
+  const row = (eventName, ts, sessionId, payload) => ({ eventName, ts, sessionId, payload: JSON.stringify(payload) });
+  const rows = [
+    row('compaction.run', day1, 'A', { trigger: 'auto', reason: 'auto', outcome: 'native-summary', ranBy: 'engine', cache: 'warm', warmBy: 'mid-turn', lastAnswerAt: day1 - 30000, idleMs: 30000, ttlMs: 3600000, tokensBefore: 967000, tokensAfter: 20000, engineAccepted: null }),
+    row('compaction.run', day1 + 7200000, 'B', { trigger: 'manual', reason: 'turn-end-cache-cold', outcome: 'brief', ranBy: 'boss', cache: 'cold', lastAnswerAt: day1, idleMs: 7200000, ttlMs: 3600000, tokensBefore: 400000, tokensAfter: 16000, engineAccepted: true }),
+    row('compaction.cold', day1 + 3601000, 'B', { detectedBy: 'timer', answerAt: day1, idleMs: 3601000, ttlMs: 3600000 }),
+    row('compaction.cold', day1 + 7000000, 'B', { detectedBy: 'reopen', answerAt: day1 + 20000, idleMs: 6980000, ttlMs: 3600000 }),
+    row('compaction.run', day2, 'C', { trigger: 'manual', outcome: 'brief', cacheWarm: false, tokensBefore: 300000 }),
+    row('compaction.run', day2 + 1000, 'D', { trigger: 'auto', outcome: 'native-summary', cacheWarm: true, tokensBefore: 120000 }),
+    row('compaction.cold', day2 + 2000, 'E', { detectedBy: 'next-input', answerAt: day2 - 4000000, ttlMs: 3600000 }),
+    row('compaction.run', day2 + 5000, 'E', { trigger: 'auto', outcome: 'native-summary', ranBy: 'engine', cache: 'warm', warmBy: 'ttl', lastAnswerAt: day2 - 4000000, idleMs: 4005000, ttlMs: 3600000 }),
+    row('compaction.run', day2 + 9000, 'F', { trigger: 'manual', outcome: 'native-summary', refusedOutcome: 'brief', ranBy: 'engine', cache: 'cold', engineAccepted: false }),
+    row('cache.turn', day2, 'A', { read: 1 }),
+  ];
+  const x = crossCacheState(rows);
+  assertEq(x.periods.map((g) => [g.period, g.compactions, g.warm, g.cold, g.unknown, g.legacy, g.expiries, g.refused]),
+    [[periodOf(day1, 'day'), 2, 1, 1, 0, 0, 1, 0], [periodOf(day2, 'day'), 4, 2, 2, 0, 2, 1, 1]], JSON.stringify(x.periods));
+  assertEq(x.totals, { compactions: 6, warm: 3, cold: 3, unknown: 0, legacy: 2, refused: 1, expiries: 2 }, 'the timer and the reopen saw the same answer of B: one expiry');
+  assertEq(x.warm.map((w) => [w.sessionId, w.legacy, w.warmBy]), [['E', false, 'ttl'], ['D', true, null], ['A', false, 'mid-turn']], 'the warm ones, newest first');
+  assertEq(x.disagreements.map((d) => [d.sessionId, d.expiryDetectedBy]), [['E', 'next-input']], 'E said warm after its answer\'s expiry was recorded');
+  assertEq(x.periods[1].byRanBy, { boss: 1, engine: 3 }, 'an old run without ranBy: the brief is the boss\'s, the summary the engine\'s');
+  assertEq(crossCacheState(rows, { period: 'week' }).periods.length, 1, 'both days in one week (Mon 26/10)');
+  const text = formatCross(x, { days: 14 });
+  assert(/6 — warm 3, cold 3, unknown 0 \(2 from before the cache state was recorded/.test(text) && /idle 1\.1h of TTL 1\.0h/.test(text) && /\(mid-turn\)/.test(text) && /expiry seen by next-input/.test(text), text);
+  let threw = null;
+  try { crossCacheState(rows, { period: 'month' }); } catch (err) { threw = err.message; }
+  assert(/period must be day or week/.test(threw || ''), 'an unknown period fails loud');
+});
+
+test('compaction-metrics: an engine refusal (compaction.error with stage, no where) is counted by its stage, not as "?"', () => {
+  const s = require('./lib/compaction-metrics.js').summarizeCompaction([
+    { eventName: 'compaction.error', payload: { stage: 'session.compact', outcome: 'native-summary' } },
+    { eventName: 'compaction.error', payload: { where: 'turn-end compact' } },
+  ]);
+  assertEq(s.errors.byWhere, { 'session.compact': 1, 'turn-end compact': 1 });
+});
+
+test('compaction-report CLI: --cache prints the warm/cold crossing from the metrics store (rows of every project)', () => {
+  const src = fs.readFileSync(path.join(SCRIPTS, 'compaction-report.js'), 'utf8');
+  assert(/argv\.includes\('--cache'\)/.test(src) && /crossCacheState\(rows, \{ period \}\)/.test(src), 'the CLI mode exists and reads the same rows');
+  assert(require('./lib/compaction-metrics.js').COMPACTION_EVENTS.includes('compaction.cold'), 'the loader reads the expiries');
 });
 
 test('folder-ttl.sweep: a folder left at 5m by sessions that stopped reporting is restored with no report from anyone (headless-only machine); a quiet state is not rewritten', () => {
