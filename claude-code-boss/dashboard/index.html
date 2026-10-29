@@ -2975,7 +2975,7 @@ async function loadCompactionPanel() {
     + `<span class="text-muted">notice at ${prK}k tokens · ${c.phaseRestartNotices || 0} notices in 30 days</span>`
     + `<span id="cmp-pr-msg" class="text-muted"></span></div>`;
   html += '<div class="grid">'
-    + stat(String(r.total), 'Compactions', `${r.pruned} pruned · ${r.nativeSummary} built-in summary`, r.total ? 'badge-green' : 'badge-yellow')
+    + stat(String(r.total), 'Compactions', `${r.pruned} pruned · ${r.brief || 0} brief (no model call) · ${r.nativeSummary} model summary`, r.total ? 'badge-green' : 'badge-yellow')
     + stat(fmt(c.cut.charsCut) + ' chars', 'Cut by pruning (exact)', c.cut.avgRatio != null ? `avg ${Math.round(c.cut.avgRatio * 100)}% smaller` : 'no pruning yet', c.cut.charsCut ? 'badge-green' : 'badge-yellow')
     + stat(st.count ? '~' + fmt(st.tokensCut) : '—', 'Tokens cut (measured, next turn)', `${st.count} measured`, st.count ? 'badge-green' : 'badge-yellow')
     + stat(String(g.held), 'Prompts held to compact first', `${g.byReason['cache-warm'] || 0} waited (cache warm)`, 'badge-green')
