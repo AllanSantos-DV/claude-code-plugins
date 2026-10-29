@@ -1,5 +1,23 @@
 # Backlog
 
+## Compactação com resumo do modelo em vez do corte mecânico (pedido do orquestrador, 2026-10-28) — 3.12.1
+
+Pesquisa: `docs/research/2026-10-28-compactacao-resumo-do-modelo-no-boss.md`.
+
+- [x] **Achado e corrigido — todo brief era recusado pelo engine** (`compaction-core.mjs` `buildBrief`). A mensagem do brief não tinha
+  `toolUses`; o Claude Code recusava ("messages[1] that has toolUses that are not a list…") e rodava o próprio resumo sobre o cache frio.
+  27 de 27 cortes a frio reais em 14 dias, US$ 1,55–2,43 cada. É também a causa da "falha da poda não achada" de 2026-10-27. Novo
+  `compactResultError` (contrato do engine) conferido no hook antes de devolver qualquer corte. Medido isolado: antes 2 chamadas de modelo
+  e 17,7 s; depois 0 chamadas e 37 ms. Testes: `compaction-core.compactResultError: …`, `compaction hook end to end (fake engine …)`.
+- [x] **Achado e corrigido — métricas e painel diziam "brief" / "built-in summary" ao contrário do real** (`hooks/compaction.mjs`,
+  `compaction-metrics.js`, `dashboard/index.html`). O evento `brief` saía antes de o engine aceitar; o painel contava todo não-`pruned` como
+  resumo. Agora a recusa prevista é registrada como `native-summary` (`result-invalid`), a inesperada como `compaction.error`, e o tile separa
+  brief de resumo. Testes: `compaction hook: a cut the engine refuses anyway …`, `compaction-metrics: a brief is counted as a brief …`.
+- [x] **Achado e corrigido — `lastTurnDelivered` lia `u.name`, o engine entrega `u.tool`**: o reinício de fase (opcional) nunca via o
+  commit. Teste: `compaction-core.lastTurnDelivered: reads the engine's tool name field …`.
+- [x] **Fora deste repositório, repassado ao orquestrador** — 181 das 207 compactações de 7 dias são auto-compactações com resumo na janela
+  do Jarvis: `orchestrador/src/orchestrator-window.mjs:84-86` grava `CLAUDE_CODE_AUTO_COMPACT_WINDOW=153000` e a janela não carrega o Boss.
+
 ## Mensagem de falha ilegível e link do aviso "disponível" (pedidos do orquestrador, 2026-10-27) — na develop, sem release
 
 - [x] **Achado e corrigido — `compaction: pruning failed … [object Object]`** (`hooks/compaction.mjs` `compactFailed`, `gateFailed`). `next.error` chega ao `.catch` como dado simples `{kind, message?, budget}`, não como `Error`; `String()` dava `[object Object]`. Novo `describeFailure` (`scripts/lib/compaction-core.mjs`). Teste: `compaction hook: a failed hook is logged with its readable cause …`. **A causa da falha da poda em si não foi achada**: sem log do erro original; a próxima ocorrência já mostra o motivo.

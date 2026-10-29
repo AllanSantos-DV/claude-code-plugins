@@ -28555,6 +28555,15 @@ test('compaction-core.compactResultError: the engine contract for a session.comp
   assertEq(cmpCore.compactResultError([{ role: 'user', text: '', toolUses: [], toolResults: [{ tool_use_id: 'x' }] }]), 'messages[0] that has toolResults that are not a list of { tool_use_id, text, isError }');
 });
 
+test('compaction-metrics: a brief is counted as a brief (no model call), never as the engine\'s summary; the dashboard says so', () => {
+  const { summarizeCompaction } = require('./lib/compaction-metrics.js');
+  const run = (outcome) => ({ ts: 1, eventName: 'compaction.run', sessionId: 's', payload: { outcome, trigger: 'manual', reason: 'reopen-cache-cold' } });
+  const r = summarizeCompaction([run('brief'), run('brief'), run('pruned'), run('native-summary')]).runs;
+  assertEq([r.total, r.brief, r.pruned, r.nativeSummary], [4, 2, 1, 1]);
+  const html = fs.readFileSync(path.join(ROOT, 'dashboard', 'index.html'), 'utf8');
+  assert(html.includes('${r.brief || 0} brief (no model call) · ${r.nativeSummary} model summary'), 'the Compactions tile separates the brief from the model summary');
+});
+
 test('compaction-core.lastTurnDelivered: reads the engine\'s tool name field (`tool`), not only `name`', () => {
   assertEq(cmpCore.lastTurnDelivered([{ role: 'user', text: 'do it', toolUses: [] }, { role: 'assistant', text: '', toolUses: [{ tool_use_id: 'b', tool: 'Bash', input: { command: 'git commit -m x' } }] }]), true, 'engine shape');
   assertEq(cmpCore.lastTurnDelivered([{ role: 'assistant', text: '', toolUses: [{ tool_use_id: 'b', tool: 'Read', input: { command: 'git commit -m x' } }] }]), false, 'another tool');

@@ -37,7 +37,7 @@ function summarizeCompaction(rows, { timeline = 20 } = {}) {
     sessions: 0,
     gate: { total: 0, byAction: {}, byReason: {}, held: 0, attachmentsPassed: 0 },
     phaseRestartNotices: 0, // the opt-in phase-restart notice (a second gate event on a prompt already counted)
-    runs: { total: 0, pruned: 0, nativeSummary: 0, byTrigger: {}, byReason: {}, prunedByKind: {} },
+    runs: { total: 0, pruned: 0, brief: 0, nativeSummary: 0, byTrigger: {}, byReason: {}, prunedByKind: {} },
     // duplicatesDropped: the engine's copies removed from a resumed history (hook-compaction resume defect).
     cut: { charsBefore: 0, charsAfter: 0, charsCut: 0, avgRatio: null, prunedResults: 0, duplicatesDropped: 0, verbatimBroken: 0 },
     // firstTurn*: the first API call after each compaction (cache.turn afterCompaction).
@@ -85,6 +85,8 @@ function summarizeCompaction(rows, { timeline = 20 } = {}) {
           s.cut.duplicatesDropped += num(p.duplicatesDropped);
           ratioSum += num(p.ratio);
           for (const [k, v] of Object.entries(p.byReason || {})) bump(s.runs.prunedByKind, k, num(v));
+        } else if (p.outcome === 'brief') {
+          s.runs.brief++; // the model-free cut: not a summary
         } else {
           s.runs.nativeSummary++;
         }
