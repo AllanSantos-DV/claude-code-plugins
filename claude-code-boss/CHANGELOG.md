@@ -1,5 +1,11 @@
 # Changelog
 
+## [3.12.1] - 2026-10-28
+
+### Fixed
+- **O corte mecânico a frio virava resumo do modelo** (`scripts/lib/compaction-core.mjs` `buildBrief`, `hooks/compaction.mjs`): a mensagem do brief saía sem a lista `toolUses`, que o Claude Code exige em toda mensagem devolvida pelo `session.compact`. O engine recusava o brief ("messages[1] that has toolUses that are not a list…") e rodava o próprio resumo — uma chamada de modelo de 50 a 270 s sobre o cache frio, justamente o que o corte existe para evitar. Em 14 dias, todos os 27 cortes a frio desta máquina foram assim, e as métricas registravam `brief`. Agora o brief passa no contrato do engine; antes de devolver qualquer corte o hook confere o contrato (`compactResultError`), e um corte recusado fica registrado como resumo do engine (`compaction.run` `native-summary` / `compaction.error`), nunca como `brief`.
+- **Reinício de fase nunca detectava o commit** (`lastTurnDelivered`): lia `name` na chamada de ferramenta, e o engine entrega `tool`.
+
 ## [3.12.0] - 2026-10-27
 
 ### Added
