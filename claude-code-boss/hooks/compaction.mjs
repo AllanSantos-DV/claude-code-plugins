@@ -77,6 +77,7 @@ function newCtx() {
     staleWarned: false,      // the "old Boss in this session" notice was given
     resumeAnswer: null,      // { synthetic, real }: lastAnswerAt is aged on resume (resumedAnswerAt); the trail says the real one
     coldLoggedFor: null,     // the lastAnswerAt whose cache expiry is already recorded
+    noTranscriptSaid: false, // the heartbeat's no-transcript notice was shown
     coldTimer: 0,            // token of the pending expiry timer (a newer answer supersedes)
     coldWatchTtlMs: 0,       // the TTL that timer was armed with
     compactSeq: 0,
@@ -194,8 +195,11 @@ function startHeartbeat($, ctx) {
   const beat = () => $.clock.after(FOLDER_HEARTBEAT_MS, () => {
     (async () => {
       if (ctx.transcriptPath) { const { reply } = await observeCalls($, ctx); await folderFromReply($, ctx, reply); }
+      else if (!ctx.noTranscriptSaid) { // once per session: the same sentence every 2 min is noise, the first one is the signal
+        ctx.noTranscriptSaid = true;
+        $.ui.log('compaction: folder heartbeat has no transcript path (classic SessionStart not seen) — calls not observed');
+      }
       if (ctx.coldWatchTtlMs && ttlInUse(ctx).ttlMs !== ctx.coldWatchTtlMs) await watchCold($, ctx);
-      else $.ui.log('compaction: folder heartbeat has no transcript path (classic SessionStart not seen) — calls not observed');
       await reportFolder($, ctx);
       // A turn-end re-check armed by the 1h window while the turn's 5m writes had not landed yet would wait the hour
       // and the next message would re-write a cold cache: re-judge it now by the shorter window.

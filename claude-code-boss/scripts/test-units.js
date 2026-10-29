@@ -29484,6 +29484,56 @@ async function folderCutRun(ce, { gated }) {
   return out;
 }
 
+// The heartbeat alone, against a fake engine: only the notices it logs over `beats` ticks (withTranscript: classic SessionStart seen).
+async function heartbeatNotices({ withTranscript, beats }) {
+  const cmp = await import(require('url').pathToFileURL(path.join(ROOT, 'hooks', 'compaction.mjs')).href);
+  const hooks = collectModuleHooks(cmp.register);
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-heartbeat-'));
+  fs.writeFileSync(path.join(dir, 'brain-http.token'), 'tok');
+  const transcript = path.join(dir, 'session.jsonl');
+  fs.writeFileSync(transcript, '');
+  const config = { enabled: true, thresholdPercent: 30, minIntervalMs: 600000, folderTtl: true };
+  const out = { timers: [], logs: [] };
+  const env = { CLAUDE_PLUGIN_DATA: dir, BRAIN_HTTP_PORT: '1' };
+  const $ = {
+    env: { get: async (k) => env[k] },
+    fs: { read: async (p) => fs.readFileSync(p, 'utf8') },
+    http: { fetch: async (url, init) => {
+      if (url.split('?')[0].endsWith('/health')) return { status: 200, ok: true, text: JSON.stringify({ dataDir: dir }) };
+      const payload = JSON.parse(JSON.parse(init.body).payload);
+      const reply = payload.kind === 'hello' ? { config } : payload.kind === 'folder' || payload.kind === 'folder-end' ? { folderTtl: { ttl: '5m', live: 1, allAbove: true, action: 'none' } } : {};
+      return { status: 200, ok: true, text: JSON.stringify(reply) };
+    } },
+    session: {
+      id: async () => 'sid-heartbeat', cwd: async () => dir, root: async () => dir, authorize: async () => ({ kind: 'api-key' }),
+      usage: async () => ({ context: { tokens: 400000, window: 1000000, breakdown: { rawMaxTokens: 1000000, autoCompactThreshold: 967000 } } }),
+      messages: async () => [],
+    },
+    clock: { now: async () => 1_000_000_000, after: (ms, fn) => { out.timers.push({ ms, fn }); } },
+    ui: { log: (t) => out.logs.push(t), toast: () => {} },
+    command: { run: async () => {} },
+    prompt: { submit: async () => {} },
+  };
+  const flush = async () => { for (let i = 0; i < 20; i++) await new Promise((r) => setImmediate(r)); };
+  const fire = async (pred) => { const i = out.timers.findIndex(pred); assert(i >= 0, `timer expected (${out.timers.map((t) => t.ms)})`); const [t] = out.timers.splice(i, 1); t.fn(); await flush(); };
+  if (withTranscript) await findHook(hooks, 'classic.SessionStart').fn($, { transcript_path: transcript, source: 'startup' }, async (e) => e);
+  await findHook(hooks, 'session.start').fn($, { isInteractive: true }, async (e) => e);
+  await fire((t) => t.ms === 1);
+  for (let i = 0; i < beats; i++) await fire((t) => t.ms === 120000);
+  fs.rmSync(dir, { recursive: true, force: true });
+  return out.logs.filter((l) => /folder heartbeat has no transcript path/.test(l));
+}
+
+test('compaction hook: the heartbeat does not warn about a missing transcript path when it has one (dangling else in 3.13.0)', async () => {
+  const notices = await heartbeatNotices({ withTranscript: true, beats: 3 });
+  assertEq(notices.length, 0, `a transcript path exists and no cold-watch condition holds: no notice, got ${JSON.stringify(notices)}`);
+});
+
+test('compaction hook: without a transcript path the heartbeat says so once per session, not on every beat', async () => {
+  const notices = await heartbeatNotices({ withTranscript: false, beats: 3 });
+  assertEq(notices.length, 1, `one notice over 3 beats, got ${notices.length}`);
+});
+
 test('compaction hook + compaction-event: after the 5m folder switch, a person back after 6 min is cut (it waited for 1h before)', async () => {
   await withCmpStore(async (ce) => {
     const r = await folderCutRun(ce, { gated: true });

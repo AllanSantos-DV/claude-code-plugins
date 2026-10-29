@@ -1,3 +1,7 @@
+## Aviso falso do heartbeat da pasta (pedido do orquestrador, 2026-10-29) — na develop, aguardando a validação do dono, sem release
+
+- **Achado e corrigido na hora:** `hooks/compaction.mjs` `startHeartbeat` — a 3.13.0 inseriu a linha do `watchCold` entre o `if (ctx.transcriptPath) {...}` e o `else`, então o `else` passou a pertencer ao `if` do `watchCold` e o aviso "folder heartbeat has no transcript path" saía a cada batida (2 min) mesmo com o caminho presente. Agora o aviso sai só sem caminho e uma vez por sessão (`ctx.noTranscriptSaid`). Dois testes novos falham antes e passam depois (`test-units.js`). Varredura do diff de 7d82886 e dos hooks: nenhum outro `if/else` sem chaves.
+
 # Backlog
 
 ## Log do esfriamento do cache × compactação (pedido do orquestrador, 2026-10-29) — 3.13.0
