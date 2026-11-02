@@ -221,10 +221,7 @@ Shipped em `claude-code-boss/config/hooks-config.json`; override do usuário em 
 | `shellEscapeGuard.inlineMaxChars` / `.platforms` | `300` / `["win32"]` | Tamanho a partir do qual `node -e` sem `\`/aspas/quebra é movido; onde o guard age |
 | `captureTriggerEvidence` | `false` | OPT-IN: captura snippets de triggers de shadow policies |
 | `specFunnel.enabled` | `false` | OPT-IN, desligado por padrão: injeta no SessionStart e no SubagentStart (junto das políticas, mesmo bloco `[BRAIN policy]`) uma instrução curta "procure o que já existe e reaproveite antes de escrever; entregue o menor diff; diga o que pulou". Só vale ligar em projeto **sem** CLAUDE.md/AGENTS.md/regras próprias: medido em projeto cru, o reaproveitamento de helper subiu de 58% para 100%, a custo de +9% a +17% por execução; quem já tem regras não ganha e só paga. Para ligar, ponha `{ "specFunnel": { "enabled": true } }` em `<globalDir>/hooks/user-config.json` (só `true` liga; vale numa sessão nova). Respeita `policyInject.enabled=false` |
-| `compaction.enabled` | `true` | Compactação controlada (`hooks/compaction.mjs`); `free` desliga |
-| `compaction.thresholdPercent` | `30` | % (10–80) da janela que o engine aplica (limite do modelo ou `CLAUDE_CODE_AUTO_COMPACT_WINDOW`); acima, compacta no próximo prompt com o cache do provedor já expirado (o corte com cache quente é o teto `warmCeilingTokens`, abaixo). Slider no dashboard (`PUT /api/compaction/config`, gravado aqui) |
-| `compaction.thresholdMaxTokens` | `150000` | Teto do limiar a frio: o corte vem no **menor** entre o % acima e este número (em janela de 1M decide ele). `0` desliga (volta ao % puro); senão 50 mil–2 milhões. Campo *Cold limit* do painel; medição em [COMPACTION-MEASUREMENT.md](COMPACTION-MEASUREMENT.md) |
-| `compaction.warmCeilingTokens` | `200000` | Teto com cache quente: no fim do turno, passado este tamanho a sessão é cortada mesmo sem o cache ter esfriado (nunca no portão do prompt). `0` desliga (só corta com cache frio); senão 50 mil–2 milhões. Campo *Warm ceiling* do painel |
+| `compaction.*` (limiares, percentual, tetos 150k/200k, gate, corte a frio/quente) | — | A compactação pertence ao Claude Code. O Boss não define limiares, não compacta e não intercepta a compactação automática nem o `/compact`. A configuração efetiva fica sempre desligada (`enabled: false`, `thresholdPercent`, `thresholdMaxTokens`, `warmCeilingTokens` = `0`, sem corte mecânico nem TTL de pasta), mesmo com um `user-config.json` antigo. Os antigos 150000/200000 foram retirados; o painel não tem mais esses controles |
 | `compaction.minIntervalMinutes` | `10` | Intervalo mínimo (1–60) entre duas compactações do gate |
 | `compaction.preserveRecentMessages` | `6` | Mensagens mais novas que a poda nunca toca |
 | `compaction.phaseRestart` | `false` | Reinício em fases: um aviso (< 80 tokens) para seguir a próxima fase numa sessão nova com um handoff curto, passado `phaseRestartTokens`, com cache quente, depois de um turno com `git commit`. Ligar pelo painel mede antes as transcrições (só leitura) e só liga direto se houver ganho |
@@ -244,7 +241,7 @@ Trocar perfil: `/dashboard` → aba Hooks, ou `/boss-profile <standard|dev|free>
 | `SubagentStart` | policy-inject |
 | `UserPromptExpansion` | skill-metric |
 | `PostToolUseFailure` | curation-detect, failure-detect |
-| *function hooks* (`modules`) | `hooks/compaction.mjs`: `classic.SessionStart`, `session.start`, `prompt.submit`, `turn.start`, `session.measure`, `turn.complete`, `session.compact`, `session.end` |
+| *function hooks* (`modules`) | `hooks/index.mjs` registra só a faixa Boss e o comando `/boss`; nenhum hook de compactação (`session.compact` etc.) |
 
 ---
 
