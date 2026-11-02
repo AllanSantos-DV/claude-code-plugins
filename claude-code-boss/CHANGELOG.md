@@ -1,5 +1,11 @@
 # Changelog
 
+## [3.14.2] - 2026-11-02
+
+### Fixed
+- **O aviso de nova versão prometia que ela chegaria sozinha mesmo com a atualização automática desligada pelo ambiente** (`scripts/lib/update-notice.js`, `scripts/lib/marketplace-autoupdate.js`): com `DISABLE_UPDATES`, `DISABLE_AUTOUPDATER` ou `CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC` definidos, o Claude Code não roda a atualização de plugins, mesmo com `autoUpdate` ligado no marketplace. O aviso agora diz qual variável está desligando e indica o contorno documentado (`FORCE_AUTOUPDATE_PLUGINS=1`) ou o caminho manual (/plugin → Marketplaces → Update).
+- **"claude-code-boss foi atualizado" se repetia a cada prompt quando sessões antigas e novas estavam abertas juntas** (`scripts/lib/update-notice.js`): uma sessão aberta antes da atualização continua rodando os hooks da versão anterior e regravava a versão vista com o número antigo. A versão vista agora nunca anda para trás.
+
 ## [3.14.1] - 2026-11-02
 
 ### Fixed
