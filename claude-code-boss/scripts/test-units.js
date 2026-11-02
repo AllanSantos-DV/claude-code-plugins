@@ -20784,6 +20784,33 @@ test('dashboard.getRouterConfig: byok.classifyRemote/byok.enabled/byok.mode/byok
 // avisava nada: o usuário via "salvo" sem saber que o timeout que digitou foi
 // descartado em silêncio. Mesma classe de bug que headers inválidos já evitavam
 // (aborta com `router.byokHeadersInvalid`) — este teste tranca o fix simétrico.
+test('dashboard: o painel de compactação edita cold limit e warm ceiling em mil tokens, com dica, validação e padrão ligado', () => {
+  const src = fs.readFileSync(path.join(ROOT, 'dashboard', 'index.html'), 'utf-8');
+  for (const id of ['cmp-max', 'cmp-warm']) assert(src.includes('id="' + id + '"'), id + ' input must exist');
+  assert(/thresholdMaxTokens \?\? 150000/.test(src) && /warmCeilingTokens \?\? 200000/.test(src), 'the fields default to 150 and 200 (k tokens) when the config omits them');
+  const fn = src.match(/async function saveCompactionConfig\(\)[\s\S]*?\n\}/);
+  assert(fn, 'saveCompactionConfig() not found');
+  assert(/thresholdMaxTokens: cap\('cmp-max'/.test(fn[0]) && /warmCeilingTokens: cap\('cmp-warm'/.test(fn[0]), 'both values are sent in the PUT body');
+  assert(/v < 50 \|\| v > 2000/.test(fn[0]) && /use 0 \(off\) or 50 to 2000/.test(fn[0]), 'out-of-range input is refused with a message, not clamped silently');
+  assert(/\* 1000/.test(fn[0]), 'the fields are in thousands of tokens and converted');
+  // one tooltip per number: the two new caps, the percent and the interval
+  const tips = [...src.matchAll(/data-tip="Default (150|200|30%|10 minutes)[^"]*"/g)].map(m => m[1]);
+  assertEq([...new Set(tips)].sort(), ['10 minutes', '150', '200', '30%'], 'each compaction number has a plain-language tooltip with its default');
+  assert(/0 turns (this limit|it) off/.test(src), 'the tooltips say how to disable each cap');
+});
+
+test('hooks-config: o valor do painel (mil tokens x 1000) faz ida e volta e 0 desliga', () => {
+  withTempHome((home) => {
+    const hc = require('./lib/hooks-config.js');
+    assert(hc.userConfigPath().startsWith(home), 'the user config must resolve inside the temp home, never the real one');
+    hc._resetCache();
+    const saved = hc.saveCompaction({ thresholdMaxTokens: 120 * 1000, warmCeilingTokens: 0 });
+    assertEq([saved.thresholdMaxTokens, saved.warmCeilingTokens], [120000, 0], 'saved as typed, 0 stays off');
+    hc._resetCache();
+    assertEq([hc.getCompaction().thresholdMaxTokens, hc.getCompaction().warmCeilingTokens], [120000, 0], 'reopened');
+  });
+});
+
 test('dashboard/index.html applyRouter(): timeout BYOK inválido (não-finito ou negativo) ABORTA o save com aviso visível, não ignora em silêncio', () => {
   const src = fs.readFileSync(path.join(ROOT, 'dashboard', 'index.html'), 'utf-8');
   const fn = src.match(/async function applyRouter\(\)[\s\S]*?\n\}/);

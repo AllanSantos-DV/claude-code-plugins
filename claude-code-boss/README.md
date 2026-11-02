@@ -249,11 +249,12 @@ Módulo de *function hook* do Claude Code (`hooks/compaction.mjs`, registrado pe
 `hooks/index.mjs` declarada em `modules` no `hooks.json`; exige Claude Code 2.1.274+). Decisões puras em
 `scripts/lib/compaction-core.mjs` (ESM, usado pelo módulo e pelo Node).
 
-- **Quando**: nunca sozinho e **nunca com o cache quente**. No `prompt.submit` de uma pessoa com a
-  sessão ociosa, se o contexto passou do limiar **e** o cache do provedor já expirou, o prompt é
-  segurado, o `/compact` roda e o mesmo texto é reenviado como seu. Com o cache válido ele espera —
-  reescrever o histórico regravaria no cache o que ainda está pago; se o cache nunca esfriar, quem age é a
-  compactação automática do próprio engine no limite dela (com a mesma escolha abaixo).
+- **Quando**: dois gatilhos, ambos com padrão ligado e editáveis no painel. (1) No `prompt.submit` de uma pessoa
+  com a sessão ociosa, se o contexto passou do limiar **e** o cache do provedor já expirou, o prompt é segurado, o
+  `/compact` roda e o mesmo texto é reenviado como seu. Com o cache válido ele espera. (2) Se o cache nunca esfria
+  (agentes trabalhando sem pausa), no **fim do turno** o corte vem quando o contexto passa do teto com cache quente
+  (`warmCeilingTokens`, padrão 200 mil tokens) — nunca no portão do prompt da pessoa. Os padrões vêm de medição
+  em transcritos reais: [docs/COMPACTION-MEASUREMENT.md](docs/COMPACTION-MEASUREMENT.md).
 - **Corte frio sem modelo**: com o cache frio, nas compactações que o boss inicia e na automática do engine a frio, o
   histórico vira o "brief": seus pedidos na íntegra, uma linha por ferramenta (arquivo, URL, comando), as mensagens dos
   últimos ~2 mil tokens na íntegra (`briefTailTokens`). Não há chamada de resumo. Em 6 compactações reais, guardou ~81% do que
@@ -272,10 +273,11 @@ Módulo de *function hook* do Claude Code (`hooks/compaction.mjs`, registrado pe
   esfriou; com o cache quente, agenda nova checagem para quando ele vencer. Nada é segurado nem reenviado.
 - **Limiar**: um % (`thresholdPercent`, padrão 30, faixa 10–80) da janela que o engine aplica naquele
   prompt — o limite do modelo ou uma janela de compactação menor (`CLAUDE_CODE_AUTO_COMPACT_WINDOW`) —, então
-  o mesmo ajuste serve a modelos de 200K e de 1M e acompanha o `/model` (30% de 200k = 60k; 30% de 1M = 300k). Só %:
-  sem piso em tokens e sem janela fixa (uma compactação deixa ~10–20k, abaixo de qualquer % do slider, e o intervalo
-  mínimo impede repetição). Um limiar além do ponto de auto-compact do engine é sinalizado (o engine compactaria antes). Ajuste no slider do painel
-  **Compaction & cache** (gravado em `~/.claude/claude-code-boss/hooks/user-config.json`, sobrevive a
+  o mesmo ajuste serve a modelos de 200K e de 1M e acompanha o `/model` (30% de 200k = 60k; 30% de 1M = 300k). O corte a frio
+  é o **menor** entre esse % e `thresholdMaxTokens` (padrão 150 mil tokens): em 1M o teto decide (150k), em 200k vale o %.
+  `0` desliga cada teto (`thresholdMaxTokens` 0 volta ao % puro; `warmCeilingTokens` 0 volta a nunca cortar com cache quente);
+  faixa 50 a 2000 mil. Um limiar além do ponto de auto-compact do engine é sinalizado (o engine compactaria antes). Ajuste no painel
+  **Compaction & cache** (slider do %, campos *Cold limit* e *Warm ceiling* em mil tokens, cada um com dica) (gravado em `~/.claude/claude-code-boss/hooks/user-config.json`, sobrevive a
   updates; sessões abertas pegam no próximo turno).
   A validade é a **observada** nas respostas reais de cada host (`ephemeral_5m` / `ephemeral_1h`;
   medido: assinatura 1 h, um gateway de API 5 min); sem observação, assume a mais longa.
@@ -299,8 +301,8 @@ Módulo de *function hook* do Claude Code (`hooks/compaction.mjs`, registrado pe
   rejeitava o thinking). O primeiro prompt detecta as cópias e compacta antes de qualquer envio (o resumo também as remove).
 - **Não age** em sessão headless (`-p`/SDK: o engine não deixa um plugin compactar ali — o `/compact`
   manual e o limiar automático continuam passando pela mesma escolha), no perfil `free`, nem com
-  `compaction.enabled: false`. Config em `hooks-config.json` → `compaction` (`thresholdPercent` 30,
-  `minIntervalMinutes` 10, `preserveRecentMessages` 6); `GET/PUT /api/compaction/config`.
+  `compaction.enabled: false`. Config em `hooks-config.json` → `compaction` (`thresholdPercent` 30, `thresholdMaxTokens` 150000,
+  `warmCeilingTokens` 200000, `minIntervalMinutes` 10, `preserveRecentMessages` 6); `GET/PUT /api/compaction/config`.
 - **Observabilidade**: o módulo envia cada evento ao daemon (`POST /hook/compaction-event`, mesmo
   token do `/mcp`) → metrics store: `compaction.gate` (decisão e motivo, idade e TTL do cache),
   `compaction.run` (um por compactação — auto do engine, `/compact`, poda ou brief: estado do cache naquele momento
