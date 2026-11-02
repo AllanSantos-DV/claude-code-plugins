@@ -1744,62 +1744,6 @@ function getOutcomeSummary(req, res, url) {
   }
 }
 
-// The compaction threshold (% of the engine's window) and cooldown — the Home slider.
-// Saved UPDATE-SAFE in <globalDir>/hooks/user-config.json (BACKLOG Q38), never the shipped file.
-function getCompactionConfig(req, res) {
-  hooksConfig._resetCache();
-  json(res, hooksConfig.getCompaction());
-}
-
-// Phase restart (opt-in): turning it on first measures this machine's transcripts, read-only
-// (scripts/phase-restart-measure.js, in a hidden child: the replay reads every 30-day transcript).
-function runPhaseRestartMeasure(thresholdTokens) {
-  return new Promise((resolve, reject) => {
-    const child = spawn(process.execPath, [path.join(ROOT, 'scripts', 'phase-restart-measure.js'), '--json', '--save', '--threshold', String(thresholdTokens)], {
-      stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true, env: { ...process.env, CLAUDE_PLUGIN_ROOT: ROOT, CLAUDE_PLUGIN_DATA: DATA_DIR },
-    });
-    let out = '', err = '', done = false;
-    child.stdout.on('data', (d) => { out += d.toString(); });
-    child.stderr.on('data', (d) => { err += d.toString(); });
-    const timer = setTimeout(() => { if (!done) { child.kill(); reject(new Error('phase-restart measurement took over 5 min — killed')); } }, 5 * 60000);
-    child.on('error', (e) => { done = true; clearTimeout(timer); reject(e); });
-    child.on('exit', (code) => {
-      done = true; clearTimeout(timer);
-      if (code !== 0) return reject(new Error(`phase-restart measurement exited ${code}: ${err.trim().slice(0, 400)}`));
-      try { resolve(JSON.parse(out)); } catch (e) { reject(new Error(`phase-restart measurement printed no JSON: ${e.message}`)); }
-    });
-  });
-}
-
-function getPhaseRestartMeasure(req, res) {
-  const file = require('./phase-restart-measure.js').resultPath();
-  json(res, { measure: fs.existsSync(file) ? readJSON(file) : null });
-}
-
-async function saveCompactionConfig(req, res) {
-  let body;
-  try { body = JSON.parse((await readBody(req)) || '{}'); } catch (err) { return fail(res, `invalid JSON body: ${err.message}`, 400); }
-  try {
-    let measure;
-    if (body.phaseRestart === true) {
-      hooksConfig._resetCache();
-      const tokens = body.phaseRestartTokens ?? hooksConfig.getCompaction().phaseRestartTokens;
-      measure = await runPhaseRestartMeasure(tokens);
-      // No measured gain: not switched on unless the person confirms (force) after seeing the numbers.
-      if (measure.verdict !== 'gain' && body.force !== true) {
-        const { phaseRestart, force, ...rest } = body; void phaseRestart; void force;
-        const config = Object.keys(rest).length ? hooksConfig.saveCompaction(rest) : hooksConfig.getCompaction();
-        return json(res, { ok: true, config, measure, needsConfirm: true });
-      }
-    }
-    const { force, ...patch } = body; void force;
-    json(res, { ok: true, config: hooksConfig.saveCompaction(patch), measure });
-  } catch (err) {
-    console.error(`[DASHBOARD] /api/compaction/config (PUT) failed: ${err.message}`);
-    fail(res, err.message, 400);
-  }
-}
-
 // F3.0-4: prune never-used curated scripts (registration only; backup written).
 // The ids are re-checked server-side against the current candidates.
 async function postCurationPrune(req, res, url) {
@@ -2606,9 +2550,6 @@ function handleAPI(req, res, url) {
   if (p === '/api/metrics/curation' && m === 'GET') return getCurationSummary(req, res, url);
   if (p === '/api/metrics/compaction' && m === 'GET') return getCompactionSummary(req, res, url);
   if (p === '/api/metrics/outcome' && m === 'GET') return getOutcomeSummary(req, res, url);
-  if (p === '/api/compaction/config' && m === 'GET') return getCompactionConfig(req, res);
-  if (p === '/api/compaction/config' && m === 'PUT') return saveCompactionConfig(req, res);
-  if (p === '/api/compaction/phase-restart' && m === 'GET') return getPhaseRestartMeasure(req, res);
   if (p === '/api/curation/prune' && m === 'POST') return postCurationPrune(req, res, url);
   if (p === '/api/doctor' && m === 'GET') return getDoctor(req, res);
   if (p === '/api/doctor/switched-off' && m === 'GET') return getDoctorSwitchedOff(req, res);
@@ -2739,4 +2680,4 @@ if (require.main === module) startDashboardServer();
 // exported so a test can call it with a fake res ({writeHead,end}) and assert
 // on the exact JSON it serializes — otherwise a bug in byokSafe (e.g. `x || null`
 // silently turning a valid `0` into `null`) would never be caught by any test.
-module.exports = { getCurationProjects, getCurationShells, deleteCurationShell, getValueSummary, getOutcomeSummary, getTuningRecommendations, _metricsMemo, getDoctorSwitchedOff, postDoctorUndo, getDoctorConfig, saveDoctorConfig, writeRouterOverride, resolveRouterFlags, getRouterConfig, fetchByokModelIds, getByokModels, opensWithField, postPluginUpdate, getProjectMarker, saveProjectMarker, saveCompactionConfig, getPhaseRestartMeasure, scanServerKb };
+module.exports = { getCurationProjects, getCurationShells, deleteCurationShell, getValueSummary, getOutcomeSummary, getTuningRecommendations, _metricsMemo, getDoctorSwitchedOff, postDoctorUndo, getDoctorConfig, saveDoctorConfig, writeRouterOverride, resolveRouterFlags, getRouterConfig, fetchByokModelIds, getByokModels, opensWithField, postPluginUpdate, getProjectMarker, saveProjectMarker, scanServerKb };

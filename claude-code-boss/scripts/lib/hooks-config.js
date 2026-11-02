@@ -372,21 +372,14 @@ function getSessionSummary() {
 
 // Compaction belongs to Claude Code: the Boss holds no threshold, gate or window (the controlled-compaction hook
 // and its core were removed). What remains here is the read shape the dashboard and the metrics still use (always
-// disabled) plus the opt-in phase-restart notice settings.
+// disabled).
 const THRESHOLD_PERCENT_RANGE = [10, 80]; // old slider range, kept only in the read shape
 const BRIEF_TAIL_TOKENS_DEFAULT = 2000;
-const PHASE_RESTART_TOKENS_DEFAULT = 400000;
 const MIN_INTERVAL_RANGE = [1, 60];
 function clampInterval(v) {
   const n = Number(v);
   if (!Number.isFinite(n)) return 10;
   return Math.min(MIN_INTERVAL_RANGE[1], Math.max(MIN_INTERVAL_RANGE[0], Math.round(n)));
-}
-const PHASE_TOKENS_RANGE = [100000, 900000];
-function clampPhaseTokens(v) {
-  const n = Number(v);
-  if (!Number.isFinite(n)) return 400000;
-  return Math.min(PHASE_TOKENS_RANGE[1], Math.max(PHASE_TOKENS_RANGE[0], Math.round(n)));
 }
 function getCompaction() {
   const c = _resolved().compaction || {};
@@ -404,11 +397,6 @@ function getCompaction() {
     mechanicalCut: false,
     briefTailTokens: Number.isFinite(Number(c.briefTailTokens)) ? Math.min(20000, Math.max(0, Math.round(Number(c.briefTailTokens)))) : BRIEF_TAIL_TOKENS_DEFAULT,
     folderTtl: false,
-    // Phase restart (opt-in): one notice to continue in a new session from a short handoff, past phaseRestartTokens
-    // with a warm cache after a committed task. Off unless set to true (the dashboard measures this machine first).
-    phaseRestart: c.phaseRestart === true,
-    phaseRestartTokens: clampPhaseTokens(c.phaseRestartTokens ?? PHASE_RESTART_TOKENS_DEFAULT),
-    phaseRestartRange: PHASE_TOKENS_RANGE,
   };
 }
 
@@ -431,33 +419,6 @@ function getFixedCost() {
     days: Number.isFinite(days) ? Math.min(180, Math.max(7, Math.round(days))) : 30,
     keep: Array.isArray(c.keep) ? c.keep.filter((x) => typeof x === 'string') : [],
   };
-}
-
-/**
- * Persist the user's compaction choice (the dashboard slider) to the UPDATE-SAFE
- * globalDir()/hooks/user-config.json — never the shipped file (BACKLOG Q38). Only the
- * given keys change; values are clamped. Returns the effective config.
- * @param {{thresholdPercent?: number, minIntervalMinutes?: number, enabled?: boolean, phaseRestart?: boolean, phaseRestartTokens?: number}} patch
- */
-function saveCompaction(patch) {
-  const p = patch && typeof patch === 'object' ? patch : {};
-  const next = {};
-  for (const key of ['enabled', 'thresholdPercent', 'minIntervalMinutes', 'thresholdMaxTokens', 'warmCeilingTokens']) {
-    if (p[key] !== undefined) throw new Error('Compaction thresholds are managed by Claude Code, not Boss');
-  }
-  if (p.phaseRestart !== undefined) next.phaseRestart = p.phaseRestart === true;
-  if (p.phaseRestartTokens !== undefined) {
-    if (!Number.isFinite(Number(p.phaseRestartTokens))) throw new Error('phaseRestartTokens must be a number');
-    next.phaseRestartTokens = clampPhaseTokens(p.phaseRestartTokens);
-  }
-  if (!Object.keys(next).length) throw new Error('nothing to save (phaseRestart or phaseRestartTokens)');
-  const file = userConfigPath();
-  const current = readUserConfigForWrite(file);
-  current.compaction = { ...(isPlainObject(current.compaction) ? current.compaction : {}), ...next };
-  fs.mkdirSync(path.dirname(file), { recursive: true });
-  writeFileAtomic(file, `${JSON.stringify(current, null, 2)}\n`);
-  _resetCache();
-  return getCompaction();
 }
 
 /**
@@ -668,7 +629,6 @@ module.exports = {
   getFixedCost,
   saveFixedCost,
   addFixedCostKeep,
-  saveCompaction,
   saveOverrides,
   isHookDisabled,
   setHookDisabled,

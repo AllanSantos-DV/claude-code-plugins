@@ -37,8 +37,8 @@ URL — e o `headersHelper` não serve de porteiro: medido no Claude Code 2.1.28
 que falha (exit 1 ou JSON inválido) NÃO impede a conexão, o cliente conecta sem o header.
 Mitigação: máquina de usuário único (o caso suportado) ou `BRAIN_HTTP_PORT` próprio.
 
-O módulo de compactação (`hooks/compaction.mjs`) fala com a mesma porta pela rota `/hook/compaction-event`
-(mesmo token). Ele lê o token **só da pasta de dados local** (`CLAUDE_PLUGIN_DATA` ou o ponteiro
+O módulo de função da faixa do Boss (`hooks/boss.mjs`, pelo `scripts/lib/module-daemon.mjs`) fala com a mesma porta pela
+rota `/hook/boss-summary` (GET, só leitura, mesmo token). Ele lê o token **só da pasta de dados local** (`CLAUDE_PLUGIN_DATA` ou o ponteiro
 `~/.claude/claude-code-boss/active-data-dir.json`), recusa caminho que não seja local e absoluto, e só envia o
 token se o `/health` da porta nomear essa MESMA pasta. O `/health` é aberto: confiar no caminho que ele diz
 permitiria a um ocupante da porta apontar um caminho de rede (UNC), e ler um caminho UNC faz o Windows entregar o

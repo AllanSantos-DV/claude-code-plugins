@@ -3006,30 +3006,6 @@ async function loadCompactionPanel() {
   return c;
 }
 
-function phaseRestartLine(m) {
-  if (!m) return '';
-  const head = m.verdict === 'gain'
-    ? `Measured gain here: US$ ${m.savingUsd} in ${m.activeDays} active days (${m.savingPct}% of US$ ${m.baseUsd}; US$ ${m.savingUsdPerDay}/day, US$ ${m.savingPerNoticeUsd}/notice)`
-    : `No measured gain here: ${m.notices} notices would have fired in ${m.activeDays} active days (saving US$ ${m.savingUsd})`;
-  return `${head} · ${m.sessions} sessions, median ${m.sessionsPerDay.median}/day (p90 ${m.sessionsPerDay.p90}) · ${m.crossings} crossings of ${Math.round(m.thresholdTokens / 1000)}k`;
-}
-
-async function savePhaseRestart(on, force) {
-  const msg = document.getElementById('cmp-pr-msg');
-  const box = document.getElementById('cmp-pr');
-  msg.textContent = on ? 'Measuring this machine\'s transcripts (read-only)…' : '';
-  try {
-    const r = await api('PUT', '/api/compaction/config', on ? { phaseRestart: true, force: force === true } : { phaseRestart: false });
-    if (r && r.error) { msg.textContent = 'Not saved: ' + r.error; box.checked = !on; return; }
-    box.checked = r.config.phaseRestart === true;
-    if (r.needsConfirm) {
-      msg.innerHTML = escapeHtml(phaseRestartLine(r.measure)) + ' — left off. <button class="btn-sm" onclick="savePhaseRestart(true, true)">Turn on anyway</button>';
-      return;
-    }
-    msg.textContent = r.config.phaseRestart ? `On. ${phaseRestartLine(r.measure)}` : 'Off.';
-  } catch (e) { msg.textContent = 'Not saved: ' + (e && e.message ? e.message : e); box.checked = !on; }
-}
-
 async function pruneUnusedScripts() {
   const p = window.__ccbPrune;
   if (!p || !p.ids.length) return;

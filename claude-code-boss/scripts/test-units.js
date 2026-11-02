@@ -18773,11 +18773,11 @@ test('doctor.runChecks + summarize: criticalFail flagged, counts add up', () => 
     hooksEvents: ['Stop'],
   };
   const results = doctor.runChecks(ctx);
-  assertEq(results.length, 20);
+  assertEq(results.length, 19);
   const s = doctor.summarize(results);
   assert(s.criticalFail, 'old node → criticalFail');
   assertEq(s.ok, false);
-  assertEq(s.counts.ok + s.counts.warn + s.counts.fail, 20);
+  assertEq(s.counts.ok + s.counts.warn + s.counts.fail, 19);
 });
 
 test('doctor.runChecks: all-healthy ctx → ok summary', () => {
@@ -20791,19 +20791,6 @@ test('dashboard: compaction remains native and no threshold controls are offered
   assert(!source.includes('async function saveCompactionConfig('));
 });
 
-test('hooks-config: retired threshold writes are refused without changing user config', () => {
-  withTempHome(() => {
-    const hc = require('./lib/hooks-config.js');
-    hc._resetCache();
-    for (const patch of [{ enabled: true }, { thresholdPercent: 30 }, { thresholdMaxTokens: 150000 }, { warmCeilingTokens: 200000 }, { minIntervalMinutes: 10 }]) {
-      let error = null;
-      try { hc.saveCompaction(patch); } catch (caught) { error = caught; }
-      assert(error && /managed by Claude Code/.test(error.message), JSON.stringify(patch));
-    }
-    assert(!fs.existsSync(hc.userConfigPath()), 'no threshold configuration is written');
-  });
-});
-
 test('dashboard/index.html applyRouter(): timeout BYOK inválido (não-finito ou negativo) ABORTA o save com aviso visível, não ignora em silêncio', () => {
   const src = fs.readFileSync(path.join(ROOT, 'dashboard', 'index.html'), 'utf-8');
   const fn = src.match(/async function applyRouter\(\)[\s\S]*?\n\}/);
@@ -22129,7 +22116,6 @@ test('user-config writers (auditoria 3.1.0): an unreadable user-config fails lou
     fs.mkdirSync(path.dirname(file), { recursive: true });
     for (const [name, call] of [
       ['saveProfile', () => hc.saveProfile('dev')],
-      ['saveCompaction', () => hc.saveCompaction({ phaseRestart: false })],
       ['setHookDisabled', () => hc.setHookDisabled('hook_x', true)],
       ['saveOverrides', () => hc.saveOverrides({ ...hc.load(), memoryRotate: { maxLines: 77 } })],
     ]) {
@@ -28058,8 +28044,7 @@ test('plugin-updater.killStale: so casa modulos da PASTA DE CACHE do plugin, nao
     for (const n of moduleCalled) {
       const m = daemonSrc.match(new RegExp(`'(/hook/[a-z-]+)':\\s*'${n}'`));
       assert(m, `${n} has a daemon route`);
-      // hook_compaction_event: its module was removed; the route stays for sessions opened before the update.
-      if (n !== 'hook_compaction_event') assert(modulesSrc.includes(m[1]), `${n}: its route ${m[1]} is called by a hooks module`);
+      assert(modulesSrc.includes(m[1]), `${n}: its route ${m[1]} is called by a hooks module`);
     }
     for (const h of hookEntries) {
       assertEq(h.server, 'plugin:claude-code-boss:brain-server');
@@ -28077,8 +28062,7 @@ test('plugin-updater.killStale: so casa modulos da PASTA DE CACHE do plugin, nao
   const loadHookWorker = async () => (await import(require('url').pathToFileURL(path.join(ROOT, 'servers', 'brain-server', 'lib', 'hook-worker-client.js')).href)).createHookWorker;
 
   test('G2: heavy lane = Stop + the PostToolUse side-effect hooks; guards and prompt detectors stay on the fast lane', () => {
-    // + hook_compaction_event: SQLite (metrics store) and a transcript tail read, like Stop.
-    assertEq(HEAVY, ['hook_boss_summary', 'hook_compaction_event', 'hook_file_edit_detect', 'hook_policy_enforce_shadow', 'hook_posttoolusebash_dispatcher', 'hook_posttoolusefailure_dispatcher', 'hook_skill_metric', 'hook_stop_dispatcher']);
+    assertEq(HEAVY, ['hook_boss_summary', 'hook_file_edit_detect', 'hook_policy_enforce_shadow', 'hook_posttoolusebash_dispatcher', 'hook_posttoolusefailure_dispatcher', 'hook_skill_metric', 'hook_stop_dispatcher']);
   });
 
   test('G2: with a hook worker, heavy hooks go to it and fast hooks never do; a worker failure degrades visibly', async () => {
@@ -28699,15 +28683,6 @@ test('folder-ttl.report: while the engine compacts idle sessions itself the fold
   } finally { sb.done(); }
 });
 
-test('compaction-event: folder / folder-end reach folder-ttl with the session id; no session id → throws', async () => {
-  const ev = require('./compaction-event.js');
-  const src = fs.readFileSync(path.join(SCRIPTS, 'compaction-event.js'), 'utf8');
-  assert(/kind === 'folder' \|\| kind === 'folder-end'/.test(src) && /folder-ttl\.js'\)\.report\(\{ sessionId: ctx\.sessionId, folder: data\.folder/.test(src), 'routed to folder-ttl.report');
-  let threw = false;
-  try { await ev.run({ payload: { kind: 'folder', folder: 'C:/x', above: true } }); } catch (err) { threw = /without session_id/.test(err.message); }
-  assert(threw, 'a folder report needs the session id');
-});
-
 test('hooks-config compaction: defaults and stale overrides cannot enable a Boss threshold', () => {
   withTempHome(() => {
     const hc = require('./lib/hooks-config.js');
@@ -28791,107 +28766,6 @@ test('cost-tuning: retired windows are restored by ownership and stale opt-ins c
       else fs.writeFileSync(file, content);
     }
     config._resetCache();
-  }
-});
-
-// ─── phase restart (opt-in setting + read-only measurement: lib/phase-restart-measure.js) ──
-
-// A synthetic transcript: `steps` = [{ ctx, gapMin, person?, commit?, out? }] → JSONL lines (one API call per step).
-function phaseTranscript(steps, t0 = Date.now() - 3 * 3600000) {
-  const lines = [];
-  let t = t0, n = 0;
-  for (const s of steps) {
-    t += (s.gapMin || 1) * 60000;
-    const ts = new Date(t).toISOString();
-    if (s.person) lines.push(JSON.stringify({ type: 'user', timestamp: ts, message: { role: 'user', content: s.person } }));
-    const content = s.commit ? [{ type: 'tool_use', id: `tu${n}`, name: 'Bash', input: { command: 'git commit -m "done"' } }] : [{ type: 'text', text: 'ok' }];
-    lines.push(JSON.stringify({ type: 'assistant', timestamp: ts, message: { id: `msg_${n++}`, model: 'claude-opus-5-5', content, usage: { input_tokens: 10, cache_read_input_tokens: s.ctx - 1010, cache_creation_input_tokens: 1000, output_tokens: s.out || 200 } } }));
-    if (s.commit) lines.push(JSON.stringify({ type: 'user', timestamp: ts, message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: `tu${n - 1}`, content: 'committed' }] } }));
-  }
-  return lines;
-}
-// A heavy session: past 400k, a task is committed, the next person prompt starts a new phase that runs 60 warm calls.
-const HEAVY_STEPS = [
-  { ctx: 380000, person: 'build it' }, { ctx: 420000 }, { ctx: 450000, commit: true },
-  { ctx: 455000, person: 'now the next phase' },
-  ...Array.from({ length: 60 }, (_, i) => ({ ctx: 456000 + i * 500 })),
-];
-const LIGHT_STEPS = [{ ctx: 50000, person: 'hi' }, { ctx: 60000, commit: true }, { ctx: 61000, person: 'next' }, { ctx: 65000 }];
-
-test('phase-restart-measure: series flags person prompts after a commit; a heavy session shows a gain, a light one none; the replay is pure', () => {
-  const m = require('./lib/phase-restart-measure.js');
-  const calls = m.seriesFromLines(phaseTranscript(HEAVY_STEPS));
-  assertEq(calls.length, HEAVY_STEPS.length, 'one call per step');
-  assertEq(calls.filter((c) => c.person).length, 2);
-  assertEq(calls.filter((c) => c.delivered).map((c) => c.ctx), [455000], 'the prompt right after the committed turn');
-  assertEq(m.seriesFromLines(['{"torn', '', JSON.stringify({ type: 'assistant', message: { id: 'a', usage: { input_tokens: 0 } }, timestamp: new Date().toISOString() })]), [], 'torn lines and zeroed copies skipped');
-  const heavy = m.measureSessions([{ id: 'h', calls }], { thresholdTokens: 400000 });
-  assertEq([heavy.verdict, heavy.notices, heavy.crossings], ['gain', 1, 1], JSON.stringify(heavy));
-  assert(heavy.savingUsd > 1 && heavy.savingUsd < heavy.baseUsd, `saving ${heavy.savingUsd} of ${heavy.baseUsd}`);
-  const light = m.measureSessions([{ id: 'l', calls: m.seriesFromLines(phaseTranscript(LIGHT_STEPS)) }]);
-  assertEq([light.verdict, light.notices, light.savingUsd], ['no-gain', 0, 0]);
-  const high = m.measureSessions([{ id: 'h', calls }], { thresholdTokens: 900000 });
-  assertEq([high.verdict, high.crossings], ['no-gain', 0], 'a threshold nobody reaches: no gain');
-  assertEq(m.simulate(calls).cost, m.simulate(calls).cost, 'deterministic');
-  assert(m.priceFor('claude-opus-5-5').read === 0.2 && m.priceFor('nope') === null, 'official prices from economy-metrics');
-});
-
-test('phase-restart-measure: reads the transcripts READ-ONLY (bytes and mtime unchanged), only top-level files in the window, sub-agent folders skipped', () => {
-  const m = require('./lib/phase-restart-measure.js');
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-phase-root-'));
-  try {
-    const proj = path.join(root, 'C--proj');
-    fs.mkdirSync(path.join(proj, 'sid1', 'subagents'), { recursive: true });
-    const main = path.join(proj, 'sid1.jsonl');
-    fs.writeFileSync(main, phaseTranscript(HEAVY_STEPS).join('\n') + '\n');
-    fs.writeFileSync(path.join(proj, 'sid1', 'subagents', 'agent-x.jsonl'), phaseTranscript(HEAVY_STEPS).join('\n'));
-    const old = path.join(proj, 'old.jsonl');
-    fs.writeFileSync(old, phaseTranscript(HEAVY_STEPS, Date.now() - 90 * 86400000).join('\n'));
-    fs.utimesSync(old, new Date(Date.now() - 90 * 86400000), new Date(Date.now() - 90 * 86400000));
-    const before = [main, old].map((f) => [fs.readFileSync(f, 'utf8'), fs.statSync(f).mtimeMs]);
-    const r = m.measure({ root, days: 30 });
-    assertEq([r.files, r.sessions, r.notices, r.verdict], [1, 1, 1, 'gain'], JSON.stringify(r));
-    assertEq([main, old].map((f) => [fs.readFileSync(f, 'utf8'), fs.statSync(f).mtimeMs]), before, 'transcripts untouched');
-    assertEq(m.measure({ root: path.join(root, 'none'), days: 30 }).sessions, 0, 'no transcripts folder: an empty measurement');
-  } finally { fs.rmSync(root, { recursive: true, force: true }); }
-});
-
-test('dashboard PUT /api/compaction/config {phaseRestart:true}: runs the measurement first; gain → on; no gain → left off until forced; off needs no measurement', async () => {
-  const { Readable } = require('stream');
-  delete require.cache[require.resolve('./dashboard.js')];
-  const dash = require('./dashboard.js');
-  const hc = require('./lib/hooks-config.js');
-  const call = async (fn, body) => { let status = 200; let out = null; await fn(Readable.from([JSON.stringify(body)]), { writeHead: (c) => { status = c; }, end: (t) => { out = JSON.parse(t); } }); return { status, body: out }; };
-  const cfgFile = hc.userConfigPath();
-  const prevCfg = fs.existsSync(cfgFile) ? fs.readFileSync(cfgFile, 'utf8') : null;
-  const prevDir = process.env.CLAUDE_CONFIG_DIR;
-  const cfgDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-phase-cfg-'));
-  const proj = path.join(cfgDir, 'projects', 'C--proj');
-  fs.mkdirSync(proj, { recursive: true });
-  process.env.CLAUDE_CONFIG_DIR = cfgDir;
-  try {
-    hc._resetCache();
-    assertEq(hc.getCompaction().phaseRestart, false, 'off by default');
-    fs.writeFileSync(path.join(proj, 'light.jsonl'), phaseTranscript(LIGHT_STEPS).join('\n'));
-    const noGain = await call(dash.saveCompactionConfig, { phaseRestart: true });
-    assertEq([noGain.status, noGain.body.needsConfirm, noGain.body.config.phaseRestart, noGain.body.measure.verdict], [200, true, false, 'no-gain'], JSON.stringify(noGain.body));
-    const forced = await call(dash.saveCompactionConfig, { phaseRestart: true, force: true });
-    assertEq([forced.body.config.phaseRestart, forced.body.measure.verdict], [true, 'no-gain'], 'forced after seeing the numbers');
-    const off = await call(dash.saveCompactionConfig, { phaseRestart: false });
-    assertEq([off.body.config.phaseRestart, off.body.measure], [false, undefined], 'turning off measures nothing');
-    fs.writeFileSync(path.join(proj, 'heavy.jsonl'), phaseTranscript(HEAVY_STEPS).join('\n'));
-    const gain = await call(dash.saveCompactionConfig, { phaseRestart: true });
-    assertEq([gain.body.config.phaseRestart, gain.body.measure.verdict, gain.body.needsConfirm], [true, 'gain', undefined], JSON.stringify(gain.body));
-    assertEq(JSON.parse(fs.readFileSync(cfgFile, 'utf8')).compaction.phaseRestart, true, 'saved UPDATE-SAFE');
-    const last = await call((req, res) => dash.getPhaseRestartMeasure(req, res), {});
-    assertEq(last.body.measure.verdict, 'gain', 'the last measurement is kept for the panel');
-    const ui = fs.readFileSync(path.join(ROOT, 'dashboard', 'index.html'), 'utf8');
-    assert(!ui.includes('id="cmp-pr"'), 'retired compaction controls are not offered by the panel');
-  } finally {
-    if (prevDir === undefined) delete process.env.CLAUDE_CONFIG_DIR; else process.env.CLAUDE_CONFIG_DIR = prevDir;
-    if (prevCfg == null) { try { fs.unlinkSync(cfgFile); } catch (err) { void err; } } else fs.writeFileSync(cfgFile, prevCfg);
-    hc._resetCache();
-    fs.rmSync(cfgDir, { recursive: true, force: true });
   }
 });
 
@@ -29035,115 +28909,6 @@ test('doctor.checkCompactionRate + compaction-report.formatReport: warns only on
   assertEq(/default threshold is unchanged/.test(txt), true);
 });
 
-function cmpTranscript(dir, rows) {
-  const f = path.join(dir, 'session.jsonl');
-  fs.writeFileSync(f, rows.map((r) => JSON.stringify(r)).join('\n') + '\n');
-  return f;
-}
-
-test('compaction-event.readNewApiCalls: one entry per API call since the last one seen; synthetic re-written copies skipped; afterCompaction from the boundary', () => {
-  const ce = require('./compaction-event.js');
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-cmp-tr-'));
-  const call = (id, usage, extra = {}) => ({ type: 'assistant', ...extra, message: { id, model: 'm', usage } });
-  const real = (w) => ({ input_tokens: 2, cache_read_input_tokens: 900, cache_creation_input_tokens: w, cache_creation: { ephemeral_5m_input_tokens: w, ephemeral_1h_input_tokens: 0 } });
-  const zeroCopy = { input_tokens: 0, output_tokens: 0, cache_read_input_tokens: 0, cache_creation_input_tokens: 0, cache_creation: { ephemeral_5m_input_tokens: 29227 } };
-  const f = cmpTranscript(dir, [
-    { type: 'user', message: { content: 'x'.repeat(600 * 1024) } }, // older rows fall out of the 512 KB tail
-    call('m1', real(100)), call('m1', real(100)),                    // thinking + tool_use rows of ONE call
-    call('side', real(7), { isSidechain: true }),
-    { type: 'system', subtype: 'compact_boundary' },
-    call('m1', zeroCopy), call('m2', zeroCopy),                      // the engine's re-written copies
-    call('m3', real(1980)),                                          // the first real call after the compaction
-    call('m4', real(50)),
-  ]);
-  const all = ce.readNewApiCalls(f, 'm1');
-  assertEq(all.map((c) => c.id), ['m3', 'm4'], 'since m1: each later call once; copies and sidechain skipped');
-  assertEq(all.map((c) => c.afterCompaction), [true, false], 'only the first real call after the boundary');
-  assertEq(ce.readNewApiCalls(f, 'm4'), [], 'nothing new since the last call seen');
-  assertEq(ce.readNewApiCalls(f, null).map((c) => [c.id, c.afterCompaction]), [['m3', true], ['m4', false]], 'first observation of a process: every call since the last boundary (a resumed session compacted before its first prompt)');
-  const noB = cmpTranscript(fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-cmp-nb-')), [call('n1', real(5)), call('n2', real(6))]);
-  assertEq(ce.readNewApiCalls(noB, null).map((c) => c.id), ['n2'], 'no boundary: the latest call only');
-  assertEq(ce.readNewApiCalls(f, 'gone-out-of-window').map((c) => c.id), ['m4'], 'since not in the tail: latest only (never a flood)');
-  const info = {};
-  ce.readNewApiCalls(f, 'gone-out-of-window', info);
-  assertEq([info.gap && info.gap.skippedInWindow, info.gap && info.gap.transcriptBytes], [2, fs.statSync(f).size], 'and the gap is reported: the in-window calls not recorded are counted (compactacao-router-13)');
-  const seenInfo = {};
-  ce.readNewApiCalls(f, 'm1', seenInfo);
-  assertEq(seenInfo.gap, undefined, 'no gap when the last call seen is in the window');
-  assert(/if \(info\.gap\) await metrics\.record\('cache\.turn\.gap'/.test(fs.readFileSync(path.join(__dirname, 'compaction-event.js'), 'utf8')), 'the turn records the gap as cache.turn.gap');
-  assertEq(ce.readNewApiCalls(path.join(dir, 'missing.jsonl'), null), []);
-});
-
-async function withCmpStore(fn) {
-  const mods = ['../engine/lib/metrics-store.js', '../engine/lib/metrics.js', './compaction-event.js'];
-  for (const m of mods) delete require.cache[require.resolve(m)];
-  const prev = process.env.CLAUDE_PLUGIN_DATA;
-  process.env.CLAUDE_PLUGIN_DATA = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-cmp-store-'));
-  try {
-    const store = require('../engine/lib/metrics-store.js');
-    if (!store.init({ project: 'ccb-cmp-probe' })) return; // no SQLite backend here: nothing to assert
-    store.close();
-    await fn(require('./compaction-event.js'), () => require('../engine/lib/metrics-store.js'));
-  } finally {
-    require('../engine/lib/metrics-store.js').close();
-    for (const m of mods) delete require.cache[require.resolve(m)];
-    process.env.CLAUDE_PLUGIN_DATA = prev;
-  }
-}
-
-test('compaction-event.run: trail events land in the metrics store; turn records cache.turn and replies the window this host proved', async () => {
-  await withCmpStore(async (ce, store) => {
-    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-cmp-proj-'));
-    const base = { session_id: 'sid-cmp', cwd: dir };
-    assertEq(await ce.run({ ...base, payload: { kind: 'run', trigger: 'manual', outcome: 'pruned', charsCut: 10 } }), {});
-    assertEq(await ce.run({ ...base, payload: { kind: 'cold', detectedBy: 'timer', answerAt: 1, idleMs: 3601000, ttlMs: 3600000 } }), {});
-    const f = cmpTranscript(dir, [{ type: 'system', subtype: 'compact_boundary' }, { type: 'assistant', message: { id: 'msg-a', model: 'm1', usage: { input_tokens: 2, cache_read_input_tokens: 0, cache_creation_input_tokens: 500, cache_creation: { ephemeral_5m_input_tokens: 500, ephemeral_1h_input_tokens: 0 } } } }]);
-    const reply = await ce.run({ ...base, transcript_path: f, payload: { kind: 'turn', host: 'gw.local', auth: 'api-key' } });
-    assertEq(reply.observed.ttlMs, 300000, 'this call contracted a 5 min write');
-    assertEq(reply.observed.write5m, 500);
-    assertEq(reply.observed.afterCompaction, true, 'marked from the transcript (first call after the boundary)');
-    assertEq(reply.lastMessageId, 'msg-a');
-    assertEq(reply.ttl.observed, '5m');
-    assert(reply.config && reply.config.enabled === false && reply.config.thresholdPercent === 0, 'old modules receive the disabled policy on their next turn');
-    const again = await ce.run({ ...base, transcript_path: f, payload: { kind: 'turn', host: 'gw.local', auth: 'api-key', sinceMessageId: 'msg-a' } });
-    assertEq(again.recorded, 0, 'the same call is never recorded twice');
-    assertEq(again.lastMessageId, 'msg-a');
-    const hello = await ce.run({ ...base, payload: { kind: 'hello', host: 'gw.local', auth: 'api-key' } });
-    assert(hello.config && hello.config.enabled === false && hello.config.thresholdPercent === 0, 'hello disables old compaction modules');
-    assertEq(hello.ttl.observed, '5m', 'hello replies the window already observed for this host');
-    assertEq((await ce.run({ ...base, payload: { kind: 'hello', host: 'other', auth: 'bearer' } })).ttl.observed, null, 'another host has no observation → null, never an assumed 5m');
-    const s = store();
-    const names = s.getEventLog({ limit: 50 }).map((r) => r.eventName);
-    for (const n of ['compaction.run', 'compaction.cold', 'cache.turn', 'compaction.session']) assert(names.includes(n), `${n} recorded (got ${names})`);
-    const turn = s.getEventLog({ eventName: 'cache.turn', limit: 1 })[0];
-    assertEq(turn.payload.afterCompaction, true);
-    assertEq(turn.sessionId, 'sid-cmp');
-    let threw = null;
-    try { await ce.run({ ...base, payload: { kind: 'nope' } }); } catch (err) { threw = err.message; }
-    assert(/unknown kind/.test(threw || ''), 'an unknown kind fails loud');
-    threw = null;
-    try { await ce.run({ ...base }); } catch (err) { threw = err.message; }
-    assert(/payload\.kind is required/.test(threw || ''), 'a missing payload fails loud');
-  });
-});
-
-// After the folder TTL switches to 5m, every call READS the 1h system prefix (~18k) and re-writes the rest at 5m:
-// a "hit" by parseCacheUsage, which leaves its window null. Real session a91f3364 (security-check, 18/10): 155 gates
-// judged by the 1h host window, waited, and 62 cold re-writes followed with no cut. Measured rows, not invented ones.
-const POST_SWITCH_CALL = { input_tokens: 3, output_tokens: 900, cache_read_input_tokens: 17753, cache_creation_input_tokens: 380829, cache_creation: { ephemeral_5m_input_tokens: 380829, ephemeral_1h_input_tokens: 0 } };
-test('compaction-event.run turn: a hit that WRITES at 5m proves a 5 min window (the folder-TTL sessions are all hits on the 1h system prefix)', async () => {
-  await withCmpStore(async (ce) => {
-    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-cmp-hit5m-'));
-    const f = cmpTranscript(dir, [{ type: 'assistant', message: { id: 'msg-h', model: 'm1', usage: POST_SWITCH_CALL } }]);
-    const reply = await ce.run({ session_id: 'sid-h', cwd: dir, transcript_path: f, payload: { kind: 'turn', host: 'gw.local', auth: 'api-key' } });
-    assertEq(reply.observed.cacheState, 'hit');
-    assertEq(reply.observed.ttlMs, 300000, 'the window of the write, hit or miss');
-    const f2 = cmpTranscript(dir, [{ type: 'assistant', message: { id: 'msg-r', model: 'm1', usage: { input_tokens: 1, output_tokens: 5, cache_read_input_tokens: 400000, cache_creation_input_tokens: 0 } } }]);
-    assertEq((await ce.run({ session_id: 'sid-h', cwd: dir, transcript_path: f2, payload: { kind: 'turn', host: 'gw.local', auth: 'api-key' } })).observed.ttlMs, null, 'a pure read writes nothing: no window (the last one stands)');
-  });
-});
-
-
 test('compaction-cache-cross: per day, compactions over a warm vs a cold cache, the warm ones listed; expiries once per session and answer; a warm run after its own expiry is a disagreement', () => {
   const { crossCacheState, formatCross, periodOf } = require('./lib/compaction-cache-cross.js');
   const day1 = new Date(2026, 9, 27, 10, 0).getTime();
@@ -29227,88 +28992,6 @@ test('runtime-sweep: a held-prompt copy nobody came back for is removed after th
     assertEq(sweepSessionState(dir), 1);
     assert(!fs.existsSync(old) && fs.existsSync(young) && fs.existsSync(other), 'only the old held copy went');
   } finally { fs.rmSync(dir, { recursive: true, force: true }); }
-});
-
-test('compaction-event hello: records the module version (null = a module from before it was sent) and answers the installed one', async () => {
-  await withCmpStore(async (ce, store) => {
-    const pkgVersion = require('../package.json').version;
-    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-cmp-hello-'));
-    const hello = (sid, extra) => ce.run({ session_id: sid, cwd: dir, payload: { kind: 'hello', host: 'h', auth: 'a', ...extra } });
-    assertEq((await hello('sid-new', { moduleVersion: pkgVersion })).installedVersion, pkgVersion);
-    await hello('sid-old', {});
-    const rows = store().getEventLog({ eventName: 'compaction.session' });
-    const by = (sid) => rows.find((r) => r.sessionId === sid).payload;
-    assertEq([by('sid-new').moduleVersion, by('sid-old').moduleVersion], [pkgVersion, null]);
-  });
-});
-
-test('compaction-report.staleModuleSessions + doctor.checkSessionModules: sessions on another module version are listed (newest hello wins) and warned about', () => {
-  const { staleModuleSessions } = require('./lib/compaction-report.js');
-  const doctor = require('./doctor.js');
-  const now = Date.now();
-  const rows = [
-    { sessionId: 'aaaaaaaa-1', ts: now - 1000, payload: { moduleVersion: '3.10.1' } },
-    { sessionId: 'bbbbbbbb-2', ts: now - 2000, payload: { moduleVersion: null } },
-    { sessionId: 'cccccccc-3', ts: now - 9000, payload: { moduleVersion: '3.9.0' } },
-    { sessionId: 'cccccccc-3', ts: now - 3000, payload: { moduleVersion: '3.10.2' } },
-  ];
-  const store = { listProjects: () => ['p'], close() {}, init: () => true, getEventLog: () => rows };
-  const stale = staleModuleSessions({ installed: '3.10.2', store });
-  assertEq(stale.map((s) => [s.sessionId, s.version]).sort(), [['aaaaaaaa-1', '3.10.1'], ['bbbbbbbb-2', null]]);
-  const res = doctor.runChecks({ sessionModules: { installed: '3.10.2', stale } }).find((r) => r.id === 'session-modules');
-  assertEq(res.status, 'warn');
-  assert(/2 session\(s\)/.test(res.detail) && /before the version was reported/.test(res.detail) && /Reopen/.test(res.fix), res.detail);
-  assertEq(doctor.runChecks({ sessionModules: { installed: '3.10.2', stale: [] } }).find((r) => r.id === 'session-modules').status, 'ok');
-  assertEq(doctor.runChecks({ sessionModules: { error: 'x' } }).find((r) => r.id === 'session-modules').status, 'warn', 'a read failure is shown');
-  // With the install time: a session whose hello predates the install counts only if it recorded a call after it
-  // (the metrics hold no session end — the first real run listed 54 sessions, almost all already closed).
-  const installedAt = now - 5000;
-  const byEvent = {
-    'compaction.session': [
-      { sessionId: 'dddddddd-4', ts: now - 60000, payload: {} },              // old module, active after the install
-      { sessionId: 'eeeeeeee-5', ts: now - 60000, payload: {} },              // old module, nothing since: closed
-      { sessionId: 'ffffffff-6', ts: now - 1000, payload: { moduleVersion: '3.10.1' } }, // hello after the install
-    ],
-    'cache.turn': [{ sessionId: 'dddddddd-4', ts: now - 2000, payload: {} }, { sessionId: 'eeeeeeee-5', ts: now - 30000, payload: {} }],
-    'compaction.gate': [],
-  };
-  const asked = [];
-  const store2 = { listProjects: () => ['p'], close() {}, init: () => true, getEventLog: ({ eventName, sinceTs }) => { asked.push([eventName, sinceTs]); return byEvent[eventName].filter((r) => r.ts >= sinceTs); } };
-  const live = staleModuleSessions({ installed: '3.10.2', installedAt, store: store2 });
-  assertEq(live.map((s) => s.sessionId).sort(), ['dddddddd-4', 'ffffffff-6'], JSON.stringify(live));
-  assert(asked.some(([e, s]) => e === 'cache.turn' && s === installedAt), 'activity read only after the install');
-  const res2 = doctor.runChecks({ sessionModules: { installed: '3.10.2', stale: live } }).find((r) => r.id === 'session-modules');
-  assert(/active since the update/.test(res2.detail), res2.detail);
-  assertEq(doctor.runChecks({}).find((r) => r.id === 'session-modules').status, 'ok', 'not probed → says so');
-});
-
-test('http-daemon POST /hook/compaction-event: REAL daemon — token-gated like /mcp; a module reaches hook_compaction_event end to end', async () => {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-cmp-route-'));
-  const { startHttpDaemon } = await import(require('url').pathToFileURL(path.join(ROOT, 'servers', 'brain-server', 'lib', 'http-daemon.js')).href);
-  const savedTok = process.env.BRAIN_HTTP_TOKEN; delete process.env.BRAIN_HTTP_TOKEN;
-  const d = await startHttpDaemon({ pluginRoot: ROOT, dataDir: dir, port: 0 });
-  try {
-    const base = `http://127.0.0.1:${d.httpServer.address().port}`;
-    const health = await (await fetch(`${base}/health`)).json();
-    assertEq(path.resolve(health.dataDir), path.resolve(dir), '/health names the data dir the module reads the token from');
-    const token = fs.readFileSync(path.join(health.dataDir, 'brain-http.token'), 'utf8').trim();
-    const transcript = cmpTranscript(dir, [{ type: 'assistant', message: { model: 'm', usage: { input_tokens: 1, cache_read_input_tokens: 0, cache_creation_input_tokens: 40, cache_creation: { ephemeral_1h_input_tokens: 40, ephemeral_5m_input_tokens: 0 } } } }]);
-    const body = JSON.stringify({ session_id: 'sid-route', cwd: dir, transcript_path: transcript, payload: JSON.stringify({ kind: 'turn', host: 'api.anthropic.com', auth: 'bearer' }) });
-    const post = (auth) => fetch(`${base}/hook/compaction-event`, { method: 'POST', headers: { 'Content-Type': 'application/json', ...(auth ? { Authorization: auth } : {}) }, body });
-    assertEq((await post(null)).status, 401, 'no token → 401');
-    assertEq((await post('Bearer wrong')).status, 401, 'wrong token → 401');
-    const ok = await post(`Bearer ${token}`);
-    assertEq(ok.status, 200);
-    const reply = await ok.json();
-    assertEq(reply.observed.write1h, 40, 'the transcript usage was read in the daemon');
-    assertEq(reply.observed.ttlMs, 3600000);
-    const bad = await fetch(`${base}/hook/compaction-event`, { method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` }, body: 'not json' });
-    assertEq(bad.status, 400, 'a non-JSON body is refused, not crashed on');
-    assertEq((await fetch(`${base}/hook/other`, { method: 'POST', headers: { Authorization: `Bearer ${token}` } })).status, 404, 'only the declared module routes exist');
-  } finally {
-    if (savedTok !== undefined) process.env.BRAIN_HTTP_TOKEN = savedTok;
-    await d.shutdown();
-  }
 });
 
 // ─── Boss band + /boss (hooks/boss.mjs → GET /hook/boss-summary → scripts/boss-summary.js) ──
@@ -31327,6 +31010,36 @@ test('window-cmd: a test window resets the terminal modes after ANY claude exit,
   const [exe, args] = lib.launchArgs('C:\\b.cmd', 'T', true);
   assertEq(exe, 'wt.exe'); assertEq(args[0] + args[1], '-wnew');
   assertEq(lib.launchArgs('C:\\b.cmd', 'T', false)[0], 'cmd.exe');
+});
+
+// ─── Retired compaction leftovers (the Boss no longer compacts): nothing may expose or emit them ─────────
+test('retired compaction: phaseRestart control is gone (config reader/writer, dashboard API + panel JS, measurement tool)', () => {
+  const hc = require('./lib/hooks-config.js');
+  assertEq(typeof hc.saveCompaction, 'undefined', 'nothing is left to save');
+  const c = hc.getCompaction();
+  for (const k of Object.keys(c)) assert(!/phaseRestart/i.test(k), `getCompaction still exposes ${k}`);
+  const dash = fs.readFileSync(path.join(SCRIPTS, 'dashboard.js'), 'utf8');
+  assert(!/phase-restart|phaseRestart|saveCompactionConfig|\/api\/compaction\/config/i.test(dash), 'dashboard.js still serves the control');
+  const html = fs.readFileSync(path.join(SCRIPTS, '..', 'dashboard', 'index.html'), 'utf8');
+  assert(!/phaseRestart|savePhaseRestart|api\/compaction\/config/.test(html), 'the panel still carries the control JS');
+  const hcSrc = fs.readFileSync(path.join(SCRIPTS, 'lib', 'hooks-config.js'), 'utf8');
+  assert(!/phaseRestart|PHASE_RESTART/.test(hcSrc), 'hooks-config still knows phaseRestart');
+  for (const f of ['phase-restart-measure.js', path.join('lib', 'phase-restart-measure.js')]) assert(!fs.existsSync(path.join(SCRIPTS, f)), `${f} must be removed`);
+});
+
+test('retired compaction: the compaction-event tool, daemon route and Node side are gone', () => {
+  assert(!fs.existsSync(path.join(SCRIPTS, 'compaction-event.js')), 'scripts/compaction-event.js must be removed');
+  const tools = fs.readFileSync(path.join(SCRIPTS, 'lib', 'hook-tools.js'), 'utf8');
+  assert(!/hook_compaction_event|compaction-event/.test(tools), 'hook-tools still registers it');
+  const daemon = fs.readFileSync(path.join(SCRIPTS, '..', 'servers', 'brain-server', 'lib', 'http-daemon.js'), 'utf8');
+  assert(!/hook\/compaction-event|hook_compaction_event/.test(daemon), 'the daemon still routes it');
+});
+
+test('retired compaction: the Doctor no longer has a session-modules check and compaction-report has no staleModuleSessions', () => {
+  const doctor = require('./doctor.js');
+  assert(!doctor.runChecks({}).some((r) => r.id === 'session-modules'), 'session-modules check must be gone');
+  assertEq(typeof require('./lib/compaction-report.js').staleModuleSessions, 'undefined');
+  assert(!/sessionModules|session-modules/.test(fs.readFileSync(path.join(SCRIPTS, 'doctor.js'), 'utf8')), 'doctor.js still mentions it');
 });
 
 // ─── Runner ──────────────────────────────────────────────────────────────────
