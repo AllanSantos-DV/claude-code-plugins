@@ -28965,17 +28965,50 @@ test('compaction-core.decideTurnEnd: an autonomous turn (no person prompt gated)
 });
 
 test('compaction-core.thresholdFor: a % of the window the engine applies (200K and 1M alike), clamped to the slider range, flagged past the engine point', () => {
-  assertEq(cmpCore.thresholdFor({ window: 1000000, engineAutoCompactAt: 967000 }), { thresholdTokens: 300000, percent: 30, aboveEngine: false });
+  assertEq(cmpCore.thresholdFor({ window: 1000000, engineAutoCompactAt: 967000 }), { thresholdTokens: 150000, percent: 30, aboveEngine: false, capped: true }, '1M window: 30% = 300k, capped at 150k (measured 02/11)');
+  assertEq(cmpCore.thresholdFor({ window: 1000000, engineAutoCompactAt: 967000 }, { thresholdMaxTokens: 0 }), { thresholdTokens: 300000, percent: 30, aboveEngine: false }, 'cap 0 = off: the pure percent of before');
+  assertEq(cmpCore.thresholdFor({ window: 1000000 }, { thresholdPercent: 10 }), { thresholdTokens: 100000, percent: 10, aboveEngine: false }, 'a percent already below the cap is not touched');
   assertEq(cmpCore.thresholdFor({ window: 300000, engineAutoCompactAt: 267000 }), { thresholdTokens: 90000, percent: 30, aboveEngine: false });
   assertEq(cmpCore.thresholdFor({ window: 200000, engineAutoCompactAt: 167000 }, { thresholdPercent: 50 }), { thresholdTokens: 100000, percent: 50, aboveEngine: false });
   assertEq(cmpCore.thresholdFor({ window: 153000, engineAutoCompactAt: 120000 }), { thresholdTokens: 45900, percent: 30, aboveEngine: false }, 'pure percent: no token floor');
   assertEq(cmpCore.thresholdFor({ window: 200000, engineAutoCompactAt: 167000 }).thresholdTokens, 60000, '30% of 200k = 60k, not 90k');
-  assertEq(cmpCore.thresholdFor({ window: 1000000, engineAutoCompactAt: 967000 }, { minThresholdTokens: 999999 }).thresholdTokens, 300000, 'no floor option exists any more: only the percent counts');
-  assertEq(cmpCore.thresholdFor({ window: 200000, engineAutoCompactAt: 150000 }, { thresholdPercent: 80 }), { thresholdTokens: 160000, percent: 80, aboveEngine: true }, 'past the engine point: it compacts first — flagged, never silently moved');
+  assertEq(cmpCore.thresholdFor({ window: 1000000, engineAutoCompactAt: 967000 }, { minThresholdTokens: 999999 }).thresholdTokens, 150000, 'no floor option exists any more: the percent, capped');
+  assertEq(cmpCore.thresholdFor({ window: 200000, engineAutoCompactAt: 150000 }, { thresholdPercent: 80 }), { thresholdTokens: 150000, percent: 80, aboveEngine: true, capped: true },'past the engine point: it compacts first — flagged, never silently moved');
   assertEq(cmpCore.thresholdFor({ window: 200000 }, { thresholdPercent: 95 }).percent, 80, 'clamped to the range top');
   assertEq(cmpCore.thresholdFor({ window: 200000 }, { thresholdPercent: 2 }).percent, 10, 'clamped to the range bottom');
   assertEq(cmpCore.thresholdFor({}).thresholdTokens, null, 'no window → no threshold');
   assertEq(cmpCore.clampPercent('x'), 30, 'garbage → the default');
+});
+
+test('compaction-core.decideTurnEnd: past the warm ceiling a WARM cache is cut at the end of the turn (a session that never idles); below it, off (0), or in the cooldown it still waits', () => {
+  const NOW = 100_000_000;
+  const T = { thresholdTokens: 150000, warmCeilingTokens: 200000, minIntervalMs: 600000 };
+  const d = (s, o = T) => cmpCore.decideTurnEnd({ busy: false, gated: false, now: NOW, ttlMs: 3600000, lastAnswerAt: NOW - 20000, ...s }, o);
+  assertEq(d({ tokens: 210000 }), { action: 'compact', reason: 'turn-end-warm-ceiling' }, 'warm, past the ceiling: cut');
+  assertEq(d({ tokens: 199999 }), { action: 'wait', reason: 'cache-warm', dueInMs: 3600000 - 20000 }, 'warm, past the cold threshold but under the ceiling: waits for the cold cut');
+  assertEq(d({ tokens: 210000 }, { ...T, warmCeilingTokens: 0 }).action, 'wait', '0 = off: a warm cache is never cut');
+  assertEq(d({ tokens: 210000, lastCompactAt: NOW - 60000 }), { action: 'none', reason: 'cooldown' }, 'no cost loop');
+  assertEq(d({ tokens: 210000, busy: true }), { action: 'none', reason: 'busy' });
+  assertEq(d({ tokens: 210000, gated: true }), { action: 'none', reason: 'prompt-gated' });
+  assertEq(d({ tokens: 210000, lastAnswerAt: NOW - 3600000 }), { action: 'compact', reason: 'turn-end-cache-cold' }, 'cold stays the cold cut (the brief)');
+  assertEq(d({ tokens: 180000 }, { ...T, warmCeilingTokens: 100000 }).action, 'compact', 'a ceiling under the cold threshold is lifted to it: never cuts below the threshold');
+  assertEq(d({ tokens: 140000 }, { ...T, warmCeilingTokens: 100000 }).action, 'none', '... and below the threshold nothing happens');
+  assertEq(cmpCore.decideTiming({ tokens: 210000, now: NOW, ttlMs: 3600000, lastAnswerAt: NOW - 20000, busy: false }, T), { action: 'wait', reason: 'cache-warm', dueInMs: 3600000 - 20000 }, "the person's prompt gate never cuts a warm cache (it would hold the prompt for a model call)");
+});
+
+test('hooks-config compaction: thresholdMaxTokens / warmCeilingTokens default to the measured values, 0 turns each off, garbage falls back (never silently to off), saves are clamped', () => {
+  const hc = require('./lib/hooks-config.js');
+  const file = hc.userConfigPath();
+  const c0 = hc.getCompaction();
+  assertEq([c0.thresholdMaxTokens, c0.warmCeilingTokens], [150000, 200000], 'defaults');
+  const out = hc.saveCompaction({ thresholdMaxTokens: 0, warmCeilingTokens: 10 });
+  assertEq([out.thresholdMaxTokens, out.warmCeilingTokens], [0, 50000], '0 = off; a tiny ceiling clamps to the 50k floor');
+  assertEq(hc.saveCompaction({ thresholdMaxTokens: 9e9 }).thresholdMaxTokens, 2000000, 'clamped to the top');
+  let threw = null;
+  try { hc.saveCompaction({ warmCeilingTokens: 'abc' }); } catch (err) { threw = err.message; }
+  assert(/warmCeilingTokens must be a number/.test(String(threw)), `garbage is refused loud: ${threw}`);
+  const cfg = JSON.parse(fs.readFileSync(file, 'utf8')); delete cfg.compaction.thresholdMaxTokens; delete cfg.compaction.warmCeilingTokens;
+  fs.writeFileSync(file, JSON.stringify(cfg, null, 2));
 });
 
 test('hooks-config compaction: getCompaction clamps; saveCompaction writes the UPDATE-SAFE user-config (never the shipped file)', () => {
@@ -29091,7 +29124,7 @@ async function phaseGateRun({ config, tokens, messages, coldMs = 0, prompts = 1 
   fs.rmSync(dir, { recursive: true, force: true });
   return calls;
 }
-const PHASE_CFG = { enabled: true, thresholdPercent: 80, minIntervalMs: 600000, folderTtl: false, phaseRestartTokens: 400000 };
+const PHASE_CFG = { enabled: true, thresholdPercent: 80, minIntervalMs: 600000, folderTtl: false, phaseRestartTokens: 400000, warmCeilingTokens: 0, thresholdMaxTokens: 0 };
 const COMMITTED = [{ role: 'user', text: 'do it' }, { role: 'assistant', text: '', toolUses: [{ name: 'Bash', input: { command: 'git commit -m x' } }] }];
 
 test('compaction hook phase restart (default off): the prompt goes down unchanged, no toast, the history is never read', async () => {
@@ -29467,7 +29500,7 @@ async function folderCutRun(ce, { gated }) {
   const transcript = path.join(dir, 'session.jsonl');
   const row = (id, usage) => JSON.stringify({ type: 'assistant', message: { id, model: 'm1', usage } }) + '\n';
   fs.writeFileSync(transcript, row('msg-1', PRE_SWITCH_CALL));
-  const config = { enabled: true, thresholdPercent: 30, minIntervalMs: 600000, folderTtl: true };
+  const config = { enabled: true, thresholdPercent: 30, minIntervalMs: 600000, folderTtl: true, warmCeilingTokens: 0, thresholdMaxTokens: 0 };
   const out = { compacts: 0, timers: [], logs: [] };
   let now = 1_000_000_000;
   const env = { CLAUDE_PLUGIN_DATA: dir, BRAIN_HTTP_PORT: '1' };
@@ -29541,7 +29574,7 @@ async function heartbeatNotices({ withTranscript, beats, folderAnswer }) {
   fs.writeFileSync(path.join(dir, 'brain-http.token'), 'tok');
   const transcript = path.join(dir, 'session.jsonl');
   fs.writeFileSync(transcript, '');
-  const config = { enabled: true, thresholdPercent: 30, minIntervalMs: 600000, folderTtl: true };
+  const config = { enabled: true, thresholdPercent: 30, minIntervalMs: 600000, folderTtl: true, warmCeilingTokens: 0, thresholdMaxTokens: 0 };
   const out = { timers: [], logs: [], trail: [] };
   const env = { CLAUDE_PLUGIN_DATA: dir, BRAIN_HTTP_PORT: '1' };
   const $ = {
@@ -29641,7 +29674,7 @@ async function reopenedRun(ce, o) {
     const row = (id, ago, usage, extra = {}) => JSON.stringify({ type: 'assistant', timestamp: new Date(now - ago).toISOString(), message: { id, model: 'claude-opus-5-5[1m]', usage }, ...extra }) + '\n';
     fs.writeFileSync(transcript, row('msg-old', o.lastCallAgoMs, REOPEN_CALL) + (o.boundaryAfter ? JSON.stringify({ type: 'system', subtype: 'compact_boundary' }) + '\n' : ''));
   }
-  const config = { enabled: true, thresholdPercent: 30, minIntervalMs: 600000, folderTtl: true };
+  const config = { enabled: true, thresholdPercent: 30, minIntervalMs: 600000, folderTtl: true, warmCeilingTokens: 0, thresholdMaxTokens: 0 };
   const out = { logs: [], gates: [], timers: [], compacts: 0, toasts: [], hello: null, folders: [] };
   const env = { CLAUDE_PLUGIN_DATA: dir, BRAIN_HTTP_PORT: '1', CLAUDE_CONFIG_DIR: cfgDir };
   const prevCfgDir = process.env.CLAUDE_CONFIG_DIR;
@@ -29800,7 +29833,7 @@ async function heldPromptRun(ce, { failHeld = false, dieBeforeResend = false } =
   let now = now0;
   const transcript = path.join(dir, 'session.jsonl');
   fs.writeFileSync(transcript, JSON.stringify({ type: 'assistant', timestamp: new Date(now0 - 30000).toISOString(), message: { id: 'msg-1', model: 'claude-opus-5-5[1m]', usage: REOPEN_CALL } }) + '\n');
-  const config = { enabled: true, thresholdPercent: 30, minIntervalMs: 600000, folderTtl: true };
+  const config = { enabled: true, thresholdPercent: 30, minIntervalMs: 600000, folderTtl: true, warmCeilingTokens: 0, thresholdMaxTokens: 0 };
   const heldDir = path.join(require('../engine/lib/data-dir.js').dataDir(), '.runtime');
   const heldFile = path.join(heldDir, 'held-prompt-sid-held-0123.json');
   const mk = () => {
@@ -29901,7 +29934,7 @@ test('compaction hook: a person\'s prompt WITH attachments over a cold cache goe
     const transcript = path.join(dir, 'session.jsonl');
     const call = (id, at) => JSON.stringify({ type: 'assistant', timestamp: new Date(at).toISOString(), message: { id, model: 'claude-opus-5-5[1m]', usage: REOPEN_CALL } }) + '\n';
     fs.writeFileSync(transcript, call('msg-1', now - 30000));
-    const config = { enabled: true, thresholdPercent: 30, minIntervalMs: 600000, folderTtl: true };
+    const config = { enabled: true, thresholdPercent: 30, minIntervalMs: 600000, folderTtl: true, warmCeilingTokens: 0, thresholdMaxTokens: 0 };
     const out = { timers: [], compacts: 0, toasts: [], logs: [] };
     const $ = {
       env: { get: async (k) => ({ CLAUDE_PLUGIN_DATA: dir, BRAIN_HTTP_PORT: '1' })[k] },
@@ -29948,6 +29981,60 @@ test('compaction hook: a person\'s prompt WITH attachments over a cold cache goe
       assertEq(out.compacts, 1, 'cut as soon as the cache went cold again');
     } finally { fs.rmSync(dir, { recursive: true, force: true }); }
   });
+});
+
+test('compaction hook: a session that never idles is cut at the end of a turn past the warm ceiling (warm cache, gate trail says why); with the ceiling off it is not', async () => {
+  const cmp = await import(require('url').pathToFileURL(path.join(ROOT, 'hooks', 'compaction.mjs')).href);
+  for (const [warmCeilingTokens, expected] of [[200000, 1], [0, 0]]) {
+    await withCmpStore(async (ce) => {
+      const hooks = collectModuleHooks(cmp.register);
+      const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-warmceil-'));
+      fs.writeFileSync(path.join(dir, 'brain-http.token'), 'tok');
+      const now = Date.now();
+      const transcript = path.join(dir, 'session.jsonl');
+      const call = (id, at) => JSON.stringify({ type: 'assistant', timestamp: new Date(at).toISOString(), message: { id, model: 'claude-opus-5-5[1m]', usage: REOPEN_CALL } }) + '\n';
+      fs.writeFileSync(transcript, '');
+      const config = { enabled: true, thresholdPercent: 30, minIntervalMs: 600000, folderTtl: true, warmCeilingTokens };
+      const out = { timers: [], compacts: 0, toasts: [], logs: [], gates: [] };
+      const $ = {
+        env: { get: async (k) => ({ CLAUDE_PLUGIN_DATA: dir, BRAIN_HTTP_PORT: '1' })[k] },
+        fs: { read: async (p) => fs.readFileSync(p, 'utf8') },
+        http: { fetch: async (url, init) => {
+          if (url.split('?')[0].endsWith('/health')) return { status: 200, ok: true, text: JSON.stringify({ dataDir: dir }) };
+          const body = JSON.parse(init.body); const payload = JSON.parse(body.payload);
+          let reply = {};
+          if (payload.kind === 'hello') reply = { config };
+          else if (payload.kind === 'folder' || payload.kind === 'folder-end') reply = { folderTtl: { ttl: '1h', live: 1, allAbove: false, action: 'none' } };
+          else if (payload.kind === 'turn' || payload.kind === 'tail') reply = { ...(await ce.run({ ...body, payload })), config };
+          else if (payload.kind === 'gate') out.gates.push(payload);
+          return { status: 200, ok: true, text: JSON.stringify(reply) };
+        } },
+        session: {
+          id: async () => 'sid-warmceil', cwd: async () => dir, root: async () => dir, authorize: async () => ({ kind: 'api-key' }),
+          usage: async () => ({ context: { tokens: 260000, window: 1000000, breakdown: { rawMaxTokens: 1000000, autoCompactThreshold: 967000 } } }),
+          messages: async () => [],
+        },
+        clock: { now: async () => now, after: (ms, fn) => { out.timers.push({ ms, fn }); } },
+        ui: { log: (t) => out.logs.push(t), toast: (t) => out.toasts.push(t) },
+        command: { run: async () => { out.compacts++; } },
+        prompt: { submit: async () => {} },
+      };
+      const flush = async () => { for (let i = 0; i < 20; i++) await new Promise((r) => setImmediate(r)); };
+      const fireShort = async () => { for (const t of out.timers.filter((x) => x.ms === 1)) { out.timers.splice(out.timers.indexOf(t), 1); t.fn(); } await flush(); };
+      try {
+        await findHook(hooks, 'classic.SessionStart').fn($, { transcript_path: transcript, source: 'startup' }, async (e) => e);
+        await findHook(hooks, 'session.start').fn($, { isInteractive: true }, async (e) => e);
+        await fireShort();
+        out.compacts = 0; // the reopen look (a 30 s old answer: warm) never cuts
+        await findHook(hooks, 'turn.start').fn($, {}, async (e) => e);
+        fs.appendFileSync(transcript, call('msg-2', now));
+        await findHook(hooks, 'turn.complete').fn($, {}, async () => ({}));
+        await fireShort();
+        assertEq(out.compacts, expected, `ceiling ${warmCeilingTokens}: warm cache at 260k tokens, 1M window (cold threshold capped at 150k)`);
+        if (expected) assert(out.gates.some((g) => g.action === 'compact' && g.reason === 'turn-end-warm-ceiling' && g.thresholdTokens === 150000), `the trail says why — ${JSON.stringify(out.gates)}`);
+      } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+    });
+  }
 });
 
 test('compaction hook: a failed hook is logged with its readable cause — the engine\'s plain-data failure, an Error, a string — never "[object Object]"', async () => {
@@ -30313,7 +30400,7 @@ test('compaction hook, open session idle > 1h after a PERSON\'s turn: the cold c
     const transcript = path.join(dir, 'session.jsonl');
     const call = (id, at) => JSON.stringify({ type: 'assistant', timestamp: new Date(at).toISOString(), message: { id, model: 'claude-opus-5-5[1m]', usage: REOPEN_CALL } }) + '\n';
     fs.writeFileSync(transcript, call('msg-1', now - 30000));
-    const config = { enabled: true, thresholdPercent: 30, minIntervalMs: 600000, folderTtl: true };
+    const config = { enabled: true, thresholdPercent: 30, minIntervalMs: 600000, folderTtl: true, warmCeilingTokens: 0, thresholdMaxTokens: 0 };
     const out = { timers: [], compacts: 0, gates: [], logs: [] };
     const $ = {
       env: { get: async (k) => ({ CLAUDE_PLUGIN_DATA: dir, BRAIN_HTTP_PORT: '1' })[k] },

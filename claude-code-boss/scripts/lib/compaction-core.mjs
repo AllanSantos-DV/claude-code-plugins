@@ -33,6 +33,18 @@ export const DEFAULTS = Object.freeze({
   // No token floor: the threshold is ONLY a percent of the model's window (owner, 14/10: the user's
   // setting, 200k → 30% of 200k, 1M → 30% of 1M). A compaction leaves ~10–20k (measured on 15 real
   // ones, 14/10), far below any percent in the slider's range, and minIntervalMs stops a loop.
+  // Measured 2026-11-02 on the day's real turns (docs/research/2026-11-02-compactacao-por-que-nao-compacta): 88% of the cost sat
+  // in turns above 100k tokens, and on a 1M window "30%" is 300k — the sessions sat at 306–481k before the first idle gap
+  // let the cut in. The cold cut now also has an ABSOLUTE ceiling: threshold = min(percent of the window, this). A 200k
+  // window keeps its 30% (60k); a 1M window cuts at 150k. Replayed on 2,300 real calls: cold cut at 150k saves 12–36%,
+  // 300k saves 0–3.5%. 0 turns the cap off (the owner's earlier pure-percent rule).
+  thresholdMaxTokens: 150000,
+  // A WARM cache is still never cut by the prompt gate. But a session that never idles (96% of today's turns came < 1 min
+  // apart; 0 of 238 calls of the 300k+ cycles had a 5-min gap before the cut) re-reads its whole context on every call, so
+  // at the END of a turn, past this size, the cut runs on a warm cache too (the engine's summary reads the warm prefix:
+  // one cheap call; or our pruning when it cuts >= 85%). Replayed with the summary call and the rewrite charged:
+  // −29% / −37% on the two big sessions at 200k. 0 turns it off (the earlier "never compact a warm cache" rule).
+  warmCeilingTokens: 200000,
   minIntervalMs: 10 * 60000,   // never two compactions closer than this
   preserveRecentMessages: 6,   // newest messages never touched (the first is always kept)
   truncateHeadChars: 300,      // what survives of a pruned result, before the note
@@ -254,7 +266,13 @@ export function decideTiming(s, options = {}) {
 export function decideTurnEnd(s, options = {}) {
   if (s.gated) return { action: 'none', reason: 'prompt-gated' };
   const t = decideTiming(s, options);
-  return t.action === 'compact' ? { action: 'compact', reason: 'turn-end-cache-cold' } : t;
+  if (t.action === 'compact') return { action: 'compact', reason: 'turn-end-cache-cold' };
+  // Warm cache, past the ceiling (never below the cold threshold): a session that never idles would otherwise pay the whole
+  // context on every call until some pause lets the cold cut in.
+  const o = { ...DEFAULTS, ...options };
+  const ceiling = Math.max(Number(o.warmCeilingTokens) || 0, Number(o.thresholdTokens) || 0);
+  if (t.action === 'wait' && Number(o.warmCeilingTokens) > 0 && s.tokens >= ceiling) return { action: 'compact', reason: 'turn-end-warm-ceiling' };
+  return t;
 }
 
 /**
@@ -307,7 +325,7 @@ export function isMechanicalCut(s) {
  * The threshold in tokens for the window the engine applies NOW. `window` is the
  * compaction window (`rawMaxTokens` of usage({breakdown}) — the model's limit or a smaller
  * one set by CLAUDE_CODE_AUTO_COMPACT_WINDOW/settings), falling back to the model window.
- * Pure percent of the window: no token floor (see DEFAULTS).
+ * A percent of the window, capped at `thresholdMaxTokens` (see DEFAULTS); no token floor.
  * `aboveEngine`: the threshold sits at or past the engine's own auto-compact point — the
  * engine will compact first and the gate will rarely act.
  * @param {{window?: number, engineAutoCompactAt?: number}} w
@@ -319,9 +337,12 @@ export function thresholdFor(w, options = {}) {
   const pct = clampPercent(o.thresholdPercent, o);
   const window = Number(w && w.window);
   if (!(window > 0)) return { thresholdTokens: null, percent: pct, aboveEngine: false };
-  const thresholdTokens = Math.round(window * pct / 100);
+  const byPercent = Math.round(window * pct / 100);
+  const cap = Number(o.thresholdMaxTokens);
+  const capped = cap > 0 && byPercent > cap;
+  const thresholdTokens = capped ? Math.round(cap) : byPercent;
   const engine = Number(w && w.engineAutoCompactAt);
-  return { thresholdTokens, percent: pct, aboveEngine: engine > 0 && thresholdTokens >= engine };
+  return { thresholdTokens, percent: pct, aboveEngine: engine > 0 && thresholdTokens >= engine, ...(capped ? { capped: true } : {}) };
 }
 
 /**

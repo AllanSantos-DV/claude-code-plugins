@@ -1,5 +1,14 @@
 # Changelog
 
+## [3.14.0] - 2026-11-02
+
+### Changed
+- **A compactação corta onde o custo está, não em 30% de uma janela de 1M** (`scripts/lib/compaction-core.mjs`, `hooks/compaction.mjs`): medido nos transcritos de 02/11 (docs/research/2026-11-02-compactacao-por-que-nao-compacta.md) — 88% do custo em turnos acima de 100k e as sessões principais subindo a 306–481k antes do corte.
+  - `thresholdMaxTokens` (padrão 150000): o limiar do corte a frio é o menor entre o percentual da janela e esse teto. Janela de 200k segue em 30% (60k); janela de 1M corta em 150k. `0` desliga o teto (percentual puro, como antes).
+  - `warmCeilingTokens` (padrão 200000): sessão que nunca ociosa (96% dos turnos de hoje vieram com menos de 1 min; 0 de 1.122 chamadas de subagente e 1,5–5,9% das principais tiveram uma pausa de 5 min) é cortada no fim do turno mesmo com cache quente quando passa desse tamanho (poda se cortar ≥ 85%, senão o resumo do engine). Nunca no portão do prompt da pessoa. `0` desliga (a regra antiga, "nunca compactar cache quente"). Replay nas chamadas reais: −36% / −37% nas duas sessões principais, com o resumo e a regravação cobrados.
+  - `compaction.gate` registra `turn-end-warm-ceiling`; `getCompaction`/`saveCompaction` expõem e limitam as duas chaves.
+- Subagentes não são alcançados pelo Boss (o engine decide a compactação deles pela janela dele): ver o relatório acima para o ajuste do ambiente.
+
 ## [3.13.0] - 2026-10-29
 
 ### Added
