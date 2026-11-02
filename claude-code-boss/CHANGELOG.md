@@ -1,12 +1,12 @@
 # Changelog
 
-## [Unreleased]
+## [3.14.1] - 2026-11-02
 
 ### Fixed
 - Retirados os limites de compactação de 150k/200k e o gate do Boss; a compactação automática e o comando manual seguem o Claude Code.
 - Overrides antigos não reativam a política. O cost-tuning não solicita janela nem percentual; valores que ele possuía são restaurados, preservando configurações do usuário.
 - Removidos `hooks/compaction.mjs` e `scripts/lib/compaction-core.mjs` (código morto: nenhum hook os carregava); `getCompaction` não depende mais deles e devolve sempre desligado. O roteador/cost-tuning só grava `ENABLE_TOOL_SEARCH`; teste novo falha se ele voltar a gravar `CLAUDE_CODE_AUTO_COMPACT_WINDOW` ou `autoCompactWindow`. Docs (CONFIGURATION, FUNCTIONAL-SPEC, GETTING-STARTED) alinhadas ao código.
-- Painel sem controles de limiar; medições antigas continuam disponíveis. Candidata local, sem publicação.
+- Painel sem controles de limiar; medições antigas continuam disponíveis.
 - Removido o controle morto `compaction.phaseRestart` (nada o emitia desde a retirada do módulo de compactação): leitor/gravador em `hooks-config.js` (`saveCompaction` deixou de existir), rotas `GET/PUT /api/compaction/config` e `GET /api/compaction/phase-restart` do painel, o JS órfão do `dashboard/index.html` e a ferramenta de medição `scripts/phase-restart-measure.js`. Chaves antigas no user-config são ignoradas. As métricas antigas (`phase-restart-notice`) seguem como histórico.
 - Removida a rota vestigial `POST /hook/compaction-event` e a ferramenta `hook_compaction_event` com `scripts/compaction-event.js`: só sessões abertas antes da retirada ainda a chamavam, e sem o módulo nada lê o que ela gravava.
 - Doctor: o check `session-modules` ("Sessions on an old Boss") saiu junto, com `staleModuleSessions`; ele comparava a versão do módulo de compactação, que não existe mais. Três testes novos (`retired compaction: …`) falharam antes da remoção e passam depois.
