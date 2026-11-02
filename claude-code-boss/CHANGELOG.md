@@ -1,5 +1,10 @@
 # Changelog
 
+## [3.14.3] - 2026-11-02
+
+### Fixed
+- **"claude-code-boss foi atualizado" ainda se repetia quando uma sessão aberta antes da 3.14.2 seguia rodando** (`scripts/lib/update-notice.js`): a 3.14.2 só impedia o código novo de voltar a versão vista; as versões até a 3.14.1 continuavam regravando a versão antiga, e a sessão nova seguinte anunciava a mesma atualização de novo (visto depois da publicação: "3.14.0 → 3.14.2" duas vezes). A maior versão vista agora fica também num campo próprio, que o código antigo preserva sem mexer, e a versão voltada para trás é ignorada. O teste novo grava o estado exatamente como o código antigo grava: falhou antes da correção e passa depois.
+
 ## [3.14.2] - 2026-11-02
 
 ### Fixed
