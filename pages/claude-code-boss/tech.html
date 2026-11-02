@@ -366,10 +366,10 @@ html{scroll-behavior:auto}
       <h3>O que isso significa na prática</h3>
       <ul class="tight">
         <li><b>Configuração sempre desligada:</b> <code>getCompaction</code> devolve sempre desligado. Overrides antigos em <code>compaction</code> ou <code>costTuning.autoCompactWindow</code> não reativam nada, e chaves antigas no user-config são ignoradas.</li>
-        <li><b>Nenhuma janela gravada:</b> o Boss não define <code>CLAUDE_CODE_AUTO_COMPACT_WINDOW</code>, <code>CLAUDE_AUTOCOMPACT_PCT_OVERRIDE</code> nem uma nova <code>autoCompactWindow</code>. Na próxima abertura, valores escritos pelo cost-tuning anterior são restaurados pelo registro de propriedade; configurações próprias do usuário ou do orquestrador são preservadas.</li>
+        <li><b>Nenhuma janela gravada:</b> o Boss não define <code>CLAUDE_CODE_AUTO_COMPACT_WINDOW</code>, <code>CLAUDE_AUTOCOMPACT_PCT_OVERRIDE</code> nem uma nova <code>autoCompactWindow</code>. Na próxima abertura, valores escritos pelo cost-tuning anterior são restaurados pelo registro de propriedade; configurações próprias do usuário ou do orquestrador são preservadas. O roteador de modelos não grava nem remove a chave <code>autoCompactWindow</code> do <code>settings.json</code> em nenhum caminho (tuning de contexto desligado ou roteador desligado): um valor do usuário fica, mesmo que seja igual ao que versões antigas gravavam.</li>
         <li><b>Cost-tuning:</b> continua cuidando de <code>ENABLE_TOOL_SEARCH=true</code> e, somente em sessões cobradas por API, de <code>CLAUDE_CODE_PROMPT_CACHE_TTL=1h</code>. Esses ajustes não mudam o limiar de compactação.</li>
         <li><b>Sessões abertas antes da atualização:</b> recebem <code>enabled: false</code> na próxima consulta ao daemon. Abra uma sessão nova para carregar o módulo atual, que não registra hooks de compactação.</li>
-        <li><b>Painel:</b> sem controles de limiar. O painel <b>Compaction &amp; cache</b> mantém as medições antigas como histórico; elas não são prova de compactação na versão atual.</li>
+        <li><b>Painel:</b> sem controles de limiar. O painel <b>Compaction &amp; cache</b> é o histórico do que foi registrado (a compactação é do Claude Code) e mantém as medições antigas; elas não são prova de compactação pelo Boss na versão atual.</li>
       </ul>
     </div>
 
