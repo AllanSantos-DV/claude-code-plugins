@@ -26534,6 +26534,18 @@ test('update-notice: "version available" cached 6h and told once per version; "p
       setVer('3.4.0'); assertEq(u.takeUpdateNotices({ root, dir, env: {} }), [], `older session: silent (round ${i + 1})`);
     }
     assertEq(JSON.parse(fs.readFileSync(u.stateFile(dir), 'utf8')).seenVersion, '3.5.0', 'seenVersion never moves back');
+    // The older session really runs the PREVIOUS release's code (≤ 3.14.1), which writes { ...state, seenVersion:
+    // <its version> } with no guard (seen on the owner's machine: "3.14.0 → 3.14.2" told twice). The newer code
+    // keeps the highest version in a field the old writer carries over untouched, so the rewind is ignored.
+    const oldWriter = (v) => { const f = u.stateFile(dir); fs.writeFileSync(f, JSON.stringify({ ...JSON.parse(fs.readFileSync(f, 'utf8')), seenVersion: v })); };
+    for (let i = 0; i < 3; i++) {
+      oldWriter('3.4.0');
+      setVer('3.5.0'); assertEq(u.takeUpdateNotices({ root, dir, env: {} }), [], `previous release's code rewound seenVersion: newer session not re-announced (round ${i + 1})`);
+    }
+    oldWriter('3.4.0'); setVer('3.6.0');
+    const fromOld = u.takeUpdateNotices({ root, dir, env: {} });
+    assert(fromOld.length === 1 && /atualizado: 3\.5\.0 → 3\.6\.0/.test(fromOld[0]), `a real update after a rewind names the highest seen version: ${JSON.stringify(fromOld)}`);
+    setVer('3.5.0');
     // Read-decide-write runs under the state lock: while another live process holds it, nothing is told or written
     // (that process decides); a lock left by a dead process is reclaimed.
     const lockDir = path.join(base, 'g-lock'); const lockFile = `${u.stateFile(lockDir)}.lock`;

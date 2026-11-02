@@ -110,13 +110,15 @@ function takeLocked(file, installed, env) {
   const { compareSemver } = require('./plugin-updater.js');
   const st = readState(file);
   const out = [];
-  if (st.seenVersion && st.seenVersion !== installed && compareSemver(installed, st.seenVersion) > 0) {
-    out.push(`claude-code-boss foi atualizado: ${st.seenVersion} → ${installed}. Novidades: ${CHANGELOG_URL}`);
+  // A session opened before an update keeps running the previous version's hooks, and releases up to 3.14.1 write
+  // { ...state, seenVersion: <their version> } with no guard. They carry unknown fields over untouched, so the
+  // highest version seen lives in highestSeen too: the rewound seenVersion is ignored and never re-announced.
+  const seen = st.highestSeen && (!st.seenVersion || compareSemver(st.highestSeen, st.seenVersion) > 0) ? st.highestSeen : st.seenVersion;
+  if (seen && seen !== installed && compareSemver(installed, seen) > 0) {
+    out.push(`claude-code-boss foi atualizado: ${seen} → ${installed}. Novidades: ${CHANGELOG_URL}`);
   }
-  // A session opened before an update keeps running the previous version's hooks: never move seenVersion back,
-  // or every prompt in a newer session would announce the same update again.
-  const rewind = st.seenVersion && compareSemver(installed, st.seenVersion) < 0;
-  const next = { ...st, seenVersion: rewind ? st.seenVersion : installed };
+  const top = seen && compareSemver(installed, seen) < 0 ? seen : installed;
+  const next = { ...st, seenVersion: top, highestSeen: top };
   if (!autoUpdateDisabled(env) && st.latest && compareSemver(st.latest, installed) > 0 && st.announcedLatest !== st.latest) {
     const blockedBy = ccAutoUpdateBlockedBy(env);
     const how = blockedBy
@@ -125,7 +127,7 @@ function takeLocked(file, installed, env) {
     out.push(`claude-code-boss: versão ${st.latest} disponível (instalada: ${installed}). ${how} Novidades: ${CHANGELOG_URL}. Desligar os avisos e a atualização automática: CLAUDE_CODE_BOSS_AUTO_UPDATE=0.`);
     next.announcedLatest = st.latest;
   }
-  if (next.seenVersion !== st.seenVersion || next.announcedLatest !== st.announcedLatest) writeState(file, next);
+  if (next.seenVersion !== st.seenVersion || next.highestSeen !== st.highestSeen || next.announcedLatest !== st.announcedLatest) writeState(file, next);
   return out;
 }
 
