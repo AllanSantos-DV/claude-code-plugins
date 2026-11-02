@@ -41,7 +41,7 @@ Seguranca: seu token da assinatura Claude NUNCA vai ao endpoint — so os header
 
 ### contextTuning (sem proxy)
 
-Grava `ENABLE_TOOL_SEARCH=true` + `CLAUDE_CODE_AUTO_COMPACT_WINDOW=200000` no settings.json SEM publicar ANTHROPIC_BASE_URL. Ganho de token (~50k deferidos/request + teto de contexto ativo) mantendo a janela de 1M disponivel. Ideal para quem usa Opus/Sonnet 1M.
+Grava só `ENABLE_TOOL_SEARCH=true` no settings.json SEM publicar ANTHROPIC_BASE_URL. Ganho de token (~50k deferidos/request) mantendo a janela de 1M disponivel; a janela de compactação (`autoCompactWindow`, `/autocompact`) fica com o Claude Code e nunca é gravada nem removida. Ideal para quem usa Opus/Sonnet 1M.
 
 ## Chave NVIDIA
 

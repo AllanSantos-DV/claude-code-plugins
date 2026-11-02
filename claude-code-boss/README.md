@@ -474,7 +474,7 @@ e mostra a URL. Também: `node scripts/dashboard-start.js` (imprime `{ok, url}`)
   contexto; por script: redirects, execuções, saída média, sucesso, variantes não
   cobertas, pipes; scripts que **nunca rodaram** na janela, com botão **Prune** — também pela tool `curation_prune_unused`; latência por hook do daemon) + card
   "learning loop" (capturadas vs. mescladas por semana) + botão de consolidação
-  do KB (ver abaixo) + painel **Compaction & cache** (compactações por motivo, caracteres e tokens
+  do KB (ver abaixo) + painel **Compaction & cache** (histórico do que foi registrado; a compactação é do Claude Code — compactações por motivo, caracteres e tokens
   cortados, prompts segurados, retomadas repodadas, e por host de API: janela de cache observada,
   hit e o preço da primeira chamada depois de cada compactação).
 

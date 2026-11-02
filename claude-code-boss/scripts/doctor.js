@@ -720,7 +720,7 @@ async function gatherContext({ probe = false, audit = false } = {}) {
   try {
     let settings = {};
     try { settings = JSON.parse(fs.readFileSync(path.join(home, '.claude', 'settings.json'), 'utf8')); } catch (e) { if (e.code !== 'ENOENT') throw e; }
-    bossConfig = fc.auditBossConfig({ settings, compaction: hooksCfg.getCompaction(), costTuning: hooksCfg.getCostTuning(), pluginId: bossPluginId(settings) });
+    bossConfig = fc.auditBossConfig({ settings, costTuning: hooksCfg.getCostTuning(), pluginId: bossPluginId(settings) });
   } catch (e) { console.error(`[doctor] boss settings: ${e.message}`); }
   let fixedCost = null;
   if (audit) {

@@ -531,25 +531,21 @@ const TOOL_SEARCH_KEY = 'ENABLE_TOOL_SEARCH';
 /**
  * Is the boss itself configured the way that does not cost the user money? A wrong value here hurts every
  * session: a fixed auto-compact window (153000 made the engine compact at ~120k with a warm cache, 15 times in one
- * session), compaction off, the plugin disabled, Tool Search off (every MCP definition sent on every message).
- * @param {{settings:object, compaction:{enabled:boolean,thresholdPercent:number}, costTuning:{autoCompactWindow:(number|null)}, pluginId:(string|null)}} f
+ * session), the plugin disabled, Tool Search off (every MCP definition sent on every message).
+ * @param {{settings:object, costTuning:{autoCompactWindow:(number|null)}, pluginId:(string|null)}} f
  * @returns {{items:Array<{id:string,label:string,status:'ok'|'warn'|'fail',detail:string,fix:string}>, actions:object[]}}
  */
 function auditBossConfig(f) {
   const env = (f.settings && f.settings.env) || {};
   const items = [];
   const actions = [];
-  const c = f.compaction || {};
-  const pct = c.thresholdPercent;
-  items.push(c.enabled === false
-    ? { id: 'boss-compaction', label: 'Compaction (Claude Code)', status: 'ok', detail: 'managed by Claude Code; Boss does not set thresholds or start compaction', fix: '' }
-    : { id: 'boss-compaction', label: 'Compaction (boss)', status: 'ok', detail: `on, at ${pct}% of the model window (${Math.round(200000 * pct / 100)} tokens of 200k, ${Math.round(1000000 * pct / 100)} of 1M) — a percent, never a fixed number`, fix: '' });
+  items.push({ id: 'boss-compaction', label: 'Compaction (Claude Code)', status: 'ok', detail: 'managed by Claude Code; Boss does not set thresholds or start compaction', fix: '' });
   const w = env[WINDOW_KEY];
   const optedIn = f.costTuning && f.costTuning.autoCompactWindow != null && String(f.costTuning.autoCompactWindow) === String(w);
   // 1,000,000 = the largest window of any model: compaction at 967k is the engine default for a 1M model, not a squeeze.
   const squeezes = w !== undefined && !(Number(w) >= 1000000);
   if (squeezes && !optedIn) {
-    items.push({ id: 'boss-fixed-window', label: 'Fixed auto-compact window', status: 'warn', detail: `settings.json env has ${WINDOW_KEY}=${w}: the engine compacts at ${Number(w) ? Number(w) - 33000 : '?'} tokens whatever the model window, mid-turn, with a warm cache (the 153000 case); the variable also outranks your /autocompact`, fix: 'Run `node scripts/doctor.js --fix` to remove it (saved to the undo journal; `--undo` puts it back), or delete the key by hand. Compaction then follows the percent above.' });
+    items.push({ id: 'boss-fixed-window', label: 'Fixed auto-compact window', status: 'warn', detail: `settings.json env has ${WINDOW_KEY}=${w}: the engine compacts at ${Number(w) ? Number(w) - 33000 : '?'} tokens whatever the model window, mid-turn, with a warm cache (the 153000 case); the variable also outranks your /autocompact`, fix: 'Run `node scripts/doctor.js --fix` to remove it (saved to the undo journal; `--undo` puts it back), or delete the key by hand. Compaction then follows the model window.' });
     actions.push({ kind: 'env-set', target: WINDOW_KEY, value: undefined, tokens: 0, why: 'fixed window instead of a percent of the model window' });
   } else items.push({ id: 'boss-fixed-window', label: 'Fixed auto-compact window', status: 'ok', detail: w === undefined ? 'none set (the engine follows the model window)' : (optedIn ? `${w}, opted in through costTuning.autoCompactWindow` : `${w}: not below the largest model window, so it does not force earlier compaction`), fix: '' });
   const ts = env[TOOL_SEARCH_KEY];
@@ -559,7 +555,7 @@ function auditBossConfig(f) {
   } else items.push({ id: 'boss-tool-search', label: 'Tool Search (ENABLE_TOOL_SEARCH)', status: 'ok', detail: `${TOOL_SEARCH_KEY}=${ts}`, fix: '' });
   const on = !f.pluginId || !f.settings || !f.settings.enabledPlugins || f.settings.enabledPlugins[f.pluginId] !== false;
   if (!on) {
-    items.push({ id: 'boss-plugin', label: 'Plugin enabled', status: 'fail', detail: `${f.pluginId} is disabled in settings.json: no hooks, no compaction control, no memory`, fix: 'Run `node scripts/doctor.js --fix` to enable it (undo with `--undo`), then restart Claude Code.' });
+    items.push({ id: 'boss-plugin', label: 'Plugin enabled', status: 'fail', detail: `${f.pluginId} is disabled in settings.json: no hooks, no memory`, fix: 'Run `node scripts/doctor.js --fix` to enable it (undo with `--undo`), then restart Claude Code.' });
     actions.push({ kind: 'plugin-enable', target: f.pluginId, tokens: 0, why: 'the boss plugin is disabled' });
   } else items.push({ id: 'boss-plugin', label: 'Plugin enabled', status: 'ok', detail: f.pluginId ? `${f.pluginId} enabled` : 'running from a plugin directory', fix: '' });
   return { items, actions };

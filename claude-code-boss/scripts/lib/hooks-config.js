@@ -371,33 +371,10 @@ function getSessionSummary() {
 }
 
 // Compaction belongs to Claude Code: the Boss holds no threshold, gate or window (the controlled-compaction hook
-// and its core were removed). What remains here is the read shape the dashboard and the metrics still use (always
-// disabled).
-const THRESHOLD_PERCENT_RANGE = [10, 80]; // old slider range, kept only in the read shape
-const BRIEF_TAIL_TOKENS_DEFAULT = 2000;
-const MIN_INTERVAL_RANGE = [1, 60];
-function clampInterval(v) {
-  const n = Number(v);
-  if (!Number.isFinite(n)) return 10;
-  return Math.min(MIN_INTERVAL_RANGE[1], Math.max(MIN_INTERVAL_RANGE[0], Math.round(n)));
-}
+// and its core were removed). What remains is the read shape the dashboard and the metrics still use: always
+// disabled, whatever an old config file says.
 function getCompaction() {
-  const c = _resolved().compaction || {};
-  return {
-    enabled: false,
-    thresholdPercent: 0,
-    thresholdRange: THRESHOLD_PERCENT_RANGE,
-    thresholdMaxTokens: 0,
-    warmCeilingTokens: 0,
-    minIntervalMs: clampInterval(c.minIntervalMinutes ?? 10) * 60000,
-    minIntervalRange: MIN_INTERVAL_RANGE,
-    preserveRecentMessages: Number.isInteger(c.preserveRecentMessages) && c.preserveRecentMessages >= 0 ? c.preserveRecentMessages : 6,
-    // Cold cut = model-free brief with a verbatim tail; the launch folder's TTL 1h→5m while every live session there
-    // is past the threshold (lib/folder-ttl.js). Both on unless set to false.
-    mechanicalCut: false,
-    briefTailTokens: Number.isFinite(Number(c.briefTailTokens)) ? Math.min(20000, Math.max(0, Math.round(Number(c.briefTailTokens)))) : BRIEF_TAIL_TOKENS_DEFAULT,
-    folderTtl: false,
-  };
+  return { enabled: false, thresholdPercent: 0, thresholdMaxTokens: 0, warmCeilingTokens: 0, mechanicalCut: false, folderTtl: false };
 }
 
 // Session cost knobs kept in settings.json env (lib/cost-tuning.js, applied by

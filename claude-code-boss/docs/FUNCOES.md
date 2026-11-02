@@ -1,6 +1,6 @@
 # claude-code-boss: função por função
 
-O valor do Boss cresce com o uso. Cada sessão pode deixar lições na memória, que voltam em sessões e projetos seguintes. Os comandos que enchem o contexto de saída viram scripts curados por projeto. A compactação acontece quando o cache está frio, e não no meio de um turno quente. Decisões que antes dependiam do LLM (usar o script curado, reescrever um heredoc no Windows, restaurar EOL/BOM) passam a ser regras mecânicas, por projeto. Numa máquina nova, sem sessões na memória, o único ganho inicial é a compactação no momento certo, e o gasto até pode subir (hooks e injeções entram antes de haver lição ou script que os compense). O custo em dólar por sessão não mede esse efeito: `node scripts/economy-report.js` mede custo, e hoje não separa sessões com Boss de sessões sem Boss. As medidas deste documento são contagens de eventos, descritas na seção 5.
+O valor do Boss cresce com o uso. Cada sessão pode deixar lições na memória, que voltam em sessões e projetos seguintes. Os comandos que enchem o contexto de saída viram scripts curados por projeto. A compactação fica com o Claude Code: o Boss não define limiar nem dispara cortes. Decisões que antes dependiam do LLM (usar o script curado, reescrever um heredoc no Windows, restaurar EOL/BOM) passam a ser regras mecânicas, por projeto. Numa máquina nova, sem sessões na memória, o ganho inicial vem do custo fixo (Tool Search, auditoria de MCP/skills), e o gasto até pode subir (hooks e injeções entram antes de haver lição ou script que os compense). O custo em dólar por sessão não mede esse efeito: `node scripts/economy-report.js` mede custo, e hoje não separa sessões com Boss de sessões sem Boss. As medidas deste documento são contagens de eventos, descritas na seção 5.
 
 Convenções: caminhos relativos a `claude-code-boss/`. Limiares foram lidos do código e do config shipped (`config/hooks-config.json` define `"profile":"standard"`); nenhum foi reverificado em execução. Um override do usuário em `user-config.json` pode mudar quais detectores rodam, e esse arquivo da máquina não foi lido.
 
@@ -19,7 +19,6 @@ Convenções: caminhos relativos a `claude-code-boss/`. Limiares foram lidos do 
 | curation-detect | PostToolUse do Bash | 1500 chars ou 30 linhas; classe do comando; recorrência em 90 dias | detectar o que curar é mecânico | `curation.flagged` 3733 |
 | curation-guard | PreToolUse do Bash | alias do `shells.json` casa com o comando | a decisão de usar o script passou a ser mecânica (`updatedInput`) | `curation.redirected` 218 |
 | curation-stop | Stop, journal de curadoria | pede REFINE, EXTEND ou CREATE; teto de tentativas | só o pedido é mecânico; o script segue do LLM | `curation.stop.blocked` 3 |
-| compaction gate | prompt humano com sessão ociosa | tokens >= 30% da janela e ocioso >= TTL do cache | decidir a hora de compactar | `compaction.run` 311 |
 | shell-escape, powershell-guard, file-format-guard, graph-guard, error-guard | PreToolUse/PostToolUse | regras próprias (seção 4) | correções que antes dependiam do LLM acertar | seção 5 |
 
 ## 2. Loop de aprendizado

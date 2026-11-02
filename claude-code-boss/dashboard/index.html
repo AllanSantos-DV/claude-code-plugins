@@ -471,7 +471,7 @@ table{font-variant-numeric:tabular-nums}
     </div>
     <div class="card">
       <h2 style="margin:0 0 .5rem 0"><span data-i18n="home.compaction">Compaction &amp; cache</span> <span class="text-muted" style="font-size:.8rem">(last 30 days)</span>
-        <span class="tip" data-tip="When: the session is cut when its context passes the threshold and the provider cache has expired (the prompt is held, cut, then sent), or — if the cache never cools — at the end of a turn once the context passes the warm ceiling. How much: chars cut are exact (our pruning); tokens cut are measured — the context of the turn after the compaction vs the reading before. Cache: the contracted window observed in real writes per API host/credential (ephemeral_5m vs ephemeral_1h) and what the first turn after a compaction paid.">i</span>
+        <span class="tip" data-tip="Compaction belongs to Claude Code: Boss sets no threshold and cuts nothing. This panel reads what was recorded. How much: chars cut are exact (our pruning); tokens cut are measured — the context of the turn after the compaction vs the reading before. Cache: the contracted window observed in real writes per API host/credential (ephemeral_5m vs ephemeral_1h) and what the first turn after a compaction paid.">i</span>
       </h2>
       <div id="home-compaction"><div class="spinner" style="margin:1rem auto"></div></div>
     </div>
@@ -1130,7 +1130,7 @@ table{font-variant-numeric:tabular-nums}
           <input type="checkbox" id="router-context-tuning" onchange="updateRouterSaveState()">
           <span>
             <span class="switch-title"><span data-i18n="router.contextTuningEnable">Context tuning sem proxy (economia de token)</span></span>
-            <span class="text-muted" style="display:block;font-size:.78rem;margin-top:.25rem" data-i18n="router.contextTuningHint">Grava ENABLE_TOOL_SEARCH + a chave autoCompactWindow (o seu /autocompact continua valendo) no settings.json SEM publicar ANTHROPIC_BASE_URL — ganho de token mantendo a janela de 1M disponível. Funciona com o router em off.</span>
+            <span class="text-muted" style="display:block;font-size:.78rem;margin-top:.25rem" data-i18n="router.contextTuningHint">Grava só ENABLE_TOOL_SEARCH no settings.json, SEM publicar ANTHROPIC_BASE_URL — ganho de token mantendo a janela de 1M disponível. A janela de compactação fica com o Claude Code. Funciona com o router em off.</span>
           </span>
         </label>
 
@@ -1483,7 +1483,7 @@ const I18N = {
 'router.applying': 'Applying...',
 'router.error': 'Error',
     'router.contextTuningEnable': 'Context tuning without proxy (token savings)',
-    'router.contextTuningHint': 'Writes ENABLE_TOOL_SEARCH + the autoCompactWindow setting (your /autocompact still wins) to settings.json WITHOUT publishing ANTHROPIC_BASE_URL — token savings while keeping the 1M window available. Works with the router off.',
+    'router.contextTuningHint': 'Writes only ENABLE_TOOL_SEARCH to settings.json, WITHOUT publishing ANTHROPIC_BASE_URL — token savings while keeping the 1M window available. The compaction window stays with Claude Code. Works with the router off.',
 'router.billingNoticeTitle': 'Billing',
 'router.billingNoticeBody': 'The router ships disabled; enabling it is opt-in at your own risk. Passthrough/sticky on the Anthropic route preserves your subscription, but BYOK, NVIDIA fallback and an ANTHROPIC_API_KEY in the environment become API billing. See the guide for how to audit it.',
 'router.billingNoticeLink': 'Billing guide →',
@@ -1717,7 +1717,7 @@ const I18N = {
 'router.applying': 'Aplicando...',
 'router.error': 'Erro',
     'router.contextTuningEnable': 'Context tuning sem proxy (economia de token)',
-    'router.contextTuningHint': 'Grava ENABLE_TOOL_SEARCH + a chave autoCompactWindow (o seu /autocompact continua valendo) no settings.json SEM publicar ANTHROPIC_BASE_URL — ganho de token mantendo a janela de 1M disponível. Funciona com o router em off.',
+    'router.contextTuningHint': 'Grava só ENABLE_TOOL_SEARCH no settings.json, SEM publicar ANTHROPIC_BASE_URL — ganho de token mantendo a janela de 1M disponível. A janela de compactação fica com o Claude Code. Funciona com o router em off.',
 'router.billingNoticeTitle': 'Cobrança',
 'router.billingNoticeBody': 'O router vem desativado por padrão; ligá-lo é opt-in por conta e risco. Passthrough/sticky na rota Anthropic preserva sua assinatura, mas BYOK, fallback NVIDIA e uma ANTHROPIC_API_KEY no ambiente viram cobrança de API. Confira como auditar no guia.',
 'router.billingNoticeLink': 'Guia de cobrança →',
@@ -2928,7 +2928,7 @@ async function loadOutcomePanel() {
     + stat(pct(c.share), 'Noisy commands handled by a script', `${c.scripts} scripts · ${c.uncovered} without one yet`, c.redirected ? 'badge-green' : 'badge-yellow')
     + stat(pct(m.share), 'Decisions taken by a rule', `${m.mechanical} by rule · ${m.handedBack} handed to the model`, m.mechanical ? 'badge-green' : 'badge-yellow')
     + stat(String(s.loopsAvoided.denied), 'Loops avoided (blind re-runs denied)', `${s.loopsAvoided.sessions} sessions · a command that already failed, nothing edited since`, s.loopsAvoided.denied ? 'badge-green' : 'badge-yellow')
-    + stat(!s.compaction.enabled ? 'Off' : (s.compaction.mechanicalCut ? 'On' : 'On (model summary)'), 'Compaction', s.compaction.measured ? `~${fmtTok(s.compaction.tokensCut)} tokens cut (measured on ${s.compaction.measured} next turns)` : (s.compaction.runs ? `${s.compaction.runs} runs · savings not measured yet` : 'no compaction yet'), s.compaction.enabled ? (s.compaction.measured ? 'badge-green' : 'badge-yellow') : 'badge-red')
+    + stat('Claude Code', 'Compaction', s.compaction.runs ? `${s.compaction.runs} recorded (history)` : 'managed by Claude Code', 'badge-green')
     + '</div>';
   const weeks = (s.byWeek || []).slice(-8);
   if (weeks.length) {

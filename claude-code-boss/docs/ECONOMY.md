@@ -5,12 +5,11 @@ mais, com menos repetição e menos decisão tomada no improviso pelo modelo**. 
 
 - **memória** entre sessões e entre projetos (o que deu certo, o que o usuário corrigiu);
 - **curadoria de comandos** (o comando que enche a tela vira um script que devolve o resumo, escolhido por regra e não por sugestão);
-- **compactação na hora certa** (só com o cache do provedor já frio, quando regravar já seria pago);
 - **inteligência coletada** de outros agentes que usam o mesmo servidor de memória;
 - **experiência entre projetos**.
 
-Numa máquina nova, sem sessões na memória, o gasto pode até subir: não há lição para lembrar nem script para reaproveitar, e o único
-ganho imediato é a compactação no momento certo. O ganho cresce com o uso, e o plugin trabalha para transformar decisões que o
+Numa máquina nova, sem sessões na memória, o gasto pode até subir: não há lição para lembrar nem script para reaproveitar, e o ganho
+imediato vem do custo fixo (Tool Search, auditoria de MCP e skills). O ganho cresce com o uso, e o plugin trabalha para transformar decisões que o
 modelo tomava toda vez em decisões mecânicas, baseadas na análise de uso de cada projeto.
 
 Custo em dólar por sessão não mede isso: duas sessões custam o mesmo e uma delas errou duas vezes a mesma coisa. Por isso a
@@ -81,8 +80,7 @@ ambiente, eventos de hook, API de módulos, chaves de settings, campos do transc
 comportamento é o mesmo — para isso há o smoke em sessão real.
 
 - **Compactação ociosa do engine** (2.1.286+, `idleCompaction`): compacta a sessão parada a ~90% do TTL de 1 h, com o cache ainda
-  quente. Chega por flag remota e só funciona com TTL de 1 h; quando ligada, o `folder-ttl` do plugin **não** troca a pasta para 5
-  min (isso a desligaria).
-- **`/autocompact`** (por modelo em `modelSettings`) e `autoCompactWindow`: o ajuste de janela do plugin
-  (`CLAUDE_CODE_AUTO_COMPACT_WINDOW`) continua desligado por padrão e, ligado, ganha do `/autocompact` do usuário (a env tem precedência).
+  quente. Chega por flag remota e só funciona com TTL de 1 h; o plugin não interfere nela.
+- **`/autocompact`** (por modelo em `modelSettings`) e `autoCompactWindow`: o plugin não grava nem remove
+  janela de compactação; vale o `/autocompact` do usuário (uma `CLAUDE_CODE_AUTO_COMPACT_WINDOW` no env tem precedência sobre ele).
 - **TTL de cache**: `promptCacheTtl` virou chave de settings e `CLAUDE_CODE_SUBAGENT_PROMPT_CACHE_TTL` controla subagentes à parte.

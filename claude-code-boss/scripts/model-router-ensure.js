@@ -168,11 +168,11 @@ function readConfig() {
 }
 
 // ── Token-override env bundle (Parte B) ──────────────────────────────────────
-// Ao LIGAR o roteamento (proxy custom) setamos, junto do ANTHROPIC_BASE_URL, dois
-// env que RECUPERAM o que o proxy custom desliga/infla: ENABLE_TOOL_SEARCH=true
-// (religa o tool-search nativo, ~52k deferidos/request) e CLAUDE_CODE_AUTO_COMPACT_
-// WINDOW (capa o contexto ativo mantendo o 1M disponível). Medido na sessão real:
-// cache_read/turno 447k → 74–127k. Ao DESLIGAR, removemos só os NOSSOS.
+// Ao LIGAR o roteamento (proxy custom) setamos, junto do ANTHROPIC_BASE_URL,
+// ENABLE_TOOL_SEARCH=true, que religa o tool-search nativo que o proxy custom
+// desliga (~52k deferidos/request). A janela de compactação é do Claude Code: o
+// valor abaixo só serve para reconhecer a CLAUDE_CODE_AUTO_COMPACT_WINDOW que
+// versões antigas gravavam e migrá-la para fora. Ao DESLIGAR, removemos só os NOSSOS.
 const AUTO_COMPACT_DEFAULT = 200000;
 const AUTO_COMPACT_MIN = 50000;
 const AUTO_COMPACT_MAX = 1000000;
@@ -239,9 +239,9 @@ function contextTuningEnabled(config) {
 // PURA: env desejado com APENAS o tuning (sem proxy). Nunca toca ANTHROPIC_BASE_URL
 // (nem escreve, nem remove: uma base_url de terceiro que já esteja lá é preservada).
 // `== null` → só preenche o ausente, nunca clobbera o valor explícito do usuário.
-// A janela de auto-compact NÃO vai para o env: a variável vence o `/autocompact`, a flag e toda
-// chave do settings (planTuningWindow grava a chave `autoCompactWindow`). Uma variável igual à
-// nossa, gravada por versões anteriores, é removida aqui (migração); a do usuário sobrevive.
+// A janela de compactação pertence ao Claude Code: nem a variável nem a chave `autoCompactWindow`
+// são gravadas. Uma variável igual à nossa, gravada por versões anteriores, é removida aqui
+// (migração); a do usuário sobrevive.
 function planTuningEnv(currentEnv, autoCompactValue) {
   const env = { ...(currentEnv || {}) };
   const next = { ...env };
@@ -250,23 +250,6 @@ function planTuningEnv(currentEnv, autoCompactValue) {
   const changed = next.ENABLE_TOOL_SEARCH !== env.ENABLE_TOOL_SEARCH
     || next.CLAUDE_CODE_AUTO_COMPACT_WINDOW !== env.CLAUDE_CODE_AUTO_COMPACT_WINDOW;
   return { env: next, changed };
-}
-
-// Faixa da chave top-level `autoCompactWindow` do settings (a do env/roteador começa em 50000).
-const WINDOW_SETTING_MIN = 100000;
-
-// PURA: a janela do tuning como chave top-level `autoCompactWindow` do settings.json — o
-// `/autocompact` do usuário (modelSettings) vence a chave. `== null` → só preenche o ausente.
-function planTuningWindow(settings) {
-  const cur = settings && settings.autoCompactWindow;
-  return { value: cur, changed: false };
-}
-
-// PURA: remove a chave só quando bate o valor que TERÍAMOS gravado; um valor do usuário fica.
-function planTuningWindowRemoval(settings, autoCompactValue) {
-  const cur = settings && settings.autoCompactWindow;
-  const ours = cur != null && cur === Math.max(WINDOW_SETTING_MIN, autoCompactValue);
-  return { remove: ours, changed: ours };
 }
 
 // PURA: remove os 2 env de tuning SÓ quando batem o valor que TERÍAMOS gravado
@@ -668,20 +651,18 @@ function enableSettingsRouting(url) {
   }
 }
 
-// Aplica APENAS o env-tuning (sem proxy): tool-search + auto-compact no
-// settings.json, sem ANTHROPIC_BASE_URL. É o ganho de token sem o custo da janela
-// de 1M. Idempotente. `on=false` remove só o que teríamos gravado.
+// Aplica APENAS o env-tuning (sem proxy): tool-search no settings.json, sem
+// ANTHROPIC_BASE_URL. É o ganho de token sem o custo da janela de 1M. Idempotente.
+// `on=false` remove só o que teríamos gravado. A chave `autoCompactWindow` nunca é
+// tocada: um valor gravado por versões antigas é indistinguível do valor do usuário.
 function applySettingsTuning(on) {
   const s = readSettings();
   if (s === null) return false;
   const acw = resolveAutoCompactWindow(readConfig());
   if (on && acw.clamped) log(`AVISO: autoCompactWindow ${acw.original} fora de [${AUTO_COMPACT_MIN}, ${AUTO_COMPACT_MAX}] — ajustado para ${acw.value}.`);
   const plan = on ? planTuningEnv(s.env || {}, acw.value) : planTuningRemoval(s.env || {}, acw.value);
-  // Ligar nunca grava a janela; desligar só remove a que versões antigas gravaram (valor igual ao nosso).
-  const win = on ? { remove: false, changed: false } : planTuningWindowRemoval(s, acw.value);
-  if (!plan.changed && !win.changed) return true;
-  if (plan.changed) { if (Object.keys(plan.env).length === 0) delete s.env; else s.env = plan.env; }
-  if (win.remove) delete s.autoCompactWindow;
+  if (!plan.changed) return true;
+  if (Object.keys(plan.env).length === 0) delete s.env; else s.env = plan.env;
   try {
     writeSettings(s);
     log(on
@@ -758,7 +739,6 @@ function disableSettingsRouting() {
   const plan = planDisableEnv(s.env, acw.value, isOurProxyUrl);
   if (!plan.changed) return; // base_url não é nossa (ou nada nosso p/ remover) → não mexe
   if (Object.keys(plan.env).length === 0) delete s.env; else s.env = plan.env;
-  if (planTuningWindowRemoval(s, acw.value).remove) delete s.autoCompactWindow;
   try {
     writeSettings(s);
     log('settings.json: bundle do roteador removido (ANTHROPIC_BASE_URL + tool-search/auto-compact nossos → Claude direto).');
@@ -1131,6 +1111,6 @@ if (require.main === module) {
 // healthCheck/probeAlive/readRouterToken exportados p/ os testes de verify-before-trust.
 module.exports = { run, mergeRouterConfig, readConfig, healthCheck, probeAlive, readRouterToken,
   resolveAutoCompactWindow, planEnableEnv, planDisableEnv, enableSettingsRouting, disableSettingsRouting,
-  contextTuningEnabled, planTuningEnv, planTuningRemoval, planTuningWindow, planTuningWindowRemoval, applySettingsTuning, applyCostTuning, planCostTuningNow,
+  contextTuningEnabled, planTuningEnv, planTuningRemoval, applySettingsTuning, applyCostTuning, planCostTuningNow,
   // servesThisBuild/processCommandLine/normPath exportados p/ os testes de troca-de-build no boot.
   servesThisBuild, processCommandLine, normPath, sessionGateway, isOurProxyUrl, cleanupGlobalEnv };

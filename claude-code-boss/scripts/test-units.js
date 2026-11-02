@@ -3339,7 +3339,7 @@ test('dashboard /api/metrics/outcome: the Home Results panel reads the same summ
   assert(/id="home-outcome"/.test(html) && /loadOutcomePanel\(\)\.catch/.test(html) && /\/api\/metrics\/outcome/.test(html), 'Home card, isolated loader and endpoint call are in the page');
   assert(/p === '\/api\/metrics\/outcome'/.test(fs.readFileSync(path.join(__dirname, 'dashboard.js'), 'utf8')), 'route registered');
   assert(/Loops avoided \(blind re-runs denied\)/.test(html) && /s\.loopsAvoided\.denied/.test(html), 'the Results panel carries the loops-avoided tile');
-  assert(/'Compaction', s\.compaction\.measured/.test(html) && /s\.compaction\.mechanicalCut/.test(html), 'the Results panel carries the one-tile compaction summary');
+  assert(/stat\('Claude Code', 'Compaction', s\.compaction\.runs/.test(html) && !/s\.compaction\.mechanicalCut/.test(html), 'the Results panel carries the compaction tile: owned by Claude Code, with the recorded history');
 });
 
 test('outcome-metrics loopsAvoided: counts error-guard denials and the sessions they happened in; zero without any', () => {
@@ -9841,14 +9841,9 @@ test('planTuningEnv: grava o tool search e NUNCA a base_url nem a janela no env 
   assertEq('ANTHROPIC_BASE_URL' in r.env, false, 'tuning JAMAIS publica base_url — é o que custa a janela de 1M');
 });
 
-test('contextTuning: no new window; legacy removal still recognizes our old value', () => {
-  const set = routerEnsure.planTuningWindow({}, 200000);
-  assertEq(set, { value: undefined, changed: false }, 'absent stays absent');
-  assertEq(routerEnsure.planTuningWindow({}, 60000).value, undefined, 'no window floor is written');
-  assertEq(routerEnsure.planTuningWindow({ autoCompactWindow: 500000 }, 200000), { value: 500000, changed: false }, 'o valor do usuário fica');
-  assertEq(routerEnsure.planTuningWindowRemoval({ autoCompactWindow: 200000 }, 200000).remove, true, 'o nosso valor sai ao desligar');
-  assertEq(routerEnsure.planTuningWindowRemoval({ autoCompactWindow: 500000 }, 200000).remove, false, 'o do usuário fica');
-  assertEq(routerEnsure.planTuningWindowRemoval({}, 200000).changed, false);
+test('contextTuning: the router has no autoCompactWindow planner (the key is never written nor removed)', () => {
+  assertEq(typeof routerEnsure.planTuningWindow, 'undefined');
+  assertEq(typeof routerEnsure.planTuningWindowRemoval, 'undefined');
 });
 
 test('contextTuning: a variável que uma versão anterior gravou (igual à nossa) é migrada para fora do env; a do usuário sobrevive', () => {
@@ -18114,7 +18109,7 @@ test('fixed-cost.auditBossConfig: compactacao em %, janela fixa, Tool Search e p
   const good = fixedCost.auditBossConfig({ ...base, settings: { env: { ENABLE_TOOL_SEARCH: 'true' }, enabledPlugins: { 'claude-code-boss@m': true } } });
   assertEq(good.items.every((i) => i.status === 'ok'), true, JSON.stringify(good.items));
   assertEq(good.actions, []);
-  assert(/30% of the model window \(60000 tokens of 200k, 300000 of 1M\)/.test(good.items[0].detail), good.items[0].detail);
+  assert(/managed by Claude Code/.test(good.items[0].detail) && !/%/.test(good.items[0].detail), good.items[0].detail);
   const bad = fixedCost.auditBossConfig({
     ...base, compaction: { enabled: false, thresholdPercent: 30 },
     settings: { env: { CLAUDE_CODE_AUTO_COMPACT_WINDOW: '153000', ENABLE_TOOL_SEARCH: 'false' }, enabledPlugins: { 'claude-code-boss@m': false } },
@@ -28506,6 +28501,11 @@ test('router enable/disable against real settings.json: no compaction window wri
     scenario('user', { autoCompactWindow: 500000 });
     scenario('legacyEnv', { env: { CLAUDE_CODE_AUTO_COMPACT_WINDOW: '200000', KEEP: '1' } });
     scenario('userEnv', { env: { CLAUDE_CODE_AUTO_COMPACT_WINDOW: '900000' } });
+    // A user key equal to the value old builds wrote (200000) is indistinguishable from ours: it stays.
+    scenario('user200k', { autoCompactWindow: 200000 });
+    fs.writeFileSync(file, JSON.stringify({ autoCompactWindow: 200000, env: { ENABLE_TOOL_SEARCH: 'true', KEEP: '1' } }));
+    ens.applySettingsTuning(false);
+    out.tuningOff = read();
     console.log(JSON.stringify(out));
   `);
   try {
@@ -28522,6 +28522,9 @@ test('router enable/disable against real settings.json: no compaction window wri
     assert(!('CLAUDE_CODE_AUTO_COMPACT_WINDOW' in (out.legacyEnv.afterEnable.env || {})), 'our old env value is migrated out');
     assertEq(out.legacyEnv.afterEnable.env.KEEP, '1', 'foreign env intact');
     assertEq(out.userEnv.afterEnable.env.CLAUDE_CODE_AUTO_COMPACT_WINDOW, '900000', 'the user\'s own env value is never touched');
+    assertEq(out.user200k.afterDisable.autoCompactWindow, 200000, 'disabling the router keeps a user autoCompactWindow of 200000');
+    assertEq(out.tuningOff.autoCompactWindow, 200000, 'tuning off keeps a user autoCompactWindow of 200000');
+    assertEq(out.tuningOff.env, { KEEP: '1' }, 'tuning off removes only our ENABLE_TOOL_SEARCH');
   } finally { fs.rmSync(home, { recursive: true, force: true }); }
 });
 
@@ -28691,10 +28694,12 @@ test('hooks-config compaction: defaults and stale overrides cannot enable a Boss
       hc._resetCache();
       const config = hc.getCompaction();
       assertEq([config.enabled, config.thresholdPercent, config.thresholdMaxTokens, config.warmCeilingTokens, config.mechanicalCut, config.folderTtl], [false, 0, 0, 0, false, false]);
+      // the retired knobs (interval, recent-message floor, brief tail, slider range) are not exposed any more
+      assertEq(Object.keys(config).sort(), ['enabled', 'folderTtl', 'mechanicalCut', 'thresholdMaxTokens', 'thresholdPercent', 'warmCeilingTokens']);
     };
     check();
     fs.mkdirSync(path.dirname(file), { recursive: true });
-    fs.writeFileSync(file, JSON.stringify({ compaction: { enabled: true, thresholdPercent: 30, thresholdMaxTokens: 150000, warmCeilingTokens: 200000, folderTtl: true, mechanicalCut: true } }));
+    fs.writeFileSync(file, JSON.stringify({ compaction: { enabled: true, thresholdPercent: 30, thresholdMaxTokens: 150000, warmCeilingTokens: 200000, folderTtl: true, mechanicalCut: true, minIntervalMinutes: 5, preserveRecentMessages: 3, briefTailTokens: 9000 } }));
     check();
   });
 });
@@ -28709,9 +28714,7 @@ test('Boss compaction policy: the gate hook and its core are gone, the hook entr
   assert(!events.includes('session.compact'), JSON.stringify(events));
   assertEq(costTuning.wantedWindow({ enabled: true, autoCompactWindow: 150000 }), null);
   assertEq(costTuning.resolveConfig({ autoCompactWindow: 200000 }).autoCompactWindow, null);
-  assertEq(routerEnsure.planTuningWindow({}, 200000), { value: undefined, changed: false });
   const preserved = { autoCompactWindow: 500000, env: { CLAUDE_AUTOCOMPACT_PCT_OVERRIDE: '80', CLAUDE_CODE_AUTO_COMPACT_WINDOW: '900000' } };
-  assertEq(routerEnsure.planTuningWindow(preserved, 200000), { value: 500000, changed: false });
   const plan = costTuning.planCostTuningAll(preserved, costTuning.wanted(costTuning.resolveConfig({ autoCompactWindow: 150000 }), false), costTuning.wantedWindow(), {});
   assertEq(plan.settings.autoCompactWindow, 500000);
   assertEq(plan.env.CLAUDE_CODE_AUTO_COMPACT_WINDOW, '900000');
