@@ -3,22 +3,22 @@
 <head>
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
-<title>claude-code-boss v3.14.0 — detalhes técnicos</title>
-<meta name="description" content="Detalhes técnicos do claude-code-boss v3.14.0: daemon HTTP, hooks, Brain KB, Model Router Anthropic/OpenAI, MCP Memory, graph tools e dashboard." />
+<title>claude-code-boss v3.14.1 — detalhes técnicos</title>
+<meta name="description" content="Detalhes técnicos do claude-code-boss v3.14.1: daemon HTTP, hooks, Brain KB, Model Router Anthropic/OpenAI, MCP Memory, graph tools e dashboard." />
 <link rel="canonical" href="https://allansantos-dv.github.io/claude-code-plugins/claude-code-boss/tech.html">
 <meta property="og:type" content="website">
 <meta property="og:site_name" content="allansantos-plugins">
 <meta property="og:locale" content="pt_BR">
-<meta property="og:title" content="claude-code-boss v3.14.0 — detalhes técnicos">
-<meta property="og:description" content="Detalhes técnicos do claude-code-boss v3.14.0: daemon HTTP, hooks, Brain KB, Model Router Anthropic/OpenAI, MCP Memory, graph tools e dashboard.">
+<meta property="og:title" content="claude-code-boss v3.14.1 — detalhes técnicos">
+<meta property="og:description" content="Detalhes técnicos do claude-code-boss v3.14.1: daemon HTTP, hooks, Brain KB, Model Router Anthropic/OpenAI, MCP Memory, graph tools e dashboard.">
 <meta property="og:url" content="https://allansantos-dv.github.io/claude-code-plugins/claude-code-boss/tech.html">
 <meta property="og:image" content="https://allansantos-dv.github.io/claude-code-plugins/claude-code-boss/og-card.jpg">
 <meta property="og:image:width" content="1200">
 <meta property="og:image:height" content="630">
 <meta property="og:image:alt" content="claude-code-boss: Menos repetição. Mais memória.">
 <meta name="twitter:card" content="summary_large_image">
-<meta name="twitter:title" content="claude-code-boss v3.14.0 — detalhes técnicos">
-<meta name="twitter:description" content="Detalhes técnicos do claude-code-boss v3.14.0: daemon HTTP, hooks, Brain KB, Model Router Anthropic/OpenAI, MCP Memory, graph tools e dashboard.">
+<meta name="twitter:title" content="claude-code-boss v3.14.1 — detalhes técnicos">
+<meta name="twitter:description" content="Detalhes técnicos do claude-code-boss v3.14.1: daemon HTTP, hooks, Brain KB, Model Router Anthropic/OpenAI, MCP Memory, graph tools e dashboard.">
 <meta name="twitter:image" content="https://allansantos-dv.github.io/claude-code-plugins/claude-code-boss/og-card.jpg">
 <script data-ccb-theme-script>
 /* Shared theme; executed before styles and first paint. */
@@ -274,20 +274,20 @@ html{scroll-behavior:auto}
   <nav class="nav-links">
     <a href="index.html">← Apresentação</a>
     <a href="https://github.com/AllanSantos-DV/claude-code-plugins/blob/main/claude-code-boss/README.md">README</a>
-    <a href="#top" class="ver">v3.14.0</a>
+    <a href="#top" class="ver">v3.14.1</a>
   </nav>
 <div class="ccb-theme" role="group" aria-label="Tema"><button type="button" data-ccb-theme="dark" aria-pressed="true">Dark</button><button type="button" data-ccb-theme="light" aria-pressed="false">Light</button></div>
 </header>
 
 <main class="wrap" id="top">
   <div class="page-head">
-    <p class="kick">documentação técnica · v3.14.0</p>
+    <p class="kick">documentação técnica · v3.14.1</p>
     <h1>Arquitetura e funcionamento interno</h1>
     <p class="intro">Para quem quer saber <b>como funciona por baixo</b>: daemon HTTP único, pipeline de hooks, Brain KB em 3 camadas, Model Router Anthropic/OpenAI, backend MCP Memory, exploração de repositório por grafo e dashboard. Fontes: <a href="https://github.com/AllanSantos-DV/claude-code-plugins/blob/main/claude-code-boss/README.md">README</a> e <a href="https://github.com/AllanSantos-DV/claude-code-plugins/blob/main/claude-code-boss/CHANGELOG.md">CHANGELOG</a>.</p>
     <div class="toc">
       <a href="#daemon">Daemon HTTP único</a>
       <a href="#hooks">Hooks pipeline</a>
-      <a href="#compaction">Compactação controlada</a>
+      <a href="#compaction">Compactação nativa</a>
       <a href="#brain">Brain KB</a>
       <a href="#config">Config &amp; perfis</a>
       <a href="#router">Model Router</a>
@@ -359,42 +359,21 @@ html{scroll-behavior:auto}
   </section>
 
   <section id="compaction">
-    <h2>Compactação controlada <span class="tag">dois limites · fim do turno</span></h2>
-    <p class="lead">O corte do contexto é decidido por funções puras em <code>scripts/lib/compaction-core.mjs</code> e executado pelo módulo <code>hooks/compaction.mjs</code> (function hook do Claude Code, registrado pela entrada única <code>hooks/index.mjs</code>; exige Claude Code 2.1.274+). Há dois limites, ambos com padrão ligado e editáveis no painel: um para o cache frio e um teto para o cache quente.</p>
-
-    <div class="table-scroll" style="margin-bottom:22px">
-      <table>
-        <thead><tr><th>Chave</th><th>Padrão</th><th>O que decide</th></tr></thead>
-        <tbody>
-          <tr><td style="min-width:190px"><code style="word-break:normal">thresholdPercent</code></td><td>30 (faixa 10–80)</td><td>Fatia da janela que o engine aplica naquele prompt (limite do modelo ou <code>CLAUDE_CODE_AUTO_COMPACT_WINDOW</code>). Janela de 200k dá 60k; janela de 1M dá 300k.</td></tr>
-          <tr><td style="min-width:190px"><code style="word-break:normal">thresholdMaxTokens</code></td><td>150000</td><td>Teto do limiar a frio. O limiar efetivo é o <b>menor</b> entre o percentual e este teto: em 1M o teto decide (150k), em 200k vale o percentual (60k). <code>0</code> desliga o teto e volta ao percentual puro.</td></tr>
-          <tr><td style="min-width:190px"><code style="word-break:normal">warmCeilingTokens</code></td><td>200000</td><td>Tamanho a partir do qual a sessão é cortada <b>no fim do turno mesmo com o cache quente</b>. <code>0</code> desliga e volta à regra antiga, nunca compactar cache quente.</td></tr>
-        </tbody>
-      </table>
-    </div>
+    <h2>Compactação: nativa do Claude Code <span class="tag">sem limiar do Boss</span></h2>
+    <p class="lead">O Boss não define limiares de compactação, não inicia cortes a frio ou a quente e não intercepta a compactação automática nem o comando manual <code>/compact</code>. As sessões seguem os padrões e as configurações do próprio Claude Code.</p>
 
     <div class="panel">
-      <h3>Como as decisões se combinam</h3>
+      <h3>O que isso significa na prática</h3>
       <ul class="tight">
-        <li><b>Corte a frio (prompt de pessoa):</b> no <code>prompt.submit</code> com a sessão ociosa, se o contexto passou do limiar efetivo <b>e</b> o cache do provedor já expirou, o prompt é segurado, o <code>/compact</code> roda e o mesmo texto é reenviado como seu. Com o cache válido, ele espera.</li>
-        <li><b>Teto quente (fim do turno):</b> o gatilho é o fim do turno, nunca o portão do prompt da pessoa. Passando de <code>warmCeilingTokens</code>, o corte é feito mesmo com cache quente. Se a poda cortar 85% ou mais, ela é aplicada; senão roda o resumo do engine. O evento <code>compaction.gate</code> registra o motivo como <code>turn-end-warm-ceiling</code>.</li>
-        <li><b>Por que o teto quente existe:</b> a regra antiga só cortava com o cache frio, e uma sessão que trabalha sem pausa quase nunca esfria. Nas medições, 96% dos turnos vieram com menos de 1 minuto de intervalo.</li>
-        <li><b>Subagentes</b> não são alcançados pelo Boss: o engine decide a compactação deles pela janela dele.</li>
-        <li><b>Configuração:</b> <code>getCompaction</code> e <code>saveCompaction</code> expõem e limitam as duas chaves. No painel (<b>Compaction &amp; cache</b>, campos <i>Cold limit</i> e <i>Warm ceiling</i>, em mil tokens), <code>0</code> desliga e, senão, a faixa é 50 a 2000; um valor inválido é recusado com mensagem. Gravado em <code>~/.claude/claude-code-boss/hooks/user-config.json</code>, sobrevive a updates; sessões abertas pegam no próximo turno.</li>
+        <li><b>Configuração sempre desligada:</b> <code>getCompaction</code> devolve sempre desligado. Overrides antigos em <code>compaction</code> ou <code>costTuning.autoCompactWindow</code> não reativam nada, e chaves antigas no user-config são ignoradas.</li>
+        <li><b>Nenhuma janela gravada:</b> o Boss não define <code>CLAUDE_CODE_AUTO_COMPACT_WINDOW</code>, <code>CLAUDE_AUTOCOMPACT_PCT_OVERRIDE</code> nem uma nova <code>autoCompactWindow</code>. Na próxima abertura, valores escritos pelo cost-tuning anterior são restaurados pelo registro de propriedade; configurações próprias do usuário ou do orquestrador são preservadas.</li>
+        <li><b>Cost-tuning:</b> continua cuidando de <code>ENABLE_TOOL_SEARCH=true</code> e, somente em sessões cobradas por API, de <code>CLAUDE_CODE_PROMPT_CACHE_TTL=1h</code>. Esses ajustes não mudam o limiar de compactação.</li>
+        <li><b>Sessões abertas antes da atualização:</b> recebem <code>enabled: false</code> na próxima consulta ao daemon. Abra uma sessão nova para carregar o módulo atual, que não registra hooks de compactação.</li>
+        <li><b>Painel:</b> sem controles de limiar. O painel <b>Compaction &amp; cache</b> mantém as medições antigas como histórico; elas não são prova de compactação na versão atual.</li>
       </ul>
     </div>
 
-    <div class="panel">
-      <h3>Como os padrões foram medidos</h3>
-      <p>Método: replay sobre transcritos reais do Claude Code (<code>~/.claude/projects/*/*.jsonl</code>) e a trilha do Boss (<code>compaction.gate</code>, <code>compaction.run</code>, <code>compaction.cold</code>) de um dia, só leitura. O contexto de cada chamada é entrada + leitura de cache + escrita de cache; o custo vem da tabela de preços por modelo, e o corte simulado cobra a regravação do contexto reduzido e, no corte com resumo do modelo, a leitura do contexto mais 3 mil tokens de saída.</p>
-      <div class="grid2">
-        <div class="mini"><p class="k">custo</p><b>88% acima de 100k</b><p>Parte do custo do dia analisado que estava em turnos com mais de 100 mil tokens de contexto.</p></div>
-        <div class="mini"><p class="k">pausas</p><b>cache raramente esfria</b><p>Pausas de 5 min ou mais: 5,9% e 1,5% das chamadas das duas sessões principais; nenhuma em 1.122 chamadas de subagente.</p></div>
-        <div class="mini"><p class="k">replay</p><b>-36,4% e -36,9%</b><p>Economia nas duas sessões principais com o corte a frio em 150k e o teto quente em 200k, com o resumo e a regravação cobrados.</p></div>
-        <div class="mini"><p class="k">qualidade</p><b>81% × 73%</b><p>Em 6 compactações reais, o corte a frio sem modelo manteve 81% do que os turnos seguintes citaram, contra 73% do resumo do engine.</p></div>
-      </div>
-      <div class="callout"><b>Limites da medição:</b> um dia, duas sessões principais e 17 subagentes: é amostra, não população, e a simulação mede dólares, não qualidade de resposta. Tabelas completas por limiar e os números de cada sessão: <a href="https://github.com/AllanSantos-DV/claude-code-plugins/blob/main/claude-code-boss/docs/COMPACTION-MEASUREMENT.md">COMPACTION-MEASUREMENT.md</a>. Para ver o que o Boss cortou na sua máquina: <code>node scripts/compaction-report.js 14 --cache</code>.</div>
-    </div>
+    <div class="callout"><b>Histórico:</b> a medição que embasava os antigos limites está preservada, marcada como retirada, em <a href="https://github.com/AllanSantos-DV/claude-code-plugins/blob/main/claude-code-boss/docs/COMPACTION-MEASUREMENT.md">COMPACTION-MEASUREMENT.md</a>.</div>
   </section>
 
   <section id="brain">
@@ -603,7 +582,7 @@ html{scroll-behavior:auto}
       <a href="changelog.html">Changelog</a>
       <a href="https://github.com/AllanSantos-DV/claude-code-plugins">GitHub</a>
     </div>
-    <div class="legal">MIT · Allan Santos · claude-code-boss v3.14.0</div>
+    <div class="legal">MIT · Allan Santos · claude-code-boss v3.14.1</div>
   </div>
 </footer>
 
