@@ -107,7 +107,7 @@ export const register = (on) => {
   // Desktop hosts its sessions through the SDK (session.start says isInteractive: false there) and
   // still draws the band, while a headless run (-p, SDK without a surface) draws nothing and so
   // polls nothing. Fires again after /clear and on a reload: the next draw starts it again.
-  // Two matched hooks (compaction.mjs holds the plugin's one unmatched session.start).
+  // Two matched hooks.
   on('session.start', { isInteractive: true }, async ($, e, next) => { await onSessionStart($, ctx); return next(e); });
   on('session.start', { isInteractive: false }, async ($, e, next) => { await onSessionStart($, ctx); return next(e); });
 

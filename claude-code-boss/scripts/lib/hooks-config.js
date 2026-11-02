@@ -370,10 +370,12 @@ function getSessionSummary() {
   return { enabled: ss.enabled !== false };
 }
 
-// Controlled compaction (hooks/compaction.mjs). Profile-aware: `free` turns it off
-// (holding a prompt to compact first is an intervention, and free is passthrough).
-// The threshold is a PERCENT of the window the engine applies (one setting for 200K and
-// 1M models); the clamp is the core's own (scripts/lib/compaction-core.mjs).
+// Compaction belongs to Claude Code: the Boss holds no threshold, gate or window (the controlled-compaction hook
+// and its core were removed). What remains here is the read shape the dashboard and the metrics still use (always
+// disabled) plus the opt-in phase-restart notice settings.
+const THRESHOLD_PERCENT_RANGE = [10, 80]; // old slider range, kept only in the read shape
+const BRIEF_TAIL_TOKENS_DEFAULT = 2000;
+const PHASE_RESTART_TOKENS_DEFAULT = 400000;
 const MIN_INTERVAL_RANGE = [1, 60];
 function clampInterval(v) {
   const n = Number(v);
@@ -388,12 +390,10 @@ function clampPhaseTokens(v) {
 }
 function getCompaction() {
   const c = _resolved().compaction || {};
-  const core = require('./compaction-core.mjs');
   return {
     enabled: false,
     thresholdPercent: 0,
-    thresholdRange: [core.DEFAULTS.minThresholdPercent, core.DEFAULTS.maxThresholdPercent],
-    // Absolute ceiling of the cold threshold and the warm ceiling (0 = off), in tokens: see compaction-core DEFAULTS.
+    thresholdRange: THRESHOLD_PERCENT_RANGE,
     thresholdMaxTokens: 0,
     warmCeilingTokens: 0,
     minIntervalMs: clampInterval(c.minIntervalMinutes ?? 10) * 60000,
@@ -402,12 +402,12 @@ function getCompaction() {
     // Cold cut = model-free brief with a verbatim tail; the launch folder's TTL 1h→5m while every live session there
     // is past the threshold (lib/folder-ttl.js). Both on unless set to false.
     mechanicalCut: false,
-    briefTailTokens: Number.isFinite(Number(c.briefTailTokens)) ? Math.min(20000, Math.max(0, Math.round(Number(c.briefTailTokens)))) : core.DEFAULTS.briefTailTokens,
+    briefTailTokens: Number.isFinite(Number(c.briefTailTokens)) ? Math.min(20000, Math.max(0, Math.round(Number(c.briefTailTokens)))) : BRIEF_TAIL_TOKENS_DEFAULT,
     folderTtl: false,
     // Phase restart (opt-in): one notice to continue in a new session from a short handoff, past phaseRestartTokens
     // with a warm cache after a committed task. Off unless set to true (the dashboard measures this machine first).
     phaseRestart: c.phaseRestart === true,
-    phaseRestartTokens: clampPhaseTokens(c.phaseRestartTokens ?? core.PHASE_RESTART_TOKENS),
+    phaseRestartTokens: clampPhaseTokens(c.phaseRestartTokens ?? PHASE_RESTART_TOKENS_DEFAULT),
     phaseRestartRange: PHASE_TOKENS_RANGE,
   };
 }

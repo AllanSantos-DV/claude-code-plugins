@@ -102,7 +102,7 @@ Nada é obrigatório. Os defaults são conservadores (tudo OFF, opt-in). Se quis
 
 > A chave é aninhada (`contextTuning.enabled`) — uma chave plana é silenciosamente ignorada.
 
-Isso grava `ENABLE_TOOL_SEARCH=true` + `CLAUDE_CODE_AUTO_COMPACT_WINDOW=200000` no settings.json — ganho de token sem publicar `ANTHROPIC_BASE_URL` (preserva a janela de 1M dos modelos que a suportam).
+Isso grava `ENABLE_TOOL_SEARCH=true` no settings.json (nenhuma janela de compactação: isso é do Claude Code) — ganho de token sem publicar `ANTHROPIC_BASE_URL` (preserva a janela de 1M dos modelos que a suportam).
 
 ## Gotchas Comuns
 

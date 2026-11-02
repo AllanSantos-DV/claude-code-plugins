@@ -127,7 +127,7 @@ export async function startHttpDaemon({ pluginRoot, dataDir, port, host = '127.0
   // reads this same file. /health stays open so any version's supervisor can probe
   // stale-vs-current.
   const token = ensureToken(dataDir);
-  // Function-hook MODULES (hooks/compaction.mjs) have no Node and cannot use the hook_*
+  // Function-hook MODULES (hooks/boss.mjs) have no Node and cannot use the hook_*
   // tools: those are unlisted on purpose (never the model's), and a module's $.mcp.call only
   // reaches listed tools. They POST here instead — same token gate as /mcp, same transport
   // (heavy lane, deadlines, latency stats) as the hooks.json mcp_tool calls.

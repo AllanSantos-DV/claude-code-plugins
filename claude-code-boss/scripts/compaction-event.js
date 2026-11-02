@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 'use strict';
 /**
- * compaction-event.js — the Node side of the controlled compaction (hooks/compaction.mjs).
+ * compaction-event.js — the Node side of the controlled compaction (its function-hook module was removed; the daemon route stays for old sessions).
  *
  * The function-hook module runs with no Node, so it reaches the boss through the
  * daemon like every migrated hook: the internal tool `hook_compaction_event`

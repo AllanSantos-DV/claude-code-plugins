@@ -5,6 +5,7 @@
 ### Fixed
 - Retirados os limites de compactação de 150k/200k e o gate do Boss; a compactação automática e o comando manual seguem o Claude Code.
 - Overrides antigos não reativam a política. O cost-tuning não solicita janela nem percentual; valores que ele possuía são restaurados, preservando configurações do usuário.
+- Removidos `hooks/compaction.mjs` e `scripts/lib/compaction-core.mjs` (código morto: nenhum hook os carregava); `getCompaction` não depende mais deles e devolve sempre desligado. O roteador/cost-tuning só grava `ENABLE_TOOL_SEARCH`; teste novo falha se ele voltar a gravar `CLAUDE_CODE_AUTO_COMPACT_WINDOW` ou `autoCompactWindow`. Docs (CONFIGURATION, FUNCTIONAL-SPEC, GETTING-STARTED) alinhadas ao código.
 - Painel sem controles de limiar; medições antigas continuam disponíveis. Candidata local, sem publicação.
 
 ## [3.14.0] - 2026-11-02
