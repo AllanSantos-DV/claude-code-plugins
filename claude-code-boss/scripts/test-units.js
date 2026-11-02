@@ -26520,6 +26520,13 @@ test('update-notice: "version available" cached 6h and told once per version; "p
     assertEq(u.takeUpdateNotices({ root, dir, env: {} }), [], 'updated told once');
     setVer('3.4.0');
     assertEq(u.takeUpdateNotices({ root, dir, env: {} }).length, 0, 'a downgrade is not announced as an update');
+    // Sessions opened before and after an update run side by side, each with its own version's hooks: the older
+    // one must not rewind seenVersion, or the newer one announces the same update on every alternation.
+    for (let i = 0; i < 2; i++) {
+      setVer('3.5.0'); assertEq(u.takeUpdateNotices({ root, dir, env: {} }), [], `newer session after an older one's prompt: not re-announced (round ${i + 1})`);
+      setVer('3.4.0'); assertEq(u.takeUpdateNotices({ root, dir, env: {} }), [], `older session: silent (round ${i + 1})`);
+    }
+    assertEq(JSON.parse(fs.readFileSync(u.stateFile(dir), 'utf8')).seenVersion, '3.5.0', 'seenVersion never moves back');
     // opt-out
     const off = { CLAUDE_CODE_BOSS_AUTO_UPDATE: '0' };
     assertEq((await u.refreshLatest({ root, dir: path.join(base, 'g2'), env: off, now: T0, fetchLatest })).status, 'disabled', 'opt-out: no check');

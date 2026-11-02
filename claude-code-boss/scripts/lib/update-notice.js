@@ -91,7 +91,10 @@ function takeUpdateNotices({ root, dir, env = process.env } = {}) {
   if (st.seenVersion && st.seenVersion !== installed && compareSemver(installed, st.seenVersion) > 0) {
     out.push(`claude-code-boss foi atualizado: ${st.seenVersion} → ${installed}. Novidades: ${CHANGELOG_URL}`);
   }
-  const next = { ...st, seenVersion: installed };
+  // A session opened before an update keeps running the previous version's hooks: never move seenVersion back,
+  // or every prompt in a newer session would announce the same update again.
+  const rewind = st.seenVersion && compareSemver(installed, st.seenVersion) < 0;
+  const next = { ...st, seenVersion: rewind ? st.seenVersion : installed };
   if (!autoUpdateDisabled(env) && st.latest && compareSemver(st.latest, installed) > 0 && st.announcedLatest !== st.latest) {
     const blockedBy = ccAutoUpdateBlockedBy(env);
     const how = blockedBy
