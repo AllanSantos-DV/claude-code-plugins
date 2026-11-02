@@ -1,5 +1,12 @@
 # Changelog
 
+## [Unreleased]
+
+### Fixed
+- Retirados os limites de compactação de 150k/200k e o gate do Boss; a compactação automática e o comando manual seguem o Claude Code.
+- Overrides antigos não reativam a política. O cost-tuning não solicita janela nem percentual; valores que ele possuía são restaurados, preservando configurações do usuário.
+- Painel sem controles de limiar; medições antigas continuam disponíveis. Candidata local, sem publicação.
+
 ## [3.14.0] - 2026-11-02
 
 ### Changed

@@ -75,9 +75,7 @@
     "maxBlocks": 1
   },
   "compaction": {
-    "thresholdPercent": 30,
-    "minIntervalMinutes": 10,
-    "preserveRecentMessages": 6
+    "enabled": false
   },
   "costTuning": {
     "cacheTtl": "1h"

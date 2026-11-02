@@ -1,3 +1,11 @@
+## Compactação pertence ao Claude Code — t-a51a44 (2026-11-02, candidata local)
+
+- [x] **Achado e corrigido imediatamente:** `scripts/lib/compaction-core.mjs:36` empacotava os tetos 150k/200k; `hooks/index.mjs:4` registrava o gate para todas as sessões. Módulo retirado da entrada de produção; configuração efetiva sempre desligada, inclusive com overrides antigos, e controles de limiar retirados. Validado em 02/11: 1850 testes unitários, 140 de hooks, ESLint e sync-version verdes. Prova instalada e commit registrados no relatório local `docs/research/2026-11-02-t-a51a44-sem-limiares.md`. Sem main/tag/release.
+- [x] **Achado e corrigido imediatamente:** os caminhos de tuning ainda podiam gravar `autoCompactWindow` se existisse opt-in antigo. Ambos agora não solicitam janela; restauração de valores possuídos e preservação de valores do usuário cobertas por regressão real sobre settings.json temporário.
+- [x] **Diagnóstico do ambiente de testes:** `scripts/test-units.js:5035` (audit) e `scripts/test-units.js:31034` (shell-escape) falhavam com o Bash WSL recebendo caminhos `C:/...`. Sem mudar código fora do escopo: nova execução com `C:/Program Files/Git/bin` no PATH da própria chamada passou 1850/1850. Logs locais `.claude/scripts/t-a51a44-units-initial.log` e `t-a51a44-units-final.log`.
+- [ ] **Fora do Boss — override global preexistente:** `<HOME>/.claude/settings.json:3` tem `CLAUDE_AUTOCOMPACT_PCT_OVERRIDE=15`, e `:330` tem `autoCompactWindow=200000`. Nenhum arquivo de produção do Boss menciona a variável percentual; o estado de propriedade não a possui. Preservado, comunicado ao Jarvis. Se continuar compactando cedo, investigar o escritor externo e restringi-lo à janela do orquestrador; não apagar configuração alheia por inferência.
+- [ ] **Preparação de publicação futura:** README/CHANGELOG alterados tornam a vitrine obsoleta. Só o agente vitrine pode atualizar pages/ e carimbar o hash; fazê-lo apenas se houver ordem posterior de publicação. Esta entrega é candidata local, sem main/tag/release.
+
 ## `brain_retrieve_context` lento: braço compose de 3 a 8 s (pedido do orquestrador, 2026-10-29) — investigado, sem defeito no cliente
 
 - [ ] **Causa medida: custo do `compose_recall` no mcp-memory (Java, fora deste repositório), que varia com a carga da máquina.** Evidência:

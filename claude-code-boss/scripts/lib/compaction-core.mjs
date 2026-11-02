@@ -33,18 +33,8 @@ export const DEFAULTS = Object.freeze({
   // No token floor: the threshold is ONLY a percent of the model's window (owner, 14/10: the user's
   // setting, 200k → 30% of 200k, 1M → 30% of 1M). A compaction leaves ~10–20k (measured on 15 real
   // ones, 14/10), far below any percent in the slider's range, and minIntervalMs stops a loop.
-  // Measured 2026-11-02 on the day's real turns (docs/research/2026-11-02-compactacao-por-que-nao-compacta): 88% of the cost sat
-  // in turns above 100k tokens, and on a 1M window "30%" is 300k — the sessions sat at 306–481k before the first idle gap
-  // let the cut in. The cold cut now also has an ABSOLUTE ceiling: threshold = min(percent of the window, this). A 200k
-  // window keeps its 30% (60k); a 1M window cuts at 150k. Replayed on 2,300 real calls: cold cut at 150k saves 12–36%,
-  // 300k saves 0–3.5%. 0 turns the cap off (the owner's earlier pure-percent rule).
-  thresholdMaxTokens: 150000,
-  // A WARM cache is still never cut by the prompt gate. But a session that never idles (96% of today's turns came < 1 min
-  // apart; 0 of 238 calls of the 300k+ cycles had a 5-min gap before the cut) re-reads its whole context on every call, so
-  // at the END of a turn, past this size, the cut runs on a warm cache too (the engine's summary reads the warm prefix:
-  // one cheap call; or our pruning when it cuts >= 85%). Replayed with the summary call and the rewrite charged:
-  // −29% / −37% on the two big sessions at 200k. 0 turns it off (the earlier "never compact a warm cache" rule).
-  warmCeilingTokens: 200000,
+  thresholdMaxTokens: 0,
+  warmCeilingTokens: 0,
   minIntervalMs: 10 * 60000,   // never two compactions closer than this
   preserveRecentMessages: 6,   // newest messages never touched (the first is always kept)
   truncateHeadChars: 300,      // what survives of a pruned result, before the note

@@ -257,10 +257,9 @@ const WINDOW_SETTING_MIN = 100000;
 
 // PURA: a janela do tuning como chave top-level `autoCompactWindow` do settings.json — o
 // `/autocompact` do usuário (modelSettings) vence a chave. `== null` → só preenche o ausente.
-function planTuningWindow(settings, autoCompactValue) {
+function planTuningWindow(settings) {
   const cur = settings && settings.autoCompactWindow;
-  if (cur != null) return { value: cur, changed: false };
-  return { value: Math.max(WINDOW_SETTING_MIN, autoCompactValue), changed: true };
+  return { value: cur, changed: false };
 }
 
 // PURA: remove a chave só quando bate o valor que TERÍAMOS gravado; um valor do usuário fica.

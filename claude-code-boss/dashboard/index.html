@@ -2957,30 +2957,9 @@ async function loadCompactionPanel() {
   if (c && c.error) { el.innerHTML = `<p class="text-muted">Compaction metrics: ${escapeHtml(c.error)}</p>`; return null; }
   const fmt = n => n >= 1000 ? (n / 1000).toFixed(1).replace(/\.0$/, '') + 'k' : String(n);
   const stat = (value, label, badge, cls) => `<div class="stat"><div class="value">${value}</div><div class="label">${label}</div><span class="badge ${cls}">${badge}</span></div>`;
-  const cfg = c.config || {};
+
   const g = c.gate, r = c.runs, st = c.settled;
-  const rng = cfg.thresholdRange || [10, 80];
-  const ivr = cfg.minIntervalRange || [1, 60];
-  const pct = cfg.thresholdPercent || 30;
-  const wins = (c.windows || []).length ? c.windows : [{ windowTokens: 200000, source: 'example' }, { windowTokens: 1000000, source: 'example' }];
-  const winRows = wins.map(w => `<span data-win="${w.windowTokens}" data-engine="${w.engineAutoCompactAt || ''}">${fmt(w.windowTokens)} window${w.source && w.source !== 'example' ? ' (' + escapeHtml(String(w.source)) + ')' : ''} → <b class="cmp-thr">${fmt(Math.round(w.windowTokens * pct / 100))}</b>${w.engineAutoCompactAt ? ` · engine compacts at ${fmt(w.engineAutoCompactAt)}` : ''}<span class="cmp-warn badge badge-yellow" style="display:${w.engineAutoCompactAt && w.windowTokens * pct / 100 >= w.engineAutoCompactAt ? 'inline' : 'none'};margin-left:.3rem">past the engine: it compacts first</span>${w.source === 'unknown-model' ? ' <span class="badge badge-yellow">window assumed (model not recognized)</span>' : ''}</span>`).join('<br>');
-  let html = `<p class="text-muted" style="font-size:.8rem;margin:0 0 .4rem 0">${cfg.enabled ? 'On' : '<b>Off</b> (profile free or config)'} · cuts when the cache is cold past the threshold, and at the end of a turn past the warm ceiling (both below)</p>`
-    + `<div style="display:flex;gap:.8rem;align-items:center;flex-wrap:wrap;font-size:.82rem;margin-bottom:.4rem">`
-    + `<label>Threshold <input id="cmp-pct" type="range" min="${rng[0]}" max="${rng[1]}" step="1" value="${pct}" oninput="compactionPreview(this.value)"> <b id="cmp-pct-v">${pct}%</b> of the window</label><span class="tip tip-down" data-tip="Default 30%. The cut size as a share of the context window of the model in use. The cold limit next to it caps this: whichever is smaller wins, so on a 1M window the 150k limit decides.">i</span>`
-    + `</div><div style="display:flex;gap:.8rem;align-items:center;flex-wrap:wrap;font-size:.82rem;margin-bottom:.4rem">`
-    + `<label>Cold limit <input id="cmp-max" type="number" min="0" max="2000" value="${Math.round((cfg.thresholdMaxTokens ?? 150000) / 1000)}" style="width:4.5rem"> k tokens</label>`
-    + `<span class="tip tip-down" data-tip="Default 150 (150,000 tokens). The most context a session may carry before it is cut. Every answer re-reads the whole context, so cost grows with its size. The session is cut at the smaller of this number and the percentage above (the percentage alone would be 300k on a 1M window). 0 turns this limit off; otherwise 50 to 2000. Applied on the next answered turn of every session, no restart.">i</span>`
-    + `<label>Warm ceiling <input id="cmp-warm" type="number" min="0" max="2000" value="${Math.round((cfg.warmCeilingTokens ?? 200000) / 1000)}" style="width:4.5rem"> k tokens</label>`
-    + `<span class="tip tip-down" data-tip="Default 200 (200,000 tokens). A session that never pauses long enough for the cache to expire (agents working non-stop) would never reach the cold limit. Past this size, at the end of a turn, it is cut anyway: the cost is rewriting the shortened context once. 0 turns it off (then a session is only cut when its cache is cold); otherwise 50 to 2000. Applied on the next answered turn of every session, no restart.">i</span>`
-    + `<label>Min interval <input id="cmp-iv" type="number" min="${ivr[0]}" max="${ivr[1]}" value="${Math.round((cfg.minIntervalMs || 600000) / 60000)}" style="width:4rem"> min</label><span class="tip tip-down" data-tip="Default 10 minutes. The shortest time between two cuts of the same session, so it is never cut over and over. 1 to 60.">i</span>`
-    + `<button class="btn-sm" onclick="saveCompactionConfig()">Save</button><span id="cmp-save-msg" class="text-muted"></span></div>`
-    + `<p class="text-muted" style="font-size:.78rem;margin:0 0 .5rem 0" id="cmp-wins">${winRows}</p>`;
-  const prK = Math.round((cfg.phaseRestartTokens || 400000) / 1000);
-  html += `<div style="display:flex;gap:.6rem;align-items:center;flex-wrap:wrap;font-size:.82rem;margin:0 0 .5rem 0">`
-    + `<label><input id="cmp-pr" type="checkbox" ${cfg.phaseRestart ? 'checked' : ''} onchange="savePhaseRestart(this.checked)"> Phase restart</label>`
-    + `<span class="tip" data-tip="Off by default. Past ${prK}k tokens, with the cache warm and right after a task was committed, the session gets one short notice (under 80 tokens) suggesting a short handoff and a new session for the next phase. Turning it on first measures this machine's transcripts (read-only) and shows whether it saves money here.">i</span>`
-    + `<span class="text-muted">notice at ${prK}k tokens · ${c.phaseRestartNotices || 0} notices in 30 days</span>`
-    + `<span id="cmp-pr-msg" class="text-muted"></span></div>`;
+  let html = '<p class="text-muted">Compaction is managed by Claude Code. Boss does not set thresholds or start compaction. Historical measurements remain below.</p>';
   html += '<div class="grid">'
     + stat(String(r.total), 'Compactions', `${r.pruned} pruned · ${r.brief || 0} brief (no model call) · ${r.nativeSummary} model summary`, r.total ? 'badge-green' : 'badge-yellow')
     + stat(fmt(c.cut.charsCut) + ' chars', 'Cut by pruning (exact)', c.cut.avgRatio != null ? `avg ${Math.round(c.cut.avgRatio * 100)}% smaller` : 'no pruning yet', c.cut.charsCut ? 'badge-green' : 'badge-yellow')
@@ -3025,33 +3004,6 @@ async function loadCompactionPanel() {
   }
   el.innerHTML = html;
   return c;
-}
-
-function compactionPreview(v) {
-  document.getElementById('cmp-pct-v').textContent = v + '%';
-  const fmt = n => n >= 1000 ? (n / 1000).toFixed(1).replace(/\.0$/, '') + 'k' : String(n);
-  for (const el of document.querySelectorAll('#cmp-wins [data-win]')) {
-    const t = Math.round(Number(el.dataset.win) * Number(v) / 100);
-    el.querySelector('.cmp-thr').textContent = fmt(t);
-    const eng = Number(el.dataset.engine);
-    el.querySelector('.cmp-warn').style.display = eng && t >= eng ? 'inline' : 'none';
-  }
-}
-
-async function saveCompactionConfig() {
-  const msg = document.getElementById('cmp-save-msg');
-  try {
-    const cap = (id, label) => {
-      const v = Number(document.getElementById(id).value);
-      if (!Number.isFinite(v) || v < 0 || (v > 0 && (v < 50 || v > 2000))) throw new Error(`${label}: use 0 (off) or 50 to 2000 (thousands of tokens)`);
-      return Math.round(v * 1000);
-    };
-    const body = { thresholdPercent: Number(document.getElementById('cmp-pct').value), minIntervalMinutes: Number(document.getElementById('cmp-iv').value), thresholdMaxTokens: cap('cmp-max', 'Cold limit'), warmCeilingTokens: cap('cmp-warm', 'Warm ceiling') };
-    const r = await api('PUT', '/api/compaction/config', body);
-    if (r && r.error) { msg.textContent = 'Not saved: ' + r.error; return; }
-    const k = n => (n ? Math.round(n / 1000) + 'k' : 'off');
-    msg.textContent = `Saved: ${r.config.thresholdPercent}% · cold limit ${k(r.config.thresholdMaxTokens)} · warm ceiling ${k(r.config.warmCeilingTokens)} · ${Math.round(r.config.minIntervalMs / 60000)} min (open sessions: from their next answered turn)`;
-  } catch (e) { msg.textContent = 'Not saved: ' + (e && e.message ? e.message : e); }
 }
 
 function phaseRestartLine(m) {

@@ -1,45 +1,9 @@
 'use strict';
 /**
- * cost-tuning.js — the two Claude Code knobs that decide what a long session costs,
- * kept in the user's settings.json `env` (pure core; the write lives in model-router-ensure,
- * which already owns settings.json and runs its writes in sequence at SessionStart).
- *
- *   - CLAUDE_CODE_PROMPT_CACHE_TTL=1h — API key / gateway / cloud sessions get a 5-minute cache
- *     by default (subscriptions already get 1 h). A tool call or a wait longer than 5 min
- *     (tests, CI, a background agent) expires it and the next request re-writes the whole
- *     context. Measured 2026-10-11 (docs/research/cost-2026-10-11): 14 such re-writes of
- *     450–770k tokens in ONE session-day, ~US$46 of a US$88 day. A 1 h write costs 1.6× a 5 min
- *     one, paid only on the new part of each turn. Proved through the owner's gateway
- *     (ephemeral_1h_input_tokens on the reply).
- *   - ENABLE_TOOL_SEARCH=true — always set (owner, 14/10): MCP tool schemas load on demand instead of
- *     all up front. A value the user already has (false, auto) is theirs and stays.
- *   - the auto-compact window (OFF by default since 14/10; opt-in through the config) — the window the engine's auto-compaction budgets
- *     against. Written as the top-level `autoCompactWindow` of settings.json, NOT as the env var
- *     CLAUDE_CODE_AUTO_COMPACT_WINDOW: the env var outranks `/autocompact`, the `--autocompact` flag and every
- *     settings key (code.claude.com/docs/en/model-config, "Set the auto-compact window"), so a user who typed
- *     `/autocompact 500k` would silently lose. The `modelSettings` entry that `/autocompact` saves beats the
- *     top-level key, so the user's command wins over the boss's value (`modelSettings` is per model id, which the
- *     boss cannot know). An env window we wrote in an earlier version is restored away by the ownership state.
- *     At 1M it compacts at ~967k, so every call between compactions re-reads up to
- *     ~1M tokens; the boss's own prompt gate only acts at a person's prompt on a cold cache,
- *     never mid-turn or in delegated sessions. The engine compacts at the window minus a fixed
- *     33k buffer (`/context`, CC 2.1.293: 300k → 267k, 153k → 120k), mid-turn too, through its
- *     summary (hooks/compaction.mjs keeps it unless pruning cuts >= 85%). 153k → ~120k: the
- *     summary call reads the history from the warm cache (measured through a proxy), so
- *     compacting there pays back in ~28 calls of a ~39-call cycle. Replayed on 7,049 real calls
- *     (docs/research/compaction-warm-tail, 2026-10-12): −12.7% against the 300k window, same
- *     summary (the 300k window itself: US$513 → ~US$210 on 6 session-days, cost-2026-10-11).
- *
- * WHY the window is off by default: the fixed 153k made the ENGINE compact at ~120k, mid-turn, with the
- * cache WARM — 15 times in one session (14/10), each a summary plus a ~32k cache re-write, and the
- * boss's cold-cache gate never acted. The owner's rule is a PERCENT of the model window (the
- * compaction setting), never a fixed number, and only on a cold cache. A previous 153000 written by
- * us is restored by the ownership state below.
- *
- * Ownership, so nothing of the user's is lost: the state remembers what WE wrote and what was
- * there before. Turning the feature off restores the previous value. A value the user changes
- * after us is theirs: we yield and never re-apply over that same value. A window the user
- * set SMALLER than ours, or a TTL they set themselves, is never touched.
+ * Claude Code cost knobs: API-billed prompt-cache TTL and Tool Search.
+ * Compaction belongs to Claude Code, never to Boss: old window configuration is
+ * ignored and the ownership state restores values written by earlier builds.
+ * Explicit user settings are preserved. The settings writer is model-router-ensure.
  */
 
 const TTL_KEY = 'CLAUDE_CODE_PROMPT_CACHE_TTL';
@@ -50,17 +14,15 @@ const WINDOW_SETTING_KEY = 'autoCompactWindow'; // top-level settings.json key; 
 const DEFAULTS = Object.freeze({ enabled: true, cacheTtl: '1h', autoCompactWindow: null, toolSearch: true });
 const WINDOW_RANGE = Object.freeze([100000, 1000000]);
 
-/** The effective config: unknown TTL values off, the window clamped (null = don't manage it). */
+/** The effective config: unknown TTL values off, compaction always unmanaged. */
 function resolveConfig(raw) {
   const c = raw && typeof raw === 'object' ? raw : {};
   const ttl = c.cacheTtl === undefined ? DEFAULTS.cacheTtl : c.cacheTtl;
-  const w = c.autoCompactWindow === undefined ? DEFAULTS.autoCompactWindow : c.autoCompactWindow;
-  const n = Number(w);
   return {
     enabled: c.enabled !== false,
     toolSearch: c.toolSearch !== false,
     cacheTtl: ttl === '1h' ? '1h' : null, // Claude Code takes only 5m|1h; 5m is its default here
-    autoCompactWindow: w === null || w === false || !Number.isFinite(n) ? null : Math.min(WINDOW_RANGE[1], Math.max(WINDOW_RANGE[0], Math.round(n))),
+    autoCompactWindow: null,
   };
 }
 
@@ -92,8 +54,8 @@ function wanted(cfg, billed) {
 }
 
 /** The window we ask for in settings.json (never in env): a number of tokens, or null. */
-function wantedWindow(cfg) {
-  return cfg.enabled && cfg.autoCompactWindow ? cfg.autoCompactWindow : null;
+function wantedWindow() {
+  return null;
 }
 
 /** May we write `val` over the user's own `cur`? Only a window LARGER than ours. */
