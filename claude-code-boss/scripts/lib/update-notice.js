@@ -25,6 +25,17 @@ function autoUpdateDisabled(env = process.env) {
   return OFF.test(String(env.CLAUDE_CODE_BOSS_AUTO_UPDATE || '').trim());
 }
 
+/**
+ * The variable that switches Claude Code's whole plugin auto-update pass off, or null.
+ * With one of these set and no FORCE_AUTOUPDATE_PLUGINS=1, `autoUpdate: true` on the marketplace
+ * does nothing (code.claude.com/docs/en/plugins/loading, "When auto-update runs").
+ */
+function ccAutoUpdateBlockedBy(env = process.env) {
+  const on = (v) => /^(1|true)$/i.test(String(v || '').trim());
+  if (on(env.FORCE_AUTOUPDATE_PLUGINS)) return null;
+  return ['DISABLE_UPDATES', 'DISABLE_AUTOUPDATER', 'CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC'].find((k) => on(env[k])) || null;
+}
+
 function stateFile(dir) {
   return path.join(dir || require('../../engine/lib/data-dir.js').globalDir(), STATE);
 }
@@ -82,11 +93,15 @@ function takeUpdateNotices({ root, dir, env = process.env } = {}) {
   }
   const next = { ...st, seenVersion: installed };
   if (!autoUpdateDisabled(env) && st.latest && compareSemver(st.latest, installed) > 0 && st.announcedLatest !== st.latest) {
-    out.push(`claude-code-boss: versão ${st.latest} disponível (instalada: ${installed}). Com a atualização automática ligada ela chega sozinha na próxima sessão; senão, /plugin → Marketplaces → Update. Novidades: ${CHANGELOG_URL}. Desligar os avisos e a atualização automática: CLAUDE_CODE_BOSS_AUTO_UPDATE=0.`);
+    const blockedBy = ccAutoUpdateBlockedBy(env);
+    const how = blockedBy
+      ? `A atualização automática NÃO vai rodar: ${blockedBy} está definido no ambiente desta sessão e desliga as atualizações de plugin do Claude Code; defina também FORCE_AUTOUPDATE_PLUGINS=1, ou atualize em /plugin → Marketplaces → Update.`
+      : 'Com a atualização automática ligada ela chega sozinha na próxima sessão; senão, /plugin → Marketplaces → Update.';
+    out.push(`claude-code-boss: versão ${st.latest} disponível (instalada: ${installed}). ${how} Novidades: ${CHANGELOG_URL}. Desligar os avisos e a atualização automática: CLAUDE_CODE_BOSS_AUTO_UPDATE=0.`);
     next.announcedLatest = st.latest;
   }
   if (next.seenVersion !== st.seenVersion || next.announcedLatest !== st.announcedLatest) writeState(file, next);
   return out;
 }
 
-module.exports = { refreshLatest, takeUpdateNotices, autoUpdateDisabled, stateFile, STATE, CHECK_EVERY_MS, PAGES_URL };
+module.exports = { refreshLatest, takeUpdateNotices, autoUpdateDisabled, ccAutoUpdateBlockedBy, stateFile, STATE, CHECK_EVERY_MS, PAGES_URL };

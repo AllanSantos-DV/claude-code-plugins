@@ -26421,7 +26421,8 @@ test('marketplace auto-update: turned on once when nobody chose (known_marketpla
     assertEq(m.ensureAutoUpdate({ pluginRoot: root, env, markerDir }).status, 'explicit', 'settings-level choice wins');
     write({ 'allansantos-plugins': {} }, {});
     assertEq(m.ensureAutoUpdate({ pluginRoot: root, env, markerDir }).status, 'enabled', 'enabled again for a fresh marker');
-    assert(/FORCE_AUTOUPDATE_PLUGINS/.test(m.takeAutoUpdateNotice({ markerDir, env: { DISABLE_AUTOUPDATER: '1' } })), 'warns when the env disables updates');
+    const blockedNotice = m.takeAutoUpdateNotice({ markerDir, env: { CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: '1' } });
+    assert(/CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC está definido/.test(blockedNotice) && /FORCE_AUTOUPDATE_PLUGINS=1/.test(blockedNotice), `warns naming the variable that disables updates: ${blockedNotice}`);
     fs.writeFileSync(knownF, '{broken');
     fs.rmSync(path.join(markerDir, m.MARKER), { force: true });
     const r = m.ensureAutoUpdate({ pluginRoot: root, env, markerDir });
@@ -26494,6 +26495,20 @@ test('update-notice: "version available" cached 6h and told once per version; "p
     const avail = u.takeUpdateNotices({ root, dir, env: {} });
     assert(avail.length === 1 && /3\.5\.0 disponível \(instalada: 3\.4\.0\)/.test(avail[0]) && /CLAUDE_CODE_BOSS_AUTO_UPDATE=0/.test(avail[0]) && !avail[0].includes('\n'), JSON.stringify(avail));
     assertEq(u.takeUpdateNotices({ root, dir, env: {} }), [], 'available told once per version');
+    assert(/chega sozinha/.test(avail[0]) && !/NÃO vai rodar/.test(avail[0]), `no blocking env: promises the automatic update: ${avail[0]}`);
+    // Claude Code's plugin auto-update pass switched off by env: the notice names the variable and the override
+    // instead of promising an update that will not come.
+    assertEq(u.ccAutoUpdateBlockedBy({}), null, 'nothing set: not blocked');
+    assertEq(u.ccAutoUpdateBlockedBy({ CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: '1' }), 'CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC', 'nonessential-traffic blocks');
+    assertEq(u.ccAutoUpdateBlockedBy({ DISABLE_AUTOUPDATER: 'true' }), 'DISABLE_AUTOUPDATER', 'autoupdater off blocks');
+    assertEq(u.ccAutoUpdateBlockedBy({ DISABLE_UPDATES: '0' }), null, '"0" is not set');
+    assertEq(u.ccAutoUpdateBlockedBy({ CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: '1', FORCE_AUTOUPDATE_PLUGINS: '1' }), null, 'FORCE_AUTOUPDATE_PLUGINS=1 overrides');
+    const blockedDir = path.join(base, 'g-blocked');
+    u.takeUpdateNotices({ root, dir: blockedDir, env: {} });
+    await u.refreshLatest({ root, dir: blockedDir, env: {}, now: T0, fetchLatest: async () => ({ latest: '3.5.0' }) });
+    const blockedAvail = u.takeUpdateNotices({ root, dir: blockedDir, env: { CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: '1' } });
+    assert(blockedAvail.length === 1 && /NÃO vai rodar: CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC/.test(blockedAvail[0]) && /FORCE_AUTOUPDATE_PLUGINS=1/.test(blockedAvail[0])
+      && !/chega sozinha/.test(blockedAvail[0]) && !blockedAvail[0].includes('\n'), `blocked env named, no false promise: ${JSON.stringify(blockedAvail)}`);
     setVer('3.5.0');
     const upd = u.takeUpdateNotices({ root, dir, env: {} });
     assert(upd.length === 1 && /atualizado: 3\.4\.0 → 3\.5\.0/.test(upd[0]), JSON.stringify(upd));
