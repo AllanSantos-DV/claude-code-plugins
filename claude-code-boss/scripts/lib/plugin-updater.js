@@ -2,9 +2,9 @@
 
 /**
  * plugin-updater.js — self-update for the externally-installed claude-code-boss
- * plugin. Because the plugin is installed from a LOCAL marketplace (git-subdir),
- * Claude Code Desktop's `/plugin` slash command does NOT pull updates for it, and
- * the 24h auto-check only notifies. This module lets the dashboard show the
+ * plugin. Claude Code's marketplace auto-update (switched on by marketplace-autoupdate.js)
+ * does not run while DISABLE_UPDATES / DISABLE_AUTOUPDATER / CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC
+ * is set (update-notice.js ccAutoUpdateBlockedBy). This module lets the dashboard show the
  * installed version, check GitHub for a newer release, and install it — mirroring
  * what `.claude/scripts/install-local.mjs` does for dev, but sourcing the release
  * ZIP from GitHub instead of the working tree.

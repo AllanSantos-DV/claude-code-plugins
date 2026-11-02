@@ -619,6 +619,9 @@ vir de variáveis de ambiente; a precedência é
 Ligada por padrão: no primeiro SessionStart o plugin liga o auto-update do marketplace (se você nunca escolheu) e avisa. Depois, tudo é visível:
 uma mensagem quando há versão nova (uma vez por versão, consulta ao GitHub no máximo a cada 6 h) e outra quando o plugin foi atualizado
 (`X → Y`). Para desligar a atualização automática e a consulta: `CLAUDE_CODE_BOSS_AUTO_UPDATE=0`.
+Com `DISABLE_UPDATES`, `DISABLE_AUTOUPDATER` ou `CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC` definidos, o Claude Code não roda a
+atualização de plugins mesmo com ela ligada: os avisos dizem qual variável está desligando. Para recebê-las assim, defina também
+`FORCE_AUTOUPDATE_PLUGINS=1`, ou atualize em /plugin → Marketplaces → Update.
 
 ## Quando um hook falha: de quem é?
 

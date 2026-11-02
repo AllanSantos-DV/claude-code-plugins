@@ -76,9 +76,11 @@ function takeAutoUpdateNotice({ markerDir, env = process.env } = {}) {
   if (!m.ok || m.data.notified || m.data.status !== 'enabled') return null;
   fs.writeFileSync(marker, JSON.stringify({ ...m.data, notified: true }));
   const blockedBy = require('./update-notice.js').ccAutoUpdateBlockedBy(env);
-  return `claude-code-boss: liguei a atualização automática do plugin (marketplace ${m.data.marketplace}) — as versões novas chegam sozinhas na próxima sessão. `
-    + `Para desligar: /plugin → Marketplaces → ${m.data.marketplace} → Disable auto-update.`
-    + (blockedBy ? ` Atenção: ${blockedBy} está definido no seu ambiente e desliga as atualizações de plugin; defina FORCE_AUTOUPDATE_PLUGINS=1 para recebê-las.` : '');
+  const arrival = blockedBy
+    ? `mas ${blockedBy} está definido no seu ambiente e desliga as atualizações de plugin do Claude Code: elas só chegam com FORCE_AUTOUPDATE_PLUGINS=1 (ou em /plugin → Marketplaces → Update). `
+    : 'as versões novas chegam sozinhas na próxima sessão. ';
+  return `claude-code-boss: liguei a atualização automática do plugin (marketplace ${m.data.marketplace}) — ${arrival}`
+    + `Para desligar: /plugin → Marketplaces → ${m.data.marketplace} → Disable auto-update.`;
 }
 
 module.exports = { ensureAutoUpdate, takeAutoUpdateNotice, marketplaceOf, configDir, MARKER };

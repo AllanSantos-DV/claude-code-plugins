@@ -4,7 +4,8 @@
 
 ### Fixed
 - **O aviso de nova versão prometia que ela chegaria sozinha mesmo com a atualização automática desligada pelo ambiente** (`scripts/lib/update-notice.js`, `scripts/lib/marketplace-autoupdate.js`): com `DISABLE_UPDATES`, `DISABLE_AUTOUPDATER` ou `CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC` definidos, o Claude Code não roda a atualização de plugins, mesmo com `autoUpdate` ligado no marketplace. O aviso agora diz qual variável está desligando e indica o contorno documentado (`FORCE_AUTOUPDATE_PLUGINS=1`) ou o caminho manual (/plugin → Marketplaces → Update).
-- **"claude-code-boss foi atualizado" se repetia a cada prompt quando sessões antigas e novas estavam abertas juntas** (`scripts/lib/update-notice.js`): uma sessão aberta antes da atualização continua rodando os hooks da versão anterior e regravava a versão vista com o número antigo. A versão vista agora nunca anda para trás.
+- **"claude-code-boss foi atualizado" se repetia a cada prompt quando sessões antigas e novas estavam abertas juntas** (`scripts/lib/update-notice.js`): uma sessão aberta antes da atualização continua rodando os hooks da versão anterior e regravava a versão vista com o número antigo. A versão vista agora nunca anda para trás, e ler, decidir e gravar o estado dos avisos acontecem sob um lock de arquivo (`engine/lib/process-lock.js`): duas sessões ao mesmo tempo não sobrescrevem mais uma à outra (24 processos concorrentes de duas versões: 1 aviso, antes 8).
+- O aviso de "liguei a atualização automática" não promete mais que as versões chegam sozinhas quando o ambiente desliga a atualização. A dica do painel ao lado de *Update now* e o README explicam as variáveis e o `FORCE_AUTOUPDATE_PLUGINS=1`, em vez de dizer que o Claude Code nunca atualiza o plugin.
 
 ## [3.14.1] - 2026-11-02
 

@@ -26423,6 +26423,13 @@ test('marketplace auto-update: turned on once when nobody chose (known_marketpla
     assertEq(m.ensureAutoUpdate({ pluginRoot: root, env, markerDir }).status, 'enabled', 'enabled again for a fresh marker');
     const blockedNotice = m.takeAutoUpdateNotice({ markerDir, env: { CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: '1' } });
     assert(/CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC está definido/.test(blockedNotice) && /FORCE_AUTOUPDATE_PLUGINS=1/.test(blockedNotice), `warns naming the variable that disables updates: ${blockedNotice}`);
+    assert(!/sozinhas/.test(blockedNotice) && !blockedNotice.includes('\n'), `blocked: no promise that updates arrive by themselves: ${blockedNotice}`);
+    assert(/sozinhas/.test(n), `not blocked: promises the automatic update: ${n}`);
+    write({ 'allansantos-plugins': {} }, {});
+    fs.rmSync(path.join(markerDir, m.MARKER), { force: true });
+    assertEq(m.ensureAutoUpdate({ pluginRoot: root, env, markerDir }).status, 'enabled', 'enabled for the override case');
+    const forced = m.takeAutoUpdateNotice({ markerDir, env: { CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: '1', FORCE_AUTOUPDATE_PLUGINS: '1' } });
+    assert(/sozinhas/.test(forced) && !/está definido/.test(forced), `FORCE_AUTOUPDATE_PLUGINS=1: updates do arrive, no warning: ${forced}`);
     fs.writeFileSync(knownF, '{broken');
     fs.rmSync(path.join(markerDir, m.MARKER), { force: true });
     const r = m.ensureAutoUpdate({ pluginRoot: root, env, markerDir });
@@ -26527,6 +26534,23 @@ test('update-notice: "version available" cached 6h and told once per version; "p
       setVer('3.4.0'); assertEq(u.takeUpdateNotices({ root, dir, env: {} }), [], `older session: silent (round ${i + 1})`);
     }
     assertEq(JSON.parse(fs.readFileSync(u.stateFile(dir), 'utf8')).seenVersion, '3.5.0', 'seenVersion never moves back');
+    // Read-decide-write runs under the state lock: while another live process holds it, nothing is told or written
+    // (that process decides); a lock left by a dead process is reclaimed.
+    const lockDir = path.join(base, 'g-lock'); const lockFile = `${u.stateFile(lockDir)}.lock`;
+    fs.mkdirSync(lockDir, { recursive: true });
+    fs.writeFileSync(u.stateFile(lockDir), JSON.stringify({ seenVersion: '3.4.0', latest: '3.6.0' }));
+    setVer('3.5.0');
+    fs.writeFileSync(lockFile, JSON.stringify({ pid: process.pid, token: 'held-by-another-session', createdAt: Date.now() }));
+    assertEq(u.takeUpdateNotices({ root, dir: lockDir, env: {} }), [], 'lock held by a live process: nothing told now');
+    assertEq(JSON.parse(fs.readFileSync(u.stateFile(lockDir), 'utf8')).seenVersion, '3.4.0', 'lock held: state not written');
+    const busy = await u.refreshLatest({ root, dir: lockDir, env: {}, now: T0, fetchLatest: async () => ({ latest: '3.7.0' }) });
+    assert(busy.status === 'error' && /locked/.test(busy.error), `refresh with the lock held fails loud: ${JSON.stringify(busy)}`);
+    assertEq(JSON.parse(fs.readFileSync(u.stateFile(lockDir), 'utf8')).latest, '3.6.0', 'lock held: latest not overwritten');
+    assert(fs.existsSync(lockFile), 'a lock this process does not own is never removed');
+    fs.writeFileSync(lockFile, JSON.stringify({ pid: 2147483646, token: 'dead-session', createdAt: Date.now() }));
+    assertEq(u.takeUpdateNotices({ root, dir: lockDir, env: {} }).length, 2, 'dead holder: lock reclaimed, updated + available told');
+    assert(!fs.existsSync(lockFile), 'lock released after the write');
+    assertEq(JSON.parse(fs.readFileSync(u.stateFile(lockDir), 'utf8')).seenVersion, '3.5.0', 'reclaimed lock: state written');
     // opt-out
     const off = { CLAUDE_CODE_BOSS_AUTO_UPDATE: '0' };
     assertEq((await u.refreshLatest({ root, dir: path.join(base, 'g2'), env: off, now: T0, fetchLatest })).status, 'disabled', 'opt-out: no check');

@@ -1065,7 +1065,7 @@ table{font-variant-numeric:tabular-nums}
         <button class="btn-primary" id="plugin-update-btn" onclick="doPluginUpdate()" style="display:none" data-i18n="plugin.update">Atualizar agora</button>
         <span id="plugin-update-progress" class="text-muted" style="font-size:.8rem"></span>
       </div>
-      <div class="text-muted" style="font-size:.7rem;margin-top:.45rem" data-i18n="plugin.updateHint">Plugin externo (marketplace local): o /plugin do Claude não atualiza sozinho. Após atualizar, rode /reload-plugins.</div>
+      <div class="text-muted" style="font-size:.7rem;margin-top:.45rem" data-i18n="plugin.updateHint">O Claude Code atualiza o plugin sozinho pelo marketplace, a menos que DISABLE_UPDATES, DISABLE_AUTOUPDATER ou CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC esteja definido (FORCE_AUTOUPDATE_PLUGINS=1 sobrepõe); nesse caso atualize aqui. Após atualizar, rode /reload-plugins.</div>
     </div>
     <!-- HERO: live router state (signature moment) -->
     <div class="card hero-status" id="router-hero">
@@ -1442,7 +1442,7 @@ const I18N = {
     'plugin.updated': 'Updated {f} → {t}. Run /reload-plugins in Claude Code.',
     'plugin.updatedRestart': 'Updated {f} → {t}. Close and reopen your Claude Code sessions (a /reload-plugins would load an older copy).',
     'plugin.confirmUpdate': 'Download the latest release and install it over the current plugin? Claude Code will need /reload-plugins afterwards.',
-    'plugin.updateHint': 'External plugin (local marketplace): Claude\'s /plugin does not auto-update it. After updating, run /reload-plugins.',
+    'plugin.updateHint': 'Claude Code updates the plugin by itself through the marketplace, unless DISABLE_UPDATES, DISABLE_AUTOUPDATER or CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC is set (FORCE_AUTOUPDATE_PLUGINS=1 overrides them); then update here. After updating, run /reload-plugins.',
     'router.saving': 'Saving...',
     'router.saved': 'Saved!',
     'router.metricsTitle': 'Savings & usage',

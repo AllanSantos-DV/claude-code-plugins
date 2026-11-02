@@ -2400,8 +2400,8 @@ async function resetRouterMetrics(req, res) {
 }
 
 // ─── API: Plugin version + self-update (F4) ───────────────────────
-// The plugin is installed from a LOCAL marketplace, so Claude Code's /plugin
-// command never pulls updates for it — the dashboard is the update surface.
+// The manual update surface, for when Claude Code's marketplace auto-update is off
+// (by the user or by env — see update-notice.js ccAutoUpdateBlockedBy).
 let _updateCheckCache = null; // { at, data } — cached to avoid hammering GitHub
 
 function getPluginVersion(req, res) {

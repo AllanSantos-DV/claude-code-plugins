@@ -4,8 +4,8 @@
  *   1. "new version available": SessionStart (refreshLatest) asks GitHub for the newest
  *      `v<X.Y.Z>` release at most every 6h and caches it; the next prompt (takeUpdateNotices)
  *      tells the user once per version.
- *   2. "plugin updated": the version at CLAUDE_PLUGIN_ROOT differs from the last one this
- *      machine saw → told once. First run only records the version (the welcome covers it).
+ *   2. "plugin updated": the version at CLAUDE_PLUGIN_ROOT is newer than the last one this
+ *      machine saw → told once. First run only records the version, silently.
  * Both ride the UserPromptSubmit `systemMessage` (the only hook channel that reaches the user).
  *
  * Opt-out: CLAUDE_CODE_BOSS_AUTO_UPDATE=0|false|off|no — no auto-update switch-on
@@ -53,6 +53,22 @@ function writeState(file, state) {
   require('../../engine/lib/atomic-write.js').writeFileAtomic(file, JSON.stringify(state, null, 2) + '\n');
 }
 
+/**
+ * Run fn() holding the state file's lock. Sessions of two plugin versions write this file at once: without the lock an
+ * older session's stale snapshot can overwrite what a newer one just wrote. Brief retries, then null (caller defers).
+ */
+function withStateLock(file, fn) {
+  const { acquireFileLock, releaseFileLock } = require('../../engine/lib/process-lock.js');
+  const lockFile = `${file}.lock`;
+  let lock = { acquired: false, reason: 'not tried' };
+  for (let i = 0; i < 5 && !lock.acquired; i++) {
+    if (i) Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 20);
+    lock = acquireFileLock(lockFile);
+  }
+  if (!lock.acquired) { console.error(`[update-notice] ${lockFile} busy (${lock.reason}) — deferred`); return null; }
+  try { return fn(); } finally { releaseFileLock(lockFile, lock.owner); }
+}
+
 function installedVersion(root) {
   return String(JSON.parse(fs.readFileSync(path.join(root, 'package.json'), 'utf8')).version || '');
 }
@@ -70,7 +86,8 @@ async function refreshLatest({ root, dir, env = process.env, now = Date.now(), f
   try {
     const r = await (fetchLatest || require('./plugin-updater.js').checkForUpdate)(root);
     if (!r || !r.latest) throw new Error('release lookup returned no version');
-    writeState(file, { ...readState(file), latest: r.latest, checkedAt: new Date(now).toISOString() });
+    const saved = withStateLock(file, () => { writeState(file, { ...readState(file), latest: r.latest, checkedAt: new Date(now).toISOString() }); return true; });
+    if (!saved) throw new Error(`${file} stayed locked — latest ${r.latest} not cached, the next session checks again`);
     return { status: 'checked', latest: r.latest };
   } catch (err) {
     console.error(`[update-notice] version check failed: ${err.message}`);
@@ -83,10 +100,15 @@ async function refreshLatest({ root, dir, env = process.env, now = Date.now(), f
  * @returns {string[]}
  */
 function takeUpdateNotices({ root, dir, env = process.env } = {}) {
-  const { compareSemver } = require('./plugin-updater.js');
   const file = stateFile(dir);
-  const st = readState(file);
   const installed = installedVersion(root);
+  // Lock busy: another session is updating the state right now; this prompt says nothing and the next one decides.
+  return withStateLock(file, () => takeLocked(file, installed, env)) || [];
+}
+
+function takeLocked(file, installed, env) {
+  const { compareSemver } = require('./plugin-updater.js');
+  const st = readState(file);
   const out = [];
   if (st.seenVersion && st.seenVersion !== installed && compareSemver(installed, st.seenVersion) > 0) {
     out.push(`claude-code-boss foi atualizado: ${st.seenVersion} → ${installed}. Novidades: ${CHANGELOG_URL}`);
