@@ -10,7 +10,9 @@
  * Safety (a delete must never hurt a working install):
  *  - nothing is removed unless the CURRENT install is verified: the registry's installPath is a
  *    direct child of `cacheBase`, exists, and has a package.json. Otherwise → nothing deleted.
- *  - the current install, the running session's own root and the root of the live brain daemon
+ *  - the current install, the dir Claude Code resolves for its version (a reload reads
+ *    <cache>/<package.json version>, which differs from the registry path for a dev build),
+ *    the running session's own root and the root of the live brain daemon
  *    (deleting the dir a daemon runs from crashed it on 2026-10-05) are always kept.
  *  - only directories directly under `cacheBase` are touched; a dir that cannot be removed
  *    (in use on Windows) is reported and retried by the next run — never fatal.
@@ -54,6 +56,14 @@ function daemonRoot(dataDir) {
 
 const norm = (p) => { const r = path.resolve(String(p)); return process.platform === 'win32' ? r.toLowerCase() : r; };
 
+/** The dir a reload resolves for the install at `current`: <cacheBase>/<its package.json version>, or null. */
+function versionDir(cacheBase, current) {
+  try {
+    const v = JSON.parse(fs.readFileSync(path.join(current, 'package.json'), 'utf8')).version;
+    return typeof v === 'string' && v ? path.join(cacheBase, v) : null;
+  } catch (err) { console.error('[cache-prune] cannot read version of ' + current + ': ' + err.message); return null; }
+}
+
 /** Pure: which entries of `names` (children of cacheBase) go, given the dirs to keep. */
 function planPrune(cacheBase, names, keepPaths) {
   const keep = new Set((keepPaths || []).filter(Boolean).map(norm));
@@ -82,8 +92,9 @@ async function pruneOldVersions(o = {}) {
   try { entries = fs.readdirSync(cacheBase, { withFileTypes: true }); }
   catch (err) { return { ...out, ok: false, skipped: `cannot list ${cacheBase}: ${err.message}` }; }
 
+  const resolved = versionDir(cacheBase, current);
   const dirs = entries.filter((e) => e.isDirectory()).map((e) => e.name);
-  for (const name of planPrune(cacheBase, dirs, [current, ...(o.keep || [])])) {
+  for (const name of planPrune(cacheBase, dirs, [current, resolved, ...(o.keep || [])])) {
     try { await rm(path.join(cacheBase, name)); out.removed.push(name); }
     catch (err) {
       out.failed.push({ name, error: err.message });

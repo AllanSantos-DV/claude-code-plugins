@@ -9361,6 +9361,14 @@ test('cache-prune: installs several versions in a temp cache → only the newest
   assert(fs.existsSync(path.join(base, '3.15.0', 'node_modules', 'dep', 'big.bin')), 'the current install is intact');
 });
 
+test('cache-prune: a dev build keeps the <package.json version> dir a reload resolves (Claude Code rewrites the registry to it)', async () => {
+  const base = _cacheWith(['3.1.0', '3.2.0', '3.3.0', '3.3.0-dev.abc']);
+  fs.writeFileSync(path.join(base, '3.3.0-dev.abc', 'package.json'), JSON.stringify({ version: '3.3.0' }));
+  const r = await cachePrune.pruneOldVersions({ cacheBase: base, current: path.join(base, '3.3.0-dev.abc') });
+  assertEq(r.removed.sort(), ['3.1.0', '3.2.0']);
+  assertEq(fs.readdirSync(base).sort(), ['3.3.0', '3.3.0-dev.abc']);
+});
+
 test('cache-prune: the running session root and the live daemon root are kept', async () => {
   const base = _cacheWith(['3.1.0', '3.2.0', '3.3.0', '3.4.0']);
   const r = await cachePrune.pruneOldVersions({ cacheBase: base, current: path.join(base, '3.4.0'), keep: [path.join(base, '3.2.0'), null, undefined] });
