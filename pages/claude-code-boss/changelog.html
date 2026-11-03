@@ -3,13 +3,13 @@
 <head>
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
-<title>claude-code-boss v3.14.3 — changelog</title>
+<title>claude-code-boss v3.14.4 — changelog</title>
 <meta name="description" content="O que mudou em cada versão do claude-code-boss, da mais recente para a mais antiga." />
 <link rel="canonical" href="https://allansantos-dv.github.io/claude-code-plugins/claude-code-boss/changelog.html">
 <meta property="og:type" content="website">
 <meta property="og:site_name" content="allansantos-plugins">
 <meta property="og:locale" content="pt_BR">
-<meta property="og:title" content="claude-code-boss v3.14.3 — changelog">
+<meta property="og:title" content="claude-code-boss v3.14.4 — changelog">
 <meta property="og:description" content="O que mudou em cada versão do claude-code-boss, da mais recente para a mais antiga.">
 <meta property="og:url" content="https://allansantos-dv.github.io/claude-code-plugins/claude-code-boss/changelog.html">
 <meta property="og:image" content="https://allansantos-dv.github.io/claude-code-plugins/claude-code-boss/og-card.jpg">
@@ -17,7 +17,7 @@
 <meta property="og:image:height" content="630">
 <meta property="og:image:alt" content="claude-code-boss: Menos repetição. Mais memória.">
 <meta name="twitter:card" content="summary_large_image">
-<meta name="twitter:title" content="claude-code-boss v3.14.3 — changelog">
+<meta name="twitter:title" content="claude-code-boss v3.14.4 — changelog">
 <meta name="twitter:description" content="O que mudou em cada versão do claude-code-boss, da mais recente para a mais antiga.">
 <meta name="twitter:image" content="https://allansantos-dv.github.io/claude-code-plugins/claude-code-boss/og-card.jpg">
 <script data-ccb-theme-script>
@@ -274,14 +274,14 @@ html{scroll-behavior:auto}
   <nav class="nav-links">
     <a href="index.html">← Apresentação</a>
     <a href="tech.html">Detalhes técnicos</a>
-    <a href="#top" class="ver">v3.14.3</a>
+    <a href="#top" class="ver">v3.14.4</a>
   </nav>
 <div class="ccb-theme" role="group" aria-label="Tema"><button type="button" data-ccb-theme="dark" aria-pressed="true">Dark</button><button type="button" data-ccb-theme="light" aria-pressed="false">Light</button></div>
 </header>
 
 <main class="wrap" id="top">
   <div class="page-head">
-    <p class="kick">changelog · v3.14.3</p>
+    <p class="kick">changelog · v3.14.4</p>
     <h1>O que mudou em cada versão</h1>
     <p class="intro">Histórico do claude-code-boss, da versão mais recente para a mais antiga. O registro completo, com cada correção, está no <a href="https://github.com/AllanSantos-DV/claude-code-plugins/blob/main/claude-code-boss/CHANGELOG.md">CHANGELOG.md</a>.</p>
     <div class="toc">
@@ -292,6 +292,7 @@ html{scroll-behavior:auto}
 
   <section id="resumo">
     <h2>Em linguagem simples</h2>
+    <p><b>3.14.4</b> (2026-11-03) · Menos espaço no disco. Cada atualização deixava a pasta da versão anterior do plugin para trás, e uma máquina chegou a guardar cerca de 40 cópias. Agora, a cada início de sessão e ao fim de um "Update now" bem-sucedido, só a versão instalada fica e as antigas, inclusive as que já estavam lá, são apagadas. Nada é apagado se a instalação atual não puder ser verificada, e uma instalação que falha nunca remove a versão que funciona. Voltar a uma versão antiga é baixá-la de novo do GitHub; nenhuma cópia é guardada.</p>
     <p><b>3.14.3</b> (2026-11-02) · Correção no aviso de atualização. O aviso "claude-code-boss foi atualizado" ainda se repetia quando uma sessão aberta antes da 3.14.2 continuava rodando: as versões antigas seguiam regravando a versão vista antiga, e a sessão nova seguinte anunciava a mesma atualização de novo. Agora a maior versão já vista fica guardada num campo próprio, que as versões antigas preservam sem mexer, e uma versão voltada para trás é ignorada. O aviso aparece uma vez só, mesmo com uma sessão antiga aberta.</p>
     <p><b>3.14.2</b> (2026-11-02) · Correções nos avisos de atualização. O aviso de nova versão prometia que ela chegaria sozinha mesmo quando o ambiente desliga a atualização de plugins do Claude Code: com <code>DISABLE_UPDATES</code>, <code>DISABLE_AUTOUPDATER</code> ou <code>CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC</code> definidos, o Claude Code não atualiza plugins, mesmo com o auto-update ligado no marketplace. Agora o aviso diz qual variável está desligando e como receber as versões assim: definir também <code>FORCE_AUTOUPDATE_PLUGINS=1</code>, ou atualizar em /plugin → Marketplaces → Update. O aviso de "liguei a atualização automática", a dica ao lado de <i>Update now</i> no painel e o README dizem o mesmo. E o aviso "claude-code-boss foi atualizado" deixou de se repetir a cada prompt quando sessões abertas antes e depois da atualização rodavam juntas: a versão vista nunca anda para trás, e o estado dos avisos é lido e gravado sob um lock, então duas sessões ao mesmo tempo não sobrescrevem uma à outra (24 processos concorrentes de duas versões: 1 aviso, antes 8).</p>
     <p><b>3.14.1</b> (2026-11-02) · Mudança: o Boss deixa de compactar sessões. Os limites de 150 mil tokens (cache frio) e 200 mil (cache quente), o gate de compactação, os campos de limite do painel e o controle de reinício em fases foram retirados; a compactação automática e o <code>/compact</code> seguem o padrão do próprio Claude Code. Overrides antigos não reativam a política, e os valores que o ajuste de custo tinha gravado são restaurados na próxima abertura, preservando o que você configurou. O painel fica sem controles de limiar e as medições antigas continuam disponíveis como histórico. Sessões abertas antes da atualização param de compactar na próxima consulta ao daemon; abra uma sessão nova para carregar o módulo atual. O check do Doctor que avisava de sessões num Boss antigo saiu junto, porque comparava a versão do módulo de compactação, que não existe mais. Correção: o roteador de modelos apagava a sua <code>autoCompactWindow</code> quando ela valia 200000, por ser igual ao valor que versões antigas gravavam; agora ele não grava nem remove mais essa chave, e o seu valor fica. Os textos que ainda prometiam compactação pelo Boss (dica do painel Compaction &amp; cache, o bloco Compaction da Home, a dica do ajuste de contexto do roteador, a documentação e o check do Doctor) foram alinhados: a compactação é do Claude Code, e o painel mostra o histórico do que foi registrado.</p>
@@ -322,12 +323,13 @@ html{scroll-behavior:auto}
   </section>
 
   <section id="versoes">
-    <h2>Destaques por versão <span class="tag">119 releases</span></h2>
-    <p class="lead">O changelog completo (v1.0.0 → v3.14.3) vive no <a href="https://github.com/AllanSantos-DV/claude-code-plugins/blob/main/claude-code-boss/CHANGELOG.md">CHANGELOG.md</a>. Destaques recentes:</p>
+    <h2>Destaques por versão <span class="tag">120 releases</span></h2>
+    <p class="lead">O changelog completo (v1.0.0 → v3.14.4) vive no <a href="https://github.com/AllanSantos-DV/claude-code-plugins/blob/main/claude-code-boss/CHANGELOG.md">CHANGELOG.md</a>. Destaques recentes:</p>
     <div class="table-scroll">
       <table>
         <thead><tr><th>Versão</th><th>Destaque</th></tr></thead>
         <tbody>
+          <tr><td><b>v3.14.4</b></td><td>Só a versão instalada do plugin fica no disco: as antigas são removidas a cada início de sessão e após uma atualização bem-sucedida.</td></tr>
           <tr><td><b>v3.14.3</b></td><td>O aviso "plugin atualizado" não se repete mais enquanto uma sessão aberta antes da 3.14.2 continua rodando.</td></tr>
           <tr><td><b>v3.14.2</b></td><td>Os avisos de atualização dizem quando a versão nova não vai chegar sozinha (qual variável do ambiente desliga a atualização de plugins e como recebê-la assim), e "plugin atualizado" não se repete mais com sessões antigas e novas abertas juntas.</td></tr>
           <tr><td><b>v3.14.1</b></td><td>O Boss deixa de compactar: limites de 150 mil/200 mil, gate, campos de limite do painel e reinício em fases retirados; a compactação automática e o /compact ficam com o Claude Code, e as medições antigas seguem como histórico. O roteador não grava nem remove mais a <code>autoCompactWindow</code> do usuário (apagava um valor de 200000); textos que prometiam compactação pelo Boss alinhados.</td></tr>
@@ -388,7 +390,7 @@ html{scroll-behavior:auto}
       <a href="https://github.com/AllanSantos-DV/claude-code-plugins/blob/main/claude-code-boss/README.md">README</a>
       <a href="https://github.com/AllanSantos-DV/claude-code-plugins">GitHub</a>
     </div>
-    <div class="legal">MIT · Allan Santos · claude-code-boss v3.14.3</div>
+    <div class="legal">MIT · Allan Santos · claude-code-boss v3.14.4</div>
   </div>
 </footer>
 
