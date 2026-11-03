@@ -495,8 +495,9 @@ async function performUpdate(root, opts = {}) {
     let sha = await _resolveSha(repo, state.tag);
     sha = sha ? sha.slice(0, 12) : `rel-${newVersion.replace(/\./g, '-')}`;
 
-    // Never delete an existing cache dir: the shared brain daemon may be running from it
-    // (removing one crashed the daemon on 2026-10-05) — a re-install goes to a fresh dir.
+    // The install itself never overwrites or deletes an existing cache dir: the shared brain daemon
+    // may be running from it (removing one crashed the daemon on 2026-10-05) — a re-install goes
+    // to a fresh dir. Old versions are removed only afterwards, by cache-prune.
     // Named after the version the registry records: a reload (/reload-plugins, or the one the
     // Desktop runs by itself when installed_plugins.json changes) reads `<cache>/<version>`, and
     // where that dir is missing Claude Code fills it from the marketplace checkout — an older
