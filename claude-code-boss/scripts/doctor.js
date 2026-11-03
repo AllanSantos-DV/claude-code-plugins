@@ -734,7 +734,9 @@ async function gatherContext({ probe = false, audit = false, scanBudgetMs } = {}
   if (audit) {
     try {
       const cr = require('./lib/compaction-report.js');
-      compaction = cr.summarizeCompaction(cr.loadCompactionRows({ days: 30 })).episodes;
+      const rows = cr.loadCompactionRows({ days: 30, budgetMs: scanBudgetMs });
+      compaction = cr.summarizeCompaction(rows).episodes;
+      if (rows.partial) compaction.partial = true;
     } catch (e) { console.error(`[doctor] compaction history: ${e.message}`); compaction = { error: e.message }; }
   }
 
@@ -747,7 +749,7 @@ async function gatherContext({ probe = false, audit = false, scanBudgetMs } = {}
       if (!bin) claudeCompat = { skipped: 'no Claude Code binary found (set CLAUDE_CODE_EXECPATH)' };
       else { const r = cc.check(bin); claudeCompat = { version: r.version, total: r.rows.length, missing: r.rows.filter((x) => !x.present) }; }
     } catch (e) { console.error(`[doctor] claude compat: ${e.message}`); claudeCompat = { error: e.message }; }
-    try { subagents = require('./lib/subagent-usage.js').summarizeSubagents(require('./subagent-report.js').subagentRuns(30)); }
+    try { const runs = require('./subagent-report.js').subagentRuns(30, { budgetMs: scanBudgetMs }); subagents = require('./lib/subagent-usage.js').summarizeSubagents(runs); if (runs.partial) subagents.partial = true; }
     catch (e) { console.error(`[doctor] sub-agent contexts: ${e.message}`); subagents = { error: e.message }; }
   }
 

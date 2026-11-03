@@ -237,12 +237,22 @@ function embedderDimMismatch(data) {
     const dims = embedder.getDimensions();
     const Db = require('../engine/lib/sqlite-compat.js').loadSqlite();
     if (!Db) return null;
+    const stampFile = path.join(data, '.runtime', 'embedder-dim-clean.json');
+    let clean = null;
+    try { clean = JSON.parse(fs.readFileSync(stampFile, 'utf8')); } catch (err) { void err; }
+    const cleanAt = clean && clean.dims === dims ? clean.at : 0;
+    const startedAt = Date.now();
+    const lastWrite = (dbPath) => Math.max(...['', '-wal'].map((s) => { try { return fs.statSync(dbPath + s).mtimeMs; } catch (err) { void err; return 0; } }));
     let count = 0;
     for (const proj of fs.readdirSync(brainDir)) {
       const dbPath = path.join(brainDir, proj, 'brain.db');
       if (!fs.existsSync(dbPath)) continue;
+      if (cleanAt && lastWrite(dbPath) < cleanAt) continue;
       const db = new Db(dbPath, { readonly: true });
       try { count += db.prepare('SELECT COUNT(*) AS c FROM embeddings WHERE dimensions != ?').get(dims).c; } finally { db.close(); }
+    }
+    if (count === 0) {
+      try { fs.mkdirSync(path.dirname(stampFile), { recursive: true }); writeFileAtomic(stampFile, JSON.stringify({ dims, at: startedAt })); } catch (err) { console.error(`[BRAIN-HEALTH] embedder dimension stamp not saved: ${err.message}`); }
     }
     return count > 0 ? { count, dims } : null;
   } catch (err) {

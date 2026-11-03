@@ -16,11 +16,17 @@ function arg(name, fallback) {
   return i > 0 && i + 1 < process.argv.length ? process.argv[i + 1] : fallback;
 }
 
-/** Sub-agent transcripts (`<project>/<session>/subagents/agent-*.jsonl`) touched inside the window, with their agent type. */
-function subagentRuns(days) {
+/**
+ * Sub-agent transcripts (`<project>/<session>/subagents/agent-*.jsonl`) touched inside the window, with their agent type.
+ * Newest first; with `budgetMs` it stops once the budget is spent and sets `partial` on the returned array.
+ * @param {number} days
+ * @param {{budgetMs?:number}} [opts]
+ */
+function subagentRuns(days, { budgetMs = Infinity } = {}) {
+  const t0 = Date.now();
   const root = path.join(process.env.CLAUDE_CONFIG_DIR || path.join(os.homedir(), '.claude'), 'projects');
   const since = Date.now() - days * 86400e3;
-  const runs = [];
+  const files = [];
   for (const proj of fs.readdirSync(root)) {
     const pd = path.join(root, proj);
     for (const d of fs.readdirSync(pd, { withFileTypes: true })) {
@@ -29,15 +35,21 @@ function subagentRuns(days) {
       for (const f of fs.readdirSync(sd)) {
         if (!f.endsWith('.jsonl')) continue;
         const p = path.join(sd, f);
-        if (fs.statSync(p).mtimeMs < since) continue;
-        const lines = fs.readFileSync(p, 'utf8').split('\n');
-        const rec = sessionRecord(lines);
-        if (!rec) continue;
-        const metaFile = p.replace(/\.jsonl$/, '.meta.json');
-        const meta = fs.existsSync(metaFile) ? JSON.parse(fs.readFileSync(metaFile, 'utf8')) : {};
-        runs.push({ ...rec, agentType: meta.agentType || 'unknown', compactions: lines.filter((l) => l.includes('compact_boundary')).length });
+        const mtime = fs.statSync(p).mtimeMs;
+        if (mtime >= since) files.push({ p, mtime });
       }
     }
+  }
+  files.sort((a, b) => b.mtime - a.mtime);
+  const runs = [];
+  for (const { p } of files) {
+    if (Date.now() - t0 > budgetMs) { runs.partial = true; break; }
+    const lines = fs.readFileSync(p, 'utf8').split('\n');
+    const rec = sessionRecord(lines);
+    if (!rec) continue;
+    const metaFile = p.replace(/\.jsonl$/, '.meta.json');
+    const meta = fs.existsSync(metaFile) ? JSON.parse(fs.readFileSync(metaFile, 'utf8')) : {};
+    runs.push({ ...rec, agentType: meta.agentType || 'unknown', compactions: lines.filter((l) => l.includes('compact_boundary')).length });
   }
   return runs;
 }

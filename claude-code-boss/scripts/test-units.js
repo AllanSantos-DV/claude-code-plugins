@@ -22550,6 +22550,73 @@ test('brain-health (auditoria 3.1.0): vectors from another embedder dimension ar
   }
 });
 
+test('brain-health: the embedder dimension check skips shards untouched since its last clean pass and rereads the ones written after', () => {
+  const emb = require('../engine/brain-embedder.js');
+  const bh = require('./brain-health.js');
+  const Db = require('../engine/lib/sqlite-compat.js').loadSqlite();
+  assert(Db, 'sqlite available in the suite');
+  const dims = (emb.getModel(), emb.getDimensions());
+  const data = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-dim-stamp-'));
+  const shard = (name) => {
+    const dir = path.join(data, 'brain', name);
+    fs.mkdirSync(dir, { recursive: true });
+    const db = new Db(path.join(dir, 'brain.db'));
+    db.exec('CREATE TABLE embeddings (entry_id TEXT PRIMARY KEY, vector BLOB, dimensions INTEGER, model TEXT)');
+    db.prepare('INSERT INTO embeddings VALUES (?, ?, ?, ?)').run('a', Buffer.alloc(4), dims, 'default');
+    db.close();
+    return path.join(dir, 'brain.db');
+  };
+  const p1 = shard('p1'); shard('p2');
+  assertEq(bh.embedderDimMismatch(data), null, 'every vector matches');
+  assert(fs.existsSync(path.join(data, '.runtime', 'embedder-dim-clean.json')), 'a clean pass leaves its stamp');
+  const addWrong = () => { const db = new Db(p1); db.prepare('INSERT INTO embeddings VALUES (?, ?, ?, ?)').run('w', Buffer.alloc(4), dims + 1, 'default'); db.close(); };
+  addWrong();
+  const old = new Date(Date.now() - 3600_000);
+  for (const suffix of ['', '-wal']) { try { fs.utimesSync(p1 + suffix, old, old); } catch (err) { void err; } }
+  assertEq(bh.embedderDimMismatch(data), null, 'a shard not written since the clean pass is not reopened');
+  const now = new Date(Date.now() + 5000);
+  fs.utimesSync(p1, now, now);
+  assertEq(bh.embedderDimMismatch(data), { count: 1, dims }, 'a shard written after the clean pass is read again');
+  assertEq(bh.embedderDimMismatch(data), { count: 1, dims }, 'a pass that found mismatches leaves no stamp, so it keeps reading');
+});
+
+test('compaction-report.loadCompactionRows: reads the most recently written projects first and stops with partial when the budget is spent', () => {
+  const cr = require('./lib/compaction-report.js');
+  const seen = [];
+  const store = {
+    listProjects: () => ['old', 'new'],
+    close() {},
+    init: ({ project }) => { seen.push(project); return true; },
+    getEventLog: () => [],
+  };
+  const mtimeOf = (p) => (p === 'new' ? 2 : 1);
+  const all = cr.loadCompactionRows({ store, mtimeOf });
+  assertEq(seen, ['new', 'old'], 'newest first');
+  assertEq(all.partial, undefined);
+  seen.length = 0;
+  const cut = cr.loadCompactionRows({ store, mtimeOf, budgetMs: -1 });
+  assertEq(cut.partial, true);
+  assertEq(seen, [], 'budget spent: no project is opened');
+});
+
+test('subagent-report.subagentRuns: a spent budget reads no transcript and flags the result partial', () => {
+  const home = fcTmp('subagents');
+  const sd = path.join(home, 'projects', 'p', 's1', 'subagents');
+  fcWrite(path.join(sd, 'agent-1.jsonl'), '{}\n');
+  const prev = process.env.CLAUDE_CONFIG_DIR;
+  process.env.CLAUDE_CONFIG_DIR = home;
+  try {
+    const sr = require('./subagent-report.js');
+    const cut = sr.subagentRuns(30, { budgetMs: -1 });
+    assertEq(cut.length, 0);
+    assertEq(cut.partial, true);
+    assertEq(sr.subagentRuns(30).partial, undefined);
+  } finally {
+    if (prev === undefined) delete process.env.CLAUDE_CONFIG_DIR; else process.env.CLAUDE_CONFIG_DIR = prev;
+    fs.rmSync(home, { recursive: true, force: true });
+  }
+});
+
 test('skill promotion (Q44): the user override of kb.skillPromotion reaches brain-promote and the dashboard (not only the shipped file)', () => {
   const bc = require('../engine/lib/brain-config.js');
   const file = path.join(require('../engine/lib/data-dir.js').globalDir(), 'user-config.json');

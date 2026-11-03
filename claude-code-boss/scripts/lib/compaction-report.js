@@ -6,12 +6,22 @@
  */
 const { summarizeCompaction, COMPACTION_EVENTS } = require('./compaction-metrics.js');
 
-/** Every compaction-related row of the last `days` days across the metrics projects (or one). */
-function loadCompactionRows({ days = 30, project = null, store = require('../../engine/lib/metrics-store.js') } = {}) {
+/** Last write of a project's metrics db (0 when unreadable): the order in which a time-boxed load reads them. */
+function metricsDbMtime(p) {
+  try { return require('fs').statSync(require('path').join(require('../../engine/lib/data-dir.js').dataDir(), 'metrics', p, 'metrics.db')).mtimeMs; } catch (err) { void err; return 0; }
+}
+
+/**
+ * Every compaction-related row of the last `days` days across the metrics projects (or one). Most recently written
+ * projects first; with `budgetMs` it stops once the budget is spent and sets `partial` on the returned array.
+ */
+function loadCompactionRows({ days = 30, project = null, store = require('../../engine/lib/metrics-store.js'), budgetMs = Infinity, mtimeOf = metricsDbMtime } = {}) {
+  const t0 = Date.now();
   const sinceTs = Date.now() - days * 86400_000;
-  const projects = project ? [project] : store.listProjects();
+  const projects = project ? [project] : store.listProjects().map((p) => ({ p, m: mtimeOf(p) })).sort((a, b) => b.m - a.m).map((x) => x.p);
   const rows = [];
   for (const p of projects) {
+    if (Date.now() - t0 > budgetMs) { rows.partial = true; break; }
     store.close(); // single-instance module: one project at a time
     if (!store.init({ project: p })) continue;
     for (const ev of COMPACTION_EVENTS) for (const r of store.getEventLog({ eventName: ev, sinceTs })) if (r.ts >= sinceTs) rows.push(r);
