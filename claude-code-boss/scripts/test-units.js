@@ -18063,6 +18063,27 @@ test('fixed-cost.scanUsage: conta chamadas por servidor na janela, sessoes, mens
   fs.rmSync(home, { recursive: true, force: true });
 });
 
+test('fixed-cost.scanUsage: com orcamento de tempo esgotado para de ler, marca parcial e avisa; sem orcamento le tudo', async () => {
+  const home = fcTmp('scan-budget');
+  const cwd = path.join(home, 'proj');
+  const now = Date.parse('2026-10-14T12:00:00Z');
+  const line = fcLine({ type: 'assistant', timestamp: new Date(now - 86400000).toISOString(), message: { content: [{ type: 'tool_use', name: 'mcp__alpha__read' }] } });
+  for (const n of ['a', 'b', 'c']) {
+    const f = path.join(home, '.claude', 'projects', 'p', n + '.jsonl');
+    fcWrite(f, line);
+    fs.utimesSync(f, new Date(now - 3600000), new Date(now - 3600000));
+  }
+  const cut = await fixedCost.scanUsage({ home, cwd, days: 30, now, budgetMs: -1 });
+  assertEq(cut.partial, true);
+  assertEq(cut.sessions, 0, 'orcamento ja gasto: nenhum transcrito e lido');
+  assert(cut.errors.some((e) => e.includes('budget')), 'o corte aparece nos erros');
+  const full = await fixedCost.scanUsage({ home, cwd, days: 30, now });
+  assertEq(full.partial, undefined);
+  assertEq(full.sessions, 3);
+  assertEq(full.byPrefix.alpha.calls, 3);
+  fs.rmSync(home, { recursive: true, force: true });
+});
+
 test('fixed-cost.listMcpServers: usuario, local, .mcp.json do projeto e servidor de plugin, com o prefixo das ferramentas', () => {
   const home = fcTmp('list');
   const cwd = path.join(home, 'proj');

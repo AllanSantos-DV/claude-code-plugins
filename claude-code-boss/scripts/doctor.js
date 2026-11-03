@@ -669,7 +669,7 @@ function bossPluginId(settings) {
 /**
  * `probe` runs the embedder load test; `audit` measures the fixed cost (reads 30 days of transcripts: seconds, so opt-in).
  */
-async function gatherContext({ probe = false, audit = false } = {}) {
+async function gatherContext({ probe = false, audit = false, scanBudgetMs } = {}) {
   const root = process.env.CLAUDE_PLUGIN_ROOT || '';
   const data = dataDir();
   const activeDataResolved = process.env.CLAUDE_PLUGIN_DATA || '';
@@ -726,7 +726,7 @@ async function gatherContext({ probe = false, audit = false } = {}) {
   if (audit) {
     try {
       const cfg = hooksCfg.getFixedCost();
-      fixedCost = await fc.runAudit({ home, cwd: process.env.CLAUDE_PROJECT_DIR || process.cwd(), days: cfg.days, keep: cfg.keep });
+      fixedCost = await fc.runAudit({ home, cwd: process.env.CLAUDE_PROJECT_DIR || process.cwd(), days: cfg.days, keep: cfg.keep, scanBudgetMs });
     } catch (e) { console.error(`[doctor] fixed cost: ${e.message}`); fixedCost = { error: e.message }; }
   }
 

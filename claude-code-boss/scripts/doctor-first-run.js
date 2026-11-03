@@ -20,6 +20,9 @@ const { runTextCli } = require('./lib/hook-io.js');
 
 const AUTO_FIXERS = ['fixed-cost', 'boss-config'];
 
+// The transcripts of 30 days can total gigabytes; the scan keeps the newest ones within this budget.
+const SCAN_BUDGET_MS = 10000;
+
 // What the user must be told was turned off (the boss's own settings fixes are not "diverted" items).
 const TURNED_OFF_LABEL = {
   'plugin-disable': 'plugin disabled',
@@ -80,7 +83,7 @@ async function run(_event, { dir, key = buildKey(), doctor = require('./doctor.j
   if (!c.enabled) return null;
   if (!claim(markerPath(key, dir))) return null;
   const startedAt = Date.now();
-  const ctx = await doctor.gatherContext({ probe: false, audit: true });
+  const ctx = await doctor.gatherContext({ probe: false, audit: true, scanBudgetMs: SCAN_BUDGET_MS });
   const results = doctor.runChecks(ctx);
   let fixes = [];
   if (c.autoFix) {

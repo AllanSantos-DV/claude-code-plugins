@@ -117,11 +117,12 @@ const tsOf = (line) => { const m = /"timestamp":"([^"]+)"/.exec(line); return m 
  *   - `oldestMs`: how far back the history actually reaches (evidence that "no calls" means something);
  *   - `delta`: the newest `deferred_tools_delta` attachment (the exact tool names injected into a session and
  *     the servers that failed or were pending), preferring the transcripts of `cwd`'s own project.
- * Streams line by line and only parses the few lines that matter.
- * @param {{home?:string, cwd?:string, days?:number, now?:number}} [opts]
- * @returns {Promise<{byPrefix:object, sessions:number, assistantMessages:number, oldestMs:number, delta:(object|null), errors:string[], ms:number}>}
+ * Streams line by line and only parses the few lines that matter. Newest transcripts first; with `budgetMs` it stops
+ * once the budget is spent and sets `partial` (a first-session hook must not scan gigabytes).
+ * @param {{home?:string, cwd?:string, days?:number, now?:number, budgetMs?:number}} [opts]
+ * @returns {Promise<{partial?:boolean, byPrefix:object, sessions:number, assistantMessages:number, oldestMs:number, delta:(object|null), errors:string[], ms:number}>}
  */
-async function scanUsage({ home = os.homedir(), cwd = process.cwd(), days = 30, now = Date.now() } = {}) {
+async function scanUsage({ home = os.homedir(), cwd = process.cwd(), days = 30, now = Date.now(), budgetMs = Infinity } = {}) {
   const t0 = Date.now();
   const cutoff = now - days * DAY;
   const root = path.join(home, '.claude', 'projects');
@@ -138,13 +139,15 @@ async function scanUsage({ home = os.homedir(), cwd = process.cwd(), days = 30, 
       const f = path.join(root, d, n);
       try {
         const st = fs.statSync(f);
-        if (st.mtimeMs >= cutoff) files.push({ f, dir: d, birth: st.birthtimeMs || st.mtimeMs });
+        if (st.mtimeMs >= cutoff) files.push({ f, dir: d, birth: st.birthtimeMs || st.mtimeMs, mtime: st.mtimeMs });
       } catch (err) { out.errors.push(`${f}: ${err.message}`); }
     }
   }
+  files.sort((a, b) => b.mtime - a.mtime);
   let bestOwn = { ts: 0, line: '' };
   let bestAny = { ts: 0, line: '' };
   for (const { f, dir, birth } of files) {
+    if (Date.now() - t0 > budgetMs) { out.partial = true; out.errors.push(`transcript scan stopped after ${budgetMs}ms budget; ${out.sessions} of ${files.length} transcripts read`); break; }
     out.sessions++;
     out.oldestMs = Math.min(out.oldestMs, birth);
     const rl = readline.createInterface({ input: fs.createReadStream(f, { encoding: 'utf8' }), crlfDelay: Infinity });
@@ -564,14 +567,14 @@ function auditBossConfig(f) {
 // ── gather + audit (I/O) ─────────────────────────────────────────────────────
 
 /** Gather everything and build the audit. `probe:false` skips the HTTP tools/list (offline / hooks). */
-async function runAudit({ home = os.homedir(), cwd = process.cwd(), days = 30, keep = [], probe = true, env = process.env, now = Date.now(), probeFn = probeHttpTools, scan = scanUsage } = {}) {
+async function runAudit({ home = os.homedir(), cwd = process.cwd(), days = 30, keep = [], probe = true, env = process.env, now = Date.now(), probeFn = probeHttpTools, scan = scanUsage, scanBudgetMs } = {}) {
   const errors = [];
   const ms = listMcpServers({ home, cwd });
   const sk = listSkills({ home, cwd });
   const pl = listPlugins({ home });
   const ins = listInstructionFiles({ home, cwd });
   const counters = readUsageCounters(home);
-  const usage = await scan({ home, cwd, days, now });
+  const usage = await scan({ home, cwd, days, now, budgetMs: scanBudgetMs });
   const oauth = oauthNames(home, errors);
   const settings = _readJsonOrNull(path.join(home, '.claude', 'settings.json'), errors) || {};
   const ts = String((settings.env || {}).ENABLE_TOOL_SEARCH ?? env.ENABLE_TOOL_SEARCH ?? '').toLowerCase();
