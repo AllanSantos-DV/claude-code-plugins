@@ -9288,6 +9288,7 @@ function _updIo(extra) {
     sha256File: () => 'a'.repeat(64),
     unzip: (_zip, dir) => { fs.mkdirSync(dir, { recursive: true }); fs.writeFileSync(path.join(dir, 'package.json'), JSON.stringify({ version: '2.0.0' })); },
     killStale: () => {},
+    prune: async () => ({ ok: true, removed: [], failed: [] }),
     ...extra,
   };
 }
@@ -9316,6 +9317,7 @@ test('plugin-updater.performUpdate: registry records the SEMVER version (what Cl
     sha256File: () => 'a'.repeat(64),
     unzip: (_zip, dir) => { fs.mkdirSync(dir, { recursive: true }); fs.writeFileSync(path.join(dir, 'package.json'), JSON.stringify({ version: '2.0.0' })); },
     killStale: (k) => { keep = k; },
+    prune: async () => ({ ok: true, removed: [], failed: [] }),
   };
   const r = await pu.performUpdate(_updRoot(), { io, skipInstall: true });
   assertEq(r.updated, true);
@@ -9335,6 +9337,91 @@ test('plugin-updater.performUpdate: o registro installed_plugins.json e gravado 
   const src = fs.readFileSync(path.join(SCRIPTS, 'lib', 'plugin-updater.js'), 'utf8');
   assert(/writeFileAtomic\(registryPath,/.test(src), 'registry goes through writeFileAtomic');
   assert(!/fs\.writeFileSync\(registryPath/.test(src), 'no plain writeFileSync on the registry');
+});
+
+// ─── cache-prune: only the current plugin version stays in the cache ─────────
+const cachePrune = require('./lib/cache-prune.js');
+function _cacheWith(versions) {
+  const base = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-prune-')), 'cache', 'mkt', 'claude-code-boss');
+  for (const v of versions) {
+    fs.mkdirSync(path.join(base, v, 'node_modules', 'dep'), { recursive: true });
+    fs.writeFileSync(path.join(base, v, 'package.json'), JSON.stringify({ version: v }));
+    fs.writeFileSync(path.join(base, v, 'node_modules', 'dep', 'big.bin'), 'x'.repeat(1000));
+  }
+  return base;
+}
+
+test('cache-prune: installs several versions in a temp cache → only the newest remains (old, dev builds, orphaned)', async () => {
+  const base = _cacheWith(['3.10.0', '3.10.0-dev.355fb7a4eceb', '3.10.1', '3.13.0', '3.14.2', '3.14.3-dev.31f4fbf84892', '3.15.0']);
+  fs.writeFileSync(path.join(base, '3.10.0', '.orphaned_at'), '1');
+  const r = await cachePrune.pruneOldVersions({ cacheBase: base, current: path.join(base, '3.15.0') });
+  assertEq(r.ok, true);
+  assertEq(r.removed.length, 6);
+  assertEq(fs.readdirSync(base), ['3.15.0']);
+  assert(fs.existsSync(path.join(base, '3.15.0', 'node_modules', 'dep', 'big.bin')), 'the current install is intact');
+});
+
+test('cache-prune: the running session root and the live daemon root are kept', async () => {
+  const base = _cacheWith(['3.1.0', '3.2.0', '3.3.0', '3.4.0']);
+  const r = await cachePrune.pruneOldVersions({ cacheBase: base, current: path.join(base, '3.4.0'), keep: [path.join(base, '3.2.0'), null, undefined] });
+  assertEq(r.removed.sort(), ['3.1.0', '3.3.0']);
+  assertEq(fs.readdirSync(base).sort(), ['3.2.0', '3.4.0']);
+});
+
+test('cache-prune: current install not verified (not recorded / outside the cache / missing / no package.json) → NOTHING is deleted', async () => {
+  const base = _cacheWith(['3.1.0', '3.2.0']);
+  fs.rmSync(path.join(base, '3.2.0', 'package.json'));
+  const outside = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-prune-out-'));
+  fs.writeFileSync(path.join(outside, 'package.json'), '{}');
+  for (const current of [null, path.join(base, '9.9.9'), path.join(base, '3.2.0'), outside, path.join(base, '3.1.0', 'node_modules')]) {
+    const r = await cachePrune.pruneOldVersions({ cacheBase: base, current });
+    assertEq(r.ok, false, `current=${current}`);
+    assert(r.skipped, 'says why nothing was deleted');
+    assertEq(fs.readdirSync(base).sort(), ['3.1.0', '3.2.0'], `current=${current}`);
+  }
+});
+
+test('cache-prune: a dir that cannot be removed is reported, the others still go, the current stays', async () => {
+  const base = _cacheWith(['3.1.0', '3.2.0', '3.3.0']);
+  const real = (p) => fs.promises.rm(p, { recursive: true, force: true });
+  const rm = async (p) => { if (path.basename(p) === '3.1.0') throw new Error('EBUSY: in use'); return real(p); };
+  const r = await cachePrune.pruneOldVersions({ cacheBase: base, current: path.join(base, '3.3.0'), rm });
+  assertEq(r.removed, ['3.2.0']);
+  assertEq(r.failed.map((f) => f.name), ['3.1.0']);
+  assertEq(fs.readdirSync(base).sort(), ['3.1.0', '3.3.0']);
+});
+
+test('cache-prune.daemonRoot: reads the live daemon root from the lock in the data dir', () => {
+  const data = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-prune-data-'));
+  assertEq(cachePrune.daemonRoot(data), null);
+  fs.writeFileSync(path.join(data, 'brain-http.lock.json'), JSON.stringify({ pluginRoot: 'C:\\x\\3.1.0' }));
+  assertEq(cachePrune.daemonRoot(data), 'C:\\x\\3.1.0');
+  assertEq(cachePrune.daemonRoot(undefined), null);
+});
+
+test('plugin-updater.performUpdate: a FAILED install never deletes the working version (npm install fails → prune not reached)', async () => {
+  const base = path.join(os.homedir(), '.claude', 'plugins', 'cache', 'allansantos-plugins', 'claude-code-boss');
+  fs.rmSync(base, { recursive: true, force: true });
+  for (const v of ['1.0.0', '0.9.0']) { fs.mkdirSync(path.join(base, v), { recursive: true }); fs.writeFileSync(path.join(base, v, 'package.json'), '{}'); }
+  let pruneCalled = false;
+  const io = _updIo({ spawnSync: async () => ({ status: 1, stderr: 'npm ERR! boom' }), prune: async () => { pruneCalled = true; return {}; } });
+  let threw = null;
+  try { await pu.performUpdate(_updRoot(), { io }); } catch (e) { threw = e; }
+  assert(threw && /npm install falhou/.test(threw.message), `expected npm failure, got ${threw && threw.message}`);
+  assertEq(pruneCalled, false, 'prune must not run after a failed install');
+  assertEq(fs.readdirSync(base).filter((n) => n === '1.0.0' || n === '0.9.0').sort(), ['0.9.0', '1.0.0']);
+});
+
+test('plugin-updater.performUpdate: after a successful install the previous versions are removed; the running dashboard root stays', async () => {
+  const base = path.join(os.homedir(), '.claude', 'plugins', 'cache', 'allansantos-plugins', 'claude-code-boss');
+  fs.rmSync(base, { recursive: true, force: true });
+  const mk = (v) => { fs.mkdirSync(path.join(base, v), { recursive: true }); fs.writeFileSync(path.join(base, v, 'package.json'), '{}'); return path.join(base, v); };
+  mk('0.8.0'); mk('0.9.0'); const running = mk('1.0.0');
+  const io = _updIo({ prune: require('./lib/cache-prune.js').pruneOldVersions });
+  const r = await pu.performUpdate(running, { io, skipInstall: true });
+  assertEq(r.updated, true);
+  assertEq(fs.readdirSync(base).sort(), ['1.0.0', '2.0.0'], 'old versions gone; current and the running root kept');
+  assertEq(r.pruned.removed.sort(), ['0.8.0', '0.9.0']);
 });
 
 test('plugin-updater.freshCacheDir: first free name, never an existing dir', () => {

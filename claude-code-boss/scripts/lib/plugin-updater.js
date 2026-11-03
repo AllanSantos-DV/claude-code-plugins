@@ -556,9 +556,21 @@ async function performUpdate(root, opts = {}) {
 
     _killStale(path.basename(destDir), process.pid);
 
+    // Only now — the new install is complete and registered — drop the previous versions: a
+    // failed install above throws before reaching this, so the working version is never touched.
+    // The running dashboard's own root stays (it loads from it); the next SessionStart removes it.
+    let pruned = null;
+    try {
+      const prune = io.prune || require('./cache-prune.js').pruneOldVersions;
+      pruned = await prune({ cacheBase, current: destDir, keep: [root] });
+    } catch (err) {
+      console.error(`[plugin-updater] prune of old versions failed: ${err.message}`);
+    }
+
     return {
       ok: true,
       updated: true,
+      pruned,
       from: info.version,
       to: newVersion,
       sha,

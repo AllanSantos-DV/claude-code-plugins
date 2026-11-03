@@ -1,5 +1,10 @@
 # Changelog
 
+## [Unreleased]
+
+### Fixed
+- **As versões antigas do plugin ficavam acumuladas no disco** (`scripts/lib/cache-prune.js`, `scripts/marketplace-autoupdate-ensure.js`, `scripts/lib/plugin-updater.js`): cada atualização deixava a pasta da versão anterior (com o `node_modules` dela) em `~/.claude/plugins/cache`, e uma máquina chegava a ~40 cópias. Agora, a cada início de sessão e ao fim de um *Update now* bem-sucedido, só a versão instalada fica; as antigas — inclusive as que já estavam lá — são apagadas. Nada é apagado se a instalação atual não for verificável (registro ausente, pasta fora do cache, sem `package.json`), uma instalação que falha nunca chega a apagar a versão que funciona, e a raiz da sessão em curso e a do daemon do Brain ficam. Voltar a uma versão antiga é baixá-la do GitHub; nenhuma cópia é guardada.
+
 ## [3.14.3] - 2026-11-02
 
 ### Fixed
