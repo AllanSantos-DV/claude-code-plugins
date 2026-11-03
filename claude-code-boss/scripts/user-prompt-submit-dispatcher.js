@@ -125,11 +125,16 @@ async function linkNoticeFor(event) {
   if (!event.session_id || !event.cwd || require('./lib/prompt-kind.js').isSyntheticPrompt(event.prompt)) return null;
   const port = Number(process.env.BRAIN_HTTP_PORT) || 38217;
   try {
-    return await require('./lib/mcp-link.js').linkNotice({
+    const link = await require('./lib/mcp-link.js').linkNotice({
       sessionId: event.session_id,
       cwd: event.cwd,
       daemonHealthy: async () => (await require('./lib/http-health.js').probeHealth(`http://127.0.0.1:${port}`, { timeoutMs: 1500 })).status === 200,
     });
+    // The same give-up is announced once per session (to the owner and to the agent), not on every prompt.
+    const once = require('./lib/notice-once.js');
+    const key = `brain-link:${event.session_id}`;
+    if (!link) { once.recovered(key); return null; }
+    return once.notice({ key, signature: link.at || 'down', text: link, detail: link.agent });
   } catch (err) {
     console.error(`[claude-code-boss:user-prompt-submit-dispatcher] mcp-link: ${err.message}`);
     return null;
@@ -161,7 +166,10 @@ async function main() {
     updates = require('./lib/update-notice.js').takeUpdateNotices({ root });
   } catch (err) { console.error(`[claude-code-boss:user-prompt-submit-dispatcher] update notice: ${err.message}`); }
   // Still alive: keeps this session's plugin dir out of the cache prune however long it stays open.
-  try { require('./lib/session-root.js').touchSessionRecord(event.session_id); } catch (err) { console.error(`[claude-code-boss:user-prompt-submit-dispatcher] session record touch: ${err.message}`); }
+  try {
+    require('./lib/session-root.js').touchSessionRecord(event.session_id);
+    require('./lib/plugin-dir-heal.js').healOpenSessions();
+  } catch (err) { console.error(`[claude-code-boss:user-prompt-submit-dispatcher] session record touch: ${err.message}`); }
   // A hook that failed or timed out earlier in this session: Claude Code names only the
   // event, so say which plugin owns it (lib/hook-owner.js — best effort, never faked).
   let hookFailures = null;

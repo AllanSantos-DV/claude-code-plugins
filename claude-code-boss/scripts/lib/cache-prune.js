@@ -77,7 +77,11 @@ function planPrune(cacheBase, names, keepPaths) {
 async function pruneOldVersions(o = {}) {
   const cacheBase = o.cacheBase || cacheBaseOf();
   const current = o.current === undefined ? registryInstallPath() : o.current;
-  const rm = o.rm || ((p) => fs.promises.rm(p, { recursive: true, force: true, maxRetries: 2, retryDelay: 100 }));
+  // A restored plugin dir (session-root.healMissingPluginRoots) is a junction: unlink it, never recurse into the install it points at.
+  const rm = o.rm || (async (p) => {
+    if (fs.lstatSync(p).isSymbolicLink()) return fs.promises.unlink(p);
+    return fs.promises.rm(p, { recursive: true, force: true, maxRetries: 2, retryDelay: 100 });
+  });
   const out = { ok: true, removed: [], failed: [] };
 
   if (!current) return { ...out, ok: false, skipped: 'no current install recorded in the registry' };
@@ -93,7 +97,7 @@ async function pruneOldVersions(o = {}) {
   catch (err) { return { ...out, ok: false, skipped: `cannot list ${cacheBase}: ${err.message}` }; }
 
   const resolved = versionDir(cacheBase, current);
-  const dirs = entries.filter((e) => e.isDirectory()).map((e) => e.name);
+  const dirs = entries.filter((e) => e.isDirectory() || e.isSymbolicLink()).map((e) => e.name);
   for (const name of planPrune(cacheBase, dirs, [current, resolved, ...(o.keep || [])])) {
     try { await rm(path.join(cacheBase, name)); out.removed.push(name); }
     catch (err) {

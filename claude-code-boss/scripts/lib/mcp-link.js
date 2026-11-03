@@ -69,13 +69,14 @@ function linkState({ sessionId, cwd, cacheRoot = defaultCacheRoot() } = {}) {
  * reconnect WILL work). Null otherwise — a dead daemon is brain-daemon-ensure's
  * advisory, not this one.
  * @param {{sessionId:string, cwd:string, daemonHealthy:()=>Promise<boolean>, cacheRoot?:string}} o
- * @returns {Promise<{user:string, agent:string}|null>}
+ * @returns {Promise<{at:string, user:string, agent:string}|null>}
  */
 async function linkNotice({ sessionId, cwd, daemonHealthy, cacheRoot }) {
   const s = linkState({ sessionId, cwd, ...(cacheRoot ? { cacheRoot } : {}) });
   if (s.state !== 'down') return null;
   if (!(await daemonHealthy())) return null;
   return {
+    at: s.at || '',
     // One line: Claude Code prefixes every line of a hook systemMessage.
     user: 'claude-code-boss: a memória desta sessão desconectou e o Claude Code parou de tentar reconectar. '
       + 'O serviço já voltou — digite /mcp, escolha brain-server e Reconnect (ou abra uma nova sessão).',

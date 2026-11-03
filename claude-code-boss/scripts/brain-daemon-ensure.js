@@ -35,6 +35,7 @@ const { dataDir } = require('../engine/lib/data-dir.js');
 const brainConfig = require('../engine/lib/brain-config.js');
 const mcpAutoUpdate = require('./lib/mcp-memory-auto-update.js');
 const crashEvidence = require('./lib/crash-evidence.js');
+const once = require('./lib/notice-once.js');
 
 function pluginRoot() {
   const env = process.env.CLAUDE_PLUGIN_ROOT;
@@ -103,9 +104,13 @@ async function run(event, deps = {}) {
     // Deps missing → install in background and leave the spawn to the next
     // hook run; spawning now only crashes the daemon on import.
     if (setup(root, data)) {
-      return `[BRAIN] Installing the plugin dependencies in the background (log: ${path.join(data, 'plugin-setup.log')}). ` +
-        'Memory tools start working on one of the next prompts, once the install finishes.';
+      return once.notice({
+        key: 'brain-setup', signature: 'installing', base: data,
+        text: '[BRAIN] O serviço de memória do claude-code-boss está terminando a instalação e volta sozinho; não precisa fazer nada.',
+        detail: `installing the plugin dependencies in the background (log: ${path.join(data, 'plugin-setup.log')})`,
+      });
     }
+    once.recovered('brain-setup', { base: data });
 
     let ensureDaemon = deps.ensureDaemon;
     if (!ensureDaemon) {
@@ -119,10 +124,15 @@ async function run(event, deps = {}) {
     const crashNote = result.crash ? crashAdvisory(result.crash) + '\n' : '';
 
     if (result.status === 'error') {
-      return crashNote + `[BRAIN] daemon único não pôde ser garantido (${result.error}). ` +
-        'O brain-server tentará reiniciar automaticamente no próximo prompt; se falhar, ' +
-        'rode `node scripts/plugin-setup.js && node servers/brain-server/index.js` manualmente.';
+      // One short line per owner while the same failure lasts; the full cause goes to brain-notices.log.
+      const down = once.notice({
+        key: 'brain-daemon', signature: `error:${result.error}`, base: data,
+        text: '[BRAIN] O serviço de memória do claude-code-boss está fora do ar e está sendo restaurado automaticamente; não precisa fazer nada.',
+        detail: `daemon único não pôde ser garantido (${result.error}); retried on the next prompt`,
+      });
+      return (crashNote + (down || '')).trim() || null;
     }
+    once.recovered('brain-daemon', { base: data });
     if (event && event.hook_event_name === 'SessionStart') {
       const loadConfig = deps.loadConfig || brainConfig.load;
       const runAutoUpdate = deps.runAutoUpdate || mcpAutoUpdate.runAutoUpdate;

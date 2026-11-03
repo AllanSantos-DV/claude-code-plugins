@@ -9511,6 +9511,91 @@ test('open-session protection is wired: SessionStart records CLAUDE_PLUGIN_ROOT,
   assert(/livePluginRoots\(\)/.test(read('lib', 'plugin-updater.js')), 'the post-update prune keeps the live roots');
 });
 
+test('session-root.healMissingPluginRoots: a live session whose plugin dir vanished gets a junction to the current install; outside the cache or with no verified install nothing is created; the prune unlinks it and leaves the install', async () => {
+  const sr = require('./lib/session-root.js');
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-heal-'));
+  const cacheBase = path.join(tmp, 'cache');
+  const current = path.join(cacheBase, '3.9.0');
+  fs.mkdirSync(current, { recursive: true });
+  fs.writeFileSync(path.join(current, 'package.json'), '{"version":"3.9.0"}');
+  const base = path.join(tmp, 'data');
+  try {
+    sr._resetMemo();
+    const gone = path.join(cacheBase, '3.8.0');
+    const outside = path.join(tmp, 'elsewhere', '3.8.0');
+    sr.recordSessionRoot('heal-1', 'C:\\w\\a', { base, pluginRoot: gone });
+    sr.recordSessionRoot('heal-2', 'C:\\w\\b', { base, pluginRoot: outside });
+    sr.recordSessionRoot('heal-3', 'C:\\w\\c', { base, pluginRoot: current });
+    assertEq(sr.healMissingPluginRoots({ base, cacheBase, current: null }), { healed: [], failed: [] }, 'no current install → nothing');
+    assertEq(sr.healMissingPluginRoots({ base, cacheBase, current: path.join(cacheBase, 'nope') }).healed, [], 'unverified install → nothing');
+    const r = sr.healMissingPluginRoots({ base, cacheBase, current });
+    assertEq(r.healed, [gone], 'only the missing dir under the cache is restored');
+    assertEq(r.failed, []);
+    assert(fs.existsSync(path.join(gone, 'package.json')), 'the restored dir resolves to the current install files');
+    assertEq(fs.existsSync(outside), false, 'a dir outside the cache is never created');
+    assertEq(sr.healMissingPluginRoots({ base, cacheBase, current }).healed, [], 'already restored → idempotent');
+    // The prune removes the link, never the install it points at.
+    const p = await require('./lib/cache-prune.js').pruneOldVersions({ cacheBase, current, keep: [] });
+    assertEq(p.removed, ['3.8.0'], 'the junction is a prune candidate');
+    assert(fs.existsSync(path.join(current, 'package.json')), 'the install behind the junction survives');
+    assertEq(fs.existsSync(gone), false);
+    // A dangling link (install it pointed to is gone) is replaced.
+    const other = path.join(cacheBase, '3.7.0');
+    fs.mkdirSync(other); fs.writeFileSync(path.join(other, 'package.json'), '{}');
+    const ghost = path.join(cacheBase, '3.6.0');
+    fs.symlinkSync(other, ghost, 'junction');
+    fs.rmSync(other, { recursive: true, force: true });
+    sr.recordSessionRoot('heal-4', 'C:\\w\\d', { base, pluginRoot: ghost });
+    assert(sr.healMissingPluginRoots({ base, cacheBase, current }).healed.includes(ghost), 'a dangling link is replaced');
+    assert(fs.existsSync(path.join(ghost, 'package.json')));
+  } finally { sr._resetMemo(); fs.rmSync(tmp, { recursive: true, force: true }); }
+});
+
+test('notice-once: a failure is shown once per owner; repeats are silent but fully logged; a different failure or a recovery shows again', () => {
+  const no = require('./lib/notice-once.js');
+  const base = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-notice-'));
+  try {
+    const n = (sig, text = 'fora do ar') => no.notice({ key: 'k', signature: sig, text, detail: `cause ${sig}`, base });
+    assertEq(n('a'), 'fora do ar', 'first sight is shown');
+    assertEq(n('a'), null, 'the same failure stays silent');
+    assertEq(n('a'), null);
+    assertEq(n('b'), 'fora do ar', 'a different failure is shown');
+    assertEq(no.notice({ key: 'other', signature: 'b', text: 'x', base }), 'x', 'keys are independent');
+    assertEq(no.recovered('k', { base }), true);
+    assertEq(no.recovered('k', { base }), false, 'nothing left to clear');
+    assertEq(n('b'), 'fora do ar', 'after a recovery the next failure is announced again');
+    const log = fs.readFileSync(no.logFile(base), 'utf8');
+    assertEq((log.match(/repeat \(silent\) k \[a\]: cause a/g) || []).length, 2, 'every silent repeat keeps its detail in the log');
+    assert(/recovered k/.test(log), 'recovery is logged');
+  } finally { fs.rmSync(base, { recursive: true, force: true }); }
+});
+
+test('brain-daemon-ensure: a daemon that cannot be ensured gives ONE plain line across prompts; the notice returns after a recovery; the cause stays in the log', async () => {
+  const ensure = require('./brain-daemon-ensure.js');
+  const data = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-ensure-once-'));
+  try {
+    const deps = (ensureDaemon) => ({ root: ROOT, data, runSetupInBackground: () => false, ensureDaemon });
+    const bad = async () => ({ status: 'error', error: 'EADDRINUSE 38217' });
+    const first = await ensure.run({ hook_event_name: 'UserPromptSubmit' }, deps(bad));
+    assert(/fora do ar/.test(first) && !/EADDRINUSE/.test(first) && first.split('\n').length === 1, 'one plain line, no raw cause: ' + first);
+    assertEq(await ensure.run({ hook_event_name: 'UserPromptSubmit' }, deps(bad)), null, 'same failure → silent');
+    assertEq(await ensure.run({ hook_event_name: 'UserPromptSubmit' }, deps(bad)), null);
+    assertEq(await ensure.run({ hook_event_name: 'UserPromptSubmit' }, deps(async () => ({ status: 'ok' }))), null, 'recovered → silent');
+    assert(/fora do ar/.test(await ensure.run({ hook_event_name: 'UserPromptSubmit' }, deps(bad))), 'a later outage is announced again');
+    assert(/EADDRINUSE 38217/.test(fs.readFileSync(require('./lib/notice-once.js').logFile(data), 'utf8')), 'the full cause is in the log');
+    const setupDeps = { root: ROOT, data, runSetupInBackground: () => true };
+    assert(/instalação/.test(await ensure.run({}, setupDeps)), 'setup notice shown once');
+    assertEq(await ensure.run({}, setupDeps), null, 'and silent on repeat');
+  } finally { fs.rmSync(data, { recursive: true, force: true }); }
+});
+
+test('open-session heal and the once-per-session link notice are wired into the dispatchers', () => {
+  const read = (...p) => fs.readFileSync(path.join(SCRIPTS, ...p), 'utf8');
+  assert(/healOpenSessions\(\)/.test(read('session-start-dispatcher.js')), 'SessionStart heals');
+  assert(/healOpenSessions\(\)/.test(read('user-prompt-submit-dispatcher.js')), 'each prompt heals');
+  assert(/brain-link:\$\{event\.session_id\}/.test(read('user-prompt-submit-dispatcher.js')), 'link notice keyed per session');
+});
+
 test('plugin-updater.freshCacheDir: first free name, never an existing dir', () => {
   const taken = new Set([path.join('B', 'x'), ]);
   assertEq(pu.freshCacheDir('B', 'y', (p) => taken.has(p)), path.join('B', 'y'));
@@ -16919,16 +17004,19 @@ test('mcp-launcher (native-java ADR-023 contract): one JSON line → url; exit 1
 test('brain-daemon-ensure: deps faltando = setup em background e NADA de spawn do daemon (ele morria na importacao: ERR_MODULE_NOT_FOUND, 2026-10-14)', async () => {
   const ens = require('./brain-daemon-ensure.js');
   let spawned = 0;
+  const data = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-ensure-setup-'));
   const out = await ens.run({ hook_event_name: 'UserPromptSubmit' }, {
-    root: ROOT, data: os.tmpdir(), runSetupInBackground: () => true,
+    root: ROOT, data, runSetupInBackground: () => true,
     ensureDaemon: async () => { spawned++; return { status: 'started' }; },
   });
   assertEq(spawned, 0, 'daemon not spawned while its deps are being installed');
-  assert(/Installing the plugin dependencies/.test(out) && /plugin-setup\.log/.test(out), `visible notice with the log path: ${out}`);
+  assert(/terminando a instalação/.test(out), `visible one-line notice: ${out}`);
+  assert(/plugin-setup.log/.test(fs.readFileSync(require('./lib/notice-once.js').logFile(data), 'utf8')), 'the log path is kept in the detail log');
   const ok = await ens.run({ hook_event_name: 'UserPromptSubmit' }, {
-    root: ROOT, data: os.tmpdir(), runSetupInBackground: () => false,
+    root: ROOT, data, runSetupInBackground: () => false,
     ensureDaemon: async () => { spawned++; return { status: 'current' }; },
   });
+  fs.rmSync(data, { recursive: true, force: true });
   assertEq([spawned, ok], [1, null], 'deps present → ensure runs, silent');
 });
 
@@ -30164,16 +30252,18 @@ test('doctor.checkCrashes: recent records → warn with the advice and the evide
 test('brain-daemon-ensure: a recorded crash becomes a visible [BRAIN-CRASH] notice, also when the respawn worked', async () => {
   const ensure = require('./brain-daemon-ensure.js');
   const crash = { pid: 7, version: '3.7.0', detectedAt: new Date().toISOString(), logFile: '/d/brain-crash.log' };
+  const data = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-ensure-crash-'));
   const text = await ensure.run({ hook_event_name: 'UserPromptSubmit' }, {
-    root: ROOT, data: process.env.CLAUDE_PLUGIN_DATA, runSetupInBackground: () => false,
+    root: ROOT, data, runSetupInBackground: () => false,
     ensureDaemon: async () => ({ status: 'started', crash }),
   });
   assert(text.startsWith('[BRAIN-CRASH]') && text.includes('/d/brain-crash.log') && text.includes('Tell the user'), text);
   const err = await ensure.run({ hook_event_name: 'UserPromptSubmit' }, {
-    root: ROOT, data: process.env.CLAUDE_PLUGIN_DATA, runSetupInBackground: () => false,
+    root: ROOT, data, runSetupInBackground: () => false,
     ensureDaemon: async () => ({ status: 'error', error: 'boom', crash }),
   });
-  assert(err.startsWith('[BRAIN-CRASH]') && err.includes('[BRAIN] daemon único'), err);
+  fs.rmSync(data, { recursive: true, force: true });
+  assert(err.startsWith('[BRAIN-CRASH]') && err.includes('fora do ar'), err);
 });
 
 test('brain daemon supervisor: a dead daemon\'s lock on a free port is recorded before the respawn', async () => {

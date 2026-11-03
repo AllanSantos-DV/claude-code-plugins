@@ -175,6 +175,34 @@ function livePluginRoots({ base } = {}) {
   return [...roots];
 }
 
+/**
+ * A live session whose plugin dir was removed (an update that pruned with older code, a manual
+ * cleanup) can no longer run its `headersHelper` or command hooks: the brain-server link then
+ * connects without the token, gets a 401 and Claude Code gives up. Recreate each missing dir of
+ * a live record as a junction to the current install — same files, nothing copied. Only dirs
+ * directly under `cacheBase` are touched, and only with a verified current install.
+ * @param {{base?:string, cacheBase:string, current:string|null}} o
+ * @returns {{healed:string[], failed:{dir:string, error:string}[]}}
+ */
+function healMissingPluginRoots({ base, cacheBase, current } = {}) {
+  const out = { healed: [], failed: [] };
+  if (!current || !cacheBase || !fs.existsSync(path.join(current, 'package.json'))) return out;
+  for (const root of livePluginRoots({ base })) {
+    if (normRoot(path.dirname(root)) !== normRoot(cacheBase) || normRoot(root) === normRoot(current)) continue;
+    if (fs.existsSync(root)) continue;
+    try {
+      try { fs.lstatSync(root); fs.unlinkSync(root); } catch (err) { if (err.code !== 'ENOENT') throw err; } // a dangling link from an earlier heal
+      fs.symlinkSync(current, root, 'junction');
+      out.healed.push(root);
+      console.error(`[session-root] restored the plugin dir of an open session: ${root} -> ${current}`);
+    } catch (err) {
+      out.failed.push({ dir: root, error: err.message });
+      console.error(`[session-root] could not restore ${root}: ${err.message}`);
+    }
+  }
+  return out;
+}
+
 /** A live session says so on each prompt: moves its record's mtime so the TTL measures idleness, not age. */
 function touchSessionRecord(sessionId, { base } = {}) {
   const id = safeId(sessionId);
@@ -191,4 +219,4 @@ function touchSessionRecord(sessionId, { base } = {}) {
 
 function _resetMemo() { _memo.clear(); _rootIndex.clear(); }
 
-module.exports = { recordSessionRoot, sessionRecordFor, sessionRootFor, envProjectIdForRoot, forgetSessionRoot, livePluginRoots, touchSessionRecord, _resetMemo };
+module.exports = { recordSessionRoot, sessionRecordFor, sessionRootFor, envProjectIdForRoot, forgetSessionRoot, livePluginRoots, healMissingPluginRoots, touchSessionRecord, _resetMemo };

@@ -1,3 +1,10 @@
+## brain-server desconectado depois de uma atualização; aviso repetido a cada prompt (t-60620b, 2026-11-03)
+
+- [x] **Corrigido — causa raiz do brain-server "não conectado"**: a limpeza do release 3.14.4 (sem a proteção de sessão aberta, que só existe no develop) apagou a pasta do plugin de sessões abertas; o `headersHelper` do `.mcp.json` falha, o Claude Code conecta sem token, o daemon responde 401, o cliente tenta OAuth ("Dynamic Client Registration rejected (HTTP 404)"), desiste após 5 tentativas e cada hook `mcp_tool` passa a errar. Correção: `session-root.healMissingPluginRoots` (via `lib/plugin-dir-heal.js`, no SessionStart e em cada prompt) recria como junction a pasta que sumiu de um registro vivo, só sob o cache e só com a instalação atual verificada; `cache-prune` agora trata links (remove o link, nunca a instalação). Testes em `scripts/test-units.js`.
+- [x] **Corrigido — aviso repetido**: `lib/notice-once.js` (livro `.runtime/notices.json`; detalhe completo sempre em `brain-notices.log`). Daemon fora do ar e instalação em andamento: uma linha, uma vez por dono, volta após recuperação ou falha diferente; link desconectado: uma vez por sessão.
+- [ ] **Limite conhecido — linhas "hook error" do próprio Claude Code não dá para silenciar**: um `mcp_tool` com servidor não conectado gera erro não bloqueante do harness (doc oficial de hooks: sem opção que o cale). Só a causa foi evitada. Uma sessão que já desistiu continua sem `brain_*` até /mcp → Reconnect ou sessão nova.
+- [ ] **Limite conhecido — sessões abertas antes do build com registro de raízes** não têm `pluginRoot` gravado, então não são curadas.
+
 ## Release 3.14.4 — versões antigas do plugin no disco; lente de feature irmã (subagente haiku/high, só código e docs, 2026-11-03)
 
 - [x] **Corrigido — versões antigas acumuladas em `~/.claude/plugins/cache`** (`scripts/lib/cache-prune.js`, ligado em `scripts/marketplace-autoupdate-ensure.js` e `scripts/lib/plugin-updater.js` `performUpdate`): mantém só a versão instalada; testes em `scripts/test-units.js`.
