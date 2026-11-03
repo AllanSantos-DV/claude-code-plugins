@@ -18,6 +18,9 @@
  * they are intentionally EXCLUDED from the SessionStart/SubagentStart always-set
  * (policy-inject.js uses listAlways for exactly that reason).
  *
+ * Each policy is surfaced once per session (lib/glob-injected.js); a compaction or
+ * /clear resets that, since the context that held it is gone.
+ *
  * Fail-open: any error → emit empty `{}`. Disabled (policyInject.enabled=false) →
  * empty. Non-edit tool / no path / outside-project path / no match → empty.
  */
@@ -27,6 +30,7 @@ const { resolveLocalScopeId } = require('../engine/lib/project-id.js');
 const policyStore = require('../engine/lib/policy-store.js');
 const { firstGlobMatch } = require('../engine/lib/glob-match.js');
 const { getPolicyInject } = require('./lib/hooks-config.js');
+const globInjected = require('./lib/glob-injected.js');
 
 // Belt-and-suspenders beyond the hooks.json matcher: only these tools carry a file
 // edit. EXACT strings (not a substring regex) so an unrelated tool can't slip in.
@@ -114,9 +118,10 @@ async function evaluate(event) {
 
   const DATA_DIR = dataDir();
   const matches = policyStore.listGlobMatching(DATA_DIR, { projectId, filePath: rawPath, cwd: ev.cwd });
-  if (!matches.length) return {};
+  const fresh = globInjected.takeFresh(ev.session_id || ev.sessionId, matches, { base: DATA_DIR });
+  if (!fresh.length) return {};
 
-  const block = renderGlobBlock(rel, matches, cfg.maxChars);
+  const block = renderGlobBlock(rel, fresh, cfg.maxChars);
   return { hookSpecificOutput: { hookEventName: 'PostToolUse', additionalContext: block } };
 }
 

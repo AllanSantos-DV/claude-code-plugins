@@ -147,6 +147,7 @@ async function main() {
   // Here (a command hook) CLAUDE_PROJECT_DIR is real; daemon-served hooks never get it
   // (lib/session-root.js) — hand it over by session_id.
   require('./lib/session-root.js').recordSessionRoot(event.session_id, process.env.CLAUDE_PROJECT_DIR, { projectId: process.env.CCB_PROJECT_ID, pluginRoot: process.env.CLAUDE_PLUGIN_ROOT });
+  if (event.source === 'compact' || event.source === 'clear') require('./lib/glob-injected.js').reset(event.session_id);
   try { require('./lib/plugin-dir-heal.js').healOpenSessions(); } catch (err) { console.error(`[claude-code-boss:session-start-dispatcher] plugin dir heal: ${err.message}`); }
   const text = await dispatch(event);
   if (text) {

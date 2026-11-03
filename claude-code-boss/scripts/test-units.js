@@ -9551,6 +9551,37 @@ test('session-root.healMissingPluginRoots: a live session whose plugin dir vanis
   } finally { sr._resetMemo(); fs.rmSync(tmp, { recursive: true, force: true }); }
 });
 
+test('policy-glob-inject: a glob policy is injected once per session; a compact or clear starts it over', () => {
+  const { execFileSync } = require('child_process');
+  const store = require('../engine/lib/policy-store.js');
+  const gi = require('./lib/glob-injected.js');
+  const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-gi-proj-'));
+  const data = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-gi-data-'));
+  try {
+    store.activate(data, { text: 'flag leftover console.log', projectId: path.basename(cwd), globs: ['src/**'] });
+    const edit = (sid, file = 'src/app.ts') => {
+      const out = execFileSync(process.execPath, [path.join(__dirname, 'policy-glob-inject.js')], {
+        input: JSON.stringify({ hook_event_name: 'PostToolUse', tool_name: 'Edit', session_id: sid, cwd, tool_input: { file_path: file } }),
+        env: { ...process.env, CLAUDE_PLUGIN_DATA: data, CCB_PROJECT_ID: '' }, encoding: 'utf8', windowsHide: true,
+      });
+      return (JSON.parse(out || '{}').hookSpecificOutput || {}).additionalContext || '';
+    };
+    assert(edit('s1').includes('flag leftover console.log'), 'first matching edit injects');
+    assertEq(edit('s1'), '', 'second matching edit in the same session stays silent');
+    assertEq(edit('s1', 'src/other.ts'), '', 'a different file matching the same policy stays silent');
+    assert(edit('s2').includes('flag leftover console.log'), 'another session is independent');
+    assertEq(gi.reset('s1', { base: data }), true, 'compact/clear drops the record');
+    assert(edit('s1').includes('flag leftover console.log'), 'after the reset the policy is injected again');
+    assert(edit(undefined) !== '' && edit(undefined) !== '', 'no session id: nothing to key on, never silenced');
+    const ss = fs.readFileSync(path.join(__dirname, 'session-start-dispatcher.js'), 'utf8');
+    assert(/source === 'compact' \|\| event\.source === 'clear'[^\n]*glob-injected[^\n]*reset\(event\.session_id\)/.test(ss), 'SessionStart compact/clear resets the record');
+    assert(/glob-injected[^\n]*reset\(sid/.test(fs.readFileSync(path.join(__dirname, 'session-end.js'), 'utf8')), 'SessionEnd forgets the record');
+  } finally {
+    fs.rmSync(cwd, { recursive: true, force: true });
+    fs.rmSync(data, { recursive: true, force: true });
+  }
+});
+
 test('notice-once: a failure is shown once per owner; repeats are silent but fully logged; a different failure or a recovery shows again', () => {
   const no = require('./lib/notice-once.js');
   const base = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-notice-'));

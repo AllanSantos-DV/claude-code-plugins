@@ -13,6 +13,7 @@ const { readStdin, parsePayload, emitEmpty } = require('./lib/hook-io.js');
 function run(event, opts = {}) {
   const sid = event && (event.session_id || event.sessionId);
   if (!sid) return false;
+  require('./lib/glob-injected.js').reset(sid, opts);
   return require('./lib/session-root.js').forgetSessionRoot(sid, opts);
 }
 
