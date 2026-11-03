@@ -19346,8 +19346,8 @@ test('G7: UserPromptSubmit spawns ONE node process (the dispatcher); model-route
   const hooks = JSON.parse(fs.readFileSync(path.join(ROOT, 'hooks', 'hooks.json'), 'utf8')).hooks;
   const cmds = (ev) => hooks[ev].flatMap(g => g.hooks || []).filter(h => h.type === 'command').map(h => (h.args || []).join(' '));
   assertEq(cmds('UserPromptSubmit').length, 1);
-  assert(/user-prompt-submit-dispatcher\.js$/.test(cmds('UserPromptSubmit')[0]), cmds('UserPromptSubmit')[0]);
-  assert(cmds('SessionStart').some(c => /model-router-ensure\.js$/.test(c)), 'SessionStart keeps its own model-router-ensure');
+  assert(/user-prompt-submit-dispatcher\.js( --hook-origin=claude-code-boss)?$/.test(cmds('UserPromptSubmit')[0]), cmds('UserPromptSubmit')[0]);
+  assert(cmds('SessionStart').some(c => /model-router-ensure\.js( --hook-origin=claude-code-boss)?$/.test(c)), 'SessionStart keeps its own model-router-ensure');
 });
 
 test('G7: the dispatcher CLI exits on its own after answering (model-router-ensure handles do not hang it)', () => {
@@ -26763,45 +26763,61 @@ test('hook-prefix: every stderr line carries [claude-code-boss:<hook>] once; exi
   assert(threw, 'name required');
 });
 
-test('hook-owner: failure/timeout records from the transcript name the owning plugin (certain for commands, candidates for mcp_tool), told once, never faked', () => {
+test('hook-owner: a failure names the origin the hook DECLARES (--hook-origin / [hook-origin=]); undeclared says so; never "dono"/"provável"; told once', () => {
   const ho = require('./lib/hook-owner.js');
   const base = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-hookowner-'));
   try {
-    const cfg = path.join(base, 'claude'); const inst = path.join(base, 'plug-boss'); const inst2 = path.join(base, 'plug-other');
-    const w = (f, o) => { fs.mkdirSync(path.dirname(f), { recursive: true }); fs.writeFileSync(f, JSON.stringify(o)); };
-    const cmd = 'node ${CLAUDE_PLUGIN_ROOT}/hooks/f.js';
-    w(path.join(inst, 'hooks', 'hooks.json'), { hooks: { UserPromptSubmit: [{ hooks: [{ type: 'command', command: cmd }, { type: 'command', command: 'node', args: ['${CLAUDE_PLUGIN_ROOT}/scripts/argform.js'] }, { type: 'mcp_tool', server: 'plugin:boss:brain', tool: 'brain_retrieve_context' }] }] } });
-    w(path.join(inst2, 'hooks', 'hooks.json'), { hooks: { UserPromptSubmit: [{ hooks: [{ type: 'mcp_tool', server: 'other', tool: 'other_tool' }] }], SessionStart: [{ matcher: 'startup', hooks: [{ type: 'command', command: 'node s.js' }] }] } });
-    w(path.join(cfg, 'plugins', 'installed_plugins.json'), { version: 2, plugins: { 'boss@m': [{ installPath: inst }], 'other@m': [{ installPath: inst2 }] } });
-    w(path.join(cfg, 'settings.json'), { hooks: { Stop: [{ hooks: [{ type: 'command', command: 'node guard.js' }] }] } });
-    const env = { CLAUDE_CONFIG_DIR: cfg };
     const rec = (uuid, a) => JSON.stringify({ type: 'attachment', uuid, attachment: a });
     const tp = path.join(base, 't.jsonl');
     fs.writeFileSync(tp, [
-      rec('u1', { type: 'hook_non_blocking_error', hookName: 'UserPromptSubmit', hookEvent: 'UserPromptSubmit', stderr: 'x', exitCode: 1, command: cmd }),
+      rec('u1', { type: 'hook_non_blocking_error', hookName: 'UserPromptSubmit', hookEvent: 'UserPromptSubmit', stderr: 'x', exitCode: 1, command: 'node /p/scripts/f.js --hook-origin=claude-code-boss' }),
       rec('u2', { type: 'hook_non_blocking_error', hookName: 'UserPromptSubmit', hookEvent: 'UserPromptSubmit', stderr: 'MCP error', exitCode: 1 }),
       rec('u3', { type: 'hook_cancelled', hookName: 'Stop', hookEvent: 'Stop', command: 'node guard.js', timedOut: true, timeoutMs: 1000 }),
-      rec('u4', { type: 'hook_non_blocking_error', hookName: 'SessionStart:startup', hookEvent: 'SessionStart', stderr: 'x', exitCode: 2, command: 'node nobody.js' }),
+      rec('u4', { type: 'hook_non_blocking_error', hookName: 'SessionStart:startup', hookEvent: 'SessionStart', stderr: '[hook-origin=other-proj] boom', exitCode: 2 }),
       rec('ok', { type: 'hook_success', hookName: 'Stop', hookEvent: 'Stop' }),
       'not json {',
     ].join('\n') + '\n');
     const event = { transcript_path: tp, session_id: 's1', cwd: base };
     const stateDir = path.join(base, 'global');
-    const msg = ho.takeFailureNotices({ event, stateDir, env });
-    assert(/UserPromptSubmit falhou \(saída 1\) → dono: plugin boss\./.test(msg), msg);
-    assert(/UserPromptSubmit falhou \(saída 1\) → candidatos: plugin boss, plugin other\./.test(msg) || /candidatos: plugin boss, plugin other/.test(msg), msg);
-    assert(/Hook Stop estourou o tempo \(1s\) → dono: settings do usuário/.test(msg), msg);
-    assert(!/u4|nobody/.test(msg) && /\(\+1 falhas de hook\)/.test(msg), `capped at 3 + remainder: ${msg}`);
-    const again = ho.takeFailureNotices({ event, stateDir, env });
-    assert(again && /SessionStart:startup falhou \(saída 2\) → dono não identificado/.test(again) && !/Stop/.test(again), `only the remainder is new: ${again}`);
-    assertEq(ho.takeFailureNotices({ event, stateDir, env }), null, 'told once');
-    // command + args hooks (the boss's own form) are recorded joined: still an exact owner
-    const reg = ho.loadRegistry({ cwd: base, env });
-    const argOwner = ho.findOwners({ hookEvent: 'UserPromptSubmit', hookName: 'UserPromptSubmit', command: 'node ${CLAUDE_PLUGIN_ROOT}/scripts/argform.js' }, reg);
-    assert(argOwner.certain && argOwner.owners[0] === 'plugin boss', JSON.stringify(argOwner));
-    assert(!ho.findOwners({ hookEvent: 'UserPromptSubmit', hookName: 'UserPromptSubmit', command: 'node ${CLAUDE_PLUGIN_ROOT}/scripts/other.js' }, reg).owners.length, 'a different script must not match');
-    assertEq(ho.takeFailureNotices({ event: { ...event, session_id: 's2', transcript_path: path.join(base, 'missing.jsonl') }, stateDir, env }), null, 'no transcript → silent');
+    const msg = ho.takeFailureNotices({ event, stateDir });
+    assert(/UserPromptSubmit falhou \(saída 1\) → origem: claude-code-boss\./.test(msg), msg);
+    assert(/UserPromptSubmit falhou \(saída 1\) → origem não declarada\./.test(msg), `no command, no marker: ${msg}`);
+    assert(/Hook Stop estourou o tempo \(1s\) → origem não declarada\./.test(msg), `an old UNSIGNED command: ${msg}`);
+    assert(!/dono|provável|candidatos/.test(msg), `no guessed owner: ${msg}`);
+    assert(/\(\+1 falhas de hook\)/.test(msg), `capped at 3 + remainder: ${msg}`);
+    const again = ho.takeFailureNotices({ event, stateDir });
+    assert(again && /SessionStart:startup falhou \(saída 2\) → origem: other-proj\./.test(again) && !/Stop/.test(again), `output marker; only the remainder is new: ${again}`);
+    assertEq(ho.takeFailureNotices({ event, stateDir }), null, 'told once');
+    assertEq(ho.takeFailureNotices({ event: { ...event, session_id: 's2', transcript_path: path.join(base, 'missing.jsonl') }, stateDir }), null, 'no transcript → silent');
+    // two different declarations are not one origin; the same one twice is
+    assertEq(ho.declaredOrigin({ command: 'node a --hook-origin=a --hook-origin=b' }), null, 'conflicting');
+    assertEq(ho.declaredOrigin({ command: 'node a --hook-origin=a --hook-origin=A' }), 'a', 'same origin twice');
+    assertEq(ho.declaredOrigin({ command: 'node a --hook-origin=bad/name' }), null, 'invalid name is not an origin');
   } finally { fs.rmSync(base, { recursive: true, force: true }); }
+});
+
+test('hooks.json: every command hook is signed once with --hook-origin=claude-code-boss at the end; the script ignores it; no duplicate entries', () => {
+  const ho = require('./lib/hook-owner.js');
+  const hooks = JSON.parse(fs.readFileSync(path.join(ROOT, 'hooks', 'hooks.json'), 'utf8')).hooks;
+  const seen = new Set();
+  let commands = 0;
+  for (const [event, groups] of Object.entries(hooks)) {
+    for (const g of groups) for (const h of g.hooks) {
+      if (h.type !== 'command') continue;
+      commands++;
+      const line = [h.command, ...(h.args || [])].join(' ');
+      assertEq(h.args[h.args.length - 1], `${ho.HOOK_ORIGIN_FLAG}=${ho.BOSS_ORIGIN}`, `${event} ${line}: signature is the last argument`);
+      assertEq(line.split(ho.HOOK_ORIGIN_FLAG).length - 1, 1, `${line}: signed exactly once`);
+      assertEq(ho.declaredOrigin({ command: line }), 'claude-code-boss', `${line}: failure message reads the origin`);
+      assert(!seen.has(`${event}|${line}`), `duplicate hook entry ${event} ${line}`);
+      seen.add(`${event}|${line}`);
+      const script = fs.readFileSync(path.join(ROOT, h.args[0].replace('${CLAUDE_PLUGIN_ROOT}/', '')), 'utf8');
+      assert(!/process\.argv/.test(script), `${h.args[0]} reads argv: the signature would change its behaviour`);
+    }
+  }
+  assertEq(commands, 5, 'the five command hooks');
+  // the same hook from an older version (unsigned) is reported as undeclared, not guessed
+  assertEq(ho.declaredOrigin({ command: 'node ${CLAUDE_PLUGIN_ROOT}/scripts/session-end.js' }), null, 'old unsigned form');
 });
 
 test('daemon 401 text names the answering daemon (pid, plugin root, port) so a squatted port is visible', async () => {

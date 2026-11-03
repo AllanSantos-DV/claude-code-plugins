@@ -6,13 +6,13 @@
           {
             "type": "command",
             "command": "node",
-            "args": ["${CLAUDE_PLUGIN_ROOT}/scripts/model-router-ensure.js"],
+            "args": ["${CLAUDE_PLUGIN_ROOT}/scripts/model-router-ensure.js", "--hook-origin=claude-code-boss"],
             "timeout": 15
           },
           {
             "type": "command",
             "command": "node",
-            "args": ["${CLAUDE_PLUGIN_ROOT}/scripts/session-start-dispatcher.js"],
+            "args": ["${CLAUDE_PLUGIN_ROOT}/scripts/session-start-dispatcher.js", "--hook-origin=claude-code-boss"],
             "timeout": 125
           }
         ]
@@ -299,7 +299,7 @@
           {
             "type": "command",
             "command": "node",
-            "args": ["${CLAUDE_PLUGIN_ROOT}/scripts/dashboard-command.js"],
+            "args": ["${CLAUDE_PLUGIN_ROOT}/scripts/dashboard-command.js", "--hook-origin=claude-code-boss"],
             "timeout": 20
           }
         ]
@@ -378,7 +378,7 @@
           {
             "type": "command",
             "command": "node",
-            "args": ["${CLAUDE_PLUGIN_ROOT}/scripts/user-prompt-submit-dispatcher.js"],
+            "args": ["${CLAUDE_PLUGIN_ROOT}/scripts/user-prompt-submit-dispatcher.js", "--hook-origin=claude-code-boss"],
             "timeout": 30
           },
           {
@@ -430,7 +430,7 @@
           {
             "type": "command",
             "command": "node",
-            "args": ["${CLAUDE_PLUGIN_ROOT}/scripts/session-end.js"],
+            "args": ["${CLAUDE_PLUGIN_ROOT}/scripts/session-end.js", "--hook-origin=claude-code-boss"],
             "timeout": 5
           }
         ]
