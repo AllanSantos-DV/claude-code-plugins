@@ -40,7 +40,7 @@ const dirOf = (base) => path.join(base || dataDir(), '.runtime', 'session-roots'
  * CCB_PROJECT_ID, if set — the daemon strips that variable from its own env, so the
  * documented override reached nothing it serves. Returns true when written.
  */
-function recordSessionRoot(sessionId, projectDir, { base, projectId } = {}) {
+function recordSessionRoot(sessionId, projectDir, { base, projectId, pluginRoot } = {}) {
   const id = safeId(sessionId);
   if (!id || !projectDir) return false;
   const dir = dirOf(base);
@@ -48,6 +48,9 @@ function recordSessionRoot(sessionId, projectDir, { base, projectId } = {}) {
     fs.mkdirSync(dir, { recursive: true });
     const rec = { projectDir, at: Date.now() };
     if (projectId) rec.projectId = String(projectId);
+    // The plugin dir this session loaded its hooks from: the cache prune must not delete it
+    // while the session lives (its command hooks run from there).
+    if (pluginRoot && !String(pluginRoot).includes('${')) rec.pluginRoot = String(pluginRoot);
     // Rename, not an in-place write: rewriting a session's record must move the folder's
     // mtime, or the root index above would keep its old projectId.
     writeJsonAtomic(path.join(dir, `${id}.json`), rec);
@@ -147,6 +150,45 @@ function forgetSessionRoot(sessionId, { base } = {}) {
   }
 }
 
+/**
+ * Plugin dirs the live sessions run their hooks from (records not past the TTL). The cache
+ * prune keeps them: deleting one leaves that open session without its command hooks.
+ */
+function livePluginRoots({ base } = {}) {
+  const dir = dirOf(base);
+  let names;
+  try { names = fs.readdirSync(dir); } catch (err) {
+    if (err.code !== 'ENOENT') console.error(`[session-root] list failed: ${err.message}`);
+    return [];
+  }
+  const now = Date.now();
+  const roots = new Set();
+  for (const f of names) {
+    if (!f.endsWith('.json')) continue;
+    const p = path.join(dir, f);
+    try {
+      if (now - fs.statSync(p).mtimeMs > TTL_MS) continue;
+      const j = JSON.parse(fs.readFileSync(p, 'utf8'));
+      if (j.pluginRoot) roots.add(String(j.pluginRoot));
+    } catch (err) { void err; /* raced with a write/prune: skip that record */ }
+  }
+  return [...roots];
+}
+
+/** A live session says so on each prompt: moves its record's mtime so the TTL measures idleness, not age. */
+function touchSessionRecord(sessionId, { base } = {}) {
+  const id = safeId(sessionId);
+  if (!id) return false;
+  try {
+    const now = new Date();
+    fs.utimesSync(path.join(dirOf(base), `${id}.json`), now, now);
+    return true;
+  } catch (err) {
+    if (err.code !== 'ENOENT') console.error(`[session-root] touch failed for ${id}: ${err.message}`);
+    return false;
+  }
+}
+
 function _resetMemo() { _memo.clear(); _rootIndex.clear(); }
 
-module.exports = { recordSessionRoot, sessionRecordFor, sessionRootFor, envProjectIdForRoot, forgetSessionRoot, _resetMemo };
+module.exports = { recordSessionRoot, sessionRecordFor, sessionRootFor, envProjectIdForRoot, forgetSessionRoot, livePluginRoots, touchSessionRecord, _resetMemo };

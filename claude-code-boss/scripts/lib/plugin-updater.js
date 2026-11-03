@@ -505,6 +505,10 @@ async function performUpdate(root, opts = {}) {
     const cacheBase = path.join(os.homedir(), '.claude', 'plugins', 'cache', MARKETPLACE, PLUGIN);
     const destDir = freshCacheDir(cacheBase, newVersion);
     const versionDir = path.join(cacheBase, newVersion);
+    // destDir is new in this call (freshCacheDir never returns an existing one), so if anything below
+    // fails before the registry points at it, it is a half-written install: remove it, never leave it.
+    let registered = false;
+    try {
     fs.mkdirSync(destDir, { recursive: true });
     fs.cpSync(extractDir, destDir, { recursive: true });
 
@@ -554,6 +558,14 @@ async function performUpdate(root, opts = {}) {
       },
     ];
     writeFileAtomic(registryPath, JSON.stringify(registry, null, 2));
+    registered = true;
+    } catch (err) {
+      if (!registered) {
+        try { fs.rmSync(destDir, { recursive: true, force: true, maxRetries: 2, retryDelay: 100 }); }
+        catch (rmErr) { console.error(`[plugin-updater] could not remove the half-written ${destDir}: ${rmErr.message}`); }
+      }
+      throw err;
+    }
 
     _killStale(path.basename(destDir), process.pid);
 
@@ -563,7 +575,7 @@ async function performUpdate(root, opts = {}) {
     let pruned = null;
     try {
       const prune = io.prune || require('./cache-prune.js').pruneOldVersions;
-      pruned = await prune({ cacheBase, current: destDir, keep: [root] });
+      pruned = await prune({ cacheBase, current: destDir, keep: [root, ...require('./session-root.js').livePluginRoots()] });
     } catch (err) {
       console.error(`[plugin-updater] prune of old versions failed: ${err.message}`);
     }

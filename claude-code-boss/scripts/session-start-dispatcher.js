@@ -146,7 +146,7 @@ async function main() {
   const eventName = event.hook_event_name || 'SessionStart';
   // Here (a command hook) CLAUDE_PROJECT_DIR is real; daemon-served hooks never get it
   // (lib/session-root.js) — hand it over by session_id.
-  require('./lib/session-root.js').recordSessionRoot(event.session_id, process.env.CLAUDE_PROJECT_DIR, { projectId: process.env.CCB_PROJECT_ID });
+  require('./lib/session-root.js').recordSessionRoot(event.session_id, process.env.CLAUDE_PROJECT_DIR, { projectId: process.env.CCB_PROJECT_ID, pluginRoot: process.env.CLAUDE_PLUGIN_ROOT });
   const text = await dispatch(event);
   if (text) {
     emitJson({ hookSpecificOutput: { hookEventName: eventName, additionalContext: text } });

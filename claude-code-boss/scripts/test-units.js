@@ -9432,6 +9432,85 @@ test('plugin-updater.performUpdate: after a successful install the previous vers
   assertEq(r.pruned.removed.sort(), ['0.8.0', '0.9.0']);
 });
 
+test('plugin-updater.performUpdate: a FAILED npm install removes the half-written destination dir (nothing partial left); the working version and the registry stay', async () => {
+  const base = path.join(os.homedir(), '.claude', 'plugins', 'cache', 'allansantos-plugins', 'claude-code-boss');
+  fs.rmSync(base, { recursive: true, force: true });
+  fs.mkdirSync(path.join(base, '1.0.0'), { recursive: true }); fs.writeFileSync(path.join(base, '1.0.0', 'package.json'), '{}');
+  const regFile = path.join(os.homedir(), '.claude', 'plugins', 'installed_plugins.json');
+  const regBefore = fs.existsSync(regFile) ? fs.readFileSync(regFile, 'utf8') : null;
+  const io = _updIo({ spawnSync: async (_c, _a, o) => { fs.writeFileSync(path.join(o.cwd, 'half-written.tmp'), 'x'); return { status: 1, stderr: 'npm ERR! boom' }; } });
+  let threw = null;
+  try { await pu.performUpdate(_updRoot(), { io }); } catch (e) { threw = e; }
+  assert(threw && /npm install falhou/.test(threw.message), 'expected the npm failure, got ' + (threw && threw.message));
+  assertEq(fs.readdirSync(base), ['1.0.0'], 'only the working version is left: the new half-written dir was removed');
+  assertEq(fs.existsSync(regFile) ? fs.readFileSync(regFile, 'utf8') : null, regBefore, 'the registry still points at what it did');
+});
+
+test('plugin-updater.performUpdate: a failure AFTER the copy (before the registry points at it) also removes the new dir, but never an existing one', async () => {
+  const base = path.join(os.homedir(), '.claude', 'plugins', 'cache', 'allansantos-plugins', 'claude-code-boss');
+  fs.rmSync(base, { recursive: true, force: true });
+  const occupied = path.join(base, '2.0.0');
+  fs.mkdirSync(occupied, { recursive: true }); fs.writeFileSync(path.join(occupied, 'daemon-is-running-here'), 'x');
+  const regFile = path.join(os.homedir(), '.claude', 'plugins', 'installed_plugins.json');
+  fs.mkdirSync(path.dirname(regFile), { recursive: true });
+  fs.writeFileSync(regFile, '{ not json');
+  let threw = null;
+  try { await pu.performUpdate(_updRoot(), { io: _updIo(), skipInstall: true }); } catch (e) { threw = e; }
+  fs.rmSync(regFile, { force: true });
+  assert(threw, 'a corrupt registry makes the update fail');
+  assertEq(fs.readdirSync(base), ['2.0.0'], 'the freshly created sibling is gone');
+  assertEq(fs.existsSync(path.join(occupied, 'daemon-is-running-here')), true, 'the pre-existing dir is untouched');
+});
+
+test('session-root: records the plugin dir each session loaded; livePluginRoots lists non-expired ones; SessionEnd forgets; a prompt touch keeps a long session alive', () => {
+  const sr = require('./lib/session-root.js');
+  const base = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-sroot-live-'));
+  try {
+    sr._resetMemo();
+    assertEq(sr.livePluginRoots({ base }), [], 'no records → none');
+    sr.recordSessionRoot('open-1', 'C:\\w\\p', { base, pluginRoot: 'C:\\cache\\3.1.0' });
+    sr.recordSessionRoot('open-2', 'C:\\w\\q', { base, pluginRoot: 'C:\\cache\\3.1.0' });
+    sr.recordSessionRoot('open-3', 'C:\\w\\r', { base, pluginRoot: 'C:\\cache\\3.2.0' });
+    sr.recordSessionRoot('legacy', 'C:\\w\\s', { base });
+    sr.recordSessionRoot('unexpanded', 'C:\\w\\t', { base, pluginRoot: '$' + '{CLAUDE_PLUGIN_ROOT}' });
+    assertEq(sr.livePluginRoots({ base }).sort(), ['C:\\cache\\3.1.0', 'C:\\cache\\3.2.0'], 'distinct roots; legacy and unexpanded records add none');
+    const dir = path.join(base, '.runtime', 'session-roots');
+    const old = (Date.now() - 8 * 86400_000) / 1000;
+    fs.utimesSync(path.join(dir, 'open-3.json'), old, old);
+    assertEq(sr.livePluginRoots({ base }), ['C:\\cache\\3.1.0'], 'a record past the TTL no longer protects its dir');
+    assert(sr.touchSessionRecord('open-3', { base }), 'touch');
+    assertEq(sr.livePluginRoots({ base }).sort(), ['C:\\cache\\3.1.0', 'C:\\cache\\3.2.0'], 'a prompt makes the record count again');
+    assertEq(sr.touchSessionRecord('never-started', { base }), false, 'unknown session → false, no throw');
+    require('./session-end.js').run({ session_id: 'open-1' }, { base });
+    assertEq(sr.livePluginRoots({ base }).sort(), ['C:\\cache\\3.1.0', 'C:\\cache\\3.2.0'], 'open-2 still holds 3.1.0');
+    require('./session-end.js').run({ session_id: 'open-2' }, { base });
+    assertEq(sr.livePluginRoots({ base }), ['C:\\cache\\3.2.0'], 'ended sessions stop protecting their dir');
+  } finally { sr._resetMemo(); fs.rmSync(base, { recursive: true, force: true }); }
+});
+
+test('plugin-updater.performUpdate: the plugin dir of a session that is still open is NOT pruned (its command hooks run from there); a dir no session uses is', async () => {
+  const sr = require('./lib/session-root.js');
+  const base = path.join(os.homedir(), '.claude', 'plugins', 'cache', 'allansantos-plugins', 'claude-code-boss');
+  fs.rmSync(base, { recursive: true, force: true });
+  const mk = (v) => { fs.mkdirSync(path.join(base, v), { recursive: true }); fs.writeFileSync(path.join(base, v, 'package.json'), '{}'); return path.join(base, v); };
+  mk('0.8.0'); const open = mk('0.9.0'); const running = mk('1.0.0');
+  sr.recordSessionRoot('open-session-prune', 'C:\\w\\proj', { pluginRoot: open });
+  try {
+    const r = await pu.performUpdate(running, { io: _updIo({ prune: require('./lib/cache-prune.js').pruneOldVersions }), skipInstall: true });
+    assertEq(r.updated, true);
+    assertEq(fs.readdirSync(base).sort(), ['0.9.0', '1.0.0', '2.0.0'], 'the open session dir, the running root and the new install stay');
+    assertEq(r.pruned.removed, ['0.8.0']);
+  } finally { sr.forgetSessionRoot('open-session-prune'); }
+});
+
+test('open-session protection is wired: SessionStart records CLAUDE_PLUGIN_ROOT, each prompt touches the record, the SessionStart prune keeps the live roots', () => {
+  const read = (...p) => fs.readFileSync(path.join(SCRIPTS, ...p), 'utf8');
+  assert(/recordSessionRoot\([^)]*pluginRoot: process\.env\.CLAUDE_PLUGIN_ROOT/.test(read('session-start-dispatcher.js')), 'SessionStart records the plugin root');
+  assert(/touchSessionRecord\(event\.session_id\)/.test(read('user-prompt-submit-dispatcher.js')), 'UserPromptSubmit touches the record');
+  assert(/livePluginRoots\(\)/.test(read('marketplace-autoupdate-ensure.js')), 'the SessionStart prune keeps the live roots');
+  assert(/livePluginRoots\(\)/.test(read('lib', 'plugin-updater.js')), 'the post-update prune keeps the live roots');
+});
+
 test('plugin-updater.freshCacheDir: first free name, never an existing dir', () => {
   const taken = new Set([path.join('B', 'x'), ]);
   assertEq(pu.freshCacheDir('B', 'y', (p) => taken.has(p)), path.join('B', 'y'));

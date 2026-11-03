@@ -19,7 +19,7 @@ async function run() {
     const prune = require('./lib/cache-prune.js');
     await Promise.all([
       require('./lib/update-notice.js').refreshLatest({ root }),
-      prune.pruneOldVersions({ keep: [root, prune.daemonRoot(process.env.CLAUDE_PLUGIN_DATA)] }).then((p) => {
+      prune.pruneOldVersions({ keep: [root, prune.daemonRoot(process.env.CLAUDE_PLUGIN_DATA), ...require('./lib/session-root.js').livePluginRoots()] }).then((p) => {
         if (p.skipped) console.error(`[cache-prune] nothing deleted: ${p.skipped}`);
       }),
     ]);

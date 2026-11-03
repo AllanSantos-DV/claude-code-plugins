@@ -160,6 +160,8 @@ async function main() {
     const root = process.env.CLAUDE_PLUGIN_ROOT && !process.env.CLAUDE_PLUGIN_ROOT.includes('${') ? process.env.CLAUDE_PLUGIN_ROOT : require('path').resolve(__dirname, '..');
     updates = require('./lib/update-notice.js').takeUpdateNotices({ root });
   } catch (err) { console.error(`[claude-code-boss:user-prompt-submit-dispatcher] update notice: ${err.message}`); }
+  // Still alive: keeps this session's plugin dir out of the cache prune however long it stays open.
+  try { require('./lib/session-root.js').touchSessionRecord(event.session_id); } catch (err) { console.error(`[claude-code-boss:user-prompt-submit-dispatcher] session record touch: ${err.message}`); }
   // A hook that failed or timed out earlier in this session: Claude Code names only the
   // event, so say which plugin owns it (lib/hook-owner.js — best effort, never faked).
   let hookFailures = null;
