@@ -9368,6 +9368,31 @@ test('cache-prune: a dev build keeps the <package.json version> dir a reload res
   assertEq(fs.readdirSync(base).sort(), ['3.3.0', '3.3.0-dev.abc']);
 });
 
+test('cache-prune: the restored dir of an open session is repointed at the new install, not left dangling when the old one is removed', async () => {
+  const base = _cacheWith(['3.3.0-dev.a', '3.4.0']);
+  const session = path.join(base, '3.2.0');
+  fs.symlinkSync(path.join(base, '3.3.0-dev.a'), session, 'junction');
+  const r = await cachePrune.pruneOldVersions({ cacheBase: base, current: path.join(base, '3.4.0'), keep: [session] });
+  assertEq(r.removed, ['3.3.0-dev.a']);
+  assertEq(r.relinked, ['3.2.0']);
+  assert(fs.existsSync(path.join(session, 'package.json')), 'the session dir resolves again');
+  assertEq(fs.realpathSync(session), fs.realpathSync(path.join(base, '3.4.0')), 'it points at the current install');
+});
+
+// What no test run may touch: the live brain daemon's lock (pid + start) and its process.
+const LIVE_DAEMON_LOCK = path.join(os.homedir(), '.config', 'opencode', 'brain-data', 'brain-http.lock.json');
+const liveDaemonState = () => {
+  let lock = null;
+  try { lock = fs.readFileSync(LIVE_DAEMON_LOCK, 'utf8'); } catch (err) { void err; /* no live daemon on this machine */ }
+  let alive = null;
+  try {
+    process.kill(JSON.parse(lock).pid, 0);
+    alive = true;
+  } catch (err) { alive = err.code === 'EPERM' ? true : (lock ? false : null); }
+  return JSON.stringify({ lock, alive });
+};
+const LIVE_DAEMON_BEFORE = liveDaemonState();
+
 test('cache-prune: the running session root and the live daemon root are kept', async () => {
   const base = _cacheWith(['3.1.0', '3.2.0', '3.3.0', '3.4.0']);
   const r = await cachePrune.pruneOldVersions({ cacheBase: base, current: path.join(base, '3.4.0'), keep: [path.join(base, '3.2.0'), null, undefined] });
@@ -17553,6 +17578,47 @@ test('mcp-headers (headersHelper): prints the daemon token of the plugin data di
   }
 });
 
+test('mcp-headers launcher: answers from the CURRENT install when the plugin dir the session pinned is gone; fails loud when no install exists', () => {
+  const cp = require('child_process');
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-launcher-'));
+  const cfg = path.join(tmp, 'claude');
+  const cacheBase = path.join(cfg, 'plugins', 'cache', 'mkt', 'claude-code-boss');
+  const current = path.join(cacheBase, '9.9.9');
+  const data = path.join(tmp, 'data');
+  const run = (env) => cp.spawnSync(process.execPath, [path.join(ROOT, 'scripts', 'mcp-headers-launcher.cjs'), data], { encoding: 'utf8', env: { ...process.env, CLAUDE_CONFIG_DIR: cfg, ...env }, timeout: 20000 });
+  try {
+    fs.mkdirSync(path.join(current, 'scripts'), { recursive: true });
+    fs.writeFileSync(path.join(current, 'scripts', 'mcp-headers.js'), "exports.headers = async ({ root }) => ({ Authorization: 'Bearer via-' + require('path').basename(root) });");
+    fs.mkdirSync(path.join(cfg, 'plugins'), { recursive: true });
+    fs.writeFileSync(path.join(cfg, 'plugins', 'installed_plugins.json'), JSON.stringify({ plugins: { 'claude-code-boss@mkt': [{ installPath: current }] } }));
+    const gone = path.join(cacheBase, '3.0.0-dev.gone');
+    const r = run({ CLAUDE_PLUGIN_ROOT: gone });
+    assertEq(r.status, 0, `exit 0 with a dangling pinned root, stderr: ${r.stderr}`);
+    assertEq(JSON.parse(r.stdout), { Authorization: 'Bearer via-9.9.9' }, 'headers come from the registry install');
+    fs.writeFileSync(path.join(cfg, 'plugins', 'installed_plugins.json'), JSON.stringify({ plugins: { 'claude-code-boss@mkt': [{ installPath: gone }] } }));
+    const viaCache = run({ CLAUDE_PLUGIN_ROOT: gone });
+    assertEq(viaCache.status, 0, `an install missing from the registry still resolves from the cache, stderr: ${viaCache.stderr}`);
+    fs.rmSync(cacheBase, { recursive: true, force: true });
+    const none = run({ CLAUDE_PLUGIN_ROOT: gone });
+    assertEq(none.status, 1, 'no install anywhere → exit 1');
+    assert(/no usable claude-code-boss install/.test(none.stderr), `the cause is on stderr: ${none.stderr}`);
+    assertEq(none.stdout, '', 'nothing on stdout when it fails');
+  } finally { fs.rmSync(tmp, { recursive: true, force: true }); }
+});
+
+test('mcp-launcher: installLauncher copies the launcher into the data dir, is idempotent and repairs a stale copy', () => {
+  const { installLauncher, LAUNCHER_NAME } = require('./lib/mcp-launcher.js');
+  const dir = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-instl-')), 'data');
+  try {
+    const a = installLauncher(dir);
+    assertEq(a.installed, true);
+    assertEq(fs.readFileSync(path.join(dir, LAUNCHER_NAME)), fs.readFileSync(path.join(ROOT, 'scripts', 'mcp-headers-launcher.cjs')), 'verbatim copy');
+    assertEq(installLauncher(dir).installed, false, 'unchanged → not rewritten');
+    fs.writeFileSync(path.join(dir, LAUNCHER_NAME), 'stale');
+    assertEq(installLauncher(dir).installed, true, 'a stale copy is replaced');
+  } finally { fs.rmSync(path.dirname(dir), { recursive: true, force: true }); }
+});
+
 test('daemon token: a pinned BRAIN_HTTP_TOKEN is synced to the token file (the headersHelper never sees that var); .mcp.json wires the helper', async () => {
   const { ensureToken, tokenFile } = await import(require('url').pathToFileURL(path.join(ROOT, 'servers', 'brain-server', 'lib', 'daemon-common.js')).href);
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-pintok-'));
@@ -17564,6 +17630,8 @@ test('daemon token: a pinned BRAIN_HTTP_TOKEN is synced to the token file (the h
     assertEq(fs.readFileSync(tokenFile(dir), 'utf8').trim(), 'pinned-xyz', 'file follows the pinned token');
     const mcp = JSON.parse(fs.readFileSync(path.join(ROOT, '.mcp.json'), 'utf8')).mcpServers['brain-server'];
     assert(/scripts\/mcp-headers\.js/.test(mcp.headersHelper) && /\$\{CLAUDE_PLUGIN_DATA\}/.test(mcp.headersHelper), `headersHelper wired: ${mcp.headersHelper}`);
+    assert(mcp.headersHelper.startsWith('node "${CLAUDE_PLUGIN_DATA}/mcp-headers-launcher.cjs"'), `headersHelper must run the version-proof launcher from the data dir first, never a path under the plugin dir: ${mcp.headersHelper}`);
+    assert(mcp.headersHelper.indexOf('mcp-headers-launcher.cjs') < mcp.headersHelper.indexOf('${CLAUDE_PLUGIN_ROOT}'), 'the plugin-dir helper is only the fallback after ||');
   } finally {
     if (savedTok === undefined) delete process.env.BRAIN_HTTP_TOKEN; else process.env.BRAIN_HTTP_TOKEN = savedTok;
     fs.rmSync(dir, { recursive: true, force: true });
@@ -22853,14 +22921,14 @@ test('KB gate: mcp-memory backend (handleRemoteKbTool) — cwd WITHOUT id refuse
 test('mcp-client restartMode (Q59): background = kick the launcher and fail FAST with a retryable error; wait = keep blocking (CLIs)', async () => {
   const McpClient = require('../engine/mcp-client.js');
   let kicks = 0;
-  const bg = new McpClient({ transport: 'http', serverUrl: '', runDir: fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-q59-')), restartMode: 'background', kickLauncher: () => { kicks++; return true; } });
+  const bg = new McpClient({ transport: 'http', serverUrl: '', runDir: fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-q59-')), restartMode: 'background', restartWaitMs: 0, kickLauncher: () => { kicks++; return true; } });
   bg._discoverDaemonUrl = () => 'http://127.0.0.1:1';
   bg._httpHealth = async () => false;
   const t0 = Date.now();
   let err = null;
   try { await bg._ensureDaemon(); } catch (e) { err = e; }
   assertEq([err && err.code, kicks], ['MEMORY_SERVER_RESTARTING', 1], 'launcher kicked once, error says "retry in a few seconds"');
-  assert(/started in the background; retry/.test(err.message), err && err.message);
+  assert(/started in the background and the server did not announce itself within 0 ms; retry/.test(err.message), err && err.message);
   assert(Date.now() - t0 < 1000, 'answers at once instead of waiting for the server to boot');
   const noLauncher = new McpClient({ transport: 'http', restartMode: 'background', kickLauncher: () => false });
   noLauncher._discoverDaemonUrl = () => 'http://127.0.0.1:1'; noLauncher._httpHealth = async () => false;
@@ -22873,6 +22941,153 @@ test('mcp-client restartMode (Q59): background = kick the launcher and fail FAST
   assertEq(new McpClient({ transport: 'http' }).restartMode, 'wait', 'default stays wait (CLIs)');
   const src = fs.readFileSync(path.join(ROOT, 'servers', 'brain-server', 'index.js'), 'utf8');
   assert(/CCB_MCP_RESTART_MODE = process\.env\.CCB_MCP_RESTART_MODE \|\| 'background'/.test(src), 'the brain daemon runs in background mode');
+});
+
+/** Isolated mcp-memory announcement: a temp run dir the client reads instead of ~/.mcp-memory/run. */
+function reconnectRig() {
+  const runDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-reconn-'));
+  const announce = (d) => fs.writeFileSync(path.join(runDir, 'daemon.json'), JSON.stringify({ url: d.url, port: d.port, pid: process.pid, version: '9.9.9' }));
+  return { runDir, announce, clear: () => fs.rmSync(runDir, { recursive: true, force: true }) };
+}
+
+test('mcp-client reconnect: a dropped daemon whose announcement moved to a new port is followed, the read succeeds, a rediscovered event is emitted and no failure surfaces', async () => {
+  const McpClient = require('../engine/mcp-client.js');
+  const rig = reconnectRig();
+  const a = await startFakeDaemon();
+  const b = await startFakeDaemon();
+  try {
+    rig.announce(a);
+    const c = new McpClient({ runDir: rig.runDir, projectId: 'P1', timeout: 4000, restartCooldownMs: 0, kickLauncher: () => false, restartMode: 'background', restartWaitMs: 0 });
+    const events = [];
+    c.on('rediscovered', (e) => events.push(e));
+    await c.connect();
+    assertEq(c._resolvedUrl, a.url, 'connected to the announced A');
+    await a.close();
+    rig.announce(b);
+    const r = await c.callTool('search_memory', { query: 'q' });
+    assertEq(r.text, 'OK:search_memory');
+    assertEq(b.seen.callCount, 1, 'the read reached B');
+    assertEq(b.seen.initProjectId, 'P1', 'B got the same project scope');
+    assertEq(events.length, 1);
+    assertEq([events[0].from, events[0].to, events[0].changed], [a.url, b.url, true]);
+    assert(/ECONNREFUSED/.test(events[0].reason), events[0].reason);
+    c.close({ skipRemote: true });
+  } finally { await b.close(); rig.clear(); }
+});
+
+test('mcp-client reconnect: an announced server that is not healthy is refused, loudly', async () => {
+  const McpClient = require('../engine/mcp-client.js');
+  const rig = reconnectRig();
+  const a = await startFakeDaemon();
+  try {
+    rig.announce(a);
+    const c = new McpClient({ runDir: rig.runDir, timeout: 4000, kickLauncher: () => false, restartMode: 'background', restartWaitMs: 0 });
+    await c.connect();
+    await a.close();
+    rig.announce({ url: 'http://127.0.0.1:1', port: 1 });
+    let err = null;
+    try { await c.callTool('search_memory', { query: 'q' }); } catch (e) { err = e; }
+    assert(err && err.code === 'DAEMON_RESTART', err && err.message);
+    assertEq(c._initialized, false, 'no session is kept on an unhealthy endpoint');
+  } finally { rig.clear(); }
+});
+
+test('mcp-client reconnect: daemon down then up — ONE launcher start, the announcement is awaited and the call is served', async () => {
+  const McpClient = require('../engine/mcp-client.js');
+  const rig = reconnectRig();
+  const a = await startFakeDaemon();
+  let b = null, kicks = 0;
+  try {
+    rig.announce(a);
+    const c = new McpClient({
+      runDir: rig.runDir, timeout: 4000, restartMode: 'background', restartWaitMs: 4000,
+      kickLauncher: () => { kicks++; setTimeout(async () => { b = await startFakeDaemon(); rig.announce(b); }, 300); return true; },
+    });
+    await c.connect();
+    await a.close();
+    const r = await c.callTool('search_memory', { query: 'q' });
+    assertEq(r.text, 'OK:search_memory');
+    assertEq(kicks, 1, 'the launcher was started exactly once');
+    assertEq(c._resolvedUrl, b.url);
+  } finally { if (b) await b.close(); rig.clear(); }
+});
+
+test('mcp-client reconnect: when the one restart fails the state is reported, and nothing is retried in a loop', async () => {
+  const McpClient = require('../engine/mcp-client.js');
+  const rig = reconnectRig();
+  const a = await startFakeDaemon();
+  let kicks = 0;
+  try {
+    rig.announce(a);
+    const c = new McpClient({ runDir: rig.runDir, timeout: 4000, restartMode: 'background', restartWaitMs: 300, restartCooldownMs: 60000, kickLauncher: () => { kicks++; return true; } });
+    await c.connect();
+    await a.close();
+    let e1 = null; try { await c.callTool('search_memory', { query: 'q' }); } catch (e) { e1 = e; }
+    assert(e1 && e1.code === 'DAEMON_RESTART' && /did not announce itself within 300 ms/.test(e1.message), e1 && e1.message);
+    let e2 = null; try { await c.callTool('search_memory', { query: 'q' }); } catch (e) { e2 = e; }
+    assert(e2 && /not retrying/.test(e2.message), e2 && e2.message);
+    assertEq(kicks, 1, 'the launcher was not started a second time inside the cooldown');
+    const w = new McpClient({ runDir: rig.runDir, timeout: 4000, restartMode: 'wait', restartCooldownMs: 60000, runLauncher: async () => { kicks++; return { ok: false, error: 'launcher exploded' }; } });
+    let e3 = null; try { await w.connect(); } catch (e) { e3 = e; }
+    assert(e3 && /not reachable/.test(e3.message), e3 && e3.message);
+    assertEq(kicks, 2, 'wait mode ran its launcher once and then failed loud');
+  } finally { rig.clear(); }
+});
+
+test('mcp-client reconnect: a write that may have been delivered is not repeated; a read is; an undelivered write is', async () => {
+  const McpClient = require('../engine/mcp-client.js');
+  const mk = (code) => {
+    const c = new McpClient({ serverUrl: 'http://127.0.0.1:1' });
+    c._initialized = true;
+    c.stats = { sends: 0, reconnects: 0 };
+    c._reconnect = async () => { c.stats.reconnects++; };
+    c._sendRequest = async () => { c.stats.sends++; const e = new Error(code === 'ECONNRESET' ? 'socket hang up' : 'connect ECONNREFUSED'); e.code = code; throw e; };
+    return c;
+  };
+  const w = mk('ECONNRESET');
+  let err = null; try { await w.callTool('add_document', { content: 'x' }); } catch (e) { err = e; }
+  assert(err && err.ambiguous === true && /may already have been recorded/.test(err.message), err && err.message);
+  assertEq([w.stats.sends, w.stats.reconnects], [1, 0]);
+  const r = mk('ECONNRESET');
+  try { await r.callTool('search_memory', { query: 'q' }); } catch (e) { void e; }
+  assertEq([r.stats.sends, r.stats.reconnects], [2, 1], 'a read is safe to repeat');
+  const u = mk('ECONNREFUSED');
+  try { await u.callTool('add_document', { content: 'x' }); } catch (e) { void e; }
+  assertEq([u.stats.sends, u.stats.reconnects], [2, 1], 'refused = never delivered, a write is repeated once');
+});
+
+test('mcp-client reconnect: concurrent calls share ONE rediscovery (single flight)', async () => {
+  const McpClient = require('../engine/mcp-client.js');
+  const rig = reconnectRig();
+  const a = await startFakeDaemon();
+  const b = await startFakeDaemon();
+  try {
+    rig.announce(a);
+    const c = new McpClient({ runDir: rig.runDir, timeout: 4000, kickLauncher: () => false, restartMode: 'background', restartWaitMs: 0 });
+    let events = 0; c.on('rediscovered', () => { events++; });
+    await c.connect();
+    await a.close();
+    rig.announce(b);
+    const out = await Promise.all([1, 2, 3].map((i) => c.callTool('search_memory', { query: `q${i}` })));
+    assertEq(out.map((x) => x.text), ['OK:search_memory', 'OK:search_memory', 'OK:search_memory']);
+    assertEq(events, 1, 'one rediscovery for three concurrent failures');
+  } finally { await b.close(); rig.clear(); }
+});
+
+test('mcp-client reconnect: the Boss reads the ANNOUNCED address (daemon.json), never a pinned or guessed port', async () => {
+  const McpClient = require('../engine/mcp-client.js');
+  const rig = reconnectRig();
+  const a = await startFakeDaemon();
+  try {
+    rig.announce(a);
+    const c = new McpClient({ runDir: rig.runDir, timeout: 4000 });
+    assertEq(c.serverUrl, '', 'no pinned URL by default');
+    await c.connect();
+    assertEq(c._resolvedUrl, a.url);
+    const src = fs.readFileSync(path.join(ROOT, 'engine', 'mcp-client.js'), 'utf8');
+    assert(!/38217|64251/.test(src), 'no daemon port is hardcoded in the client');
+    c.close({ skipRemote: true });
+  } finally { await a.close(); rig.clear(); }
 });
 
 test('dashboard server mode (Q58): status, project list, listing and skills panel read the SERVER on mcp-memory (not the stale local folders)', async () => {
@@ -31612,6 +31827,10 @@ test('retired compaction: the Doctor no longer has a session-modules check and c
   assert(!doctor.runChecks({}).some((r) => r.id === 'session-modules'), 'session-modules check must be gone');
   assertEq(typeof require('./lib/compaction-report.js').staleModuleSessions, 'undefined');
   assert(!/sessionModules|session-modules/.test(fs.readFileSync(path.join(SCRIPTS, 'doctor.js'), 'utf8')), 'doctor.js still mentions it');
+});
+
+test('isolation: the whole run left the live brain daemon (lock, pid) untouched', () => {
+  assertEq(liveDaemonState(), LIVE_DAEMON_BEFORE, 'a test run stopped, restarted or rewrote the live daemon');
 });
 
 // ─── Runner ──────────────────────────────────────────────────────────────────

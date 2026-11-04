@@ -6,7 +6,7 @@
     "engine/lib/brain-config.js"
   ],
   "files": {
-    "engine/brain-backend.js": "b876cd895871664bcb73d128cf5b3758df49b8dd0d45afc5a013dc267c1fde58",
+    "engine/brain-backend.js": "a4c01339b692fa23f16584ccb8f444d7efe8cd6c2385fbc2247f18af144b8181",
     "engine/brain-embedder.js": "c04b4d04921058db3cf5b5a01c1c2a728c4b4e2226777b50c4615acc0f98758d",
     "engine/brain-graph.js": "b13ecdd9a75b036f68305e9835012cd6c0a337db9a74d54d38495f0788085864",
     "engine/brain-index.js": "68a2745982756d0db0a144d22891d21ad69ef106231de8c5e8e65341da8027b8",
@@ -44,7 +44,7 @@
     "engine/lib/shell-escape.js": "992e6ca8e1d3b7236b8b8236cf956ee80e800f0c0532c0d1f5209be49b66b795",
     "engine/lib/sqlite-compat.js": "122746c15131a2e800451ed6d6903216f462ac59163ab65e66b8687e8ce7baaf",
     "engine/lib/text-utils.js": "68dd660d8c8c6b6930e3de9304d2d56bb2fdc6773029aa3d46b8b0eb605ad08a",
-    "engine/mcp-client.js": "aedbbc616cff43b4bad04e3ab7bd0dda49f3005a4a456c882edae53a2dce2d52",
+    "engine/mcp-client.js": "9b9c60b3ac53dc7c85d8fd2cff082f2593208d571339f6fed5d607e7a52ae452",
     "scripts/lib/mcp-bootstrap/launcher.js": "c7060022f13347b30648ed2fac16898d86f0850be70bbd4e7054e63ab2366ba7",
     "scripts/lib/mcp-bootstrap/registry.js": "62077187fdac17229d34745cd7c8f5c501e148724331d3873b28bc3a74391fa0"
   }

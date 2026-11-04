@@ -13,8 +13,30 @@ function abortError(method, signal) {
   return Object.assign(new Error(`MCP request "${method}" aborted${why}`), { code: 'ABORTED', name: 'AbortError' });
 }
 
+/** Connection-phase failures: the request never left this machine, so repeating it cannot duplicate it. */
+const UNDELIVERED_CODES = new Set(['ECONNREFUSED', 'ENOTFOUND', 'EAI_AGAIN', 'EADDRNOTAVAIL', 'EHOSTUNREACH', 'ENETUNREACH']);
+/** Failures after the request may have reached the daemon (reset, timeout, hang up): outcome unknown. */
+const AMBIGUOUS_CODES = new Set(['ECONNRESET', 'ETIMEDOUT', 'EPIPE', 'ECONNABORTED']);
+/** mcp-memory tools that change nothing: always safe to repeat. Anything else counts as a write. */
+const READ_TOOLS = new Set([
+  'search_memory', 'get_context', 'compose_recall', 'get_document', 'get_recent',
+  'list_documents', 'summarize_memory', 'get_project',
+]);
+
+/** @returns {'undelivered'|'ambiguous'|null} how a transport error relates to delivery of the request. */
+function classifyTransportError(err) {
+  if (!err || err.code === 'ABORTED') return null;
+  const code = err.code || (err.cause && err.cause.code) || '';
+  if (UNDELIVERED_CODES.has(code)) return 'undelivered';
+  if (AMBIGUOUS_CODES.has(code)) return 'ambiguous';
+  const m = String(err.message || '');
+  if (/ECONNREFUSED|ENOTFOUND|EAI_AGAIN|EADDRNOTAVAIL|EHOSTUNREACH|ENETUNREACH/.test(m)) return 'undelivered';
+  if (/timed out|timeout|ECONNRESET|socket hang up|EPIPE/i.test(m)) return 'ambiguous';
+  return null;
+}
+
 class McpClient extends EventEmitter {
-  #reconnecting = false;
+  #reconnectP = null;
 
   constructor(opts = {}) {
     super();
@@ -44,6 +66,12 @@ class McpClient extends EventEmitter {
     // 'wait' (default: CLIs can afford the boot) or 'background' (the brain daemon — see _ensureDaemon).
     this.restartMode = opts.restartMode === 'background' ? 'background' : 'wait';
     this._kickLauncher = typeof opts.kickLauncher === 'function' ? opts.kickLauncher : null; // test seam
+    this._runLauncher = typeof opts.runLauncher === 'function' ? opts.runLauncher : null; // test seam
+    // One restart per outage: a later one only after the cooldown, so a daemon that cannot start is reported, not hammered.
+    this.restartWaitMs = Number.isFinite(opts.restartWaitMs) ? opts.restartWaitMs : 5000;
+    this.restartTimeoutMs = Number.isFinite(opts.restartTimeoutMs) ? opts.restartTimeoutMs : 60000;
+    this.restartCooldownMs = Number.isFinite(opts.restartCooldownMs) ? opts.restartCooldownMs : 60000;
+    this._lastRestartAt = 0;
   }
 
   async connect() {
@@ -54,6 +82,7 @@ class McpClient extends EventEmitter {
     await this._ensureDaemon();
     await this._connectHttp();
     this._initialized = true;
+    this._lastRestartAt = 0;
   }
 
   /** Ensure the Java daemon is actually running before attempting connection. */
@@ -62,21 +91,41 @@ class McpClient extends EventEmitter {
     if (url && await this._httpHealth(url)) return;
     // A server the user pointed to (serverUrl) is not ours to start.
     if (this.serverUrl || !this.autoRestart) return;
+    const since = Date.now() - this._lastRestartAt;
+    if (this._lastRestartAt && since < this.restartCooldownMs) {
+      const err = new Error(`the memory server is down: its launcher was already tried ${Math.round(since / 1000)} s ago and it is still not announcing a healthy server (${path.join(this.runDir, 'daemon.json')}) — not retrying; run backend_setup or see ~/.mcp-memory/logs/daemon.log`);
+      err.code = 'MEMORY_SERVER_DOWN';
+      throw err;
+    }
+    this._lastRestartAt = Date.now();
     if (this.restartMode === 'background') {
-      // The brain daemon answers MCP tools inside a session: waiting here for the server to boot
-      // outlasted the tool's timeout, so the first call after a crash just timed out (BACKLOG Q59).
-      // Start the launcher detached and answer NOW with a clear, retryable error.
+      // The brain daemon answers MCP tools inside a session: waiting for a full boot outlasted the
+      // tool's timeout (BACKLOG Q59), so the wait is short: start the launcher detached, watch the
+      // announcement for restartWaitMs, and answer with a clear, retryable error if it is not up.
       const kicked = (this._kickLauncher || require('../scripts/lib/mcp-bootstrap/launcher.js').kickLauncher)();
+      if (kicked && await this._waitAnnounced(this.restartWaitMs)) return;
       const err = new Error(kicked
-        ? 'the memory server is not running — its launcher was started in the background; retry in a few seconds'
+        ? `the memory server is not running — its launcher was started in the background and the server did not announce itself within ${this.restartWaitMs} ms; retry in a few seconds`
         : 'the memory server is not running and its launcher was not found (~/.mcp-memory/bin) — run backend_setup');
       err.code = 'MEMORY_SERVER_RESTARTING';
       throw err;
     }
     console.error('[MCP] memory server not running — asking its launcher to start it...');
-    const r = await require('../scripts/lib/mcp-bootstrap/launcher.js').runLauncher({ timeoutMs: 60000 });
+    const runLauncher = this._runLauncher || require('../scripts/lib/mcp-bootstrap/launcher.js').runLauncher;
+    const r = await runLauncher({ timeoutMs: this.restartTimeoutMs });
     if (!r.ok) console.error(`[MCP] the launcher could not start the memory server: ${r.error}`);
     // _connectHttp does the final health check and fails loud.
+  }
+
+  /** Poll the daemon announcement until it names a healthy server, at most `ms`. True when it does. */
+  async _waitAnnounced(ms) {
+    const end = Date.now() + ms;
+    for (;;) {
+      const url = this._discoverDaemonUrl();
+      if (url && await this._httpHealth(url)) return true;
+      if (Date.now() >= end) return false;
+      await new Promise((r) => setTimeout(r, 250));
+    }
   }
 
   /**
@@ -257,19 +306,22 @@ class McpClient extends EventEmitter {
         return this.callTool(name, args, opts, _retryCount + 1);
       }
 
-      // Daemon restarted on a new port (daemon.json updated): connection refused,
-      // timeout, or other network error. Re-discover URL and retry ONCE.
+      // Daemon restarted on a new port (daemon.json updated), or is down: re-read the announcement,
+      // start the launcher once if it is down, and retry ONCE. A request that may already have been
+      // delivered (reset/timeout mid-call) is repeated only when the tool is a read.
       if (this.transport === 'http' && _retryCount === 0) {
-        const isConnectionError = err.code === 'ECONNREFUSED'
-          || err.code === 'ETIMEDOUT'
-          || err.code === 'ENOTFOUND'
-          || err.message?.includes('ECONNREFUSED')
-          || err.message?.includes('timeout')
-          || err.message?.includes('connect');
-        if (isConnectionError) {
+        const kind = classifyTransportError(err);
+        if (kind === 'ambiguous' && !READ_TOOLS.has(name)) {
+          const ambiguous = new Error(`${err.message} — "${name}" may already have been recorded by the memory server; not repeated, check before retrying`);
+          ambiguous.code = err.code || 'AMBIGUOUS_WRITE';
+          ambiguous.ambiguous = true;
+          ambiguous.originalError = err;
+          throw ambiguous;
+        }
+        if (kind) {
           console.error(`[MCP] Connection error (${err.code || err.message}), re-discovering daemon URL and retrying once`);
           try {
-            await this._reconnect();
+            await this._reconnect(err.code || err.message);
           } catch (reconnectErr) {
             const wrapped = new Error(`DAEMON_RESTART: reconnect failed: ${reconnectErr.message}`);
             wrapped.code = 'DAEMON_RESTART';
@@ -287,22 +339,27 @@ class McpClient extends EventEmitter {
 
   /** Re-run the HTTP handshake after a session expired server-side (TTL eviction)
    *  or when the daemon restarts on a new port (daemon.json updated). */
-  async _reconnect() {
-    if (this.#reconnecting) {
-      while (this.#reconnecting) await new Promise(r => setTimeout(r, 10));
-      return;
+  _reconnect(reason = 'session') {
+    // Single flight: concurrent callers share one rediscovery, and all see its outcome.
+    if (!this.#reconnectP) {
+      this.#reconnectP = this._doReconnect(reason).finally(() => { this.#reconnectP = null; });
     }
-    this.#reconnecting = true;
-    try {
-      this._sessionId = '';
-      this._initialized = false;
-      this._requestId = 0;
-      // Force re-discovery of daemon URL in case the port changed on restart.
-      this._resolvedUrl = '';
-      await this.connect();
-    } finally {
-      this.#reconnecting = false;
-    }
+    return this.#reconnectP;
+  }
+
+  /**
+   * Emits `rediscovered` ({from, to, changed, reason}) once the announced server answered a healthy
+   * probe — an event, not an error: nothing here counts as a failure for a caller's breaker.
+   */
+  async _doReconnect(reason) {
+    const from = this._resolvedUrl;
+    this._sessionId = '';
+    this._initialized = false;
+    this._requestId = 0;
+    // Force re-discovery of daemon URL in case the port changed on restart.
+    this._resolvedUrl = '';
+    await this.connect();
+    this.emit('rediscovered', { from, to: this._resolvedUrl, changed: from !== this._resolvedUrl, reason: String(reason) });
   }
 
   /**

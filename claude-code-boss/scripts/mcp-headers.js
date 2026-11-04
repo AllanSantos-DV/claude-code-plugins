@@ -33,6 +33,7 @@ async function headers({ argvDataDir, root = path.resolve(__dirname, '..'), ensu
   // Same data dir the plugin's hooks resolve (they get CLAUDE_PLUGIN_DATA in their env).
   if (validEnvDir(argvDataDir)) process.env.CLAUDE_PLUGIN_DATA = argvDataDir;
   const data = dataDir();
+  require('./lib/mcp-launcher.js').installLauncher(validEnvDir(argvDataDir) || data);
   const run = ensure || ((d) => require('./brain-daemon-ensure.js').run({ hook_event_name: 'headersHelper' }, { root, data: d }));
   let timer;
   const note = await Promise.race([

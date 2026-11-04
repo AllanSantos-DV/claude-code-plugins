@@ -25,7 +25,7 @@ const CIRCUIT_COOLDOWN_MS = Number.parseInt(process.env.CCB_MCP_MEMORY_CIRCUIT_M
 
 function isTransportFailure(err) {
   // DAEMON_RESTART: mcp-client already retried once and could not re-reach the daemon.
-  if (err && err.code === 'DAEMON_RESTART') return true;
+  if (err && (err.code === 'DAEMON_RESTART' || err.code === 'MEMORY_SERVER_DOWN' || err.code === 'MEMORY_SERVER_RESTARTING')) return true;
   return /timed out|timeout|ECONNREFUSED|ECONNRESET|ENOTFOUND|EHOSTUNREACH|socket hang up|fetch failed/i
     .test((err && err.message) || '');
 }

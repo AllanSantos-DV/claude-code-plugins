@@ -105,7 +105,29 @@ async function pruneOldVersions(o = {}) {
       console.error(`[cache-prune] could not remove ${name}: ${err.message}`);
     }
   }
+  out.relinked = relinkDangling(cacheBase, current);
   return out;
 }
 
-module.exports = { pruneOldVersions, planPrune, cacheBaseOf, registryInstallPath, daemonRoot, MARKETPLACE, PLUGIN };
+/**
+ * A kept entry that is a junction/symlink (a restored dir of an open session) pointing into a
+ * dir this prune just removed would leave that session without hooks and without its
+ * `headersHelper`; point it at the current install instead. Returns the relinked names.
+ */
+function relinkDangling(cacheBase, current) {
+  const relinked = [];
+  let entries;
+  try { entries = fs.readdirSync(cacheBase, { withFileTypes: true }); } catch (err) { console.error(`[cache-prune] cannot list ${cacheBase}: ${err.message}`); return relinked; }
+  for (const e of entries) {
+    const p = path.join(cacheBase, e.name);
+    try {
+      if (!fs.lstatSync(p).isSymbolicLink() || fs.existsSync(p) || norm(p) === norm(current)) continue;
+      fs.unlinkSync(p);
+      fs.symlinkSync(current, p, 'junction');
+      relinked.push(e.name);
+    } catch (err) { console.error(`[cache-prune] could not relink ${e.name}: ${err.message}`); }
+  }
+  return relinked;
+}
+
+module.exports = { pruneOldVersions, relinkDangling, planPrune, cacheBaseOf, registryInstallPath, daemonRoot, MARKETPLACE, PLUGIN };

@@ -100,6 +100,7 @@ async function run(event, deps = {}) {
     const root = deps.root || pluginRoot();
     const data = deps.data || dataDir();
     const setup = deps.runSetupInBackground || runSetupInBackground;
+    require('./lib/mcp-launcher.js').installLauncher(data);
 
     // Deps missing → install in background and leave the spawn to the next
     // hook run; spawning now only crashes the daemon on import.
