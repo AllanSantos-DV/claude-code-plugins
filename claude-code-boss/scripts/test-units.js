@@ -27502,6 +27502,17 @@ test('update-notice: the plugin homepage shown with an update (plugin.json + mar
   }
 });
 
+/** A Claude Code config dir whose local marketplace clone lists claude-code-boss at `version`; returns the env pointing at it. */
+function fakeMarketplace(base, { name = 'allansantos-plugins', version, autoUpdate = true, lastUpdated = '2026-10-13T00:00:00.000Z' } = {}) {
+  const cfg = path.join(base, 'cc-config'); const loc = path.join(cfg, 'plugins', 'marketplaces', name);
+  fs.mkdirSync(path.join(loc, 'claude-code-boss', '.claude-plugin'), { recursive: true });
+  fs.mkdirSync(path.join(loc, '.claude-plugin'), { recursive: true });
+  fs.writeFileSync(path.join(loc, '.claude-plugin', 'marketplace.json'), JSON.stringify({ plugins: [{ name: 'claude-code-boss', source: './claude-code-boss' }] }));
+  fs.writeFileSync(path.join(loc, 'claude-code-boss', '.claude-plugin', 'plugin.json'), JSON.stringify({ version }));
+  fs.writeFileSync(path.join(cfg, 'plugins', 'known_marketplaces.json'), JSON.stringify({ [name]: { installLocation: loc, autoUpdate, lastUpdated } }));
+  return { CLAUDE_CONFIG_DIR: cfg };
+}
+
 test('update-notice: no version notice builds a GitHub link — the source holds no repository URL and both notices link the Pages changelog', () => {
   const u = require('./lib/update-notice.js');
   const src = fs.readFileSync(path.join(__dirname, 'lib', 'update-notice.js'), 'utf8');
@@ -27512,7 +27523,7 @@ test('update-notice: no version notice builds a GitHub link — the source holds
   try {
     fs.writeFileSync(path.join(root, 'package.json'), JSON.stringify({ version: '3.5.0' }));
     fs.writeFileSync(path.join(dir, u.STATE), JSON.stringify({ seenVersion: '3.4.0', latest: '3.6.0' }));
-    const notices = u.takeUpdateNotices({ root, dir, env: {} });
+    const notices = u.takeUpdateNotices({ root, dir, env: fakeMarketplace(dir, { version: '3.6.0' }) });
     assertEq(notices.length, 2, 'updated + available');
     for (const text of notices) {
       assert(text.includes(`${u.PAGES_URL}changelog.html`), `links the Pages changelog: ${text}`);
@@ -27543,21 +27554,22 @@ test('update-notice: "version available" cached 6h and told once per version; "p
   const base = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-updnotice-'));
   try {
     const root = path.join(base, 'plugin'); const dir = path.join(base, 'global');
+    const E = fakeMarketplace(base, { version: '9.9.9' });
     const setVer = (v) => { fs.mkdirSync(root, { recursive: true }); fs.writeFileSync(path.join(root, 'package.json'), JSON.stringify({ version: v })); };
     let calls = 0; let latest = '3.4.0';
     const fetchLatest = async () => { calls++; return { latest }; };
     const T0 = Date.parse('2026-10-13T00:00:00Z');
     setVer('3.4.0');
-    assertEq(u.takeUpdateNotices({ root, dir, env: {} }), [], 'first run: only records the version');
+    assertEq(u.takeUpdateNotices({ root, dir, env: E }), [], 'first run: only records the version');
     assertEq((await u.refreshLatest({ root, dir, env: {}, now: T0, fetchLatest })).status, 'checked', 'checked');
-    assertEq(u.takeUpdateNotices({ root, dir, env: {} }), [], 'latest == installed: nothing to say');
+    assertEq(u.takeUpdateNotices({ root, dir, env: E }), [], 'latest == installed: nothing to say');
     assertEq((await u.refreshLatest({ root, dir, env: {}, now: T0 + 3600e3, fetchLatest })).status, 'fresh', 'within 6h: no network');
     assertEq(calls, 1, 'one request');
     latest = '3.5.0';
     assertEq((await u.refreshLatest({ root, dir, env: {}, now: T0 + 7 * 3600e3, fetchLatest })).latest, '3.5.0', 're-checked after 6h');
-    const avail = u.takeUpdateNotices({ root, dir, env: {} });
+    const avail = u.takeUpdateNotices({ root, dir, env: E });
     assert(avail.length === 1 && /3\.5\.0 disponível \(instalada: 3\.4\.0\)/.test(avail[0]) && /CLAUDE_CODE_BOSS_AUTO_UPDATE=0/.test(avail[0]) && !avail[0].includes('\n'), JSON.stringify(avail));
-    assertEq(u.takeUpdateNotices({ root, dir, env: {} }), [], 'available told once per version');
+    assertEq(u.takeUpdateNotices({ root, dir, env: E }), [], 'available told once per version');
     assert(/chega sozinha/.test(avail[0]) && !/NÃO vai rodar/.test(avail[0]), `no blocking env: promises the automatic update: ${avail[0]}`);
     // Claude Code's plugin auto-update pass switched off by env: the notice names the variable and the override
     // instead of promising an update that will not come.
@@ -27567,27 +27579,27 @@ test('update-notice: "version available" cached 6h and told once per version; "p
     assertEq(u.ccAutoUpdateBlockedBy({ DISABLE_UPDATES: '0' }), null, '"0" is not set');
     assertEq(u.ccAutoUpdateBlockedBy({ CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: '1', FORCE_AUTOUPDATE_PLUGINS: '1' }), null, 'FORCE_AUTOUPDATE_PLUGINS=1 overrides');
     const blockedDir = path.join(base, 'g-blocked');
-    u.takeUpdateNotices({ root, dir: blockedDir, env: {} });
+    u.takeUpdateNotices({ root, dir: blockedDir, env: E });
     await u.refreshLatest({ root, dir: blockedDir, env: {}, now: T0, fetchLatest: async () => ({ latest: '3.5.0' }) });
-    const blockedAvail = u.takeUpdateNotices({ root, dir: blockedDir, env: { CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: '1' } });
+    const blockedAvail = u.takeUpdateNotices({ root, dir: blockedDir, env: { ...E, CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: '1' } });
     assert(blockedAvail.length === 1 && /NÃO vai rodar: CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC/.test(blockedAvail[0]) && /FORCE_AUTOUPDATE_PLUGINS=1/.test(blockedAvail[0])
       && !/chega sozinha/.test(blockedAvail[0]) && !blockedAvail[0].includes('\n'), `blocked env named, no false promise: ${JSON.stringify(blockedAvail)}`);
     setVer('3.5.0');
-    const upd = u.takeUpdateNotices({ root, dir, env: {} });
+    const upd = u.takeUpdateNotices({ root, dir, env: E });
     assert(upd.length === 1 && /atualizado: 3\.4\.0 → 3\.5\.0/.test(upd[0]), JSON.stringify(upd));
     // Read by a person: every link goes to the public Pages site, never to the repository README or a blob.
     for (const url of [...avail, ...upd].flatMap((t) => t.match(/https?:\/\/\S+/g) || [])) {
       assert(url.startsWith(u.PAGES_URL) && !/readme/i.test(url) && !url.includes('/blob/'), `update notice links the Pages site, got ${url}`);
     }
     assert(upd[0].includes(`${u.PAGES_URL}changelog.html`), `"updated" points at the Pages changelog: ${upd[0]}`);
-    assertEq(u.takeUpdateNotices({ root, dir, env: {} }), [], 'updated told once');
+    assertEq(u.takeUpdateNotices({ root, dir, env: E }), [], 'updated told once');
     setVer('3.4.0');
-    assertEq(u.takeUpdateNotices({ root, dir, env: {} }).length, 0, 'a downgrade is not announced as an update');
+    assertEq(u.takeUpdateNotices({ root, dir, env: E }).length, 0, 'a downgrade is not announced as an update');
     // Sessions opened before and after an update run side by side, each with its own version's hooks: the older
     // one must not rewind seenVersion, or the newer one announces the same update on every alternation.
     for (let i = 0; i < 2; i++) {
-      setVer('3.5.0'); assertEq(u.takeUpdateNotices({ root, dir, env: {} }), [], `newer session after an older one's prompt: not re-announced (round ${i + 1})`);
-      setVer('3.4.0'); assertEq(u.takeUpdateNotices({ root, dir, env: {} }), [], `older session: silent (round ${i + 1})`);
+      setVer('3.5.0'); assertEq(u.takeUpdateNotices({ root, dir, env: E }), [], `newer session after an older one's prompt: not re-announced (round ${i + 1})`);
+      setVer('3.4.0'); assertEq(u.takeUpdateNotices({ root, dir, env: E }), [], `older session: silent (round ${i + 1})`);
     }
     assertEq(JSON.parse(fs.readFileSync(u.stateFile(dir), 'utf8')).seenVersion, '3.5.0', 'seenVersion never moves back');
     // The older session really runs the PREVIOUS release's code (≤ 3.14.1), which writes { ...state, seenVersion:
@@ -27596,10 +27608,10 @@ test('update-notice: "version available" cached 6h and told once per version; "p
     const oldWriter = (v) => { const f = u.stateFile(dir); fs.writeFileSync(f, JSON.stringify({ ...JSON.parse(fs.readFileSync(f, 'utf8')), seenVersion: v })); };
     for (let i = 0; i < 3; i++) {
       oldWriter('3.4.0');
-      setVer('3.5.0'); assertEq(u.takeUpdateNotices({ root, dir, env: {} }), [], `previous release's code rewound seenVersion: newer session not re-announced (round ${i + 1})`);
+      setVer('3.5.0'); assertEq(u.takeUpdateNotices({ root, dir, env: E }), [], `previous release's code rewound seenVersion: newer session not re-announced (round ${i + 1})`);
     }
     oldWriter('3.4.0'); setVer('3.6.0');
-    const fromOld = u.takeUpdateNotices({ root, dir, env: {} });
+    const fromOld = u.takeUpdateNotices({ root, dir, env: E });
     assert(fromOld.length === 1 && /atualizado: 3\.5\.0 → 3\.6\.0/.test(fromOld[0]), `a real update after a rewind names the highest seen version: ${JSON.stringify(fromOld)}`);
     setVer('3.5.0');
     // Read-decide-write runs under the state lock: while another live process holds it, nothing is told or written
@@ -27609,14 +27621,14 @@ test('update-notice: "version available" cached 6h and told once per version; "p
     fs.writeFileSync(u.stateFile(lockDir), JSON.stringify({ seenVersion: '3.4.0', latest: '3.6.0' }));
     setVer('3.5.0');
     fs.writeFileSync(lockFile, JSON.stringify({ pid: process.pid, token: 'held-by-another-session', createdAt: Date.now() }));
-    assertEq(u.takeUpdateNotices({ root, dir: lockDir, env: {} }), [], 'lock held by a live process: nothing told now');
+    assertEq(u.takeUpdateNotices({ root, dir: lockDir, env: E }), [], 'lock held by a live process: nothing told now');
     assertEq(JSON.parse(fs.readFileSync(u.stateFile(lockDir), 'utf8')).seenVersion, '3.4.0', 'lock held: state not written');
     const busy = await u.refreshLatest({ root, dir: lockDir, env: {}, now: T0, fetchLatest: async () => ({ latest: '3.7.0' }) });
     assert(busy.status === 'error' && /locked/.test(busy.error), `refresh with the lock held fails loud: ${JSON.stringify(busy)}`);
     assertEq(JSON.parse(fs.readFileSync(u.stateFile(lockDir), 'utf8')).latest, '3.6.0', 'lock held: latest not overwritten');
     assert(fs.existsSync(lockFile), 'a lock this process does not own is never removed');
     fs.writeFileSync(lockFile, JSON.stringify({ pid: 2147483646, token: 'dead-session', createdAt: Date.now() }));
-    assertEq(u.takeUpdateNotices({ root, dir: lockDir, env: {} }).length, 2, 'dead holder: lock reclaimed, updated + available told');
+    assertEq(u.takeUpdateNotices({ root, dir: lockDir, env: E }).length, 2, 'dead holder: lock reclaimed, updated + available told');
     assert(!fs.existsSync(lockFile), 'lock released after the write');
     assertEq(JSON.parse(fs.readFileSync(u.stateFile(lockDir), 'utf8')).seenVersion, '3.5.0', 'reclaimed lock: state written');
     // opt-out
@@ -27628,6 +27640,59 @@ test('update-notice: "version available" cached 6h and told once per version; "p
     const failed = await u.refreshLatest({ root, dir: path.join(base, 'g3'), env: {}, now: T0, fetchLatest: async () => { throw new Error('GitHub API 403'); } });
     assert(failed.status === 'error' && /403/.test(failed.error), JSON.stringify(failed));
     assertEq((await u.refreshLatest({ root, dir: path.join(base, 'g3'), env: {}, now: T0, fetchLatest })).status, 'checked', 'retried right after a failure');
+  } finally { fs.rmSync(base, { recursive: true, force: true }); }
+});
+
+test('update-notice: the "available" notice gives `marketplace update` before `plugin update`; a local marketplace clone that stays behind or is unreadable is told once, never silent', () => {
+  const u = require('./lib/update-notice.js');
+  const base = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-unstale-'));
+  try {
+    const root = path.join(base, 'claude', 'plugins', 'cache', 'mkt-x', 'claude-code-boss', '3.4.0');
+    fs.mkdirSync(root, { recursive: true });
+    fs.writeFileSync(path.join(root, 'package.json'), JSON.stringify({ version: '3.4.0' }));
+    const T0 = Date.parse('2026-11-04T10:00:00Z');
+    const run = (dir, env, now) => u.takeUpdateNotices({ root, dir, env, now });
+    const seed = (dir, latest = '3.5.0') => { fs.mkdirSync(dir, { recursive: true }); fs.writeFileSync(u.stateFile(dir), JSON.stringify({ seenVersion: '3.4.0', highestSeen: '3.4.0', latest })); };
+
+    // `claude plugin update` reads the local clone and says "already at the latest version" while it is behind:
+    // the notice names the marketplace refresh first, with the marketplace the plugin was installed from.
+    const behind = fakeMarketplace(path.join(base, 'a'), { name: 'mkt-x', version: '3.4.0', lastUpdated: '2026-11-03T08:00:00.000Z' });
+    const dA = path.join(base, 'st-a'); seed(dA);
+    const first = run(dA, behind, T0);
+    assertEq(first.length, 1, `only "available" on the first sight: ${JSON.stringify(first)}`);
+    const iMkt = first[0].indexOf('`claude plugin marketplace update mkt-x`');
+    const iUpd = first[0].indexOf('`claude plugin update claude-code-boss@mkt-x`');
+    assert(iMkt > 0 && iUpd > iMkt, `marketplace update named before plugin update: ${first[0]}`);
+    assertEq(run(dA, behind, T0 + 30 * 60e3), [], 'clone behind for 30 min: Claude Code may still be refreshing, nothing told');
+    const stale = run(dA, behind, T0 + 61 * 60e3);
+    assert(stale.length === 1 && /não está trazendo a versão 3\.5\.0/.test(stale[0]) && stale[0].includes('continua em 3.4.0 há 1 h')
+      && stale[0].includes('2026-11-03T08:00:00.000Z') && stale[0].includes('`claude plugin marketplace update mkt-x`') && !stale[0].includes('\n'),
+    `behind past the window with auto-update on: told once: ${JSON.stringify(stale)}`);
+    assertEq(run(dA, behind, T0 + 5 * 3600e3), [], 'stale told once per version');
+    fs.writeFileSync(u.stateFile(dA), JSON.stringify({ ...JSON.parse(fs.readFileSync(u.stateFile(dA), 'utf8')), latest: '3.6.0' }));
+    assertEq(run(dA, behind, T0 + 6 * 3600e3).length, 1, 'a newer release: "available" again, the stale clock restarts');
+    assertEq(run(dA, behind, T0 + 6.5 * 3600e3), [], 'new stale clock: 30 min is not late');
+    assertEq(JSON.parse(fs.readFileSync(u.stateFile(dA), 'utf8')).staleSince.latest, '3.6.0', 'stale clock follows the release');
+    fakeMarketplace(path.join(base, 'a'), { name: 'mkt-x', version: '3.6.0' });
+    assertEq(run(dA, behind, T0 + 8 * 3600e3), [], 'clone caught up: nothing to say');
+    assert(!('staleSince' in JSON.parse(fs.readFileSync(u.stateFile(dA), 'utf8'))), 'clone caught up: stale clock cleared');
+
+    // Auto-update off, or Claude Code's update pass blocked by env: the clone is expected to lag, so no stale notice.
+    const manual = fakeMarketplace(path.join(base, 'b'), { name: 'mkt-x', version: '3.4.0', autoUpdate: false });
+    const dB = path.join(base, 'st-b'); seed(dB);
+    assertEq(run(dB, manual, T0).length, 1, 'auto-update off: "available" only');
+    assertEq(run(dB, manual, T0 + 3 * 3600e3), [], 'auto-update off: no stale notice');
+    const dC = path.join(base, 'st-c'); seed(dC);
+    const blocked = { ...fakeMarketplace(path.join(base, 'c'), { name: 'mkt-x', version: '3.4.0' }), DISABLE_AUTOUPDATER: '1' };
+    assertEq(run(dC, blocked, T0).length, 1, 'blocked: "available" only (it names the blocking variable)');
+    assertEq(run(dC, blocked, T0 + 3 * 3600e3), [], 'blocked: no stale notice');
+
+    // No readable clone: the release cannot arrive; told at once with the error, never silent.
+    const dD = path.join(base, 'st-d'); seed(dD);
+    const broken = run(dD, { CLAUDE_CONFIG_DIR: path.join(base, 'no-config') }, T0);
+    assert(broken.length === 2 && /a versão 3\.5\.0 não tem como chegar: .*known_marketplaces\.json/.test(broken[1]) && broken[1].includes('`claude plugin marketplace update mkt-x`'),
+      `unreadable clone told with its error: ${JSON.stringify(broken)}`);
+    assertEq(run(dD, { CLAUDE_CONFIG_DIR: path.join(base, 'no-config') }, T0 + 3600e3), [], 'unreadable clone told once per version');
   } finally { fs.rmSync(base, { recursive: true, force: true }); }
 });
 
