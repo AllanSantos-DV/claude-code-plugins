@@ -86,13 +86,16 @@ async function graphBase({ discover, fetchImpl = globalThis.fetch } = {}) {
 /**
  * Raw POST to a subpath. Returns { status, json }. Throws GraphError on 4xx/5xx (structured body).
  * 200 (incl. non-ready reads {state,hint}) and 202 (ingest accepted) are success.
+ * `ctx.rediscover` (optional, () => Promise<string|null>) resolves the base again before each retry
+ * of a refused connection: a reinstall restarts the daemon on another port.
  */
 async function post(base, sub, ctx, extra = {}, { fetchImpl = globalThis.fetch, timeoutMs = 15000, refusedDelaysMs = RETRY_DELAYS_MS } = {}) {
   const body = { path: ctx.root, ...extra };
   const ctrl = new AbortController();
   const t = setTimeout(() => ctrl.abort(), timeoutMs);
   try {
-    const send = () => fetchImpl(`${base}/api/v1/graph/${sub}`, {
+    let url = base;
+    const send = () => fetchImpl(`${url}/api/v1/graph/${sub}`, {
       method: 'POST', headers: { 'content-type': 'application/json' },
       body: JSON.stringify(body), signal: ctrl.signal,
     });
@@ -107,6 +110,7 @@ async function post(base, sub, ctx, extra = {}, { fetchImpl = globalThis.fetch, 
           throw e;
         }
         await sleep(refusedDelaysMs[i]);
+        if (typeof ctx.rediscover === 'function') url = (await ctx.rediscover()) || url;
       }
     }
     // timeout still ACTIVE here → also bounds reading the BODY (not just headers). clearTimeout in finally.

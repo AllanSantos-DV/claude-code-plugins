@@ -9809,6 +9809,36 @@ test('scoped-rules-client: asks the announced server by the contract (files, ses
   } finally { await srv.close(); await old.close(); rig.clear(); client._resetDown(); }
 });
 
+test('scoped-rules-client: tries and backoff share one budget under the hook timeout — a slow server answering inside it is used, one past it fails loud with the budget', async () => {
+  const client = require('./lib/scoped-rules-client.js');
+  const hookTimeoutS = require('../hooks/hooks.json').hooks.UserPromptSubmit.flatMap((g) => g.hooks).find((h) => h.tool === 'hook_scope_rules').timeout;
+  assert(client.BUDGET_MS > 2200 && client.BUDGET_MS <= hookTimeoutS * 1000 - 1000, `budget ${client.BUDGET_MS} ms: above the 2.2 s measured on the live server, 1 s under the ${hookTimeoutS} s hook timeout`);
+  const rig = reconnectRig();
+  const refused = () => Object.assign(new TypeError('fetch failed'), { cause: Object.assign(new Error('connect ECONNREFUSED'), { code: 'ECONNREFUSED' }) });
+  const answerAfter = (ms) => (url, init) => new Promise((resolve, reject) => {
+    const t = setTimeout(() => resolve(new globalThis.Response(JSON.stringify({ count: 0, rules: [] }), { status: 200 })), ms);
+    init.signal.addEventListener('abort', () => { clearTimeout(t); reject(init.signal.reason); });
+  });
+  try {
+    client._resetDown();
+    rig.announce({ url: 'http://127.0.0.1:1', port: 1 });
+    let tries = 0;
+    const slowAfterRefusal = (url, init) => (++tries === 1 ? Promise.reject(refused()) : answerAfter(250)(url, init));
+    const r = await client.lookupScopedRules({}, { runDir: rig.runDir, delays: [50, 100], timeoutMs: 600, fetchImpl: slowAfterRefusal });
+    assertEq([r.count, tries], [0, 2], 'the slow answer after one refusal fits the budget');
+    const t0 = Date.now();
+    let e1 = null; try { await client.lookupScopedRules({}, { runDir: rig.runDir, delays: [50], timeoutMs: 300, fetchImpl: answerAfter(5000) }); } catch (e) { e1 = e; }
+    assert(e1 && e1.code === 'LOOKUP_FAILED' && /did not answer within 300 ms/.test(e1.message), e1 && e1.message);
+    assert(Date.now() - t0 < 450, `bounded by the budget (${Date.now() - t0} ms)`);
+    tries = 0;
+    const t1 = Date.now();
+    let e2 = null; try { await client.lookupScopedRules({}, { runDir: rig.runDir, delays: [100, 400], timeoutMs: 250, fetchImpl: () => { tries++; return Promise.reject(refused()); } }); } catch (e) { e2 = e; }
+    assert(e2 && e2.code === 'MEMORY_SERVER_DOWN' && /within 250 ms/.test(e2.message), e2 && e2.message);
+    assertEq(tries, 2, 'a backoff step past the budget is not waited');
+    assert(Date.now() - t1 < 250, `no wait past the budget (${Date.now() - t1} ms)`);
+  } finally { rig.clear(); client._resetDown(); }
+});
+
 test('scoped-rules-client: ECONNREFUSED is retried a bounded number of times, re-reading the announcement — a brief restart does not drop the call; a server that stays down fails fast afterwards', async () => {
   const client = require('./lib/scoped-rules-client.js');
   assertEq(client.RETRY_DELAYS_MS, [250, 500, 1000], 'default backoff');
@@ -9837,7 +9867,7 @@ test('scoped-rules-client: ECONNREFUSED is retried a bounded number of times, re
   } finally { rig.clear(); client._resetDown(); }
 });
 
-test('graph client: a refused POST is sent again with bounded backoff — a brief daemon restart does not drop the call; a daemon that stays down fails with the count; other errors are not retried', async () => {
+test('graph client: a refused POST is sent again with bounded backoff — a brief daemon restart does not drop the call, a daemon that moved port is followed; a daemon that stays down fails with the count; other errors are not retried', async () => {
   const { post, GraphError } = require('./lib/graph/client.js');
   const refused = () => Object.assign(new TypeError('fetch failed'), { cause: Object.assign(new Error('connect ECONNREFUSED 127.0.0.1:1'), { code: 'ECONNREFUSED' }) });
   const ctx = { root: os.tmpdir() };
@@ -9853,6 +9883,12 @@ test('graph client: a refused POST is sent again with bounded backoff — a brie
   let e2 = null; try { await post('http://127.0.0.1:1', 'status', ctx, {}, { fetchImpl: async () => { tries++; throw new Error('boom'); }, refusedDelaysMs: [10, 20] }); } catch (e) { e2 = e; }
   assert(e2 instanceof GraphError && /boom/.test(e2.message), e2 && e2.message);
   assertEq(tries, 1, 'an error that may have reached the daemon is not sent again');
+  const hit = [];
+  let asked = 0;
+  const moved = async (u) => { hit.push(u); if (u.startsWith('http://127.0.0.1:55518')) throw refused(); return new globalThis.Response(JSON.stringify({ state: 'ready' }), { status: 200 }); };
+  const r2 = await post('http://127.0.0.1:55518', 'status', { ...ctx, rediscover: async () => { asked++; return asked < 2 ? null : 'http://127.0.0.1:64043'; } }, {}, { fetchImpl: moved, refusedDelaysMs: [10, 20, 40] });
+  assertEq([r2.status, asked], [200, 2], 'the base is resolved again after each refusal; a not-yet-announced daemon keeps the old one');
+  assertEq(hit, ['http://127.0.0.1:55518/api/v1/graph/status', 'http://127.0.0.1:55518/api/v1/graph/status', 'http://127.0.0.1:64043/api/v1/graph/status'], 'the call follows the daemon to its new port');
 });
 
 test('mcp-client: a brief restart is waited out with bounded probes — the refused call reaches the restarted server and the launcher is never started', async () => {
@@ -25291,6 +25327,20 @@ test('graph/tools: fail-open when daemon offline', async () => {
   const out = await t.handle('graph_status', {});
   assert(!out.isError, 'not isError');
   assert(out.content[0].text.startsWith('🕸️ Graph unavailable'), 'offline text');
+});
+test('graph/tools: a call refused on the old port follows the daemon to the port it announced after a reinstall', async () => {
+  graphClient.__clearCapCache();
+  let found = 0;
+  const hosts = [];
+  const fetchImpl = async (u) => {
+    hosts.push(new URL(u).host);
+    if (u.startsWith('http://told')) throw Object.assign(new TypeError('fetch failed'), { cause: Object.assign(new Error('connect ECONNREFUSED'), { code: 'ECONNREFUSED' }) });
+    return new globalThis.Response(JSON.stringify({ state: 'ready', nodes: 1, edges: 0 }), { status: 200 });
+  };
+  const t = createGraphTools({ cwd: () => ROOT, fetchImpl, discover: async () => ({ url: found++ ? 'http://tnew' : 'http://told' }) });
+  const out = await t.handle('graph_status', {});
+  assert(!out.isError && /ready/.test(out.content[0].text), out.content[0].text);
+  assert(hosts.includes('told') && hosts[hosts.length - 1] === 'tnew', `the refused call is resent to the announced port: ${hosts.join(' → ')}`);
 });
 test('graph/tools: capability 404 surfaces update guidance', async () => {
   graphClient.__clearCapCache();
