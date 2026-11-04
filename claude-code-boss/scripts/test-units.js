@@ -27373,6 +27373,19 @@ test('cooldown-stamp: absent → off; stamped → on until ms elapses; settleWit
   assertEq((await settleWithin(Promise.reject(new Error('x')), 1000)).status, 'error');
 });
 
+test('settleWithin: synchronous work that starves the loop does not make a detector with pending I/O time out', async () => {
+  const { settleWithin } = require('../engine/lib/settle-within.js');
+  const reads = async () => { for (let i = 0; i < 3; i++) await fs.promises.readFile(__filename.replace(/test-units\.js$/, 'doctor.js'), 'utf8').then((s) => s.length); return 'done'; };
+  const guarded = settleWithin(reads(), 60);
+  const end = Date.now() + 250;
+  while (Date.now() < end) { /* the starving neighbour */ }
+  assertEq((await guarded).status, 'ok');
+  const never = settleWithin(new Promise(() => {}), 60);
+  const end2 = Date.now() + 250;
+  while (Date.now() < end2) { /* starve again */ }
+  assertEq((await never).status, 'timeout');
+});
+
 test('config-merge: deepMerge (objects recurse, arrays/scalars replace, base untouched) + filesStamp tracks edits', () => {
   const { deepMerge, filesStamp } = require('../engine/lib/config-merge.js');
   const base = { a: { b: 1, c: [1, 2] }, d: 1 };
