@@ -150,11 +150,17 @@ function forgetSessionRoot(sessionId, { base } = {}) {
   }
 }
 
+// Margin for the uptime clock's resolution: a record touched right at boot still counts.
+const BOOT_SLACK_MS = 60_000;
+
 /**
- * Plugin dirs the live sessions run their hooks from (records not past the TTL). The cache
- * prune keeps them: deleting one leaves that open session without its command hooks.
+ * Plugin dirs the live sessions run their hooks from: records not past the TTL and touched
+ * since the machine booted (no session survives a reboot; a resumed one records itself again
+ * at SessionStart). The cache prune keeps them: deleting one leaves that open session without
+ * its command hooks.
+ * @param {{base?:string, bootMs?:number}} [o] bootMs: boot time, defaults to now - os.uptime()
  */
-function livePluginRoots({ base } = {}) {
+function livePluginRoots({ base, bootMs } = {}) {
   const dir = dirOf(base);
   let names;
   try { names = fs.readdirSync(dir); } catch (err) {
@@ -162,12 +168,14 @@ function livePluginRoots({ base } = {}) {
     return [];
   }
   const now = Date.now();
+  const boot = Number.isFinite(bootMs) ? bootMs : now - require('os').uptime() * 1000;
   const roots = new Set();
   for (const f of names) {
     if (!f.endsWith('.json')) continue;
     const p = path.join(dir, f);
     try {
-      if (now - fs.statSync(p).mtimeMs > TTL_MS) continue;
+      const { mtimeMs } = fs.statSync(p);
+      if (now - mtimeMs > TTL_MS || mtimeMs < boot - BOOT_SLACK_MS) continue;
       const j = JSON.parse(fs.readFileSync(p, 'utf8'));
       if (j.pluginRoot) roots.add(String(j.pluginRoot));
     } catch (err) { void err; /* raced with a write/prune: skip that record */ }

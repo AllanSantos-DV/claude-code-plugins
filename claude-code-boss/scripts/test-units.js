@@ -9512,6 +9512,28 @@ test('session-root: records the plugin dir each session loaded; livePluginRoots 
   } finally { sr._resetMemo(); fs.rmSync(base, { recursive: true, force: true }); }
 });
 
+test('session-root.livePluginRoots: a record last touched before the machine booted no longer protects its dir (sessions that died in a reboot); one touched after boot does', () => {
+  const sr = require('./lib/session-root.js');
+  const base = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-sroot-boot-'));
+  try {
+    sr._resetMemo();
+    sr.recordSessionRoot('before-boot', 'C:\\w\\p', { base, pluginRoot: 'C:\\cache\\3.1.0' });
+    sr.recordSessionRoot('after-boot', 'C:\\w\\q', { base, pluginRoot: 'C:\\cache\\3.2.0' });
+    const dir = path.join(base, '.runtime', 'session-roots');
+    const bootMs = Date.now() - 3600_000;
+    const stale = (bootMs - 2 * 3600_000) / 1000;
+    fs.utimesSync(path.join(dir, 'before-boot.json'), stale, stale);
+    assertEq(sr.livePluginRoots({ base, bootMs }), ['C:\\cache\\3.2.0'], 'the pre-boot record is ignored, the post-boot one kept');
+    const atBoot = (bootMs - 30_000) / 1000;
+    fs.utimesSync(path.join(dir, 'before-boot.json'), atBoot, atBoot);
+    assertEq(sr.livePluginRoots({ base, bootMs }).sort(), ['C:\\cache\\3.1.0', 'C:\\cache\\3.2.0'], 'within the boot slack it still counts');
+    fs.utimesSync(path.join(dir, 'before-boot.json'), stale, stale);
+    assert(sr.touchSessionRecord('before-boot', { base }), 'a resumed session touches its record');
+    assertEq(sr.livePluginRoots({ base, bootMs }).sort(), ['C:\\cache\\3.1.0', 'C:\\cache\\3.2.0'], 'touched after boot → protected again');
+    assertEq(sr.livePluginRoots({ base }).sort(), ['C:\\cache\\3.1.0', 'C:\\cache\\3.2.0'], 'default boot time (os.uptime) keeps records written now');
+  } finally { sr._resetMemo(); fs.rmSync(base, { recursive: true, force: true }); }
+});
+
 test('plugin-updater.performUpdate: the plugin dir of a session that is still open is NOT pruned (its command hooks run from there); a dir no session uses is', async () => {
   const sr = require('./lib/session-root.js');
   const base = path.join(os.homedir(), '.claude', 'plugins', 'cache', 'allansantos-plugins', 'claude-code-boss');
