@@ -9709,6 +9709,51 @@ test('scope-rules: rules come from the memory server for the touched scope, once
   }
 });
 
+test('scope-rules: a Read that switches on a new kind delivers its rules in the same turn (PostToolUse), once per kinds set; a failing touch lookup is not retried on every Read', async () => {
+  const hook = require('./scope-rules-hook.js');
+  const sr = require('./lib/scope-rules.js');
+  const { runWithHookEnv } = require('./lib/hook-context.js');
+  const base = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-sr-touch-'));
+  const root = path.join(base, 'proj');
+  const { calls, lookup } = fakeScopedLookup([
+    { id: 'rule:codigo:sem-cerimonia', text: 'Sem cerimonia.' },
+    { id: 'rule:codigo:sem-codigo-morto', text: 'Sem codigo morto.' },
+    { id: 'rule:docs:curto', text: 'Doc curta.' },
+  ]);
+  const ev = (sid, name, file, tool = 'Read') => ({ hook_event_name: name, session_id: sid, tool_name: tool, tool_input: { file_path: file } });
+  const fire = (e, deps = { base, lookup }) => runWithHookEnv({ CLAUDE_PROJECT_DIR: root }, () => hook.run(e, deps));
+  try {
+    assertEq((await fire(ev('s1', 'UserPromptSubmit'))).context, '', 'first prompt: nothing touched, no codigo');
+    const read = await fire(ev('s1', 'PostToolUse', path.join(root, 'lib', 'decide.cjs')));
+    assert(read.context.includes('rule:codigo:sem-cerimonia') && read.context.includes('rule:codigo:sem-codigo-morto'), `the Read of a code file brings codigo before the turn ends: ${JSON.stringify(read)}`);
+    assertEq(calls[calls.length - 1].files, ['lib/decide.cjs']);
+    const n = calls.length;
+    assertEq((await fire(ev('s1', 'PostToolUse', path.join(root, 'lib', 'rules.cjs')))).context, '', 'another code file: same kinds, no lookup, nothing repeated');
+    assertEq((await fire(ev('s1', 'PostToolUse', path.join(root, 'lib', 'rules.cjs'), 'Edit'))).context, '', 'an Edit of a touched file: nothing new');
+    assertEq(calls.length, n, 'no lookup per Read once the kinds were tried');
+    assertEq((await fire(ev('s1', 'UserPromptSubmit'))).context, '', 'next prompt: files changed, lookup again, nothing repeated (never per prompt)');
+    assertEq((await fire(ev('s1', 'UserPromptSubmit'))).context, '', 'and the prompt after: no lookup at all');
+    assertEq(calls.length, n + 1);
+    assert((await fire(ev('s1', 'PostToolUse', path.join(root, 'README.md')))).context.includes('rule:docs:curto'), 'a new kind (docs) is delivered on its touch');
+    assertEq((await fire(ev('s1', 'PostToolUse', path.join(root, 'x.cjs'), 'Bash'))).context, '', 'a tool that is not a touch: nothing');
+    const ids = fs.readFileSync(path.join(base, '.runtime', 'scope-rules.jsonl'), 'utf8').trim().split('\n').map((l) => JSON.parse(l)).flatMap((e) => e.ids || []);
+    assertEq(ids, ['rule:codigo:sem-cerimonia', 'rule:codigo:sem-codigo-morto', 'rule:docs:curto'], 'each rule journaled once');
+
+    let tries = 0;
+    const slow = async () => { tries++; throw Object.assign(new Error('did not answer within 4000 ms'), { code: 'LOOKUP_FAILED' }); };
+    await fire(ev('s2', 'UserPromptSubmit'), { base, lookup });
+    const failed = await fire(ev('s2', 'PostToolUse', path.join(root, 'a.cjs')), { base, lookup: slow });
+    assert(/não chegaram/.test(failed.notice) && !failed.context, `the touch failure is visible: ${JSON.stringify(failed)}`);
+    await fire(ev('s2', 'PostToolUse', path.join(root, 'b.cjs')), { base, lookup: slow });
+    assertEq(tries, 1, 'a slow server costs one touch per kinds set, not every Read');
+    assert((await fire(ev('s2', 'UserPromptSubmit'), { base, lookup })).context.includes('rule:codigo:sem-cerimonia'), 'the next prompt retries and delivers');
+    assertEq(sr.resetInjected('s2', { base, source: 'compact' }), true);
+    assert((await fire(ev('s2', 'PostToolUse', path.join(root, 'c.cjs')), { base, lookup })).context.includes('rule:codigo:sem-cerimonia'), 'after a compact the next touch delivers again');
+  } finally {
+    fs.rmSync(base, { recursive: true, force: true });
+  }
+});
+
 test('scope-rules: an unknown rule id fails loud (visible, signed with the hook origin, journaled), once per session; valid rules still arrive', async () => {
   const sr = require('./lib/scope-rules.js');
   const owner = require('./lib/hook-owner.js');

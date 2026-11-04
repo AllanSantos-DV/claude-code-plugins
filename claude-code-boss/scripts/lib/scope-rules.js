@@ -8,7 +8,9 @@
  * stack (`angular`, `java`, `python`, `dotnet`). Each rule is delivered once per session; a
  * compaction or /clear wipes it from the context, so SessionStart with that source calls
  * `resetInjected` and the next prompt delivers it again. The lookup runs again only when the set of
- * touched files changed.
+ * touched files changed. A touch (PostToolUse) that switches on a kind not tried yet looks up at
+ * once, so a session that reads and then edits in one turn has the rules before the edit; path
+ * rules for further files of a kind already tried wait for the next prompt.
  *
  * State per session_id under `<data>/.runtime/scope-rules/`. Each delivery (rule ids, reason, size)
  * and each refused rule is appended to `<data>/.runtime/scope-rules.jsonl`.
@@ -71,12 +73,13 @@ function triggersFor(paths) {
 }
 
 /**
- * @returns {{touched: string[], delivered: string[], lookedUp: string|null, resetBy: string, told: string[]}}
+ * @returns {{touched: string[], delivered: string[], lookedUp: string|null, kindsTried: string|null, resetBy: string, told: string[]}}
  *   delivered: rule ids in the context now; lookedUp: the touched-files key of the last complete
- *   lookup; resetBy: the SessionStart source that wiped the context; told: refused ids already shown
+ *   lookup; kindsTried: the touched-kinds key last tried (by a touch, or a complete prompt lookup);
+ *   resetBy: the SessionStart source that wiped the context; told: refused ids already shown
  */
 function readState(sessionId, base) {
-  const empty = { touched: [], delivered: [], lookedUp: null, resetBy: '', told: [] };
+  const empty = { touched: [], delivered: [], lookedUp: null, kindsTried: null, resetBy: '', told: [] };
   const id = safeId(sessionId);
   if (!id) return empty;
   try {
@@ -85,6 +88,7 @@ function readState(sessionId, base) {
       touched: strings(j.touched),
       delivered: strings(j.delivered),
       lookedUp: typeof j.lookedUp === 'string' ? j.lookedUp : null,
+      kindsTried: typeof j.kindsTried === 'string' ? j.kindsTried : null,
       resetBy: typeof j.resetBy === 'string' ? j.resetBy : '',
       told: strings(j.told),
     };
@@ -131,7 +135,7 @@ function resetInjected(sessionId, { base, source } = {}) {
   if (!safeId(sessionId)) return false;
   const state = readState(sessionId, base);
   if (!state.delivered.length && state.lookedUp === null) return false;
-  writeState(sessionId, { ...state, delivered: [], lookedUp: null, resetBy: String(source || 'reset') }, base);
+  writeState(sessionId, { ...state, delivered: [], lookedUp: null, kindsTried: null, resetBy: String(source || 'reset') }, base);
   return true;
 }
 
@@ -213,23 +217,32 @@ async function defaultLookup({ files, projectId }) {
 }
 
 /**
- * UserPromptSubmit entry: the rules newly in scope for this session and what must be shown to the
- * owner. A lookup failure is shown once (notice-once) and retried on the next prompt; refused rule
- * ids are shown once per session.
+ * The rules newly in scope for this session and what must be shown to the owner. On a prompt
+ * (UserPromptSubmit) it looks up when the touched files changed; on a touch (PostToolUse,
+ * `onTouch`) only when the touched kinds are new, tried once per kinds set whatever the outcome.
+ * A lookup failure is shown once (notice-once) and retried on the next prompt; refused rule ids
+ * are shown once per session.
  * @param {object} event hook payload (session_id)
- * @param {{base?: string, maxChars: number, setMaxChars?: number, root?: string, projectId?: string,
+ * @param {{base?: string, maxChars: number, setMaxChars?: number, root?: string, projectId?: string, onTouch?: boolean,
  *   lookup?: (q: {files: string[], projectId?: string}) => Promise<{rules: object[]}|null>}} opts
  *   lookup resolves null when the memory backend is not mcp-memory (no rules to ask for)
  * @returns {Promise<{context: string, notice: string}>}
  */
-async function inject(event, { base, maxChars, setMaxChars = SET_MAX_CHARS, root, projectId, lookup = defaultLookup } = {}) {
+async function inject(event, { base, maxChars, setMaxChars = SET_MAX_CHARS, root, projectId, onTouch = false, lookup = defaultLookup } = {}) {
   const none = { context: '', notice: '' };
   const sid = (event && (event.session_id || event.sessionId)) || '';
   if (!safeId(sid)) return none;
-  const state = readState(sid, base);
+  let state = readState(sid, base);
   const files = relativeFiles(state.touched, root);
   const key = JSON.stringify(files);
   if (state.lookedUp === key) return none;
+  const kindsKey = JSON.stringify([...triggersFor(state.touched)].sort());
+  if (onTouch) {
+    if (state.kindsTried === kindsKey) return none;
+    // Marked before asking, so a slow or failing server costs one touch per kinds set, not every Read.
+    state = { ...state, kindsTried: kindsKey };
+    writeState(sid, state, base);
+  }
   let reply;
   try {
     reply = await lookup({ files, projectId });
@@ -265,6 +278,7 @@ async function inject(event, { base, maxChars, setMaxChars = SET_MAX_CHARS, root
     ...state,
     delivered: [...state.delivered, ...take.map((r) => r.id)],
     lookedUp: deferred ? state.lookedUp : key,
+    kindsTried: deferred ? state.kindsTried : kindsKey,
     resetBy: deferred ? state.resetBy : '',
     told: [...state.told, ...fresh.map((r) => r.id)],
   }, base);
