@@ -290,6 +290,25 @@
             "timeout": 10
           }
         ]
+      },
+      {
+        "matcher": "Read|Edit|Write|MultiEdit|NotebookEdit",
+        "hooks": [
+          {
+            "type": "mcp_tool",
+            "server": "plugin:claude-code-boss:brain-server",
+            "tool": "hook_scope_rules",
+            "input": {
+              "hook_event_name": "${hook_event_name}",
+              "session_id": "${session_id}",
+              "cwd": "${cwd}",
+              "tool_name": "${tool_name}",
+              "tool_input": "${tool_input}",
+              "project_dir": "${CLAUDE_PROJECT_DIR}"
+            },
+            "timeout": 5
+          }
+        ]
       }
     ],
     "UserPromptExpansion": [
@@ -420,6 +439,18 @@
               "session_id": "${session_id}"
             },
             "timeout": 30
+          },
+          {
+            "type": "mcp_tool",
+            "server": "plugin:claude-code-boss:brain-server",
+            "tool": "hook_scope_rules",
+            "input": {
+              "hook_event_name": "${hook_event_name}",
+              "session_id": "${session_id}",
+              "cwd": "${cwd}",
+              "project_dir": "${CLAUDE_PROJECT_DIR}"
+            },
+            "timeout": 5
           }
         ]
       }

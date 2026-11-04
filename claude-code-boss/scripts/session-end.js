@@ -14,6 +14,7 @@ function run(event, opts = {}) {
   const sid = event && (event.session_id || event.sessionId);
   if (!sid) return false;
   require('./lib/glob-injected.js').reset(sid, opts);
+  require('./lib/scope-rules.js').forget(sid, opts);
   return require('./lib/session-root.js').forgetSessionRoot(sid, opts);
 }
 

@@ -87,6 +87,7 @@ const PROFILE_PRESETS = {
     powershellGuard:  { enabled: false },
     fileFormatGuard:  { enabled: false },
     policyInject:     { enabled: false },
+    scopeRules:       { enabled: false },
     activeResearch:   { enabled: false },
     decisionPromote:  { enabled: false },
     curationStop:     { enabled: false },
@@ -252,6 +253,16 @@ function getPolicyInject() {
     enabled: pi.enabled !== false,
     maxPolicies: Number.isInteger(pi.maxPolicies) && pi.maxPolicies > 0 ? pi.maxPolicies : 10,
     maxChars: Number.isInteger(pi.maxChars) && pi.maxChars > 0 ? pi.maxChars : 4000,
+  };
+}
+
+// Profile-resolved (free disables it). Backs the owner's rules by scope (rule:<kind>:<slug> documents in
+// mcp-memory, lib/scope-rules.js). maxChars caps each rule's text in the injected block.
+function getScopeRules() {
+  const sr = _resolved().scopeRules || {};
+  return {
+    enabled: sr.enabled !== false,
+    maxChars: Number.isInteger(sr.maxChars) && sr.maxChars > 0 ? sr.maxChars : 2000,
   };
 }
 
@@ -588,6 +599,7 @@ module.exports = {
   getFileFormatGuard,
   getSessionPractices,
   getPolicyInject,
+  getScopeRules,
   getSpecFunnel,
   getCaptureTriggerEvidence,
   getCuration,

@@ -9582,6 +9582,88 @@ test('policy-glob-inject: a glob policy is injected once per session; a compact 
   }
 });
 
+test('scope-rules: ids and triggers are mechanical (kind from the id, scope from the touched path)', () => {
+  const sr = require('./lib/scope-rules.js');
+  assertEq(sr.parseRuleId('rule:codigo:sem-any'), { kind: 'codigo', slug: 'sem-any' });
+  assertEq(sr.parseRuleId('rule:angular:no-any'), { kind: 'angular', slug: 'no-any' });
+  assertEq(sr.parseRuleId('rule:Codigo:x'), null, 'uppercase kind is not a rule id');
+  assertEq(sr.parseRuleId('rule:cobol:x'), null, 'a kind with no trigger is refused, not silently never fired');
+  assertEq(sr.parseRuleId('regra:codigo:x'), null);
+  assertEq([...sr.triggersFor(['src/app/a.component.ts'])].sort(), ['angular', 'codigo']);
+  assertEq([...sr.triggersFor(['tests/a.test.js'])].sort(), ['codigo', 'teste']);
+  assertEq([...sr.triggersFor(['docs/x.md'])], ['docs']);
+  assertEq([...sr.triggersFor(['C:\\proj\\src\\Main.java'])].sort(), ['codigo', 'java']);
+  assertEq([...sr.triggersFor(['logo.png', ''])], []);
+});
+
+test('scope-rules: each scope is injected once per session, re-injected after compact/clear, never repeated per prompt', async () => {
+  const sr = require('./lib/scope-rules.js');
+  const base = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-sr-'));
+  const docs = [
+    { id: 'rule:sempre:fail-loud', summary: 'Sem fallback silencioso.' },
+    { id: 'rule:codigo:comentarios', content: { text: 'Comentario so quando dificil.' } },
+    { id: 'rule:teste:real', summary: 'Teste real, sem mock.' },
+    { id: 'rule:codigo:longa', summary: 'x'.repeat(30) },
+    { id: 'rule:Nope:x', summary: 'id invalido' },
+    { id: 'rule:docs:vazia', summary: '  ' },
+    { id: 'outro-doc', summary: 'ignorado' },
+  ];
+  let fetched = 0;
+  const fetch = async () => { fetched++; return docs; };
+  const prompt = (sid) => sr.inject({ session_id: sid }, { base, maxChars: 20, fetch });
+  try {
+    sr.clearCache();
+    const first = await prompt('s1');
+    assert(first.includes('escopo: sempre') && first.includes('rule:sempre:fail-loud'), 'first prompt delivers `sempre`');
+    assert(!first.includes('comentarios'), 'no touched file yet: no codigo rule');
+    assertEq(await prompt('s1'), '', 'second prompt in the same session stays silent');
+    sr.recordTouched('s1', 'C:\\p\\src\\app.ts', { base });
+    const code = await prompt('s1');
+    assert(code.includes('escopo: codigo') && code.includes('Comentario so quando'), 'touching a source file delivers codigo');
+    assert(code.includes('cortada em 20 de 30 caracteres'), 'a rule over maxChars is cut with a visible mark');
+    assertEq(await prompt('s1'), '', 'codigo is not repeated');
+    sr.recordTouched('s1', 'tests/a.test.js', { base });
+    const test_ = await prompt('s1');
+    assert(test_.includes('escopo: teste') && !test_.includes('codigo'), 'a test file adds only teste');
+    assert((await prompt('s2')).includes('escopo: sempre'), 'another session is independent');
+    assertEq(sr.resetInjected('s1', { base }), true, 'compact/clear drops what was delivered');
+    const again = await prompt('s1');
+    assert(['sempre', 'codigo', 'teste'].every((k) => again.includes(k)), 're-delivered after the reset, touched evidence kept');
+    assertEq(fetched, 1, 'rules come from the daemon cache, one fetch for all prompts');
+    const journalText = fs.readFileSync(path.join(base, '.runtime', 'scope-rules.jsonl'), 'utf8');
+    assert(journalText.includes('rule:Nope:x') && journalText.includes('empty content'), 'rejected documents are journaled');
+    assert(!journalText.includes('outro-doc'), 'documents outside the rule: namespace are not reported');
+    sr.forget('s1', { base });
+    assertEq(sr.readState('s1', base), { touched: [], injected: [] }, 'SessionEnd forgets the record');
+    assertEq(await sr.inject({}, { base, maxChars: 20, fetch }), '', 'no session id: nothing to key on');
+    sr.clearCache();
+    assertEq(await sr.inject({ session_id: 's3' }, { base, maxChars: 20, fetch: async () => { throw Object.assign(new Error('x'), { code: 'NOT_READY' }); } }), '', 'backend not connected yet: retry on the next prompt');
+    let threw = false;
+    sr.clearCache();
+    try { await sr.inject({ session_id: 's3' }, { base, maxChars: 20, fetch: async () => { throw new Error('server down'); } }); } catch { threw = true; }
+    assert(threw, 'a real fetch failure is loud, not an empty answer');
+  } finally {
+    sr.clearCache();
+    fs.rmSync(base, { recursive: true, force: true });
+  }
+});
+
+test('scope-rules: the hook is declared, served by the daemon, evidence-fed and reset on compact/clear', () => {
+  const hooks = JSON.parse(fs.readFileSync(path.join(ROOT, 'hooks', 'hooks.json'), 'utf8')).hooks;
+  const ups = hooks.UserPromptSubmit.flatMap((g) => g.hooks).filter((h) => h.tool === 'hook_scope_rules');
+  assertEq(ups.length, 1, 'UserPromptSubmit carries one hook_scope_rules entry');
+  const post = hooks.PostToolUse.filter((g) => g.hooks.some((h) => h.tool === 'hook_scope_rules'));
+  assertEq(post.length, 1, 'PostToolUse carries one hook_scope_rules entry');
+  assert(new RegExp(`^${post[0].matcher}$`).test('Read') && new RegExp(`^${post[0].matcher}$`).test('Edit'), 'evidence from Read and Edit');
+  assert(require('./lib/hook-tools.js').HOOKS.hook_scope_rules, 'the daemon serves hook_scope_rules');
+  const ss = fs.readFileSync(path.join(__dirname, 'session-start-dispatcher.js'), 'utf8');
+  assert(/scope-rules\.js'\)\.resetInjected\(event\.session_id\)/.test(ss), 'SessionStart compact/clear resets the scope record');
+  assert(/scope-rules\.js'\)\.forget\(sid/.test(fs.readFileSync(path.join(__dirname, 'session-end.js'), 'utf8')), 'SessionEnd forgets the record');
+  const cfg = require('./lib/hooks-config.js');
+  assertEq(cfg.getScopeRules(), { enabled: true, maxChars: 2000 });
+  assertEq(cfg.resolveProfileConfig({ profile: 'free' }).scopeRules, { enabled: false }, 'the free profile turns it off');
+});
+
 test('notice-once: a failure is shown once per owner; repeats are silent but fully logged; a different failure or a recovery shows again', () => {
   const no = require('./lib/notice-once.js');
   const base = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-notice-'));
