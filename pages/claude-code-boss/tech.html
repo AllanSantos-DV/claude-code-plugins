@@ -287,6 +287,7 @@ html{scroll-behavior:auto}
     <div class="toc">
       <a href="#daemon">Daemon HTTP único</a>
       <a href="#hooks">Hooks pipeline</a>
+      <a href="#scope-rules">Regras por escopo</a>
       <a href="#compaction">Compactação nativa</a>
       <a href="#brain">Brain KB</a>
       <a href="#config">Config &amp; perfis</a>
@@ -357,6 +358,23 @@ html{scroll-behavior:auto}
     </div>
 
     <div class="callout"><b>Captura de lição in-loop:</b> quando o usuário corrige, o agente chama a tool MCP <code>capture_lesson</code> com a lição curada — admission control inline (dedup/merge → recurrence), sem reler transcript, sem subagente caro. <b>Tom advisory:</b> os hooks informam, não coagem.</div>
+  </section>
+
+  <section id="scope-rules">
+    <h2>Regras do dono por escopo <span class="tag">hook_scope_rules</span></h2>
+    <p class="lead">As regras do dono ficam no mcp-memory e são entregues por escopo de trabalho, escolhido de forma determinística pelo arquivo tocado (caminho e extensão), nunca por semelhança com o texto do prompt.</p>
+    <div class="panel">
+      <h3>Como funciona</h3>
+      <ul class="tight">
+        <li><b>Documentos:</b> cada regra é um documento global <code>rule:&lt;tipo&gt;:&lt;slug&gt;</code>, com tipo <code>sempre</code>, <code>codigo</code>, <code>teste</code>, <code>docs</code> ou uma stack (<code>angular</code>, <code>java</code>, <code>python</code>, <code>dotnet</code>).</li>
+        <li><b>Evidência (PostToolUse):</b> em Read, Edit, Write, MultiEdit e NotebookEdit o hook só registra o arquivo tocado; não entrega nada.</li>
+        <li><b>Entrega (UserPromptSubmit):</b> entrega <code>sempre</code> e os tipos que os arquivos tocados ligam, <b>uma vez por tipo por sessão</b>. Medido em sessão real: 171 caracteres na primeira entrega, +177 ao tocar código, nada nos prompts seguintes.</li>
+        <li><b>Reset (SessionStart):</b> com <code>source</code> <code>compact</code> ou <code>clear</code> o que foi entregue é zerado e a regra volta no prompt seguinte (318 caracteres re-entregues após um compact medido). O fim da sessão apaga o estado.</li>
+        <li><b>Limites:</b> regra acima de <code>scopeRules.maxChars</code> (2000) é cortada com marca visível. Documento <code>rule:</code> com id ou conteúdo inválido é recusado.</li>
+        <li><b>Journal:</b> recusas e entregas (ids e caracteres) vão para <code>.runtime/scope-rules.jsonl</code>; falha de leitura aparece como hook degradado.</li>
+        <li><b>Config:</b> o perfil <code>free</code> desliga; <code>scopeRules.enabled</code> e <code>scopeRules.maxChars</code> ajustam. Módulos: <code>scripts/lib/scope-rules.js</code> e <code>scripts/scope-rules-hook.js</code>.</li>
+      </ul>
+    </div>
   </section>
 
   <section id="compaction">

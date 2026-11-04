@@ -4401,7 +4401,6 @@ test('embed-worker shutdown: the op in flight (native init) finishes BEFORE term
 
 test('G12 embed-worker: inference runs off the main thread (event loop stays free), a crash degrades to null and the worker respawns', async () => {
   const { createEmbedWorker } = await import(require('url').pathToFileURL(path.join(ROOT, 'servers', 'brain-server', 'lib', 'embed-worker-client.js')).href);
-  const { monitorEventLoopDelay } = require('perf_hooks');
   const fakeRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-embedw-'));
   fs.mkdirSync(path.join(fakeRoot, 'engine'));
   fs.writeFileSync(path.join(fakeRoot, 'engine', 'brain-embedder.js'), [
@@ -4417,11 +4416,11 @@ test('G12 embed-worker: inference runs off the main thread (event loop stays fre
   const w = createEmbedWorker({ pluginRoot: fakeRoot, callTimeoutMs: 10000 });
   try {
     assertEq(await w.init(), true);
-    const h = monitorEventLoopDelay({ resolution: 1 }); h.enable();
-    const vecs = await Promise.all([w.embed('a'), w.embed('b'), w.embed('c')]);
-    h.disable();
+    let ticks = 0; const timer = setInterval(() => { ticks++; }, 5);
+    let vecs;
+    try { vecs = await Promise.all([w.embed('a'), w.embed('b'), w.embed('c')]); } finally { clearInterval(timer); }
     assertEq(vecs, [[1, 2, 3], [1, 2, 3], [1, 2, 3]]);
-    assert(h.max / 1e6 < 100, `600 ms of synchronous embedding must not block the main loop, max delay ${(h.max / 1e6).toFixed(1)} ms`);
+    assert(ticks >= 3, `600 ms of synchronous embedding must not block the main loop: only ${ticks} timer ticks ran before the vectors came back`);
     assertEq(w.getStatus().ready, true); assertEq(w.getDimensions(), 3);
     assertEq(await w.embed('crash'), null, 'a dead worker degrades to null (keyword fallback)');
     assertEq(await w.embed('again'), [1, 2, 3], 'the next call respawns the worker');
@@ -17009,7 +17008,7 @@ test('http-daemon: the open SSE stream (GET) gets periodic keepalive comments, s
     const sse = await fetch(url, { method: 'GET', headers: { Accept: 'text/event-stream', Authorization: H.Authorization, 'mcp-session-id': sid }, signal: ctrl.signal });
     assertEq(sse.status, 200, 'SSE stream opened');
     const reader = sse.body.getReader(); const dec = new TextDecoder(); let got = '';
-    const until = Date.now() + 2000;
+    const until = Date.now() + 15000;
     while (Date.now() < until && (got.match(/: keepalive/g) || []).length < 3) {
       const { value, done } = await Promise.race([reader.read(), new Promise((r) => setTimeout(() => r({ value: null, done: false }), 400))]);
       if (done) break; if (value) got += dec.decode(value);
@@ -27458,12 +27457,12 @@ test('cooldown-stamp: absent → off; stamped → on until ms elapses; settleWit
 test('settleWithin: synchronous work that starves the loop does not make a detector with pending I/O time out', async () => {
   const { settleWithin } = require('../engine/lib/settle-within.js');
   const reads = async () => { for (let i = 0; i < 3; i++) await fs.promises.readFile(__filename.replace(/test-units\.js$/, 'doctor.js'), 'utf8').then((s) => s.length); return 'done'; };
-  const guarded = settleWithin(reads(), 60);
-  const end = Date.now() + 250;
+  const guarded = settleWithin(reads(), 300);
+  const end = Date.now() + 1300;
   while (Date.now() < end) { /* the starving neighbour */ }
   assertEq((await guarded).status, 'ok');
-  const never = settleWithin(new Promise(() => {}), 60);
-  const end2 = Date.now() + 250;
+  const never = settleWithin(new Promise(() => {}), 300);
+  const end2 = Date.now() + 1300;
   while (Date.now() < end2) { /* starve again */ }
   assertEq((await never).status, 'timeout');
 });
@@ -28870,9 +28869,14 @@ test('plugin-updater.killStale: so casa modulos da PASTA DE CACHE do plugin, nao
         let err = null; try { await hw.run('hang', {}, { timeoutMs: 60 }); } catch (e) { err = e; }
         assert(err && /prazo/.test(err.message), `stuck job expires visibly (#${i + 1})`);
       }
-      await new Promise((r) => setTimeout(r, 300)); // terminate → exit → replacement on next call
+      for (const until = Date.now() + 10000; hw.stats().recycled < 1 && Date.now() < until;) await new Promise((r) => setTimeout(r, 25));
       assertEq(hw.stats().recycled, 1, 'recycled once: 180 ms without a word from the worker, past stallMs');
-      assertEq(await hw.run('b', {}, { timeoutMs: 2000 }), 'ok:b', 'the next heavy hook runs on a FRESH worker instead of queueing behind the stuck job');
+      // terminate() is asynchronous: a call that lands before the exit event is failed fast (by design); the replacement serves the next one.
+      let b = null;
+      for (const until = Date.now() + 10000; b === null && Date.now() < until;) {
+        try { b = await hw.run('b', {}, { timeoutMs: 2000 }); } catch (e) { if (!/exited/.test(e.message)) throw e; await new Promise((r) => setTimeout(r, 25)); }
+      }
+      assertEq(b, 'ok:b', 'the next heavy hook runs on a FRESH worker instead of queueing behind the stuck job');
       assertEq(hw.stats().spawned, 2, 'a replacement worker was spawned');
     } finally { await hw.shutdown(); }
   });

@@ -1,5 +1,13 @@
 # Changelog
 
+## [Unreleased]
+
+### Added
+- **Regras do dono entregues por escopo de trabalho** (`scripts/lib/scope-rules.js`, `scripts/scope-rules-hook.js`, hook declarado `hook_scope_rules`): as regras ficam no mcp-memory como documentos globais `rule:<tipo>:<slug>` (`sempre`, `codigo`, `teste`, `docs` ou uma stack). O Boss as entrega no prompt seguinte ao arquivo tocado, pelo caminho e extensão (nunca por semelhança com o texto do prompt): `sempre` na primeira vez, o tipo de código quando um arquivo de código é lido ou editado, e assim por diante. Cada tipo entra **uma vez por sessão** e volta depois de `/compact` ou `/clear`; o fim da sessão apaga o estado. Medido numa sessão real: 171 caracteres na primeira entrega, +177 ao tocar código, nada nos prompts seguintes, 318 re-entregues após o compact. Regra com id inválido ou vazia é recusada e registrada em `.runtime/scope-rules.jsonl`; regra acima de 2000 caracteres é cortada com marca visível; falha de leitura aparece como hook degradado. O perfil `free` desliga; `scopeRules.enabled` e `scopeRules.maxChars` ajustam.
+
+### Fixed
+- Dois testes dependiam do relógio da máquina e falhavam quando ela estava ocupada: o do embed-worker (pico de atraso do laço de eventos) agora conta batidas de timer durante a inferência, e o do keepalive do SSE espera até 15 s pelos 3 comentários. As duas verificações continuam provando o mesmo comportamento.
+
 ## [3.14.4] - 2026-11-03
 
 ### Fixed
