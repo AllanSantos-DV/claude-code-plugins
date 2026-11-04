@@ -1,6 +1,6 @@
 # Changelog
 
-## [Unreleased]
+## [3.15.0] - 2026-11-04
 
 ### Added
 - **Regras do dono entregues por escopo de trabalho** (`scripts/lib/scope-rules.js`, `scripts/scope-rules-hook.js`, hook declarado `hook_scope_rules`): as regras ficam no mcp-memory como documentos globais `rule:<tipo>:<slug>` (`sempre`, `codigo`, `teste`, `docs` ou uma stack). O Boss as entrega no prompt seguinte ao arquivo tocado, pelo caminho e extensão (nunca por semelhança com o texto do prompt): `sempre` na primeira vez, o tipo de código quando um arquivo de código é lido ou editado, e assim por diante. Cada tipo entra **uma vez por sessão** e volta depois de `/compact` ou `/clear`; o fim da sessão apaga o estado. Medido numa sessão real: 171 caracteres na primeira entrega, +177 ao tocar código, nada nos prompts seguintes, 318 re-entregues após o compact. Regra com id inválido ou vazia é recusada e registrada em `.runtime/scope-rules.jsonl`; regra acima de 2000 caracteres é cortada com marca visível; falha de leitura aparece como hook degradado. O perfil `free` desliga; `scopeRules.enabled` e `scopeRules.maxChars` ajustam.
@@ -8,6 +8,10 @@
 - **Um reinício breve do servidor de memória não derruba mais a chamada** (`engine/mcp-client.js`, `scripts/lib/scoped-rules-client.js`, `scripts/lib/graph/client.js`): conexão recusada é tentada de novo algumas vezes em intervalos curtos (250, 500 e 1000 ms) antes de acionar o lançador ou falhar; se todas forem recusadas, o erro diz que o servidor está fora do ar e quantas vezes recusou (no cliente das regras, as chamadas seguintes falham na hora por 30 s, sem repetir a espera).
 
 ### Fixed
+- **Um pedido de indexação do grafo não é mais reenviado depois de uma conexão cortada** (`scripts/lib/graph/client.js`, `scripts/lib/refused-retry.js`): um corte pode chegar depois de o daemon já ter gravado o pedido; só a recusa (que nunca chegou ao daemon) é tentada de novo numa escrita.
+- **Uma porta do Brain fora da faixa em `BRAIN_HTTP_PORT` não manda mais os clientes a uma porta errada** (`scripts/lib/brain-port.js`): o prompt, o painel, o backup e o alerta de latência seguem a mesma regra do daemon (1 a 65535, senão 38217).
+- **O log de avisos do Boss tem teto** (`scripts/lib/notice-once.js`): `brain-notices.log` gira em 1 MB, como o log do router.
+- **A descrição do `minScore` do `brain_search` diz o padrão real**: sem filtro com o servidor de memória, 0,05 no store local (dizia 0,2).
 - **Depois de reiniciar o daemon, o fim do turno não espera mais o resumo da faixa** (`scripts/boss-summary.js`, `servers/brain-server/lib/http-daemon.js`): a primeira leitura do resumo abria o banco de métricas de cada projeto (~15 s) na mesma fila do hook Stop, estourava o prazo e o aviso de saúde dizia que o hook "decidiu nada". Agora ela avança em partes de 2 s entre os polls, a faixa espera em silêncio e nenhum prazo estoura.
 - **A faixa do Boss segue a sessão nova depois do `/clear`** (`hooks/boss.mjs`): a economia "na sessão" era a da sessão anterior ao clear.
 - **Todo hook do Boss servido pelo daemon assina o aviso de falha** (`scripts/lib/hook-tools.js`): o texto degradado de qualquer hook `mcp_tool` declara `[hook-origin=claude-code-boss]`, não só o das regras por escopo.
