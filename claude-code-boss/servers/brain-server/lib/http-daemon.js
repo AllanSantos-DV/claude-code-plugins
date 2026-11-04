@@ -36,6 +36,24 @@ const MAX_SESSIONS = 50; // limite de sessões simultâneas para evitar exaustã
 const SHUTDOWN_DRAIN_MS = 25_000;
 // How long a module read route's answer is reused (~0.7 s over 230 projects' metrics, measured).
 const READ_CACHE_MS = 30_000;
+// A module read is a figure for a band, not a decision: its computation may outlast the reply and still
+// lands in the cache (the first one after a daemon start opens every project's metrics db: ~15 s measured).
+const READ_COMPUTE_MS = 120_000;
+// How long a module read waits for that computation before answering the fail-open "not yet".
+const READ_WAIT_MS = 8_000;
+
+/**
+ * Why a module read's answer is neither cached nor served ('' when it is): a degraded hook, or a
+ * first read still filling its cache. Either way the next poll tries again.
+ * @param {string} name  the hook tool behind the route
+ * @param {object} value  its parsed answer
+ * @returns {string}
+ */
+export function moduleReadRefusal(name, value) {
+  if (value && value.systemMessage) return value.systemMessage;
+  if (value && value.warming) return `[claude-code-boss] hook ${name} degradado no daemon (fail-open): primeira leitura ainda em curso`;
+  return '';
+}
 
 async function readJsonBody(req) {
   const chunks = [];
@@ -54,7 +72,7 @@ async function readJsonBody(req) {
  * @returns {Promise<{ httpServer, sessions:Map, shutdown:()=>Promise<void>, port:number }>}
  *   Rejects with an Error whose `.code === 'EADDRINUSE'` if the port is taken.
  */
-export async function startHttpDaemon({ pluginRoot, dataDir, port, host = '127.0.0.1', version = '2.0.0', sseKeepaliveMs = SSE_KEEPALIVE_MS, sessionIdleMs = SESSION_IDLE_MS, reapIntervalMs = 60_000, shutdownDrainMs = SHUTDOWN_DRAIN_MS, readCacheMs = READ_CACHE_MS }) {
+export async function startHttpDaemon({ pluginRoot, dataDir, port, host = '127.0.0.1', version = '2.0.0', sseKeepaliveMs = SSE_KEEPALIVE_MS, sessionIdleMs = SESSION_IDLE_MS, reapIntervalMs = 60_000, shutdownDrainMs = SHUTDOWN_DRAIN_MS, readCacheMs = READ_CACHE_MS, readWaitMs = READ_WAIT_MS }) {
   const sessions = new Map(); // sessionId -> { server, transport, lastSeen }
   let _shuttingDown = false;
   // Requests awaiting an answer — everything but /health, /shutdown and the long-lived
@@ -137,7 +155,7 @@ export async function startHttpDaemon({ pluginRoot, dataDir, port, host = '127.0
   const getModuleHookTools = () => {
     if (!moduleHookTools) {
       moduleHookTools = createRequire(import.meta.url)(path.join(pluginRoot, 'scripts', 'lib', 'hook-tools.js'))
-        .createHookTools({ pluginRoot, hookWorker });
+        .createHookTools({ pluginRoot, hookWorker, deadlines: Object.fromEntries(Object.values(MODULE_READ_ROUTES).map((n) => [n, READ_COMPUTE_MS])) });
     }
     return moduleHookTools;
   };
@@ -152,14 +170,19 @@ export async function startHttpDaemon({ pluginRoot, dataDir, port, host = '127.0
     const pending = getModuleHookTools().handle(MODULE_READ_ROUTES[url], {}).then((out) => {
       const text = (out && out.content && out.content[0] && out.content[0].text) || '{}';
       const value = JSON.parse(text);
-      // A degraded hook is an error, never cached: the next poll tries again.
-      if (value && value.systemMessage) throw new Error(value.systemMessage);
+      const refusal = moduleReadRefusal(MODULE_READ_ROUTES[url], value);
+      if (refusal) throw new Error(refusal);
       readCache.set(url, { at: Date.now(), value });
       return value;
     }).catch((err) => { readCache.delete(url); throw err; });
     readCache.set(url, { pending });
     return pending;
   };
+  /** The cached read, or the hook's fail-open text once readWaitMs passes (the computation goes on). */
+  const readWithin = (url) => new Promise((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error(`[claude-code-boss] hook ${MODULE_READ_ROUTES[url]} degradado no daemon (fail-open): ainda calculando após ${readWaitMs}ms`)), readWaitMs);
+    readCached(url).then(resolve, reject).finally(() => clearTimeout(timer));
+  });
 
   const httpServer = http.createServer(async (req, res) => {
     try {
@@ -209,7 +232,7 @@ export async function startHttpDaemon({ pluginRoot, dataDir, port, host = '127.0
           return;
         }
         let value;
-        try { value = await readCached(url); } catch (err) {
+        try { value = await readWithin(url); } catch (err) {
           console.error(`[brain-http] ${url}: ${err.message}`);
           res.writeHead(503, { 'Content-Type': 'application/json' });
           res.end(JSON.stringify({ error: err.message }));

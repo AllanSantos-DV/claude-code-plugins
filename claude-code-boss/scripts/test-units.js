@@ -9926,7 +9926,14 @@ test('scope-rules: the hook is declared, served by the daemon with the origin in
   assert(new RegExp(`^${post[0].matcher}$`).test('Read') && new RegExp(`^${post[0].matcher}$`).test('Edit'), 'evidence from Read and Edit');
   const ht = require('./lib/hook-tools.js');
   const spec = ht.HOOKS.hook_scope_rules;
-  assertEq(spec.origin, 'claude-code-boss', 'declared origin (mcp_tool: no command line to carry --hook-origin)');
+  // mcp_tool hooks have no command line to carry --hook-origin: every one declares it in its degraded text.
+  const cd = require('./correction-detect.js');
+  const cdRun = cd.run;
+  cd.run = async () => { throw new Error('boom-cd'); };
+  try {
+    const out = JSON.parse(await ht.runHookInline(ROOT, 'hook_correction_detect', { hook_event_name: 'UserPromptSubmit', session_id: 'sr-origin-test' }));
+    assertEq(require('./lib/hook-owner.js').declaredOrigin({ output: out.systemMessage }), 'claude-code-boss', out.systemMessage);
+  } finally { cd.run = cdRun; }
   const both = JSON.parse(await spec.call({ run: async () => ({ context: 'REGRAS', notice: '[hook-origin=claude-code-boss] aviso' }) }, { hook_event_name: 'UserPromptSubmit' }));
   assertEq(both, { systemMessage: '[hook-origin=claude-code-boss] aviso', hookSpecificOutput: { hookEventName: 'UserPromptSubmit', additionalContext: 'REGRAS' } });
   assertEq(await spec.call({ run: async () => ({ context: '', notice: '' }) }, { hook_event_name: 'UserPromptSubmit' }), '{}', 'nothing to say: empty reply');
@@ -30173,6 +30180,63 @@ test('http-daemon GET /hook/boss-summary: REAL daemon — token-gated, one cache
   }
 });
 
+test('boss-summary: the first reads stop at the budget and finish on later calls, so a cold start never holds the heavy lane', () => {
+  const bs = require('./boss-summary.js');
+  let clock = 0;
+  const opened = [];
+  const store = {
+    listProjects: () => ['p1', 'p2', 'p3'],
+    getEventLogIsolated: (p, { sinceId }) => {
+      opened.push(`${p}@${sinceId}`);
+      if (sinceId === 0) clock += 1000; // a first open is slow, a later incremental read is not
+      return sinceId === 0 ? [{ id: 1, ts: 10, event: 'x', project: p }] : [];
+    },
+  };
+  const read = bs.createRowReader(store, { now: () => clock });
+  const a = read(0, 1500);
+  assertEq([a.complete, a.rows.map((r) => r.project)], [false, ['p1', 'p2']], 'p3 waits: the budget went on p1 and p2');
+  const b = read(0, 1500);
+  assertEq([b.complete, b.rows.map((r) => r.project)], [true, ['p1', 'p2', 'p3']], 'the next call reads p3; refreshing p1 and p2 does not spend the budget');
+  assertEq(opened, ['p1@0', 'p2@0', 'p1@1', 'p2@1', 'p3@0']);
+  assertEq(read(0).complete, true, 'no budget: one call reads everything');
+});
+
+test('http-daemon moduleReadRefusal: a summary still warming is the silent fail-open, never cached; a real one is served', async () => {
+  const { moduleReadRefusal } = await import(require('url').pathToFileURL(path.join(ROOT, 'servers', 'brain-server', 'lib', 'http-daemon.js')).href);
+  const { isDaemonDegraded } = await import(require('url').pathToFileURL(path.join(ROOT, 'scripts', 'lib', 'module-daemon.mjs')).href);
+  const warming = moduleReadRefusal('hook_boss_summary', { warming: true });
+  assert(isDaemonDegraded(warming), warming);
+  assertEq(moduleReadRefusal('hook_boss_summary', { systemMessage: 'x' }), 'x');
+  assertEq(moduleReadRefusal('hook_boss_summary', { tokenGuard: {} }), '');
+});
+
+test('http-daemon GET /hook/boss-summary: a computation slower than the reply answers fail-open, goes on into the cache and is no expired hook', async () => {
+  seedBossMetrics('sid-boss-slow');
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-boss-slow-'));
+  const { startHttpDaemon } = await import(require('url').pathToFileURL(path.join(ROOT, 'servers', 'brain-server', 'lib', 'http-daemon.js')).href);
+  const { isDaemonDegraded } = await import(require('url').pathToFileURL(path.join(ROOT, 'scripts', 'lib', 'module-daemon.mjs')).href);
+  const savedTok = process.env.BRAIN_HTTP_TOKEN; delete process.env.BRAIN_HTTP_TOKEN;
+  const d = await startHttpDaemon({ pluginRoot: ROOT, dataDir: dir, port: 0, readWaitMs: 1 });
+  try {
+    const base = `http://127.0.0.1:${d.httpServer.address().port}`;
+    const token = fs.readFileSync(path.join((await (await fetch(`${base}/health`)).json()).dataDir, 'brain-http.token'), 'utf8').trim();
+    const get = () => fetch(`${base}/hook/boss-summary?session=sid-boss-slow`, { headers: { Authorization: `Bearer ${token}` } });
+    const first = await get();
+    assertEq(first.status, 503, 'the reply does not wait for the computation');
+    const body = await first.text();
+    assert(isDaemonDegraded(body), `the band reads it as the silent fail-open: ${body}`);
+    let r = first;
+    for (let i = 0; i < 200 && r.status !== 200; i++) { await new Promise((ok) => setTimeout(ok, 50)); r = await get(); }
+    assertEq(r.status, 200, 'the computation went on and a later read is served from the cache');
+    assertEq((await r.json()).tokenGuard.sessionTokens, bossTokens(36000));
+    const lat = (await (await fetch(`${base}/health`)).json()).hookLatency.hook_boss_summary;
+    assertEq(lat.expired, 0, `no expired hook: ${JSON.stringify(lat)}`);
+  } finally {
+    if (savedTok !== undefined) process.env.BRAIN_HTTP_TOKEN = savedTok;
+    await d.shutdown();
+  }
+});
+
 test('hooks module: ONE entry registers the Boss band without intercepting native compaction', async () => {
   const hooksJson = JSON.parse(fs.readFileSync(path.join(ROOT, 'hooks', 'hooks.json'), 'utf8'));
   assertEq(hooksJson.modules, ['./index.mjs']);
@@ -30316,6 +30380,27 @@ test('boss.mjs: a daemon that fail-opens the summary (503: deadline missed / wor
   assertEq(b.calls.logs, [], `nothing on the screen, got ${JSON.stringify(b.calls.logs)}`);
   assertEq(ctx.line, 'Boss · sessão US$ 1,23 · Token Guard −0 tokens na sessão (30d: −10) · Brain no ar', 'the last numbers stay in the band');
   assertEq(b.calls.invalidations, 1, 'no redraw: the line did not change');
+});
+
+// Seen after /clear on Claude Code 2.1.316: the session got a new id, and the band kept asking
+// for the figures of the session before the clear.
+test('boss.mjs: each read asks for the CURRENT session id — after /clear the band follows the new session', async () => {
+  const boss = await import(require('url').pathToFileURL(path.join(ROOT, 'hooks', 'boss.mjs')).href);
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-boss-clear-'));
+  fs.writeFileSync(path.join(dir, 'brain-http.token'), 'tok');
+  const asked = [];
+  const b = fakeBoss$({ sessionId: 'sid-before-clear', env: { CLAUDE_PLUGIN_DATA: dir, BRAIN_HTTP_PORT: '1' }, fetchImpl: async (url) => {
+    if (url.split('?')[0].endsWith('/health')) return { status: 200, ok: true, text: JSON.stringify({ dataDir: dir }) };
+    asked.push(new URL(url).searchParams.get('session'));
+    return { status: 200, ok: true, text: JSON.stringify({ tokenGuard: { days: 30, savedTokens: 10, sessionTokens: 0 }, brain: { connected: true } }) };
+  } });
+  const hooks = collectModuleHooks(boss.register);
+  await findHook(hooks, 'session.start', { isInteractive: true }).fn(b.$, { isInteractive: true }, async (e) => e);
+  const command = findHook(hooks, 'command.run', { command: 'boss' }).fn;
+  await command(b.$, { command: 'boss' }, async () => ({}));
+  b.$.session.id = async () => 'sid-after-clear';
+  await command(b.$, { command: 'boss' }, async () => ({}));
+  assertEq(asked, ['sid-before-clear', 'sid-after-clear']);
 });
 
 test('every shipped skill has a YAML frontmatter that PARSES, with a description (Claude Code skips a broken one)', () => {
@@ -31792,19 +31877,19 @@ test('boss-summary.createRowReader: the 2nd call with no new events does not re-
     },
   };
   const read = createRowReader(store);
-  assertEq(read(0).length, 3, 'first call reads everything');
+  assertEq(read(0).rows.length, 3, 'first call reads everything');
   assertEq(rowsHanded, 3);
   rowsHanded = 0; calls.length = 0;
-  assertEq(read(0).length, 3, 'same answer from the cache');
+  assertEq(read(0).rows.length, 3, 'same answer from the cache');
   assertEq(rowsHanded, 0, 'no new events → no row is read again');
   assertEq(calls.map((c) => c.sinceId), [2, 1], 'each project asks only past its last id');
   db.a.push({ id: 3, ts: 3000, eventName: 'curation.shaped' });
   rowsHanded = 0;
-  assertEq(read(0).length, 4);
+  assertEq(read(0).rows.length, 4);
   assertEq(rowsHanded, 1, 'only the new row is read');
-  assertEq(read(1800).map((r) => r.id).sort(), [2, 3], 'rows older than the window leave the cache');
+  assertEq(read(1800).rows.map((r) => r.id).sort(), [2, 3], 'rows older than the window leave the cache');
   delete db.b;
-  assertEq(read(0).length, 2, 'a project whose db is gone leaves the cache');
+  assertEq(read(0).rows.length, 2, 'a project whose db is gone leaves the cache');
 });
 
 test('metrics-store.getEventLogIsolated: sinceId returns only rows written after that id', () => {

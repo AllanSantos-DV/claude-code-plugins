@@ -102,9 +102,7 @@ const HOOKS = {
   // silent-except-alert
   hook_correction_detect: { script: 'correction-detect.js', call: async (m, ev) => additional(ev.hook_event_name || 'UserPromptSubmit', await m.run(ev)) },
   hook_active_research_detect: { script: 'active-research-detect.js', call: async (m, ev) => additional(ev.hook_event_name || 'UserPromptSubmit', await m.run(ev)) },
-  // `origin`: an mcp_tool hook has no command line to carry --hook-origin, so it declares it in its visible text (lib/hook-owner.js).
   hook_scope_rules: {
-    origin: require('./hook-owner.js').BOSS_ORIGIN,
     script: 'scope-rules-hook.js',
     call: async (m, ev) => {
       const { context, notice } = await m.run(ev);
@@ -159,10 +157,8 @@ function refreshConfig(modPath, dependents = []) {
   }
 }
 
-const degraded = (name, msg) => {
-  const origin = HOOKS[name] && HOOKS[name].origin;
-  return JSON.stringify({ systemMessage: `${origin ? `[hook-origin=${origin}] ` : ''}[claude-code-boss] hook ${name} degradado no daemon (fail-open): ${msg}` });
-};
+// An mcp_tool hook has no command line to carry --hook-origin, so its visible text declares it (lib/hook-owner.js).
+const degraded = (name, msg) => JSON.stringify({ systemMessage: `[hook-origin=${require('./hook-owner.js').BOSS_ORIGIN}] [claude-code-boss] hook ${name} degradado no daemon (fail-open): ${msg}` });
 
 /**
  * Run one hook in THIS thread and return the stdout text of its `command` form.

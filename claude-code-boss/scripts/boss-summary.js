@@ -77,33 +77,47 @@ function brainOf(health, healthError) {
  * INCREMENTAL: it keeps, per project, the rows of the window and the last row id it saw, and a later call
  * asks the store only for rows with a greater id (backlog: ~0.7 s of full re-read, 230 projects). Rows that
  * left the window are dropped from the cache; a project whose db is gone leaves the cache with it.
+ * The first read opens every project's db (~15 s measured after a daemon start) and would hold the heavy lane,
+ * and every Stop queued behind it: once first reads have taken budgetMs, the projects not yet in the cache wait
+ * for the next call and the answer says `complete: false`.
  * @param {{listProjects:Function, getEventLogIsolated:Function}} [storeArg]  injectable for tests
+ * @param {{now?:Function}} [opts]  clock, injectable for tests
+ * @returns {(sinceTs:number, budgetMs?:number) => {rows:object[], complete:boolean}}
  */
-function createRowReader(storeArg) {
+function createRowReader(storeArg, { now = Date.now } = {}) {
   const cache = new Map(); // project → { lastId, rows }
-  return function readRows(sinceTs) {
+  return function readRows(sinceTs, budgetMs = Infinity) {
     const store = storeArg || require('../engine/lib/metrics-store.js');
     const eventNames = [...CURATION_EVENTS, ...ECONOMY_EVENTS, ...VALUE_EVENTS];
     const projects = store.listProjects();
     for (const p of [...cache.keys()]) if (!projects.includes(p)) cache.delete(p);
     const rows = [];
+    let coldMs = 0;
+    let complete = true;
     for (const project of projects) {
+      const cold = !cache.has(project);
+      if (cold && coldMs >= budgetMs) { complete = false; continue; }
+      const t0 = now();
       const slot = cache.get(project) || { lastId: 0, rows: [] };
       const fresh = store.getEventLogIsolated(project, { eventNames, sinceTs, sinceId: slot.lastId });
       for (const r of fresh) if (Number(r.id) > slot.lastId) slot.lastId = Number(r.id);
       slot.rows = slot.rows.filter((r) => Number(r.ts) >= sinceTs).concat(fresh);
       cache.set(project, slot);
+      if (cold) coldMs += now() - t0;
       for (const r of slot.rows) rows.push(r);
     }
-    return rows;
+    return { rows, complete };
   };
 }
 
 const readRows = createRowReader();
+const READ_BUDGET_MS = 2000;
 
+/** The summary, or `{ warming: true }` while the first reads still fill the row cache (no partial totals). */
 async function run() {
   const now = Date.now();
-  const rows = readRows(now - DAYS * 86400_000);
+  const { rows, complete } = readRows(now - DAYS * 86400_000, READ_BUDGET_MS);
+  if (!complete) return { warming: true };
   let health = null;
   let healthError;
   try {

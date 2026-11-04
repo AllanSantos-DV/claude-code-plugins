@@ -26,7 +26,6 @@ const msg = (err) => String(err && err.message ? err.message : err);
 function newCtx() {
   return {
     daemon: null,     // { base, token } of the brain daemon (scripts/lib/module-daemon.mjs)
-    sessionId: '',
     summary: null,    // the daemon's last reply
     error: null,      // the last failure to read it (drawn until a read succeeds)
     loggedError: '',  // the failure already written to the log (one line per new failure, not per poll)
@@ -38,7 +37,9 @@ function newCtx() {
 }
 
 async function readSummary($, ctx) {
-  const get = async (d) => $.http.fetch(`${d.base}${ROUTE}?session=${encodeURIComponent(ctx.sessionId)}`, {
+  // Read on every poll: /clear gives the session a new id without a session.start this module sees.
+  const sessionId = await $.session.id();
+  const get = async (d) => $.http.fetch(`${d.base}${ROUTE}?session=${encodeURIComponent(sessionId)}`, {
     headers: { Authorization: `Bearer ${d.token}` },
   });
   let r = await get(await daemon($, ctx, false, 'boss'));
@@ -88,14 +89,13 @@ function startPolling($, ctx) {
   $.clock.after(1, () => { void refresh($, ctx); });
 }
 
-/** session.start: /boss, the session's id, and the polling dropped until the next draw starts it. */
+/** session.start: /boss, and the polling dropped until the next draw starts it. */
 async function onSessionStart($, ctx) {
   await $.command.register({
     name: 'boss',
     description: 'Claude Code Boss: custo da sessão, economia do Token Guard e estado do Brain',
     immediate: true,
   });
-  ctx.sessionId = await $.session.id();
   if (ctx.timer) ctx.timer.cancel();
   ctx.timer = null;
 }
