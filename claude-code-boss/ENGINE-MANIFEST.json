@@ -44,7 +44,7 @@
     "engine/lib/shell-escape.js": "992e6ca8e1d3b7236b8b8236cf956ee80e800f0c0532c0d1f5209be49b66b795",
     "engine/lib/sqlite-compat.js": "122746c15131a2e800451ed6d6903216f462ac59163ab65e66b8687e8ce7baaf",
     "engine/lib/text-utils.js": "68dd660d8c8c6b6930e3de9304d2d56bb2fdc6773029aa3d46b8b0eb605ad08a",
-    "engine/mcp-client.js": "9b9c60b3ac53dc7c85d8fd2cff082f2593208d571339f6fed5d607e7a52ae452",
+    "engine/mcp-client.js": "b9deb4105d8ab717c5d0dedff0c04fe2c9b1400aea2da5c4bf687d1f56cdc50e",
     "scripts/lib/mcp-bootstrap/launcher.js": "c7060022f13347b30648ed2fac16898d86f0850be70bbd4e7054e63ab2366ba7",
     "scripts/lib/mcp-bootstrap/registry.js": "62077187fdac17229d34745cd7c8f5c501e148724331d3873b28bc3a74391fa0"
   }

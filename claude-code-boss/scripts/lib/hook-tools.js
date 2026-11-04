@@ -102,7 +102,18 @@ const HOOKS = {
   // silent-except-alert
   hook_correction_detect: { script: 'correction-detect.js', call: async (m, ev) => additional(ev.hook_event_name || 'UserPromptSubmit', await m.run(ev)) },
   hook_active_research_detect: { script: 'active-research-detect.js', call: async (m, ev) => additional(ev.hook_event_name || 'UserPromptSubmit', await m.run(ev)) },
-  hook_scope_rules: { script: 'scope-rules-hook.js', call: async (m, ev) => additional(ev.hook_event_name || 'UserPromptSubmit', await m.run(ev)) },
+  // `origin`: an mcp_tool hook has no command line to carry --hook-origin, so it declares it in its visible text (lib/hook-owner.js).
+  hook_scope_rules: {
+    origin: require('./hook-owner.js').BOSS_ORIGIN,
+    script: 'scope-rules-hook.js',
+    call: async (m, ev) => {
+      const { context, notice } = await m.run(ev);
+      return json({
+        ...(notice ? { systemMessage: notice } : {}),
+        ...(context ? { hookSpecificOutput: { hookEventName: ev.hook_event_name || 'UserPromptSubmit', additionalContext: context } } : {}),
+      });
+    },
+  },
   hook_policy_glob_inject: { script: 'policy-glob-inject.js', call: async (m, ev) => json(await m.evaluate(ev)) },
   // context-bearing (G6): standing policies into every subagent's context. Was one
   // `node` spawn per subagent — the fan-out case. Echoes the event name like the CLI.
@@ -148,7 +159,10 @@ function refreshConfig(modPath, dependents = []) {
   }
 }
 
-const degraded = (name, msg) => JSON.stringify({ systemMessage: `[claude-code-boss] hook ${name} degradado no daemon (fail-open): ${msg}` });
+const degraded = (name, msg) => {
+  const origin = HOOKS[name] && HOOKS[name].origin;
+  return JSON.stringify({ systemMessage: `${origin ? `[hook-origin=${origin}] ` : ''}[claude-code-boss] hook ${name} degradado no daemon (fail-open): ${msg}` });
+};
 
 /**
  * Run one hook in THIS thread and return the stdout text of its `command` form.

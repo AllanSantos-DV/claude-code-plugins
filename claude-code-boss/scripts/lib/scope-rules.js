@@ -2,26 +2,29 @@
 /**
  * lib/scope-rules.js — the owner's rules, delivered by scope of work.
  *
- * Rules live in mcp-memory as global documents whose id is `rule:<kind>:<slug>`. The kind is
- * `sempre` (every session) or a trigger decided from the files the session touched:
- * `codigo`, `teste`, `docs` or a stack (`angular`, `java`, `python`, `dotnet`). A kind is
- * injected once per session; a compaction or /clear wipes it from the context, so SessionStart
- * with that source calls `resetInjected` and the next prompt delivers it again.
+ * Rules are documents of the single memory server whose id is `rule:<kind>:<slug>`, asked with its
+ * scoped-rules lookup (lib/scoped-rules-client.js) for the files the session touched. The kind is
+ * `sempre` (every session) or a trigger decided from those files: `codigo`, `teste`, `docs` or a
+ * stack (`angular`, `java`, `python`, `dotnet`). Each rule is delivered once per session; a
+ * compaction or /clear wipes it from the context, so SessionStart with that source calls
+ * `resetInjected` and the next prompt delivers it again. The lookup runs again only when the set of
+ * touched files changed.
  *
- * State per session_id under `<data>/.runtime/scope-rules/`: the touched paths (evidence, survives
- * a reset) and the kinds already injected. Deliveries and rejected documents go to
- * `<data>/.runtime/scope-rules.jsonl`.
+ * State per session_id under `<data>/.runtime/scope-rules/`. Each delivery (rule ids, reason, size)
+ * and each refused rule is appended to `<data>/.runtime/scope-rules.jsonl`.
  */
 const fs = require('fs');
 const path = require('path');
 const { dataDir } = require('../../engine/lib/data-dir.js');
 const { writeJsonAtomic } = require('../../engine/lib/atomic-write.js');
+const notices = require('./notice-once.js');
 
 const RULE_ID = /^rule:([a-z0-9][a-z0-9-]*):([a-z0-9][a-z0-9._-]*)$/;
 const TOUCHED_CAP = 50;
 const TTL_MS = 7 * 86400_000;
-const CACHE_TTL_MS = 10 * 60_000;
-const USER_PROJECT = '__user__';
+const SET_MAX_CHARS = 4000;
+const NOTICE_KEY = 'scope-rules';
+const ORIGIN = `[hook-origin=${require('./hook-owner.js').BOSS_ORIGIN}]`;
 
 const TEST_PATH = /(^|[\\/])(tests?|__tests__|specs?)[\\/]|\.(test|spec)\.[a-z0-9]+$/i;
 const CODE_EXT = /\.(js|jsx|mjs|cjs|ts|tsx|java|kt|py|cs|go|rs|rb|php|swift|c|cc|cpp|h|hpp|vue|svelte|ps1|sh)$/i;
@@ -33,10 +36,12 @@ const STACKS = {
   dotnet: /\.(cs|csproj|sln)$/i,
 };
 const BASE_KINDS = new Set(['sempre', 'codigo', 'teste', 'docs']);
+const KIND_NAMES = [...BASE_KINDS, ...Object.keys(STACKS)].join('|');
 
 const safeId = (sid) => (sid ? require('../../engine/lib/session-id.js').sanitizeSessionId(sid) : '');
 const stateDir = (base) => path.join(base || dataDir(), '.runtime', 'scope-rules');
 const journalFile = (base) => path.join(base || dataDir(), '.runtime', 'scope-rules.jsonl');
+const strings = (v) => (Array.isArray(v) ? v.map(String) : []);
 
 /**
  * Parse a rule document id.
@@ -65,18 +70,27 @@ function triggersFor(paths) {
   return kinds;
 }
 
+/**
+ * @returns {{touched: string[], delivered: string[], lookedUp: string|null, resetBy: string, told: string[]}}
+ *   delivered: rule ids in the context now; lookedUp: the touched-files key of the last complete
+ *   lookup; resetBy: the SessionStart source that wiped the context; told: refused ids already shown
+ */
 function readState(sessionId, base) {
+  const empty = { touched: [], delivered: [], lookedUp: null, resetBy: '', told: [] };
   const id = safeId(sessionId);
-  if (!id) return { touched: [], injected: [] };
+  if (!id) return empty;
   try {
     const j = JSON.parse(fs.readFileSync(path.join(stateDir(base), `${id}.json`), 'utf8'));
     return {
-      touched: Array.isArray(j.touched) ? j.touched.map(String) : [],
-      injected: Array.isArray(j.injected) ? j.injected.map(String) : [],
+      touched: strings(j.touched),
+      delivered: strings(j.delivered),
+      lookedUp: typeof j.lookedUp === 'string' ? j.lookedUp : null,
+      resetBy: typeof j.resetBy === 'string' ? j.resetBy : '',
+      told: strings(j.told),
     };
   } catch (err) {
     if (err.code !== 'ENOENT') console.error(`[scope-rules] state unreadable for ${id}: ${err.message}`);
-    return { touched: [], injected: [] };
+    return empty;
   }
 }
 
@@ -107,12 +121,17 @@ function recordTouched(sessionId, filePath, { base } = {}) {
   writeState(sessionId, state, base);
 }
 
-/** Forget what the session already received (compact, clear); the touched paths stay. */
-function resetInjected(sessionId, { base } = {}) {
+/**
+ * Forget what the session already received (compact, clear); the touched paths stay.
+ * @param {string} sessionId
+ * @param {{base?: string, source?: string}} [o] source: the SessionStart source, kept as the reason of the next delivery
+ * @returns {boolean} true when there was something to forget
+ */
+function resetInjected(sessionId, { base, source } = {}) {
   if (!safeId(sessionId)) return false;
   const state = readState(sessionId, base);
-  if (!state.injected.length) return false;
-  writeState(sessionId, { touched: state.touched, injected: [] }, base);
+  if (!state.delivered.length && state.lookedUp === null) return false;
+  writeState(sessionId, { ...state, delivered: [], lookedUp: null, resetBy: String(source || 'reset') }, base);
   return true;
 }
 
@@ -136,86 +155,121 @@ function journal(entry, base) {
   }
 }
 
-let cache = null;
-
 /**
- * The rule documents of the owner's global space, parsed and cached in the daemon's memory.
- * A document whose id looks like a rule but does not parse is reported in `rejected`, never dropped silently.
- * @param {{fetch?: () => Promise<object[]>, base?: string, now?: number, ttlMs?: number}} [opts]
- * @returns {Promise<{rules: Array<{id: string, kind: string, text: string}>, rejected: Array<{id: string, why: string}>}>}
+ * The touched paths as the lookup wants them: relative to the project root, `/`-separated, sorted.
+ * A path outside the root has no project-relative form and is left out of the lookup (it still
+ * switches its kind on through triggersFor).
  */
-async function loadRules({ fetch, base, now = Date.now(), ttlMs = CACHE_TTL_MS } = {}) {
-  if (cache && now - cache.at < ttlMs) return cache.value;
-  const docs = await (fetch || defaultFetch)();
-  const rules = [];
-  const rejected = [];
-  for (const d of docs) {
-    const id = String(d.id || '');
-    if (!id.startsWith('rule:')) continue;
-    const parsed = parseRuleId(id);
-    if (!parsed) { rejected.push({ id, why: 'id is not rule:<sempre|codigo|teste|docs|stack>:<slug>' }); continue; }
-    const text = String((d.content && d.content.text) || d.summary || '').trim();
-    if (!text) { rejected.push({ id, why: 'empty content' }); continue; }
-    rules.push({ id, kind: parsed.kind, text });
+function relativeFiles(touched, root) {
+  const r = root ? path.resolve(root) : '';
+  const out = new Set();
+  for (const p of touched || []) {
+    if (!path.isAbsolute(p)) { out.add(p.replace(/\\/g, '/')); continue; }
+    if (!r) continue;
+    const rel = path.relative(r, p);
+    if (!rel || rel.startsWith('..') || path.isAbsolute(rel)) continue;
+    out.add(rel.replace(/\\/g, '/'));
   }
-  const value = { rules, rejected };
-  if (rejected.length) journal({ event: 'rejected', rejected }, base);
-  cache = { at: now, value };
-  return value;
-}
-
-/** Drop the cached rules (tests, and a rule edit the owner wants seen at once). */
-function clearCache() { cache = null; }
-
-async function defaultFetch() {
-  const backend = require('../../engine/brain-backend.js');
-  if (backend.peekMode() !== 'mcp-memory') return [];
-  if (backend.getMode() !== 'mcp-memory') throw Object.assign(new Error('brain backend not connected yet'), { code: 'NOT_READY' });
-  return backend.listDocuments({ projectId: USER_PROJECT });
+  return [...out].sort();
 }
 
 /**
- * Pick the rules to deliver now: `sempre` plus the kinds the touched paths trigger, minus what
- * the session already received.
- * @returns {{kinds: string[], rules: Array<{id: string, kind: string, text: string}>}}
+ * Split the lookup reply into the rules to deliver now and the ones refused. A rule whose id is not
+ * `rule:<known kind>:<slug>` is refused (never silently skipped): its kind has no trigger, so it
+ * would never reach any session.
+ * @param {object[]} rules lookup reply
+ * @param {{touched: string[], delivered: string[], hasFiles: boolean}} s
+ * @returns {{deliver: Array<{id: string, kind: string, text: string}>, refused: Array<{id: string, why: string}>}}
  */
-function decide({ rules, touched, injected }) {
-  const done = new Set(injected || []);
-  const wanted = ['sempre', ...triggersFor(touched)].filter((k) => !done.has(k));
-  const withRules = wanted.filter((k) => rules.some((r) => r.kind === k));
-  return { kinds: withRules, rules: rules.filter((r) => withRules.includes(r.kind)) };
+function select(rules, { touched, delivered, hasFiles }) {
+  const wanted = new Set(['sempre', ...triggersFor(touched)]);
+  const done = new Set(delivered);
+  const deliver = [];
+  const refused = [];
+  for (const r of rules || []) {
+    const id = String((r && r.id) || '');
+    const parsed = parseRuleId(id);
+    if (!parsed) { refused.push({ id, why: `unknown rule id (expected rule:<${KIND_NAMES}>:<slug>)` }); continue; }
+    if (done.has(id) || !wanted.has(parsed.kind)) continue;
+    // Without files the server skips its path filter: a path-scoped rule is not in scope yet.
+    if (!hasFiles && Array.isArray(r.paths) && r.paths.length) continue;
+    const text = String(r.text || '').trim();
+    if (!text) { refused.push({ id, why: 'empty text' }); continue; }
+    deliver.push({ id, kind: parsed.kind, text });
+  }
+  return { deliver, refused };
 }
 
 /** Declarative block for the model; each rule is cut at `maxChars` with a visible mark. */
-function render(rules, kinds, maxChars) {
+function render(rules, maxChars) {
+  const kinds = [...new Set(rules.map((r) => r.kind))];
   const cut = (r) => (r.text.length > maxChars ? `${r.text.slice(0, maxChars)}\n[regra ${r.id} cortada em ${maxChars} de ${r.text.length} caracteres]` : r.text);
-  const body = rules.map((r) => `- (${r.id}) ${cut(r)}`).join('\n');
-  return `[BOSS regras do dono — escopo: ${kinds.join(', ')}]\n${body}`;
+  return `[BOSS regras do dono — escopo: ${kinds.join(', ')}]\n${rules.map((r) => `- (${r.id}) ${cut(r)}`).join('\n')}`;
+}
+
+async function defaultLookup({ files, projectId }) {
+  if (require('../../engine/brain-backend.js').peekMode() !== 'mcp-memory') return null;
+  return require('./scoped-rules-client.js').lookupScopedRules({ files, projectId, idPrefix: 'rule:' });
 }
 
 /**
- * UserPromptSubmit entry: the block of rules newly in scope for this session, or '' when none.
+ * UserPromptSubmit entry: the rules newly in scope for this session and what must be shown to the
+ * owner. A lookup failure is shown once (notice-once) and retried on the next prompt; refused rule
+ * ids are shown once per session.
  * @param {object} event hook payload (session_id)
- * @param {{base?: string, maxChars: number, fetch?: () => Promise<object[]>}} opts
- * @returns {Promise<string>}
+ * @param {{base?: string, maxChars: number, setMaxChars?: number, root?: string, projectId?: string,
+ *   lookup?: (q: {files: string[], projectId?: string}) => Promise<{rules: object[]}|null>}} opts
+ *   lookup resolves null when the memory backend is not mcp-memory (no rules to ask for)
+ * @returns {Promise<{context: string, notice: string}>}
  */
-async function inject(event, { base, maxChars, fetch } = {}) {
+async function inject(event, { base, maxChars, setMaxChars = SET_MAX_CHARS, root, projectId, lookup = defaultLookup } = {}) {
+  const none = { context: '', notice: '' };
   const sid = (event && (event.session_id || event.sessionId)) || '';
-  if (!safeId(sid)) return '';
+  if (!safeId(sid)) return none;
   const state = readState(sid, base);
-  let rules;
+  const files = relativeFiles(state.touched, root);
+  const key = JSON.stringify(files);
+  if (state.lookedUp === key) return none;
+  let reply;
   try {
-    ({ rules } = await loadRules({ fetch, base }));
+    reply = await lookup({ files, projectId });
   } catch (err) {
-    if (err.code === 'NOT_READY') return '';
-    throw err;
+    console.error(`[scope-rules] lookup failed: ${err.message}`);
+    const shown = notices.notice({ key: NOTICE_KEY, signature: String(err.code || 'error'), text: `${ORIGIN} regras do dono por escopo não chegaram: ${err.message}`, detail: err.stack || err.message, base });
+    return { context: '', notice: shown || '' };
   }
-  const picked = decide({ rules, touched: state.touched, injected: state.injected });
-  if (!picked.kinds.length) return '';
-  const text = render(picked.rules, picked.kinds, maxChars);
-  writeState(sid, { touched: state.touched, injected: [...state.injected, ...picked.kinds] }, base);
-  journal({ session: safeId(sid), kinds: picked.kinds, ids: picked.rules.map((r) => r.id), chars: text.length }, base);
-  return text;
+  if (!reply) return none;
+  notices.recovered(NOTICE_KEY, { base });
+
+  const { deliver, refused } = select(reply.rules, { touched: state.touched, delivered: state.delivered, hasFiles: files.length > 0 });
+  const fresh = refused.filter((r) => !state.told.includes(r.id));
+  if (fresh.length) {
+    journal({ event: 'refused', session: safeId(sid), refused: fresh }, base);
+    console.error(`[scope-rules] refused: ${fresh.map((r) => `${r.id} (${r.why})`).join('; ')}`);
+  }
+  const take = [];
+  for (const r of deliver) {
+    if (take.length && render([...take, r], maxChars).length > setMaxChars) break;
+    take.push(r);
+  }
+  const deferred = deliver.length - take.length;
+  const context = take.length ? render(take, maxChars) : '';
+  if (take.length) {
+    journal({
+      event: 'injected', session: safeId(sid), reason: state.resetBy ? `after-${state.resetBy}` : 'new-scope',
+      ids: take.map((r) => r.id), kinds: [...new Set(take.map((r) => r.kind))], chars: context.length, ...(deferred ? { deferred } : {}),
+    }, base);
+  }
+  // Rules past the set cap stay pending: the lookup is not marked done, so the next prompt brings them.
+  writeState(sid, {
+    ...state,
+    delivered: [...state.delivered, ...take.map((r) => r.id)],
+    lookedUp: deferred ? state.lookedUp : key,
+    resetBy: deferred ? state.resetBy : '',
+    told: [...state.told, ...fresh.map((r) => r.id)],
+  }, base);
+  const notice = fresh.length ? `${ORIGIN} regra do dono recusada: ${fresh.map((r) => `${r.id || '(sem id)'} — ${r.why}`).join('; ')}` : '';
+  return { context, notice };
 }
 
-module.exports = { parseRuleId, triggersFor, recordTouched, resetInjected, forget, loadRules, clearCache, decide, render, inject, readState };
+module.exports = { parseRuleId, triggersFor, recordTouched, resetInjected, forget, relativeFiles, select, render, inject, readState };

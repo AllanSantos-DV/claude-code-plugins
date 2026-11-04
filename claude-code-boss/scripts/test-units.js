@@ -9642,68 +9642,268 @@ test('scope-rules: ids and triggers are mechanical (kind from the id, scope from
   assertEq([...sr.triggersFor(['logo.png', ''])], []);
 });
 
-test('scope-rules: each scope is injected once per session, re-injected after compact/clear, never repeated per prompt', async () => {
+/** Fake scoped-rules server reply: path rules only when a touched file matches (the server's filter), all rules without files. */
+function fakeScopedLookup(rules) {
+  const calls = [];
+  const lookup = async (q) => {
+    calls.push(q);
+    const has = q.files && q.files.length;
+    const hit = (r) => !r.paths || !has || q.files.some((f) => r.paths.some((g) => f.endsWith(g.replace('**/*', ''))));
+    return { count: rules.length, rules: rules.filter(hit) };
+  };
+  return { calls, lookup };
+}
+
+test('scope-rules: rules come from the memory server for the touched scope, once per scope, again only after compact/clear, journaled append-only with ids, reason and size', async () => {
   const sr = require('./lib/scope-rules.js');
   const base = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-sr-'));
-  const docs = [
-    { id: 'rule:sempre:fail-loud', summary: 'Sem fallback silencioso.' },
-    { id: 'rule:codigo:comentarios', content: { text: 'Comentario so quando dificil.' } },
-    { id: 'rule:teste:real', summary: 'Teste real, sem mock.' },
-    { id: 'rule:codigo:longa', summary: 'x'.repeat(30) },
-    { id: 'rule:Nope:x', summary: 'id invalido' },
-    { id: 'rule:docs:vazia', summary: '  ' },
-    { id: 'outro-doc', summary: 'ignorado' },
-  ];
-  let fetched = 0;
-  const fetch = async () => { fetched++; return docs; };
-  const prompt = (sid) => sr.inject({ session_id: sid }, { base, maxChars: 20, fetch });
+  const root = path.join(base, 'proj');
+  const { calls, lookup } = fakeScopedLookup([
+    { id: 'rule:sempre:fail-loud', text: 'Sem fallback silencioso.' },
+    { id: 'rule:codigo:comentarios', text: 'Comentario so quando dificil, e sempre explicando o porque.' },
+    { id: 'rule:codigo:java-estilo', paths: ['**/*.java'], text: 'Java: sem wildcard import.' },
+    { id: 'rule:teste:real', text: 'Teste real, sem mock.' },
+  ]);
+  const prompt = (sid, extra = {}) => sr.inject({ session_id: sid }, { base, maxChars: 30, root, projectId: 'proj-x', lookup, ...extra });
+  const journalLines = () => fs.readFileSync(path.join(base, '.runtime', 'scope-rules.jsonl'), 'utf8').trim().split('\n');
   try {
-    sr.clearCache();
     const first = await prompt('s1');
-    assert(first.includes('escopo: sempre') && first.includes('rule:sempre:fail-loud'), 'first prompt delivers `sempre`');
-    assert(!first.includes('comentarios'), 'no touched file yet: no codigo rule');
-    assertEq(await prompt('s1'), '', 'second prompt in the same session stays silent');
-    sr.recordTouched('s1', 'C:\\p\\src\\app.ts', { base });
+    assert(first.context.includes('escopo: sempre') && first.context.includes('rule:sempre:fail-loud'), 'first prompt delivers `sempre`');
+    assert(!first.context.includes('comentarios') && !first.context.includes('java-estilo'), 'no touched file: nothing of codigo, no path rule');
+    assertEq(calls[0], { files: [], projectId: 'proj-x' }, 'the server is asked for the session project, no files yet');
+    assertEq(await prompt('s1'), { context: '', notice: '' }, 'same touched set: no new lookup, nothing repeated');
+    assertEq(calls.length, 1);
+    sr.recordTouched('s1', path.join(root, 'src', 'app.ts'), { base });
     const code = await prompt('s1');
-    assert(code.includes('escopo: codigo') && code.includes('Comentario so quando'), 'touching a source file delivers codigo');
-    assert(code.includes('cortada em 20 de 30 caracteres'), 'a rule over maxChars is cut with a visible mark');
-    assertEq(await prompt('s1'), '', 'codigo is not repeated');
-    sr.recordTouched('s1', 'tests/a.test.js', { base });
-    const test_ = await prompt('s1');
-    assert(test_.includes('escopo: teste') && !test_.includes('codigo'), 'a test file adds only teste');
-    assert((await prompt('s2')).includes('escopo: sempre'), 'another session is independent');
-    assertEq(sr.resetInjected('s1', { base }), true, 'compact/clear drops what was delivered');
+    assertEq(calls[1].files, ['src/app.ts'], 'the touched file goes relative to the project root');
+    assert(code.context.includes('escopo: codigo') && code.context.includes('Comentario so quando') && !code.context.includes('fail-loud'), 'codigo arrives, sempre is not repeated');
+    assert(code.context.includes('cortada em 30 de'), 'a rule over maxChars is cut with a visible mark');
+    sr.recordTouched('s1', path.join(root, 'src', 'Main.java'), { base });
+    const java = await prompt('s1');
+    assertEq(calls[2].files, ['src/Main.java', 'src/app.ts']);
+    assert(java.context.includes('rule:codigo:java-estilo') && !java.context.includes('comentarios'), 'a path rule newly in scope arrives even though its kind was already delivered; nothing repeated');
+    sr.recordTouched('s1', path.join(root, 'tests', 'a.test.js'), { base });
+    assert((await prompt('s1')).context.includes('rule:teste:real'), 'a test file brings teste');
+    assert((await prompt('s2')).context.includes('rule:sempre:fail-loud'), 'another session is independent');
+    const before = journalLines();
+    assertEq(sr.resetInjected('s1', { base, source: 'compact' }), true, 'compact wipes what was delivered');
     const again = await prompt('s1');
-    assert(['sempre', 'codigo', 'teste'].every((k) => again.includes(k)), 're-delivered after the reset, touched evidence kept');
-    assertEq(fetched, 1, 'rules come from the daemon cache, one fetch for all prompts');
-    const journalText = fs.readFileSync(path.join(base, '.runtime', 'scope-rules.jsonl'), 'utf8');
-    assert(journalText.includes('rule:Nope:x') && journalText.includes('empty content'), 'rejected documents are journaled');
-    assert(!journalText.includes('outro-doc'), 'documents outside the rule: namespace are not reported');
+    assert(['fail-loud', 'comentarios', 'java-estilo', 'teste:real'].every((k) => again.context.includes(k)), 're-delivered after the compact, touched evidence kept');
+    assertEq(await prompt('s1'), { context: '', notice: '' }, 'and not again on the next prompt');
+    sr.resetInjected('s1', { base, source: 'clear' });
+    await prompt('s1');
+    const after = journalLines();
+    assertEq(after.slice(0, before.length), before, 'the journal is append-only: earlier lines untouched');
+    const entries = after.map((l) => JSON.parse(l)).filter((e) => e.event === 'injected');
+    assertEq(entries.map((e) => e.reason), ['new-scope', 'new-scope', 'new-scope', 'new-scope', 'new-scope', 'after-compact', 'after-clear']);
+    assertEq(entries[2].ids, ['rule:codigo:java-estilo']);
+    assertEq(entries[5].chars, again.context.length, 'size of what was injected');
+    assert(entries.every((e) => e.session && Array.isArray(e.kinds) && e.at), 'session, kinds and time recorded');
+    assertEq(sr.resetInjected('s9', { base, source: 'compact' }), false, 'nothing delivered: nothing to reset');
     sr.forget('s1', { base });
-    assertEq(sr.readState('s1', base), { touched: [], injected: [] }, 'SessionEnd forgets the record');
-    assertEq(await sr.inject({}, { base, maxChars: 20, fetch }), '', 'no session id: nothing to key on');
-    sr.clearCache();
-    assertEq(await sr.inject({ session_id: 's3' }, { base, maxChars: 20, fetch: async () => { throw Object.assign(new Error('x'), { code: 'NOT_READY' }); } }), '', 'backend not connected yet: retry on the next prompt');
-    let threw = false;
-    sr.clearCache();
-    try { await sr.inject({ session_id: 's3' }, { base, maxChars: 20, fetch: async () => { throw new Error('server down'); } }); } catch { threw = true; }
-    assert(threw, 'a real fetch failure is loud, not an empty answer');
+    assertEq(sr.readState('s1', base).delivered, [], 'SessionEnd forgets the record');
+    assertEq(await sr.inject({}, { base, maxChars: 30, lookup }), { context: '', notice: '' }, 'no session id: nothing to key on');
+    assertEq(await prompt('s5', { lookup: async () => null }), { context: '', notice: '' }, 'memory backend is not mcp-memory: no rules, no noise');
   } finally {
-    sr.clearCache();
     fs.rmSync(base, { recursive: true, force: true });
   }
 });
 
-test('scope-rules: the hook is declared, served by the daemon, evidence-fed and reset on compact/clear', () => {
+test('scope-rules: an unknown rule id fails loud (visible, signed with the hook origin, journaled), once per session; valid rules still arrive', async () => {
+  const sr = require('./lib/scope-rules.js');
+  const owner = require('./lib/hook-owner.js');
+  const base = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-sr-bad-'));
+  const { lookup } = fakeScopedLookup([
+    { id: 'rule:sempre:ok', text: 'vale' },
+    { id: 'rule:cobol:x', text: 'tipo sem gatilho' },
+    { id: 'rule:Codigo:y', text: 'id fora do formato' },
+    { id: 'rule:sempre:vazia', text: '  ' },
+  ]);
+  const prompt = (sid) => sr.inject({ session_id: sid }, { base, maxChars: 200, lookup });
+  try {
+    const r = await prompt('s1');
+    assert(r.context.includes('rule:sempre:ok'), 'the valid rule is delivered');
+    assert(r.notice.startsWith('[hook-origin=claude-code-boss]'), r.notice);
+    assert(['rule:cobol:x', 'rule:Codigo:y', 'rule:sempre:vazia'].every((id) => r.notice.includes(id)) && /unknown rule id/.test(r.notice), r.notice);
+    assertEq(owner.declaredOrigin({ output: r.notice }), 'claude-code-boss', 'hook-owner reads the declared origin');
+    const refused = fs.readFileSync(path.join(base, '.runtime', 'scope-rules.jsonl'), 'utf8').trim().split('\n').map((l) => JSON.parse(l)).filter((e) => e.event === 'refused');
+    assertEq(refused.length, 1);
+    assertEq(refused[0].refused.map((x) => x.id), ['rule:cobol:x', 'rule:Codigo:y', 'rule:sempre:vazia']);
+    sr.recordTouched('s1', 'docs/a.md', { base });
+    assertEq((await prompt('s1')).notice, '', 'told once per session');
+    assert((await prompt('s2')).notice.includes('rule:cobol:x'), 'another session is told too');
+  } finally {
+    fs.rmSync(base, { recursive: true, force: true });
+  }
+});
+
+test('scope-rules: a lookup failure is shown once, signed, and retried on the next prompt; the set cap defers the rest to the next prompt', async () => {
+  const sr = require('./lib/scope-rules.js');
+  const base = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-sr-down-'));
+  const down = async () => { throw Object.assign(new Error('the memory server refused every try (4)'), { code: 'MEMORY_SERVER_DOWN' }); };
+  const { lookup, calls } = fakeScopedLookup([
+    { id: 'rule:sempre:a', text: 'a'.repeat(60) },
+    { id: 'rule:sempre:b', text: 'b'.repeat(60) },
+  ]);
+  try {
+    const first = await sr.inject({ session_id: 's1' }, { base, maxChars: 100, lookup: down });
+    assert(first.notice.startsWith('[hook-origin=claude-code-boss]') && /refused every try/.test(first.notice) && !first.context, first.notice);
+    assertEq((await sr.inject({ session_id: 's1' }, { base, maxChars: 100, lookup: down })).notice, '', 'the same outage stays silent (notice-once), still logged');
+    const capped = await sr.inject({ session_id: 's1' }, { base, maxChars: 100, setMaxChars: 120, lookup });
+    assert(capped.context.includes('rule:sempre:a') && !capped.context.includes('rule:sempre:b'), 'the server is back: delivered up to the set cap');
+    const rest = await sr.inject({ session_id: 's1' }, { base, maxChars: 100, setMaxChars: 120, lookup });
+    assert(rest.context.includes('rule:sempre:b') && !rest.context.includes('rule:sempre:a'), 'the deferred rule arrives on the next prompt');
+    assertEq(calls.length, 2, 'the lookup was repeated only because a rule was still pending');
+    assertEq((await sr.inject({ session_id: 's1' }, { base, maxChars: 100, setMaxChars: 120, lookup })).context, '');
+    assertEq(calls.length, 2);
+    assert(/repeat \(silent\) scope-rules/.test(fs.readFileSync(require('./lib/notice-once.js').logFile(base), 'utf8')), 'the silent repeat is in the log');
+  } finally {
+    fs.rmSync(base, { recursive: true, force: true });
+  }
+});
+
+/** Throwaway HTTP server answering the scoped-rules route; returns {url, port, bodies, close}. */
+function startScopedRulesServer(handler) {
+  const bodies = [];
+  const server = http.createServer((req, res) => {
+    let raw = '';
+    req.on('data', (c) => (raw += c));
+    req.on('end', () => {
+      if (req.method !== 'POST' || req.url !== '/api/v1/scoped-rules/lookup') { res.writeHead(404); return res.end('{}'); }
+      bodies.push(JSON.parse(raw || '{}'));
+      const [status, json] = handler(bodies[bodies.length - 1]);
+      res.writeHead(status, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify(json));
+    });
+  });
+  return new Promise((resolve) => server.listen(0, '127.0.0.1', () => {
+    const port = server.address().port;
+    resolve({ url: `http://127.0.0.1:${port}`, port, bodies, close: () => new Promise((r) => server.close(r)) });
+  }));
+}
+
+async function closedPort() {
+  const s = http.createServer();
+  await new Promise((r) => s.listen(0, '127.0.0.1', r));
+  const port = s.address().port;
+  await new Promise((r) => s.close(r));
+  return port;
+}
+
+test('scoped-rules-client: asks the announced server by the contract (files, session project, rule: prefix, text); a server without the route fails loud', async () => {
+  const client = require('./lib/scoped-rules-client.js');
+  const rig = reconnectRig();
+  const srv = await startScopedRulesServer(() => [200, { count: 1, rules: [{ id: 'rule:sempre:a', text: 'x' }] }]);
+  const old = await startScopedRulesServer(() => [404, {}]);
+  try {
+    client._resetDown();
+    rig.announce(srv);
+    const r = await client.lookupScopedRules({ files: ['src/a.ts'], projectId: 'proj-x', idPrefix: 'rule:' }, { runDir: rig.runDir });
+    assertEq(r.rules[0].id, 'rule:sempre:a');
+    assertEq(srv.bodies[0], { include_text: true, limit: 200, files: ['src/a.ts'], project_id: 'proj-x', id_prefix: 'rule:' });
+    await client.lookupScopedRules({ files: [] }, { runDir: rig.runDir });
+    assert(!('files' in srv.bodies[1]) && !('project_id' in srv.bodies[1]), 'no files: the field is omitted (an empty list is not a valid value)');
+    rig.announce(old);
+    let err = null; try { await client.lookupScopedRules({}, { runDir: rig.runDir }); } catch (e) { err = e; }
+    assert(err && err.code === 'LOOKUP_UNSUPPORTED' && /3\.0\.0/.test(err.message), err && err.message);
+  } finally { await srv.close(); await old.close(); rig.clear(); client._resetDown(); }
+});
+
+test('scoped-rules-client: ECONNREFUSED is retried a bounded number of times, re-reading the announcement — a brief restart does not drop the call; a server that stays down fails fast afterwards', async () => {
+  const client = require('./lib/scoped-rules-client.js');
+  assertEq(client.RETRY_DELAYS_MS, [250, 500, 1000], 'default backoff');
+  const rig = reconnectRig();
+  let srv = null;
+  try {
+    client._resetDown();
+    rig.announce({ url: `http://127.0.0.1:${await closedPort()}`, port: 1 });
+    setTimeout(async () => { srv = await startScopedRulesServer(() => [200, { count: 0, rules: [] }]); rig.announce(srv); }, 150);
+    const r = await client.lookupScopedRules({}, { runDir: rig.runDir, delays: [100, 200, 400] });
+    assertEq(r.rules, [], 'the restarted server on a new port answered the same call');
+    assertEq(srv.bodies.length, 1);
+    await srv.close();
+    const dead = await closedPort();
+    rig.announce({ url: `http://127.0.0.1:${dead}`, port: dead });
+    let tries = 0;
+    const counting = (url, init) => { tries++; return globalThis.fetch(url, init); };
+    let e1 = null; try { await client.lookupScopedRules({}, { runDir: rig.runDir, delays: [10, 20], fetchImpl: counting }); } catch (e) { e1 = e; }
+    assert(e1 && e1.code === 'MEMORY_SERVER_DOWN', e1 && e1.message);
+    assertEq(tries, 3, 'bounded: the first try plus one per backoff step');
+    const t0 = Date.now();
+    let e2 = null; try { await client.lookupScopedRules({}, { runDir: rig.runDir, delays: [10, 20], fetchImpl: counting }); } catch (e) { e2 = e; }
+    assert(e2 && e2.code === 'MEMORY_SERVER_DOWN' && /moments ago/.test(e2.message), e2 && e2.message);
+    assertEq(tries, 3, 'inside the down window nothing is tried');
+    assert(Date.now() - t0 < 100, 'and nothing is waited');
+  } finally { rig.clear(); client._resetDown(); }
+});
+
+test('graph client: a refused POST is sent again with bounded backoff — a brief daemon restart does not drop the call; a daemon that stays down fails with the count; other errors are not retried', async () => {
+  const { post, GraphError } = require('./lib/graph/client.js');
+  const refused = () => Object.assign(new TypeError('fetch failed'), { cause: Object.assign(new Error('connect ECONNREFUSED 127.0.0.1:1'), { code: 'ECONNREFUSED' }) });
+  const ctx = { root: os.tmpdir() };
+  let tries = 0;
+  const restarting = async () => { tries++; if (tries < 3) throw refused(); return new globalThis.Response(JSON.stringify({ state: 'ready' }), { status: 200 }); };
+  const r = await post('http://127.0.0.1:1', 'ingest', ctx, {}, { fetchImpl: restarting, refusedDelaysMs: [10, 20, 40] });
+  assertEq([r.status, r.json.state, tries], [200, 'ready', 3], 'the third try reached the restarted daemon');
+  tries = 0;
+  let e1 = null; try { await post('http://127.0.0.1:1', 'status', ctx, {}, { fetchImpl: async () => { tries++; throw refused(); }, refusedDelaysMs: [10, 20] }); } catch (e) { e1 = e; }
+  assert(e1 instanceof GraphError && e1.code === 'NETWORK' && /refused the connection 3 times \(ECONNREFUSED\)/.test(e1.message), e1 && e1.message);
+  assertEq(tries, 3, 'bounded: the first try plus one per backoff step');
+  tries = 0;
+  let e2 = null; try { await post('http://127.0.0.1:1', 'status', ctx, {}, { fetchImpl: async () => { tries++; throw new Error('boom'); }, refusedDelaysMs: [10, 20] }); } catch (e) { e2 = e; }
+  assert(e2 instanceof GraphError && /boom/.test(e2.message), e2 && e2.message);
+  assertEq(tries, 1, 'an error that may have reached the daemon is not sent again');
+});
+
+test('mcp-client: a brief restart is waited out with bounded probes — the refused call reaches the restarted server and the launcher is never started', async () => {
+  const McpClient = require('../engine/mcp-client.js');
+  const rig = reconnectRig();
+  const a = await startFakeDaemon();
+  let b = null, kicks = 0;
+  try {
+    rig.announce(a);
+    const c = new McpClient({ runDir: rig.runDir, timeout: 4000, restartMode: 'background', restartWaitMs: 0, kickLauncher: () => { kicks++; return false; } });
+    assertEq(c.refusedRetryDelaysMs, [250, 500, 1000], 'default backoff');
+    await c.connect();
+    await a.close();
+    setTimeout(async () => { b = await startFakeDaemon(); rig.announce(b); }, 400);
+    const r = await c.callTool('add_document', { content: 'x' });
+    assertEq(r.text, 'OK:add_document');
+    assertEq(b.seen.callCount, 1, 'the call was not dropped');
+    assertEq(kicks, 0, 'a brief restart does not start the launcher');
+    const d = new McpClient({ runDir: rig.runDir, refusedRetryDelaysMs: [10, 20] });
+    rig.announce({ url: `http://127.0.0.1:${await closedPort()}`, port: 1 });
+    let probes = 0;
+    d._httpHealth = async () => { probes++; return false; };
+    assertEq(await d._awaitRestartedServer(), false);
+    assertEq(probes, 3, 'bounded: one probe now plus one per backoff step');
+    c.close({ skipRemote: true });
+  } finally { if (b) await b.close(); rig.clear(); }
+});
+
+test('scope-rules: the hook is declared, served by the daemon with the origin in its visible text, evidence-fed and reset on compact/clear', async () => {
   const hooks = JSON.parse(fs.readFileSync(path.join(ROOT, 'hooks', 'hooks.json'), 'utf8')).hooks;
   const ups = hooks.UserPromptSubmit.flatMap((g) => g.hooks).filter((h) => h.tool === 'hook_scope_rules');
   assertEq(ups.length, 1, 'UserPromptSubmit carries one hook_scope_rules entry');
   const post = hooks.PostToolUse.filter((g) => g.hooks.some((h) => h.tool === 'hook_scope_rules'));
   assertEq(post.length, 1, 'PostToolUse carries one hook_scope_rules entry');
   assert(new RegExp(`^${post[0].matcher}$`).test('Read') && new RegExp(`^${post[0].matcher}$`).test('Edit'), 'evidence from Read and Edit');
-  assert(require('./lib/hook-tools.js').HOOKS.hook_scope_rules, 'the daemon serves hook_scope_rules');
+  const ht = require('./lib/hook-tools.js');
+  const spec = ht.HOOKS.hook_scope_rules;
+  assertEq(spec.origin, 'claude-code-boss', 'declared origin (mcp_tool: no command line to carry --hook-origin)');
+  const both = JSON.parse(await spec.call({ run: async () => ({ context: 'REGRAS', notice: '[hook-origin=claude-code-boss] aviso' }) }, { hook_event_name: 'UserPromptSubmit' }));
+  assertEq(both, { systemMessage: '[hook-origin=claude-code-boss] aviso', hookSpecificOutput: { hookEventName: 'UserPromptSubmit', additionalContext: 'REGRAS' } });
+  assertEq(await spec.call({ run: async () => ({ context: '', notice: '' }) }, { hook_event_name: 'UserPromptSubmit' }), '{}', 'nothing to say: empty reply');
+  const mod = require('./scope-rules-hook.js');
+  const real = mod.run;
+  mod.run = async () => { throw new Error('boom'); };
+  try {
+    const out = JSON.parse(await ht.runHookInline(ROOT, 'hook_scope_rules', { hook_event_name: 'UserPromptSubmit', session_id: 'sr-origin-test' }));
+    assert(out.systemMessage.startsWith('[hook-origin=claude-code-boss] [claude-code-boss] hook hook_scope_rules degradado') && out.systemMessage.includes('boom'), out.systemMessage);
+    assertEq(require('./lib/hook-owner.js').declaredOrigin({ output: out.systemMessage }), 'claude-code-boss');
+  } finally { mod.run = real; }
   const ss = fs.readFileSync(path.join(__dirname, 'session-start-dispatcher.js'), 'utf8');
-  assert(/scope-rules\.js'\)\.resetInjected\(event\.session_id\)/.test(ss), 'SessionStart compact/clear resets the scope record');
+  assert(/scope-rules\.js'\)\.resetInjected\(event\.session_id, \{ source: event\.source \}\)/.test(ss), 'SessionStart compact/clear resets the scope record, keeping the source as the next reason');
   assert(/scope-rules\.js'\)\.forget\(sid/.test(fs.readFileSync(path.join(__dirname, 'session-end.js'), 'utf8')), 'SessionEnd forgets the record');
   const cfg = require('./lib/hooks-config.js');
   assertEq(cfg.getScopeRules(), { enabled: true, maxChars: 2000 });

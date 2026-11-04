@@ -19,6 +19,7 @@
 const { resolve: pathResolve } = require('path');
 const { realpathSync, existsSync } = require('fs');
 const { homedir } = require('os');
+const { RETRY_DELAYS_MS, isRefused, refusedCode, sleep } = require('../refused-retry.js');
 
 class GraphError extends Error {
   constructor(status, code, message, extra = {}) {
@@ -86,15 +87,28 @@ async function graphBase({ discover, fetchImpl = globalThis.fetch } = {}) {
  * Raw POST to a subpath. Returns { status, json }. Throws GraphError on 4xx/5xx (structured body).
  * 200 (incl. non-ready reads {state,hint}) and 202 (ingest accepted) are success.
  */
-async function post(base, sub, ctx, extra = {}, { fetchImpl = globalThis.fetch, timeoutMs = 15000 } = {}) {
+async function post(base, sub, ctx, extra = {}, { fetchImpl = globalThis.fetch, timeoutMs = 15000, refusedDelaysMs = RETRY_DELAYS_MS } = {}) {
   const body = { path: ctx.root, ...extra };
   const ctrl = new AbortController();
   const t = setTimeout(() => ctrl.abort(), timeoutMs);
   try {
-    const res = await fetchImpl(`${base}/api/v1/graph/${sub}`, {
+    const send = () => fetchImpl(`${base}/api/v1/graph/${sub}`, {
       method: 'POST', headers: { 'content-type': 'application/json' },
       body: JSON.stringify(body), signal: ctrl.signal,
     });
+    // A refused connection never reached the daemon, so even an ingest is safe to send again.
+    let res;
+    for (let i = 0; !res; i++) {
+      try {
+        res = await send();
+      } catch (e) {
+        if (!isRefused(e) || i >= refusedDelaysMs.length || ctrl.signal.aborted) {
+          if (i && isRefused(e)) throw new GraphError(0, 'NETWORK', `the memory daemon refused the connection ${i + 1} times (${refusedCode(e)}): it is down or still restarting`);
+          throw e;
+        }
+        await sleep(refusedDelaysMs[i]);
+      }
+    }
     // timeout still ACTIVE here → also bounds reading the BODY (not just headers). clearTimeout in finally.
     let json = null;
     try { json = await res.json(); } catch (e) { void e; /* non-JSON body */ }

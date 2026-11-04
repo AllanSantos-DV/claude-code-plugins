@@ -148,7 +148,7 @@ async function main() {
   // (lib/session-root.js) — hand it over by session_id.
   require('./lib/session-root.js').recordSessionRoot(event.session_id, process.env.CLAUDE_PROJECT_DIR, { projectId: process.env.CCB_PROJECT_ID, pluginRoot: process.env.CLAUDE_PLUGIN_ROOT });
   if (event.source === 'compact' || event.source === 'clear') require('./lib/glob-injected.js').reset(event.session_id);
-  if (event.source === 'compact' || event.source === 'clear') require('./lib/scope-rules.js').resetInjected(event.session_id);
+  if (event.source === 'compact' || event.source === 'clear') require('./lib/scope-rules.js').resetInjected(event.session_id, { source: event.source });
   try { require('./lib/plugin-dir-heal.js').healOpenSessions(); } catch (err) { console.error(`[claude-code-boss:session-start-dispatcher] plugin dir heal: ${err.message}`); }
   const text = await dispatch(event);
   if (text) {

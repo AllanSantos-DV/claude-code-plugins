@@ -20,7 +20,7 @@ const AMBIGUOUS_CODES = new Set(['ECONNRESET', 'ETIMEDOUT', 'EPIPE', 'ECONNABORT
 /** mcp-memory tools that change nothing: always safe to repeat. Anything else counts as a write. */
 const READ_TOOLS = new Set([
   'search_memory', 'get_context', 'compose_recall', 'get_document', 'get_recent',
-  'list_documents', 'summarize_memory', 'get_project',
+  'list_documents', 'summarize_memory', 'get_project', 'lookup_scoped_rules',
 ]);
 
 /** @returns {'undelivered'|'ambiguous'|null} how a transport error relates to delivery of the request. */
@@ -72,6 +72,24 @@ class McpClient extends EventEmitter {
     this.restartTimeoutMs = Number.isFinite(opts.restartTimeoutMs) ? opts.restartTimeoutMs : 60000;
     this.restartCooldownMs = Number.isFinite(opts.restartCooldownMs) ? opts.restartCooldownMs : 60000;
     this._lastRestartAt = 0;
+    // Backoff of the probes after a refused connection, before the launcher may be started.
+    this.refusedRetryDelaysMs = Array.isArray(opts.refusedRetryDelaysMs) ? opts.refusedRetryDelaysMs : [250, 500, 1000];
+  }
+
+  /**
+   * A refused connection is usually the server restarting: probe the announced server now and then
+   * after each backoff step, so a brief restart is waited out instead of starting the launcher.
+   * @param {AbortSignal} [signal] the caller's cancellation, checked between probes
+   * @returns {Promise<boolean>} true when an announced server answered healthy
+   */
+  async _awaitRestartedServer(signal) {
+    for (const ms of [0, ...this.refusedRetryDelaysMs]) {
+      if (ms) await new Promise((r) => setTimeout(r, ms));
+      if (signal && signal.aborted) return false;
+      const url = this.serverUrl || this._discoverDaemonUrl();
+      if (url && await this._httpHealth(url)) return true;
+    }
+    return false;
   }
 
   async connect() {
@@ -320,6 +338,7 @@ class McpClient extends EventEmitter {
         }
         if (kind) {
           console.error(`[MCP] Connection error (${err.code || err.message}), re-discovering daemon URL and retrying once`);
+          if (kind === 'undelivered') await this._awaitRestartedServer(opts.signal);
           try {
             await this._reconnect(err.code || err.message);
           } catch (reconnectErr) {
