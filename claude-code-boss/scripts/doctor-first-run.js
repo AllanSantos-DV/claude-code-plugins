@@ -20,8 +20,8 @@ const { runTextCli } = require('./lib/hook-io.js');
 
 const AUTO_FIXERS = ['fixed-cost', 'boss-config'];
 
-// The transcripts of 30 days can total gigabytes; the scan keeps the newest ones within this budget.
-const SCAN_BUDGET_MS = 10000;
+// The history of 30 days can total gigabytes; the transcript, compaction and sub-agent reads share this budget, newest first.
+const SCAN_BUDGET_MS = 9000;
 
 // What the user must be told was turned off (the boss's own settings fixes are not "diverted" items).
 const TURNED_OFF_LABEL = {

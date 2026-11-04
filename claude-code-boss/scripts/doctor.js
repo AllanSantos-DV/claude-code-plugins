@@ -670,6 +670,8 @@ function bossPluginId(settings) {
  * `probe` runs the embedder load test; `audit` measures the fixed cost (reads 30 days of transcripts: seconds, so opt-in).
  */
 async function gatherContext({ probe = false, audit = false, scanBudgetMs } = {}) {
+  // One time budget for the three history reads, split by how much each one tells the doctor.
+  const share = (f) => (scanBudgetMs === undefined ? undefined : Math.round(scanBudgetMs * f));
   const root = process.env.CLAUDE_PLUGIN_ROOT || '';
   const data = dataDir();
   const activeDataResolved = process.env.CLAUDE_PLUGIN_DATA || '';
@@ -726,7 +728,7 @@ async function gatherContext({ probe = false, audit = false, scanBudgetMs } = {}
   if (audit) {
     try {
       const cfg = hooksCfg.getFixedCost();
-      fixedCost = await fc.runAudit({ home, cwd: process.env.CLAUDE_PROJECT_DIR || process.cwd(), days: cfg.days, keep: cfg.keep, scanBudgetMs });
+      fixedCost = await fc.runAudit({ home, cwd: process.env.CLAUDE_PROJECT_DIR || process.cwd(), days: cfg.days, keep: cfg.keep, scanBudgetMs: share(0.5) });
     } catch (e) { console.error(`[doctor] fixed cost: ${e.message}`); fixedCost = { error: e.message }; }
   }
 
@@ -734,7 +736,7 @@ async function gatherContext({ probe = false, audit = false, scanBudgetMs } = {}
   if (audit) {
     try {
       const cr = require('./lib/compaction-report.js');
-      const rows = cr.loadCompactionRows({ days: 30, budgetMs: scanBudgetMs });
+      const rows = cr.loadCompactionRows({ days: 30, budgetMs: share(0.2) });
       compaction = cr.summarizeCompaction(rows).episodes;
       if (rows.partial) compaction.partial = true;
     } catch (e) { console.error(`[doctor] compaction history: ${e.message}`); compaction = { error: e.message }; }
@@ -749,7 +751,7 @@ async function gatherContext({ probe = false, audit = false, scanBudgetMs } = {}
       if (!bin) claudeCompat = { skipped: 'no Claude Code binary found (set CLAUDE_CODE_EXECPATH)' };
       else { const r = cc.check(bin); claudeCompat = { version: r.version, total: r.rows.length, missing: r.rows.filter((x) => !x.present) }; }
     } catch (e) { console.error(`[doctor] claude compat: ${e.message}`); claudeCompat = { error: e.message }; }
-    try { const runs = require('./subagent-report.js').subagentRuns(30, { budgetMs: scanBudgetMs }); subagents = require('./lib/subagent-usage.js').summarizeSubagents(runs); if (runs.partial) subagents.partial = true; }
+    try { const runs = require('./subagent-report.js').subagentRuns(30, { budgetMs: share(0.3) }); subagents = require('./lib/subagent-usage.js').summarizeSubagents(runs); if (runs.partial) subagents.partial = true; }
     catch (e) { console.error(`[doctor] sub-agent contexts: ${e.message}`); subagents = { error: e.message }; }
   }
 

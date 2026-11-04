@@ -22617,6 +22617,19 @@ test('subagent-report.subagentRuns: a spent budget reads no transcript and flags
   }
 });
 
+test('doctor.gatherContext: the first-run budget reaches the transcript and sub-agent reads (a spent budget flags both partial)', async () => {
+  const doctor = require('./doctor.js');
+  const home = os.homedir();
+  assert(home.startsWith(os.tmpdir()), `the suite's temp HOME, never the real one (${home})`);
+  const proj = path.join(home, '.claude', 'projects', 'p');
+  fcWrite(path.join(proj, 's1.jsonl'), '{}\n');
+  fcWrite(path.join(proj, 's1', 'subagents', 'agent-1.jsonl'), '{}\n');
+  const ctx = await doctor.gatherContext({ probe: false, audit: true, scanBudgetMs: -100 });
+  assert(ctx.fixedCost.errors.some((e) => e.includes('budget')), 'the transcript scan stopped at its budget');
+  assertEq(ctx.subagents.partial, true);
+  fs.rmSync(proj, { recursive: true, force: true });
+});
+
 test('skill promotion (Q44): the user override of kb.skillPromotion reaches brain-promote and the dashboard (not only the shipped file)', () => {
   const bc = require('../engine/lib/brain-config.js');
   const file = path.join(require('../engine/lib/data-dir.js').globalDir(), 'user-config.json');
