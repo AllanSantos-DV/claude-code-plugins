@@ -3,22 +3,22 @@
 <head>
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
-<title>claude-code-boss v3.14.4 — detalhes técnicos</title>
-<meta name="description" content="Detalhes técnicos do claude-code-boss v3.14.4: daemon HTTP, hooks, Brain KB, Model Router Anthropic/OpenAI, MCP Memory, graph tools e dashboard." />
+<title>claude-code-boss v3.15.0 — detalhes técnicos</title>
+<meta name="description" content="Detalhes técnicos do claude-code-boss v3.15.0: daemon HTTP, hooks, Brain KB, Model Router Anthropic/OpenAI, MCP Memory, graph tools e dashboard." />
 <link rel="canonical" href="https://allansantos-dv.github.io/claude-code-plugins/claude-code-boss/tech.html">
 <meta property="og:type" content="website">
 <meta property="og:site_name" content="allansantos-plugins">
 <meta property="og:locale" content="pt_BR">
-<meta property="og:title" content="claude-code-boss v3.14.4 — detalhes técnicos">
-<meta property="og:description" content="Detalhes técnicos do claude-code-boss v3.14.4: daemon HTTP, hooks, Brain KB, Model Router Anthropic/OpenAI, MCP Memory, graph tools e dashboard.">
+<meta property="og:title" content="claude-code-boss v3.15.0 — detalhes técnicos">
+<meta property="og:description" content="Detalhes técnicos do claude-code-boss v3.15.0: daemon HTTP, hooks, Brain KB, Model Router Anthropic/OpenAI, MCP Memory, graph tools e dashboard.">
 <meta property="og:url" content="https://allansantos-dv.github.io/claude-code-plugins/claude-code-boss/tech.html">
 <meta property="og:image" content="https://allansantos-dv.github.io/claude-code-plugins/claude-code-boss/og-card.jpg">
 <meta property="og:image:width" content="1200">
 <meta property="og:image:height" content="630">
 <meta property="og:image:alt" content="claude-code-boss: Menos repetição. Mais memória.">
 <meta name="twitter:card" content="summary_large_image">
-<meta name="twitter:title" content="claude-code-boss v3.14.4 — detalhes técnicos">
-<meta name="twitter:description" content="Detalhes técnicos do claude-code-boss v3.14.4: daemon HTTP, hooks, Brain KB, Model Router Anthropic/OpenAI, MCP Memory, graph tools e dashboard.">
+<meta name="twitter:title" content="claude-code-boss v3.15.0 — detalhes técnicos">
+<meta name="twitter:description" content="Detalhes técnicos do claude-code-boss v3.15.0: daemon HTTP, hooks, Brain KB, Model Router Anthropic/OpenAI, MCP Memory, graph tools e dashboard.">
 <meta name="twitter:image" content="https://allansantos-dv.github.io/claude-code-plugins/claude-code-boss/og-card.jpg">
 <script data-ccb-theme-script>
 /* Shared theme; executed before styles and first paint. */
@@ -274,14 +274,14 @@ html{scroll-behavior:auto}
   <nav class="nav-links">
     <a href="index.html">← Apresentação</a>
     <a href="https://github.com/AllanSantos-DV/claude-code-plugins/blob/main/claude-code-boss/README.md">README</a>
-    <a href="#top" class="ver">v3.14.4</a>
+    <a href="#top" class="ver">v3.15.0</a>
   </nav>
 <div class="ccb-theme" role="group" aria-label="Tema"><button type="button" data-ccb-theme="dark" aria-pressed="true">Dark</button><button type="button" data-ccb-theme="light" aria-pressed="false">Light</button></div>
 </header>
 
 <main class="wrap" id="top">
   <div class="page-head">
-    <p class="kick">documentação técnica · v3.14.4</p>
+    <p class="kick">documentação técnica · v3.15.0</p>
     <h1>Arquitetura e funcionamento interno</h1>
     <p class="intro">Para quem quer saber <b>como funciona por baixo</b>: daemon HTTP único, pipeline de hooks, Brain KB em 3 camadas, Model Router Anthropic/OpenAI, backend MCP Memory, exploração de repositório por grafo e dashboard. Fontes: <a href="https://github.com/AllanSantos-DV/claude-code-plugins/blob/main/claude-code-boss/README.md">README</a> e <a href="https://github.com/AllanSantos-DV/claude-code-plugins/blob/main/claude-code-boss/CHANGELOG.md">CHANGELOG</a>.</p>
     <div class="toc">
@@ -358,6 +358,7 @@ html{scroll-behavior:auto}
     </div>
 
     <div class="callout"><b>Captura de lição in-loop:</b> quando o usuário corrige, o agente chama a tool MCP <code>capture_lesson</code> com a lição curada — admission control inline (dedup/merge → recurrence), sem reler transcript, sem subagente caro. <b>Tom advisory:</b> os hooks informam, não coagem.</div>
+    <div class="callout"><b>Falha assinada e Stop sem espera:</b> o texto degradado de qualquer hook <code>mcp_tool</code> declara <code>[hook-origin=claude-code-boss]</code> (<code>scripts/lib/hook-tools.js</code>). Depois de reiniciar o daemon, a primeira leitura do resumo da faixa (<code>scripts/boss-summary.js</code>) avança em partes de 2 s entre os polls, em vez de abrir o banco de métricas de cada projeto (~15 s) de uma vez na fila do hook Stop; a faixa (<code>hooks/boss.mjs</code>) segue o id da sessão nova depois do <code>/clear</code>.</div>
   </section>
 
   <section id="scope-rules">
@@ -372,6 +373,7 @@ html{scroll-behavior:auto}
         <li><b>Reset (SessionStart):</b> com <code>source</code> <code>compact</code> ou <code>clear</code> o que foi entregue é zerado e a regra volta no prompt seguinte (318 caracteres re-entregues após um compact medido). O fim da sessão apaga o estado.</li>
         <li><b>Limites:</b> regra acima de <code>scopeRules.maxChars</code> (2000) é cortada com marca visível. Documento <code>rule:</code> com id ou conteúdo inválido é recusado.</li>
         <li><b>Journal:</b> recusas e entregas (ids e caracteres) vão para <code>.runtime/scope-rules.jsonl</code>; falha de leitura aparece como hook degradado.</li>
+        <li><b>Lookup por arquivo:</b> em vez de listar todos os documentos, o cliente (<code>scripts/lib/scoped-rules-client.js</code>) chama <code>POST /api/v1/scoped-rules/lookup</code> no mcp-memory com o projeto da sessão e só os arquivos tocados. Tentativas e esperas dividem um orçamento de 4 s, abaixo do limite de 5 s do hook; o conjunto entregue num prompt tem teto de 4000 caracteres, e o excedente vai no prompt seguinte. Precisa do mcp-memory 3.0.0+; em versão anterior o aviso diz isso uma vez.</li>
         <li><b>Config:</b> o perfil <code>free</code> desliga; <code>scopeRules.enabled</code> e <code>scopeRules.maxChars</code> ajustam. Módulos: <code>scripts/lib/scope-rules.js</code> e <code>scripts/scope-rules-hook.js</code>.</li>
       </ul>
     </div>
@@ -460,6 +462,7 @@ html{scroll-behavior:auto}
       <ul class="tight">
         <li><b>local (padrão):</b> SQLite no <code>DATA_DIR/brain/&lt;projeto&gt;/brain.db</code> — zero servidor externo. Tem memória, recall, lições, curadoria e políticas. <b>Não tem</b> as tools que só o servidor entrega: grafo de código (<code>graph_*</code>), recall em dois níveis (<code>compose_recall</code>), ingestão de conversa e migração.</li>
         <li><b>mcp-memory (integrado):</b> o mesmo plugin passa a usar o servidor de memória (native-java) e <b>ganha essas ferramentas</b>. HTTP com auto-discovery via <code>~/.mcp-memory/run/daemon.json</code>; ingestão opt-in; <b>Migrar agora</b> leva o acervo local para o servidor projeto a projeto (idempotente, fail-loud).</li>
+        <li><b>Reconexão:</b> conexão recusada é tentada de novo em 250, 500 e 1000 ms antes de acionar o lançador ou falhar (<code>engine/mcp-client.js</code>, cliente das regras, cliente do grafo) e relê o anúncio do daemon, aceitando o endereço novo só depois de um teste de saúde; chamadas simultâneas compartilham uma redescoberta. Daemon fora do ar: o lançador é acionado uma vez por queda, sem laço. Leituras são repetidas após reset ou timeout; uma escrita que pode ter sido entregue (inclusive um pedido de indexação do grafo) não é reenviada, só a recusa é repetida.</li>
         <li><b>O agente ativa para você:</b> no backend local o agente é avisado do que está desligado. Ele pergunta se você já roda um servidor em outro host (aponta para o endereço, sem instalar nada); se você não souber, reaproveita o servidor que já roda na máquina (instalado por plugins irmãos — nunca um segundo) ou o instala: <code>backend_status</code>, <code>backend_setup</code> (confere Java 21+ e dá o comando de instalação do seu sistema se faltar), <code>backend_setup_status</code>. Ele mostra a versão do servidor e atualiza só com o seu OK (<code>backend_update</code>). Pelo Dashboard, o mesmo assistente roda no botão <b>Activate Server</b>.</li>
         <li><b>Auto-update HTTP:</b> no <code>SessionStart</code>, consulta <code>check_update</code> no máximo uma vez por 24h e chama <code>update</code> uma vez, sem retry, sob lock cross-process. Um <code>serverUrl</code> remoto exige <code>autoUpdate.allowRemote=true</code> e nunca usa o fallback local. Se a nova versão falha no boot, o caminho local restaura o JAR anterior e confirma a versão restaurada em <code>/health.version</code> antes de reportar rollback concluído.</li>
         <li><b>Backup:</b> o Dashboard (aba Brain) guarda tudo o que o plugin aprendeu num <code>.tar.gz</code> (bancos SQLite em snapshot <code>VACUUM INTO</code>, sem modelos nem segredos) e restaura em outra máquina, com cópia de segurança antes. Os dados do servidor entram quando ele oferecer <code>backup_export</code>/<code>backup_import</code> (contrato em <code>docs/BACKUP-CONTRACT.md</code>).</li>
@@ -601,7 +604,7 @@ html{scroll-behavior:auto}
       <a href="changelog.html">Changelog</a>
       <a href="https://github.com/AllanSantos-DV/claude-code-plugins">GitHub</a>
     </div>
-    <div class="legal">MIT · Allan Santos · claude-code-boss v3.14.4</div>
+    <div class="legal">MIT · Allan Santos · claude-code-boss v3.15.0</div>
   </div>
 </footer>
 
