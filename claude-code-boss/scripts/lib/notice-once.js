@@ -5,7 +5,8 @@
  * A down brain daemon used to be reported on every prompt of every session. The ledger keeps,
  * per `key`, the signature of the failure already shown: the same signature stays silent until
  * `recovered(key)` clears it or a different failure arrives. Silence only trims the screen —
- * every call, shown or not, appends its full detail to `brain-notices.log` in the data dir.
+ * every call, shown or not, appends its full detail to `brain-notices.log` in the data dir
+ * (size-capped, rotated by engine/lib/log-rotate.js).
  */
 const fs = require('fs');
 const path = require('path');
@@ -25,8 +26,7 @@ function readLedger(base) {
 /** Full detail to the log, whatever the screen shows. Never throws. */
 function logDetail(line, { base } = {}) {
   try {
-    fs.mkdirSync(path.dirname(logFile(base)), { recursive: true });
-    fs.appendFileSync(logFile(base), `${new Date().toISOString()} ${line}\n`);
+    require('../../engine/lib/log-rotate.js').appendRotating(logFile(base), `${new Date().toISOString()} ${line}`);
   } catch (err) { console.error(`[notice-once] log failed (${logFile(base)}): ${err.message}`); }
 }
 

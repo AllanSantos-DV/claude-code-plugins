@@ -66,7 +66,7 @@ function createBackupRoutes({ pluginRoot, dataDir, globalDir, json, fail, deps =
   /** Stop the brain daemon (it holds the stores open); clients respawn it on reconnect. */
   async function stopBrainDaemon() {
     if (deps.stopBrainDaemon) return deps.stopBrainDaemon();
-    const port = Number(process.env.BRAIN_HTTP_PORT) || 38217;
+    const port = require('./lib/brain-port.js').brainPort();
     const health = async () => { try { return (await fetch(`http://127.0.0.1:${port}/health`, { signal: AbortSignal.timeout(1500) })).ok; } catch (err) { void err; return false; } };
     if (!(await health())) return false;
     let token = '';

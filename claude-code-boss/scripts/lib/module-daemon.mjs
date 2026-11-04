@@ -119,7 +119,9 @@ export async function localDataDir($, label) {
  */
 export async function daemon($, holder, refresh = false, label = 'boss') {
   if (holder.daemon && !refresh) return holder.daemon;
-  const port = Number(await $.env.get('BRAIN_HTTP_PORT')) || 38217;
+  // Same rule as lib/brain-port.js; a function-hook module has no require.
+  const e = Number(await $.env.get('BRAIN_HTTP_PORT'));
+  const port = e > 0 && e <= 65535 ? e : 38217;
   const base = `http://127.0.0.1:${port}`;
   const local = await localDataDir($, label);
   if (!local) throw new Error('boss data dir unknown (no CLAUDE_PLUGIN_DATA, no published pointer) — not reading the token');

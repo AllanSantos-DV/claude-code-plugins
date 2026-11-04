@@ -9867,6 +9867,33 @@ test('scoped-rules-client: ECONNREFUSED is retried a bounded number of times, re
   } finally { rig.clear(); client._resetDown(); }
 });
 
+test('brain-port: the clients read BRAIN_HTTP_PORT with the daemon rule (1..65535, else 38217), never a bare Number() || 38217', () => {
+  const { brainPort } = require('./lib/brain-port.js');
+  assertEq([brainPort({}), brainPort({ BRAIN_HTTP_PORT: '40001' }), brainPort({ BRAIN_HTTP_PORT: '70000' }), brainPort({ BRAIN_HTTP_PORT: '-5' }), brainPort({ BRAIN_HTTP_PORT: 'x' })],
+    [38217, 40001, 38217, 38217, 38217], 'same answers as daemon-common resolvePort');
+  for (const f of ['user-prompt-submit-dispatcher.js', 'dashboard-backup.js', 'dashboard.js', 'brain-health.js']) {
+    const src = fs.readFileSync(path.join(SCRIPTS, f), 'utf8');
+    assert(!/Number\(process\.env\.BRAIN_HTTP_PORT\)\s*\|\|\s*38217/.test(src), `${f} parses the port without the range check`);
+  }
+  const mod = fs.readFileSync(path.join(SCRIPTS, 'lib', 'module-daemon.mjs'), 'utf8');
+  assert(!/Number\(await \$\.env\.get\('BRAIN_HTTP_PORT'\)\)\s*\|\|\s*38217/.test(mod) && /e > 0 && e <= 65535/.test(mod), 'module-daemon.mjs applies the same range rule');
+});
+
+test('graph client: an ingest whose connection was reset is not sent again (the daemon may have stored it); a reset read is retried', async () => {
+  const { post } = require('./lib/graph/client.js');
+  const reset = () => Object.assign(new TypeError('fetch failed'), { cause: Object.assign(new Error('read ECONNRESET'), { code: 'ECONNRESET' }) });
+  const ctx = { root: os.tmpdir() };
+  let tries = 0;
+  let err = null;
+  try { await post('http://127.0.0.1:1', 'ingest', ctx, {}, { fetchImpl: async () => { tries++; throw reset(); }, refusedDelaysMs: [10, 20] }); } catch (e) { err = e; }
+  assert(err && /fetch failed/.test(err.message), err && err.message);
+  assertEq(tries, 1, 'a reset ingest is sent once');
+  tries = 0;
+  const flaky = async () => { tries++; if (tries < 2) throw reset(); return new globalThis.Response(JSON.stringify({ state: 'ready' }), { status: 200 }); };
+  const r = await post('http://127.0.0.1:1', 'status', ctx, {}, { fetchImpl: flaky, refusedDelaysMs: [10, 20] });
+  assertEq([r.status, tries], [200, 2], 'a reset read is retried');
+});
+
 test('graph client: a refused POST is sent again with bounded backoff — a brief daemon restart does not drop the call, a daemon that moved port is followed; a daemon that stays down fails with the count; other errors are not retried', async () => {
   const { post, GraphError } = require('./lib/graph/client.js');
   const refused = () => Object.assign(new TypeError('fetch failed'), { cause: Object.assign(new Error('connect ECONNREFUSED 127.0.0.1:1'), { code: 'ECONNREFUSED' }) });
@@ -9969,6 +9996,19 @@ test('notice-once: a failure is shown once per owner; repeats are silent but ful
     const log = fs.readFileSync(no.logFile(base), 'utf8');
     assertEq((log.match(/repeat \(silent\) k \[a\]: cause a/g) || []).length, 2, 'every silent repeat keeps its detail in the log');
     assert(/recovered k/.test(log), 'recovery is logged');
+  } finally { fs.rmSync(base, { recursive: true, force: true }); }
+});
+
+test('notice-once: the detail log rotates at its size cap, so a long outage logging every prompt never grows it without bound', () => {
+  const no = require('./lib/notice-once.js');
+  const { DEFAULT_MAX_BYTES } = require('../engine/lib/log-rotate.js');
+  const base = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-notice-cap-'));
+  try {
+    fs.writeFileSync(no.logFile(base), 'x'.repeat(DEFAULT_MAX_BYTES));
+    no.notice({ key: 'k', signature: 'a', text: 'fora do ar', detail: 'cause a', base });
+    assert(fs.statSync(no.logFile(base)).size < 1024, 'a fresh log starts past the cap');
+    assertEq(fs.statSync(`${no.logFile(base)}.1`).size, DEFAULT_MAX_BYTES, 'the full one is kept as .1');
+    assert(/shown k \[a\]: cause a/.test(fs.readFileSync(no.logFile(base), 'utf8')), 'the new line is in the fresh log');
   } finally { fs.rmSync(base, { recursive: true, force: true }); }
 });
 
@@ -17246,6 +17286,8 @@ test('http-daemon: hook_* tools are NOT in tools/list (model never sees them) bu
     const names = list.json.result.tools.map((t) => t.name);
     assert(!names.some((n) => n.startsWith('hook_')), `hook_* must not be listed, got ${names.filter((n) => n.startsWith('hook_')).join(',')}`);
     assert(names.includes('brain_search') && names.includes('capture_lesson'), 'model-facing tools stay listed');
+    const minScoreDoc = list.json.result.tools.find((t) => t.name === 'brain_search').inputSchema.properties.minScore.description;
+    assert(!/0\.2\b/.test(minScoreDoc) && /memory server/.test(minScoreDoc) && /0\.05/.test(minScoreDoc), `brain_search minScore states the defaults the code applies: ${minScoreDoc}`);
     // Every listed tool declares BOTH hints from the explicit classification in mcp-server.js
     // (a new tool must be classified there — the default would be destructive + logged).
     const hints = Object.fromEntries(list.json.result.tools.map((t) => [t.name, t.annotations]));

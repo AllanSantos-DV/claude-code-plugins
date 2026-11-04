@@ -123,7 +123,7 @@ async function dispatch(event, opts = {}) {
 
 async function linkNoticeFor(event) {
   if (!event.session_id || !event.cwd || require('./lib/prompt-kind.js').isSyntheticPrompt(event.prompt)) return null;
-  const port = Number(process.env.BRAIN_HTTP_PORT) || 38217;
+  const port = require('./lib/brain-port.js').brainPort();
   try {
     const link = await require('./lib/mcp-link.js').linkNotice({
       sessionId: event.session_id,

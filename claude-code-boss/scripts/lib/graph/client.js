@@ -19,7 +19,7 @@
 const { resolve: pathResolve } = require('path');
 const { realpathSync, existsSync } = require('fs');
 const { homedir } = require('os');
-const { RETRY_DELAYS_MS, isRefused, refusedCode, sleep } = require('../refused-retry.js');
+const { RETRY_DELAYS_MS, isRefused, neverReached, refusedCode, sleep } = require('../refused-retry.js');
 
 class GraphError extends Error {
   constructor(status, code, message, extra = {}) {
@@ -99,14 +99,15 @@ async function post(base, sub, ctx, extra = {}, { fetchImpl = globalThis.fetch, 
       method: 'POST', headers: { 'content-type': 'application/json' },
       body: JSON.stringify(body), signal: ctrl.signal,
     });
-    // A refused connection never reached the daemon, so even an ingest is safe to send again.
+    // A reset ingest may already be stored, so a write is sent again only when it never reached the daemon.
+    const retryable = sub === 'ingest' ? neverReached : isRefused;
     let res;
     for (let i = 0; !res; i++) {
       try {
         res = await send();
       } catch (e) {
-        if (!isRefused(e) || i >= refusedDelaysMs.length || ctrl.signal.aborted) {
-          if (i && isRefused(e)) throw new GraphError(0, 'NETWORK', `the memory daemon refused the connection ${i + 1} times (${refusedCode(e)}): it is down or still restarting`);
+        if (!retryable(e) || i >= refusedDelaysMs.length || ctrl.signal.aborted) {
+          if (i && retryable(e)) throw new GraphError(0, 'NETWORK', `the memory daemon refused the connection ${i + 1} times (${refusedCode(e)}): it is down or still restarting`);
           throw e;
         }
         await sleep(refusedDelaysMs[i]);
