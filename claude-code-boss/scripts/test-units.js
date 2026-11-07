@@ -22617,6 +22617,22 @@ test('capture-dispatch (FIX #6): an ack drains the offer so a LATER offer starts
   t.cq.reset(t.project, t.sid);
 });
 
+test('capture-dispatch: the cooldown between offers follows the injected clock', () => {
+  const t = _capRelentSeed(12, true);
+  const cooldownMs = 60000;
+  const config = { maxBlockAttempts: 5, cooldownMs, maxCapturesPerSession: 50 };
+  const r1 = t.cd.run(t.evt, { config });
+  assert(r1 && r1.block === true, 'the first offer opens');
+  const first = t.cq.getState(t.project, t.sid);
+  t.cq.recordAck(first.offer.windowId, 'captured');
+  const inside = t.cd.run(t.evt, { config, now: () => first.lastOfferTs + cooldownMs - 1 });
+  assert(!inside.block, 'inside the cooldown no new offer opens');
+  assert(!t.cq.getState(t.project, t.sid).offer, 'and nothing is left open');
+  const after = t.cd.run(t.evt, { config, now: () => first.lastOfferTs + cooldownMs + 1 });
+  assert(after && after.block === true, 'once the cooldown has passed the next offer opens');
+  t.cq.reset(t.project, t.sid);
+});
+
 // ─── capture-queue (Phase 1.5a: durable redacted cycle queue) ────────────────
 test('capture-queue: ingest extracts + redacts cycles into a durable queue and advances the scan cursor', () => {
   const q = require('./lib/capture-queue.js');

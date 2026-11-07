@@ -204,10 +204,11 @@ function run(event, deps) {
   // Another detector already blocks this Stop: the offer rides that block instead of costing its own
   // turn on a later Stop, so the cadence (cooldown + shouldFire) is not waited for.
   const ride = !!(deps && deps.blockPending);
-  if (!ride && st.lastOfferTs && (Date.now() - st.lastOfferTs) < bounds.cooldownMs) return {};
+  const now = deps && typeof deps.now === 'function' ? deps.now() : Date.now();
+  if (!ride && st.lastOfferTs && (now - st.lastOfferTs) < bounds.cooldownMs) return {};
   const queueChars = renderBlock(st.queue, 1e9).length;
   const decision = ride ? { fire: true, reason: 'rides-block' } : shouldFire(
-    { cycles: st.queue.length, chars: queueChars, model, capturesThisSession: st.offers || 0, lastCaptureTs: st.lastOfferTs || 0 },
+    { cycles: st.queue.length, chars: queueChars, model, capturesThisSession: st.offers || 0, lastCaptureTs: st.lastOfferTs || 0, now },
     bounds,
   );
   if (!decision.fire) return {};
