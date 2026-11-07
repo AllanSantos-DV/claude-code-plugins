@@ -19321,8 +19321,9 @@ test('leitores: curation summary conta bloqueios do Stop, correcao de escape (br
     // one stuck window relented on every Stop before the relent fix: still ONE offer given up
     { eventName: 'capture.relented', payload: { windowId: 'c' }, ts: 6 }, { eventName: 'capture.relented', payload: { windowId: 'c' }, ts: 7 },
     { eventName: 'capture.adopted', payload: { cycles: 7 }, ts: 7 },
+    { eventName: 'capture.pruned', payload: { files: 2 }, ts: 8 }, { eventName: 'capture.pruned', payload: { files: 1 }, ts: 9 },
   ]).funnel;
-  assertEq(f, { offered: 4, untracked: 0, acked: 2, ackedNone: 1, relented: 1, open: 1, reoffered: 1, adopted: 1, adoptedCycles: 7 });
+  assertEq(f, { offered: 4, untracked: 0, acked: 2, ackedNone: 1, relented: 1, open: 1, reoffered: 1, adopted: 1, adoptedCycles: 7, pruned: 3 });
   // offers from a build that never recorded the answer (no ackTracked) are not read as unanswered
   const old = aggregateCaptureRate([
     { eventName: 'capture.offered', payload: { windowId: 'x' }, ts: 1 }, { eventName: 'capture.offered', payload: { windowId: 'y' }, ts: 2 },
@@ -19330,7 +19331,7 @@ test('leitores: curation summary conta bloqueios do Stop, correcao de escape (br
   ]).funnel;
   assertEq([old.offered, old.untracked, old.acked, old.relented, old.open], [3, 2, 1, 0, 0]);
   const dash = fs.readFileSync(path.join(ROOT, 'scripts', 'dashboard.js'), 'utf8');
-  assert(/CAPTURE_FUNNEL_EVENTS = \['capture\.offered', 'capture\.acked', 'capture\.relented', 'capture\.reoffered', 'capture\.adopted'\]/.test(dash), 'capture-rate route reads the funnel events');
+  assert(/CAPTURE_FUNNEL_EVENTS = \['capture\.offered', 'capture\.acked', 'capture\.relented', 'capture\.reoffered', 'capture\.adopted', 'capture\.pruned'\]/.test(dash), 'capture-rate route reads the funnel events');
   const ui = fs.readFileSync(path.join(ROOT, 'dashboard', 'index.html'), 'utf8');
   assert(/c\.stopBlocks/.test(ui) && /c\.shellEscape/.test(ui) && /c\.detectorErrors/.test(ui) && /captureFunnelLine\(data\.funnel\)/.test(ui), 'the panels render them');
 });

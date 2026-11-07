@@ -43,7 +43,7 @@ Fluxo: captura, recall, citação, consolidação, e (manual) skill ou policy. C
   5. ciclos órfãos de sessão encerrada são adotados após 24 h.
 - Sai: `{block:true}` com um motivo de uma linha que só nomeia a janela (`windowId`); o trecho redigido da conversa, marcado como dado não confiável, chega ao LLM pela tool `capture_window`, cujo resultado o terminal mostra recolhido (o motivo de um Stop hook aparece inteiro na tela do CLI). O LLM escolhe entre `capture_lesson` e `capture_ack`.
 - Mecânico: o que oferecer, quando e quantas vezes. LLM: se há lição, o texto, as tags e o tipo.
-- Métricas: `capture.offered/reoffered/relented/acked/adopted`.
+- Métricas: `capture.offered/reoffered/relented/acked/pruned` (`adopted` só em versões anteriores à 3.15.2).
 
 **Outros detectores (todos desligados em `standard`, exceto onde indicado)**
 - `pattern-detect`: lembrete a cada 6 Stops (`EVERY=6`) pedindo `capture_lesson(type:"pattern")`.
