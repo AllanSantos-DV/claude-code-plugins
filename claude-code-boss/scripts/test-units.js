@@ -22703,6 +22703,24 @@ test('capture-queue: recordAck/readAck/clearAck round-trip by windowId', () => {
   assert(!q.readAck(wid), 'ack cleared');
 });
 
+test('capture-queue: a stale ack marker left by a late ack is pruned with the stale window blocks', () => {
+  const q = require('./lib/capture-queue.js');
+  const dir = path.join(process.env.CLAUDE_PLUGIN_DATA, '.runtime');
+  const stamp = Date.now();
+  const staleWid = `w-stale-${stamp}`;
+  const freshWid = `w-fresh-${stamp}`;
+  q.recordAck(staleWid, 'captured');
+  q.recordAck(freshWid, 'captured');
+  const staleAck = path.join(dir, `capture-ack-${staleWid}.json`);
+  const old = new Date(Date.now() - 25 * 3600e3);
+  fs.utimesSync(staleAck, old, old);
+  assert(q.writeWindow(`w-trigger-${stamp}`, 'text'), 'a window write runs the prune');
+  assert(!q.readAck(staleWid), 'the ack older than 24 h is gone');
+  assertEq(q.readAck(freshWid).outcome, 'captured', 'a recent ack is kept');
+  q.clearAck(freshWid);
+  q.clearWindow(`w-trigger-${stamp}`);
+});
+
 test('capture-queue: reconcile drains on an explicit ack marker (no transcript guessing)', () => {
   const q = require('./lib/capture-queue.js');
   const { redact } = require('../engine/lib/redact.js');

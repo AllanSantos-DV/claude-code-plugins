@@ -208,11 +208,13 @@ function readWindow(windowId) {
 function clearWindow(windowId) {
   try { fs.unlinkSync(_windowFile(windowId)); } catch (err) { void err; }
 }
-/** A window whose session ended without ack or relent stays behind; drop it once stale. */
+const WINDOW_FILE_PREFIXES = ['capture-window-', 'capture-ack-'];
+
+/** A window block, or an ack that arrived after its window was relented, stays behind; drop it once stale. */
 function _pruneWindows(dir) {
   const now = Date.now();
   for (const name of fs.readdirSync(dir)) {
-    if (!name.startsWith('capture-window-')) continue;
+    if (!WINDOW_FILE_PREFIXES.some((p) => name.startsWith(p))) continue;
     const p = path.join(dir, name);
     try { if (now - fs.statSync(p).mtimeMs > ORPHAN_STALE_MS) fs.unlinkSync(p); } catch (err) { void err; }
   }
