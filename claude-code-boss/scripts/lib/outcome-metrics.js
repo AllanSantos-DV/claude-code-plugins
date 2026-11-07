@@ -41,6 +41,7 @@ const HANDED_BACK = Object.freeze({
   'capture.offered': 'capture review offered',
   'curation.stop.blocked': 'turn blocked to curate a command',
   'curation.flagged': 'raw output of a recurring command entered the context',
+  'powershell.warned': 'PowerShell warning handed to the agent',
 });
 // Measured on this machine's history: organic weeks hold 1–25 captures per project; the bulk weeks 54, 62, 74, 85, 97, 248.
 const BACKFILL_PER_WEEK = 40;
@@ -122,7 +123,7 @@ function summarizeOutcomes(rows, { since = 0, maturitySince = since, backfillPer
   }
   const weeks = new Map();
   const wk = (ts) => { const k = weekOf(ts); if (!weeks.has(k)) weeks.set(k, { week: k, captured: 0, admitted: 0, merged: 0, userScope: 0, injected: 0, cited: 0, redirected: 0, flagged: 0, mechanical: 0, handedBack: 0 }); return weeks.get(k); };
-  const learning = { captured: 0, imported: 0, admitted: 0, merged: 0, byScope: {}, injected: 0, cited: 0, origins: {}, citedByOrigin: {}, citedEntries: new Map() };
+  const learning = { captured: 0, imported: 0, admitted: 0, merged: 0, byScope: {}, injected: 0, recallEmpty: 0, cited: 0, origins: {}, citedByOrigin: {}, citedEntries: new Map() };
   const mechByKind = {}; const backByKind = {};
   let firstRedirect = null; // when the dominant rule event started being recorded
   const curation = { redirected: 0, flagged: 0, used: 0, uncovered: 0, bypass: 0, scripts: new Map() };
@@ -156,6 +157,8 @@ function summarizeOutcomes(rows, { since = 0, maturitySince = since, backfillPer
     } else if (n === 'retrieve.injected') {
       const k = p.chars === 0 ? 0 : num(p.count); learning.injected += k; w.injected += k; c.injected += k;
       for (const [o, v] of Object.entries(p.origins || {})) learning.origins[o] = (learning.origins[o] || 0) + num(v);
+    } else if (n === 'retrieve.empty') {
+      learning.recallEmpty++;
     } else if (n === 'retrieve.cited') {
       learning.cited++; w.cited++;
       const o = p.origin || 'unrecorded'; learning.citedByOrigin[o] = (learning.citedByOrigin[o] || 0) + 1;
@@ -197,7 +200,7 @@ function summarizeOutcomes(rows, { since = 0, maturitySince = since, backfillPer
     learning: {
       captured: learning.captured, imported: learning.imported, admitted: learning.admitted, merged: learning.merged, recurrenceShare: round(learning.captured ? learning.merged / learning.captured : null),
       userScope: learning.byScope.user || 0, userScopeShare: round(learning.captured ? (learning.byScope.user || 0) / learning.captured : null), byScope: learning.byScope,
-      injected: learning.injected, cited: learning.cited, citationRate: round(learning.injected ? learning.cited / learning.injected : null),
+      injected: learning.injected, recallEmpty: learning.recallEmpty, cited: learning.cited, citationRate: round(learning.injected ? learning.cited / learning.injected : null),
       origins: learning.origins, crossProjectShare: round(originTotal ? ((learning.origins.other || 0) / originTotal) : null), citedByOrigin: learning.citedByOrigin,
       reuse: { citedEntries: entries.length, inSeveralSessions: entries.filter((e) => e.sessions.size > 1).length, inSeveralProjects: entries.filter((e) => e.projects.size > 1).length },
     },

@@ -3342,6 +3342,16 @@ test('dashboard /api/metrics/outcome: the Home Results panel reads the same summ
   assert(/stat\('Claude Code', 'Compaction', s\.compaction\.runs/.test(html) && !/s\.compaction\.mechanicalCut/.test(html), 'the Results panel carries the compaction tile: owned by Claude Code, with the recorded history');
 });
 
+test('outcome-metrics: powershell.warned counts as handed back to the model, and a recall filtered to nothing (retrieve.empty) is counted apart from recalls that injected', () => {
+  const { summarizeOutcomes } = require('./lib/outcome-metrics.js');
+  const e = (eventName, payload = {}) => ({ eventName, ts: Date.UTC(2026, 9, 20), payload, sessionId: 's', project: 'p' });
+  const s = summarizeOutcomes([e('powershell.warned'), e('powershell.warned'), e('retrieve.empty', { returned: 3, reason: 'filtered' }), e('retrieve.injected', { count: 2, chars: 40 })]);
+  assertEq(s.mechanical.handedBackByKind['powershell.warned'], 2, 'a PowerShell warning is a decision handed back to the model');
+  assertEq(s.learning.recallEmpty, 1, 'the recall that returned entries but injected none is visible');
+  assertEq(s.learning.injected, 2, 'and does not change what was injected');
+  assertEq(summarizeOutcomes([]).learning.recallEmpty, 0);
+});
+
 test('outcome-metrics loopsAvoided: counts error-guard denials and the sessions they happened in; zero without any', () => {
   const { summarizeOutcomes } = require('./lib/outcome-metrics.js');
   const e = (eventName, sessionId, project = 'p') => ({ eventName, ts: Date.UTC(2026, 9, 20), payload: {}, sessionId, project });
