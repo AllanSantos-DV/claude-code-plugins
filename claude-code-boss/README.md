@@ -622,7 +622,8 @@ uma mensagem quando há versão nova (uma vez por versão, consulta ao GitHub no
 (`X → Y`). Para desligar a atualização automática e a consulta: `CLAUDE_CODE_BOSS_AUTO_UPDATE=0`.
 Com `DISABLE_UPDATES`, `DISABLE_AUTOUPDATER` ou `CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC` definidos, o Claude Code não roda a
 atualização de plugins mesmo com ela ligada: os avisos dizem qual variável está desligando. Para recebê-las assim, defina também
-`FORCE_AUTOUPDATE_PLUGINS=1`, ou atualize em /plugin → Marketplaces → Update.
+`FORCE_AUTOUPDATE_PLUGINS=1`, ou rode `claude plugin marketplace update <marketplace>` e depois
+`claude plugin update claude-code-boss@<marketplace>`.
 
 ## Quando um hook falha: de quem é?
 
@@ -688,7 +689,8 @@ Para testar mudanças não-commitadas, carregue o plugin direto do checkout numa
 claude --plugin-dir ./claude-code-boss
 ```
 
-Depois de commitar e fazer push, o marketplace atualiza automaticamente via `/plugin update claude-code-boss` no Claude Code.
+Depois de commitar e fazer push, a atualização automática do marketplace entrega a versão nova. Para puxar na hora:
+`claude plugin marketplace update allansantos-plugins` e depois `claude plugin update claude-code-boss@allansantos-plugins`.
 
 ## Licença
 

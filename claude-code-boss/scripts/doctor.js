@@ -277,6 +277,12 @@ function checkCompactionRate(ctx) {
   };
 }
 
+/** The two commands that bring a release in: the marketplace copy first, or `plugin update` reports the old version as the latest. */
+function updateCommandsEn() {
+  const mkt = require('./lib/marketplace-autoupdate.js').marketplaceOf(pluginRoot()) || 'allansantos-plugins';
+  return `\`claude plugin marketplace update ${mkt}\` then \`claude plugin update claude-code-boss@${mkt}\``;
+}
+
 /** Does the installed Claude Code still contain every name the plugin depends on (ctx.claudeCompat, from scripts/compat-check.js)? A name can survive a behaviour change: this proves presence only. */
 function checkClaudeCompat(ctx) {
   const base = { id: 'claude-compat', label: 'Installed Claude Code vs what the plugin depends on', critical: false };
@@ -289,7 +295,7 @@ function checkClaudeCompat(ctx) {
   return {
     ...base, status: 'warn',
     detail: `Claude Code ${c.version || '?'} no longer contains ${c.missing.length} of ${c.total} names the plugin depends on: ${names}${c.missing.length > 6 ? ', …' : ''}`,
-    fix: 'Update the plugin (`claude plugin update claude-code-boss`); if it is already the latest, the dependent feature may have stopped working — `node scripts/compat-check.js` lists each name and why the plugin needs it.',
+    fix: `Update the plugin (${updateCommandsEn()}); if it is already the latest, the dependent feature may have stopped working — \`node scripts/compat-check.js\` lists each name and why the plugin needs it.`,
   };
 }
 

@@ -24032,6 +24032,8 @@ test('doctor: claude-compat and subagent-contexts — silent when not measured, 
   const miss = by({ claudeCompat: { version: '2.1.301', total: 60, missing: [{ kind: 'contract', name: 'idleCompaction', why: 'x' }] } }, 'claude-compat');
   assertEq(miss.status, 'warn');
   assert(/idleCompaction \(contract\)/.test(miss.detail) && /1 of 60/.test(miss.detail), miss.detail);
+  const iMkt = miss.fix.indexOf('`claude plugin marketplace update '); const iUpd = miss.fix.indexOf('`claude plugin update claude-code-boss@');
+  assert(iMkt >= 0 && iUpd > iMkt, `the fix names the marketplace update before the plugin update: ${miss.fix}`);
   assertEq(by({ claudeCompat: { skipped: 'no Claude Code binary found' } }, 'claude-compat').status, 'warn', 'no binary is never reported as a pass');
   assertEq(by({ claudeCompat: { error: 'boom' } }, 'claude-compat').status, 'warn');
   const { summarizeSubagents } = require('./lib/subagent-usage.js');
@@ -27480,6 +27482,8 @@ test('marketplace auto-update: turned on once when nobody chose (known_marketpla
     const blockedNotice = m.takeAutoUpdateNotice({ markerDir, env: { CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: '1' } });
     assert(/CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC está definido/.test(blockedNotice) && /FORCE_AUTOUPDATE_PLUGINS=1/.test(blockedNotice), `warns naming the variable that disables updates: ${blockedNotice}`);
     assert(!/sozinhas/.test(blockedNotice) && !blockedNotice.includes('\n'), `blocked: no promise that updates arrive by themselves: ${blockedNotice}`);
+    const iMktCmd = blockedNotice.indexOf('`claude plugin marketplace update allansantos-plugins`');
+    assert(iMktCmd >= 0 && blockedNotice.indexOf('`claude plugin update claude-code-boss@allansantos-plugins`') > iMktCmd, `blocked: names the marketplace update before the plugin update: ${blockedNotice}`);
     assert(/sozinhas/.test(n), `not blocked: promises the automatic update: ${n}`);
     write({ 'allansantos-plugins': {} }, {});
     fs.rmSync(path.join(markerDir, m.MARKER), { force: true });
