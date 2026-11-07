@@ -31,7 +31,7 @@ function _file(project, sid) {
   return path.join(_runtimeDir(), `capture-queue-${sanitizeSessionId(project)}--${sanitizeSessionId(sid)}.json`);
 }
 
-function _default() { return { rev: 0, scan: { offset: 0, anchorHash: '' }, seen: [], seenPrompts: [], queue: [], offer: null, offers: 0, captured: 0, lastOfferTs: 0, paused: false, adoptCheckedAt: 0 }; }
+function _default() { return { rev: 0, scan: { offset: 0, anchorHash: '' }, seen: [], seenPrompts: [], queue: [], offer: null, offers: 0, captured: 0, lastOfferTs: 0, paused: false, pruneCheckedAt: 0 }; }
 
 function _load(project, sid) {
   try {
@@ -46,8 +46,8 @@ function _load(project, sid) {
       offers: o.offers || 0,       // review interruptions opened this session (cadence cap)
       captured: o.captured || 0,   // real captures (non-'none' acks) — evolution telemetry
       lastOfferTs: o.lastOfferTs || 0,
-      paused: o.paused === true,          // relented this session: no new offers here, the cycles wait for adoption
-      adoptCheckedAt: o.adoptCheckedAt || 0,
+      paused: o.paused === true,          // relented this session: no new offers here
+      pruneCheckedAt: o.pruneCheckedAt || 0,
     };
   } catch (err) { void err; return _default(); }
 }
@@ -68,6 +68,17 @@ function _save(project, sid, state, expectRev) {
     console.error(`[capture-queue] save failed: ${err.message}`);
     return false;
   }
+}
+
+/** Comparable form of a transcript path (case-insensitive on Windows). */
+function _normTranscript(p) {
+  const r = path.resolve(String(p || ''));
+  return process.platform === 'win32' ? r.toLowerCase() : r;
+}
+
+/** The cycles a session's window may carry: only those read from its own session id and transcript. */
+function _isOwn(c, sid, transcriptPath) {
+  return !!c && c.sid === String(sid) && c.transcript === _normTranscript(transcriptPath);
 }
 
 function _hash(promptId, user, assistant) {
@@ -98,6 +109,7 @@ function ingest(project, sid, transcriptPath, redactFn, opts = {}) {
   const seenSet = new Set(state.seen);
   const promptSet = new Set(state.seenPrompts);
   const offered = new Set(state.offer ? state.offer.ids : []);
+  const origin = { sid: String(sid), transcript: _normTranscript(transcriptPath) };
   let added = 0;
   let changed = false;
   for (const c of cycles) {
@@ -118,8 +130,14 @@ function ingest(project, sid, transcriptPath, redactFn, opts = {}) {
     }
     promptSet.add(c.promptId);
     state.seenPrompts.push(c.promptId);
-    state.queue.push({ id, promptId: c.promptId, user, assistant, ...(thinking ? { thinking } : {}) });
+    state.queue.push({ id, promptId: c.promptId, ...origin, user, assistant, ...(thinking ? { thinking } : {}) });
     added++;
+  }
+  const own = state.queue.filter(c => _isOwn(c, sid, transcriptPath));
+  if (own.length !== state.queue.length) {
+    state.queue = own;
+    if (state.offer && !state.offer.ids.some(id => own.some(c => c.id === id))) state.offer = null;
+    changed = true;
   }
   if (state.seen.length > SEEN_CAP) state.seen = state.seen.slice(-SEEN_CAP);
   if (state.seenPrompts.length > SEEN_CAP) state.seenPrompts = state.seenPrompts.slice(-SEEN_CAP);
@@ -204,10 +222,16 @@ function _pruneWindows(dir) {
  * Open an offer over the OLDEST queued cycles that fit maxChars (FIFO). Cycles
  * are NOT removed until ack(). Returns { windowId, text, cycles } or null.
  */
-function offer(project, sid, maxChars) {
+function offer(project, sid, maxChars, transcriptPath) {
   const state = _load(project, sid);
   if (state.offer) return null;        // an offer is already open — reconcile it first
-  if (state.queue.length === 0) return null;
+  const own = state.queue.filter(c => _isOwn(c, sid, transcriptPath));
+  const foreign = state.queue.length - own.length;
+  if (foreign) state.queue = own;
+  if (own.length === 0) {
+    if (foreign) { const expect = state.rev; state.rev = expect + 1; _save(project, sid, state, expect); }
+    return null;
+  }
   const { text, kept } = packCycles(state.queue, maxChars);
   if (!text || kept === 0) return null;
   const ids = state.queue.slice(0, kept).map(c => c.id);
@@ -227,15 +251,15 @@ function offer(project, sid, maxChars) {
   state.lastOfferTs = Date.now();
   state.rev = expect + 1;
   if (!_save(project, sid, state, expect)) return null; // CAS: never emit an untracked offer
-  return { windowId, text, cycles: kept };
+  return { windowId, text, cycles: kept, foreignDropped: foreign };
 }
 
 /** Re-pack an already-open offer's cycles for a retry re-inject, or null. */
-function currentOfferText(project, sid, maxChars) {
+function currentOfferText(project, sid, maxChars, transcriptPath) {
   const state = _load(project, sid);
   if (!state.offer) return null;
   const ids = new Set(state.offer.ids);
-  const cycles = state.queue.filter(c => ids.has(c.id));
+  const cycles = state.queue.filter(c => ids.has(c.id) && _isOwn(c, sid, transcriptPath));
   if (cycles.length === 0) return null;
   const { text } = packCycles(cycles, maxChars);
   return text ? { windowId: state.offer.windowId, text } : null;
@@ -271,7 +295,7 @@ function noteBlock(project, sid) {
  * cycles and stop offering in this session. Before, the offer stayed open forever — every
  * later Stop re-ran the relent (376 `capture.relented` in 14 windows) and the session never
  * offered again; its cycles waited for "a future session" that never read another
- * session's queue. Now they stay queued here until adoptOrphans moves them.
+ * session's queue. Now they stay queued in this session's queue file until it goes stale and is pruned.
  * @returns {boolean} whether the offer was released
  */
 function releaseOffer(project, sid) {
@@ -288,12 +312,11 @@ function releaseOffer(project, sid) {
   return false;
 }
 
-// A session whose queue file has not changed in this long is over: its queued cycles
-// belong to the project, not to that session.
+// A session whose queue file has not changed in this long is over; its file is pruned.
 const ORPHAN_STALE_MS = 24 * 3600e3;
-const ADOPT_CHECK_EVERY_MS = 3600e3;
+const PRUNE_CHECK_EVERY_MS = 3600e3;
 // Before the `owner/repo` ids, a project was keyed by its lowercased remote host + path
-// (`github_com_owner_repo`); those queues (327 cycles for this repo alone) are the same project.
+// (`github_com_owner_repo`); those queues are the same project.
 const LEGACY_HOSTS = ['github_com', 'gitlab_com', 'bitbucket_org'];
 
 /** File prefixes of this project's queues: the current id and, for an `owner/repo` id, its legacy host-keyed form. */
@@ -305,55 +328,36 @@ function _queuePrefixes(project) {
 }
 
 /**
- * Move the queued cycles of ended sessions of the SAME project into this session's queue
- * (oldest file first, at most `maxFiles` per call), so they are offered here under the
- * normal cadence. The orphan file is deleted only after this session's queue holding its
- * cycles is durably saved — a crash in between duplicates a cycle, never loses one.
- * Checked at most once an hour per session (it lists the runtime dir).
- * @returns {{files:number, cycles:number}}
+ * Delete the queue files of ended sessions (stale for `staleMs`) of the SAME project. Their
+ * cycles are never moved into another session's queue: a window only ever carries the
+ * conversation of the session and transcript that asked for it. Checked at most once an hour
+ * per session (it lists the runtime dir).
+ * @returns {{files:number}}
  */
-function adoptOrphans(project, sid, { now = Date.now(), staleMs = ORPHAN_STALE_MS, maxFiles = 1, force = false } = {}) {
-  const out = { files: 0, cycles: 0 };
+function pruneOrphans(project, sid, { now = Date.now(), staleMs = ORPHAN_STALE_MS, force = false } = {}) {
+  const out = { files: 0 };
   const own = _load(project, sid);
-  if (!force && now - (own.adoptCheckedAt || 0) < ADOPT_CHECK_EVERY_MS) return out;
+  if (!force && now - (own.pruneCheckedAt || 0) < PRUNE_CHECK_EVERY_MS) return out;
   const dir = _runtimeDir();
   const prefixes = _queuePrefixes(project);
   const ownName = path.basename(_file(project, sid));
   let names = [];
-  try { names = fs.readdirSync(dir); } catch (err) { if (err.code !== 'ENOENT') console.error(`[capture-queue] adopt: ${err.message}`); }
-  const orphans = [];
+  try { names = fs.readdirSync(dir); } catch (err) { if (err.code !== 'ENOENT') console.error(`[capture-queue] prune: ${err.message}`); }
   for (const n of names) {
     if (!prefixes.some((p) => n.startsWith(p)) || !n.endsWith('.json') || n === ownName) continue;
-    try { const mtime = fs.statSync(path.join(dir, n)).mtimeMs; if (now - mtime > staleMs) orphans.push({ n, mtime }); } catch (err) { void err; }
+    try {
+      const p = path.join(dir, n);
+      if (now - fs.statSync(p).mtimeMs > staleMs) { fs.unlinkSync(p); out.files++; }
+    } catch (err) { console.error(`[capture-queue] prune ${n}: ${err.message}`); }
   }
-  orphans.sort((a, b) => a.mtime - b.mtime);
   for (let i = 0; i < 5; i++) {
     const state = _load(project, sid);
     const expect = state.rev;
-    state.adoptCheckedAt = now;
-    const have = new Set(state.queue.map((c) => c.id));
-    const seen = new Set(state.seen);
-    const taken = [];
-    for (const { n } of orphans.slice(0, maxFiles)) {
-      let o = null;
-      try { o = JSON.parse(fs.readFileSync(path.join(dir, n), 'utf-8')); } catch (err) { console.error(`[capture-queue] adopt ${n}: ${err.message}`); continue; }
-      const cycles = Array.isArray(o && o.queue) ? o.queue : [];
-      for (const c of cycles) {
-        if (!c || !c.id || have.has(c.id)) continue;
-        have.add(c.id);
-        state.queue.push(c);
-        if (!seen.has(c.id)) { seen.add(c.id); state.seen.push(c.id); }
-        out.cycles++;
-      }
-      taken.push(n);
-    }
-    if (state.seen.length > SEEN_CAP) state.seen = state.seen.slice(-SEEN_CAP);
+    state.pruneCheckedAt = now;
     state.rev = expect + 1;
-    if (!_save(project, sid, state, expect)) { out.cycles = 0; continue; }
-    for (const n of taken) { try { fs.unlinkSync(path.join(dir, n)); out.files++; } catch (err) { console.error(`[capture-queue] adopt cleanup ${n}: ${err.message}`); } }
-    return out;
+    if (_save(project, sid, state, expect)) break;
   }
-  return { files: 0, cycles: 0 };
+  return out;
 }
 
 /** Remove the offered window's cycles and clear the offer — only for a MATCHING windowId. */
@@ -413,4 +417,4 @@ function reconcile(project, sid, deps) {
   return { acked: false, dropped: false, retry: state.offer.attempts };
 }
 
-module.exports = { ingest, getState, reset, offer, currentOfferText, noteBlock, releaseOffer, adoptOrphans, ORPHAN_STALE_MS, ack, reconcile, recordAck, readAck, clearAck, writeWindow, readWindow, clearWindow, _hash, _load, _save, _file };
+module.exports = { ingest, getState, reset, offer, currentOfferText, noteBlock, releaseOffer, pruneOrphans, ORPHAN_STALE_MS, ack, reconcile, recordAck, readAck, clearAck, writeWindow, readWindow, clearWindow, _hash, _load, _save, _file };

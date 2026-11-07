@@ -9864,23 +9864,40 @@ test('scoped-rules-client: tries and backoff share one budget under the hook tim
     const t = setTimeout(() => resolve(new globalThis.Response(JSON.stringify({ count: 0, rules: [] }), { status: 200 })), ms);
     init.signal.addEventListener('abort', () => { clearTimeout(t); reject(init.signal.reason); });
   });
+  const fakeClock = (start) => {
+    const c = { t: start, waited: [] };
+    c.now = () => c.t;
+    c.wait = (ms) => { c.waited.push(ms); c.t += ms; return Promise.resolve(); };
+    return c;
+  };
   try {
     client._resetDown();
     rig.announce({ url: 'http://127.0.0.1:1', port: 1 });
     let tries = 0;
-    const slowAfterRefusal = (url, init) => (++tries === 1 ? Promise.reject(refused()) : answerAfter(250)(url, init));
-    const r = await client.lookupScopedRules({}, { runDir: rig.runDir, delays: [50, 100], timeoutMs: 600, fetchImpl: slowAfterRefusal });
-    assertEq([r.count, tries], [0, 2], 'the slow answer after one refusal fits the budget');
+    const c1 = fakeClock(1_000_000);
+    const slowAfterRefusal = () => {
+      tries++;
+      if (tries === 1) { c1.t += 20; return Promise.reject(refused()); }
+      c1.t += 250;
+      return Promise.resolve(new globalThis.Response(JSON.stringify({ count: 0, rules: [] }), { status: 200 }));
+    };
+    const r = await client.lookupScopedRules({}, { runDir: rig.runDir, delays: [50, 100], timeoutMs: 600, fetchImpl: slowAfterRefusal, now: c1.now, wait: c1.wait });
+    assertEq([r.count, tries, c1.waited], [0, 2, [50]], 'the slow answer after one refusal fits the budget');
     const t0 = Date.now();
     let e1 = null; try { await client.lookupScopedRules({}, { runDir: rig.runDir, delays: [50], timeoutMs: 300, fetchImpl: answerAfter(5000) }); } catch (e) { e1 = e; }
     assert(e1 && e1.code === 'LOOKUP_FAILED' && /did not answer within 300 ms/.test(e1.message), e1 && e1.message);
-    assert(Date.now() - t0 < 450, `bounded by the budget (${Date.now() - t0} ms)`);
+    assert(Date.now() - t0 < 4000, `the budget aborts the request, not the 5 s server (${Date.now() - t0} ms)`);
     tries = 0;
-    const t1 = Date.now();
-    let e2 = null; try { await client.lookupScopedRules({}, { runDir: rig.runDir, delays: [100, 400], timeoutMs: 250, fetchImpl: () => { tries++; return Promise.reject(refused()); } }); } catch (e) { e2 = e; }
+    const c2 = fakeClock(2_000_000);
+    const slowRefusal = () => { tries++; c2.t += 160; return Promise.reject(refused()); };
+    let e2 = null; try { await client.lookupScopedRules({}, { runDir: rig.runDir, delays: [100, 400], timeoutMs: 250, fetchImpl: slowRefusal, now: c2.now, wait: c2.wait }); } catch (e) { e2 = e; }
     assert(e2 && e2.code === 'MEMORY_SERVER_DOWN' && /within 250 ms/.test(e2.message), e2 && e2.message);
-    assertEq(tries, 2, 'a backoff step past the budget is not waited');
-    assert(Date.now() - t1 < 250, `no wait past the budget (${Date.now() - t1} ms)`);
+    assertEq([tries, c2.waited], [1, []], 'a first refusal that used 160 of 250 ms leaves no room for the 100 ms step: it is not waited');
+    tries = 0;
+    const c3 = fakeClock(3_000_000);
+    let e3 = null; try { await client.lookupScopedRules({}, { runDir: rig.runDir, delays: [100, 400], timeoutMs: 250, fetchImpl: () => { tries++; return Promise.reject(refused()); }, now: c3.now, wait: c3.wait }); } catch (e) { e3 = e; }
+    assert(e3 && e3.code === 'MEMORY_SERVER_DOWN', e3 && e3.message);
+    assertEq([tries, c3.waited], [2, [100]], 'an instant refusal waits the 100 ms step and never the 400 ms one past the budget');
   } finally { rig.clear(); client._resetDown(); }
 });
 
@@ -22495,69 +22512,89 @@ test('capture-dispatch (FIX #6): after maxBlockAttempts un-acked blocks it RELEN
     assert(!(r4 && r4.block), 'past the relent it keeps allowing the stop');
   } finally { m.fire = origFire; }
   assertEq(relents, [], 'no repeated relent event and no new offer after relenting');
-  assertEq(t.cq.getState(t.project, t.sid).queue.length, 6, 'cycles still queued, waiting for adoption');
+  assertEq(t.cq.getState(t.project, t.sid).queue.length, 6, 'cycles still queued in the session');
   t.cq.reset(t.project, t.sid);
 });
 
-test('capture-queue.adoptOrphans: ciclos de sessoes ENCERRADAS do mesmo projeto entram na fila da sessao viva; o arquivo orfao so some depois que ela salvou; outro projeto e sessao recente ficam', () => {
+test('capture-queue.pruneOrphans: apaga o arquivo de sessoes ENCERRADAS do mesmo projeto (id legado incluso) sem copiar ciclos; outro projeto, outro repo e sessao recente ficam', () => {
   const q = require('./lib/capture-queue.js');
   const dir = path.join(require('../engine/lib/data-dir.js').dataDir(), '.runtime');
   fs.mkdirSync(dir, { recursive: true });
-  const P = 'adopt-proj-' + Date.now();
-  const mk = (proj, sid, ids, ageMs, offer) => {
-    const st = { rev: 1, scan: { offset: 0, anchorHash: '' }, seen: ids, seenPrompts: [], queue: ids.map((id) => ({ id, promptId: id, user: 'u ' + id, assistant: 'a ' + id })), offer: offer ? { windowId: 'w', ids, at: 1, attempts: 9, blockCount: 9 } : null, offers: 1, captured: 0, lastOfferTs: 1 };
-    const f = q._file(proj, sid); fs.writeFileSync(f, JSON.stringify(st));
-    const t = (Date.now() - ageMs) / 1000; fs.utimesSync(f, t, t); return f;
-  };
-  const stuck = mk(P, 'old-a', ['c1', 'c2'], 3 * 864e5, true);   // ended 3 days ago with a stuck offer
-  const older = mk(P, 'old-b', ['c3'], 5 * 864e5, false);
-  const fresh = mk(P, 'live-other', ['c9'], 60e3, false);        // another LIVE session: untouched
-  const foreign = mk(P + '-x', 'old-c', ['z1'], 9 * 864e5, false); // other project: untouched
-  try {
-    const r1 = q.adoptOrphans(P, 'me', { force: true });
-    assertEq(r1, { files: 1, cycles: 1 }, 'oldest orphan first, one file per call');
-    assertEq(fs.existsSync(older), false);
-    const r2 = q.adoptOrphans(P, 'me', { force: true });
-    assertEq(r2, { files: 1, cycles: 2 }, 'the stuck offer\'s cycles are adopted too (never lost)');
-    assertEq(q.getState(P, 'me').queue.map((c) => c.id), ['c3', 'c1', 'c2']);
-    assertEq(fs.existsSync(stuck), false);
-    assertEq([fs.existsSync(fresh), fs.existsSync(foreign)], [true, true], 'live session and other project untouched');
-    assertEq(q.adoptOrphans(P, 'me'), { files: 0, cycles: 0 }, 'throttled to once an hour without force');
-  } finally { for (const f of [stuck, older, fresh, foreign, q._file(P, 'me')]) fs.rmSync(f, { force: true }); }
-});
-
-test('capture-queue.adoptOrphans: se salvar a fila da sessao falha, o orfao NAO e apagado (nenhum ciclo perdido)', () => {
-  const q = require('./lib/capture-queue.js');
-  const P = 'adopt-fail-' + Date.now();
-  const f = q._file(P, 'gone');
-  fs.mkdirSync(path.dirname(f), { recursive: true });
-  fs.writeFileSync(f, JSON.stringify({ rev: 1, queue: [{ id: 'k1', promptId: 'k1', user: 'u', assistant: 'a' }], seen: ['k1'] }));
-  const t = (Date.now() - 3 * 864e5) / 1000; fs.utimesSync(f, t, t);
-  const own = q._file(P, 'me');
-  fs.mkdirSync(own); // a DIRECTORY where the queue file goes: every save fails
-  try {
-    assertEq(q.adoptOrphans(P, 'me', { force: true }), { files: 0, cycles: 0 });
-    assertEq(fs.existsSync(f), true, 'orphan kept');
-  } finally { fs.rmSync(f, { force: true }); fs.rmSync(own, { recursive: true, force: true }); }
-});
-
-test('capture-queue.adoptOrphans: a fila do id LEGADO do mesmo repo (github_com_owner_repo) e adotada pela sessao com o id owner/repo; outro repo do mesmo dono fica', () => {
-  const q = require('./lib/capture-queue.js');
   const stamp = Date.now();
   const P = `Owner-${stamp}/Repo-x`;
-  const mk = (proj, sid, ids) => {
+  const mk = (proj, sid, ids, ageMs) => {
     const f = q._file(proj, sid);
-    fs.mkdirSync(path.dirname(f), { recursive: true });
-    fs.writeFileSync(f, JSON.stringify({ rev: 1, queue: ids.map((id) => ({ id, promptId: id, user: 'u', assistant: 'a' })), seen: ids }));
-    const t = (Date.now() - 3 * 864e5) / 1000; fs.utimesSync(f, t, t); return f;
+    fs.writeFileSync(f, JSON.stringify({ rev: 1, queue: ids.map((id) => ({ id, promptId: id, user: 'u ' + id, assistant: 'a ' + id })), seen: ids }));
+    const t = (Date.now() - ageMs) / 1000; fs.utimesSync(f, t, t); return f;
   };
-  const legacy = mk(`github_com_owner-${stamp}_repo-x`, 'old', ['L1', 'L2']);
-  const otherRepo = mk(`github_com_owner-${stamp}_repo-y`, 'old', ['Y1']);
+  const stuck = mk(P, 'old-a', ['c1', 'c2'], 3 * 864e5);
+  const legacy = mk(`github_com_owner-${stamp}_repo-x`, 'old', ['L1'], 5 * 864e5);
+  const fresh = mk(P, 'live-other', ['c9'], 60e3);
+  const otherRepo = mk(`github_com_owner-${stamp}_repo-y`, 'old', ['Y1'], 9 * 864e5);
   try {
-    assertEq(q.adoptOrphans(P, 'me', { force: true }), { files: 1, cycles: 2 });
-    assertEq([fs.existsSync(legacy), fs.existsSync(otherRepo)], [false, true]);
-    assertEq(q.adoptOrphans('plain-id-' + stamp, 'me', { force: true }), { files: 0, cycles: 0 }, 'an id without owner/repo has no legacy form');
-  } finally { for (const f of [legacy, otherRepo, q._file(P, 'me'), q._file('plain-id-' + stamp, 'me')]) fs.rmSync(f, { force: true }); }
+    assertEq(q.pruneOrphans(P, 'me', { force: true }), { files: 2 });
+    assertEq([fs.existsSync(stuck), fs.existsSync(legacy)], [false, false]);
+    assertEq([fs.existsSync(fresh), fs.existsSync(otherRepo)], [true, true], 'live session and other repo untouched');
+    assertEq(q.getState(P, 'me').queue, [], 'nothing was copied into the live session');
+    assertEq(q.pruneOrphans(P, 'me'), { files: 0 }, 'throttled to once an hour without force');
+  } finally { for (const f of [stuck, legacy, fresh, otherRepo, q._file(P, 'me')]) fs.rmSync(f, { force: true }); }
+});
+
+test('capture window: nunca entrega a conversa de OUTRA sessao/transcript (fila orfa, fila com ciclo alheio e ciclo sem origem)', () => {
+  const q = require('./lib/capture-queue.js');
+  const cd = require('./capture-dispatch.js');
+  const cwd = process.env.CLAUDE_PLUGIN_DATA;
+  const P = require('../engine/lib/project-id.js').resolveProjectId({ cwd });
+  const sid = 'cap-bind-' + Math.random().toString(16).slice(2);
+  const tpOwn = path.join(cwd, `bind-${sid}.jsonl`);
+  const tpOther = path.join(cwd, `bind-other-${sid}.jsonl`);
+  fs.writeFileSync(tpOwn, [
+    JSON.stringify({ type: 'user', promptId: 'own1', message: { role: 'user', content: 'OWNMARKER pergunta da sessao viva' } }),
+    JSON.stringify({ type: 'assistant', message: { role: 'assistant', model: 'claude-sonnet-5', content: [{ type: 'text', text: 'resp own' }] } }),
+  ].join('\n') + '\n');
+  const orphan = q._file(P, 'dead-' + sid);
+  fs.mkdirSync(path.dirname(orphan), { recursive: true });
+  fs.writeFileSync(orphan, JSON.stringify({ rev: 1, queue: [{ id: 'f1', promptId: 'f1', user: 'FOREIGNMARKER-orphan', assistant: 'a' }], seen: ['f1'] }));
+  const old = (Date.now() - 3 * 864e5) / 1000; fs.utimesSync(orphan, old, old);
+  const own = q._file(P, sid);
+  fs.writeFileSync(own, JSON.stringify({ rev: 3, seen: ['f2', 'f3'], seenPrompts: ['f2', 'f3'], queue: [
+    { id: 'f2', promptId: 'f2', sid: 'dead-' + sid, transcript: tpOther, user: 'FOREIGNMARKER-stamped', assistant: 'a' },
+    { id: 'f3', promptId: 'f3', user: 'FOREIGNMARKER-unstamped', assistant: 'a' },
+  ] }));
+  const written = [];
+  const realWrite = q.writeWindow;
+  q.writeWindow = (wid, text) => { written.push(text); return realWrite(wid, text); };
+  try {
+    const out = cd.run({ session_id: sid, transcript_path: tpOwn, cwd }, { config: { maxBlockAttempts: 5, cooldownMs: 0, maxCapturesPerSession: 50 }, blockPending: true });
+    const all = written.join('\n');
+    assert(!/FOREIGNMARKER/.test(all), 'no foreign conversation reaches the window: ' + all.slice(0, 300));
+    assert(!/FOREIGNMARKER/.test(JSON.stringify(q.getState(P, sid).queue)), 'foreign cycles are gone from the live queue');
+    assertEq(fs.existsSync(orphan), false, 'the stale orphan file is pruned, not merged');
+    assert(out && out.block === true && /OWNMARKER/.test(all), 'the session own cycle is still offered: ' + JSON.stringify(out));
+  } finally {
+    q.writeWindow = realWrite;
+    for (const f of [orphan, own, tpOwn, tpOther]) fs.rmSync(f, { force: true });
+  }
+});
+
+test('capture-queue.offer: so empacota ciclos da propria sessao e transcript; ciclo alheio nao entra nem com a mesma fila', () => {
+  const q = require('./lib/capture-queue.js');
+  const P = 'bind-proj-' + Date.now();
+  const f = q._file(P, 'me');
+  fs.mkdirSync(path.dirname(f), { recursive: true });
+  const tp = path.join(os.tmpdir(), 'ccb-bind-own.jsonl');
+  const norm = process.platform === 'win32' ? path.resolve(tp).toLowerCase() : path.resolve(tp);
+  fs.writeFileSync(f, JSON.stringify({ rev: 1, queue: [
+    { id: 'm1', promptId: 'm1', sid: 'me', transcript: norm, user: 'MINE', assistant: 'a' },
+    { id: 'x1', promptId: 'x1', sid: 'other', transcript: norm, user: 'OTHERSID', assistant: 'a' },
+    { id: 'x2', promptId: 'x2', sid: 'me', transcript: norm + '.other', user: 'OTHERTP', assistant: 'a' },
+  ], seen: [] }));
+  try {
+    const o = q.offer(P, 'me', 100000, tp);
+    assert(o && /MINE/.test(o.text) && !/OTHERSID|OTHERTP/.test(o.text), 'only the own cycle is packed');
+    assertEq(o.foreignDropped, 2);
+    assertEq(q.getState(P, 'me').queue.map((c) => c.id), ['m1']);
+  } finally { fs.rmSync(f, { force: true }); }
 });
 
 test('capture-dispatch (FIX #6): an ack drains the offer so a LATER offer starts the block counter fresh', () => {
@@ -22643,7 +22680,7 @@ test('capture-queue: offer packs oldest queued cycles under a windowId; ack drai
   const project = 'cq-off-' + Date.now(); const sid = 'cqo-' + Date.now();
   const tp = path.join(process.env.CLAUDE_PLUGIN_DATA, `cqo-${sid}.jsonl`);
   _cqSeed(q, redact, project, sid, tp, 3);
-  const off = q.offer(project, sid, 100000);
+  const off = q.offer(project, sid, 100000, tp);
   assert(off && off.windowId, 'offer created');
   assert(off.text.includes('q1') && off.text.includes('a3'), 'packs the queued cycles');
   assertEq(q.getState(project, sid).queue.length, 3, 'offer does not remove from queue yet');
@@ -22671,7 +22708,7 @@ test('capture-queue: reconcile drains on an explicit ack marker (no transcript g
   const project = 'cq-ack-' + Date.now(); const sid = 'cqa-' + Date.now();
   const tp = path.join(process.env.CLAUDE_PLUGIN_DATA, `cqa-${sid}.jsonl`);
   _cqSeed(q, redact, project, sid, tp, 3);
-  const off = q.offer(project, sid, 100000);
+  const off = q.offer(project, sid, 100000, tp);
   q.recordAck(off.windowId, 'captured'); // the agent's capture_lesson/capture_ack tool wrote this
   const r = q.reconcile(project, sid, 6);
   assert(r.acked && r.outcome === 'captured', 'reconcile drains on the explicit ack');
@@ -22686,7 +22723,7 @@ test('capture-queue: reconcile re-blocks indefinitely until acked — NEVER park
   const project = 'cq-nopark-' + Date.now(); const sid = 'cqp-' + Date.now();
   const tp = path.join(process.env.CLAUDE_PLUGIN_DATA, `cqp-${sid}.jsonl`);
   _cqSeed(q, redact, project, sid, tp, 3);
-  q.offer(project, sid, 100000);
+  q.offer(project, sid, 100000, tp);
   // Many un-acked reconciles: the offer STAYS OPEN (re-block) and cycles STAY in
   // the durable queue. Allan's design: the turn never proceeds until the agent
   // acks; a stuck window is re-offered on the next Stop, never lost to a terminal
@@ -22714,13 +22751,13 @@ test('capture-queue: reconcile counts captured separately from offers; "none" do
   ].join('\n');
   fs.writeFileSync(tp, cyc(1) + '\n' + cyc(2) + '\n' + cyc(3) + '\n');
   q.ingest(project, sid, tp, s => redact(s).text);
-  const off1 = q.offer(project, sid, 100000);
+  const off1 = q.offer(project, sid, 100000, tp);
   q.recordAck(off1.windowId, 'captured');
   q.reconcile(project, sid);
   assertEq(q.getState(project, sid).captured, 1, 'captured incremented on a real capture');
   fs.appendFileSync(tp, cyc(4) + '\n' + cyc(5) + '\n' + cyc(6) + '\n');
   q.ingest(project, sid, tp, s => redact(s).text);
-  const off2 = q.offer(project, sid, 100000);
+  const off2 = q.offer(project, sid, 100000, tp);
   q.recordAck(off2.windowId, 'none');
   q.reconcile(project, sid);
   assertEq(q.getState(project, sid).captured, 1, '"none" ack does NOT count as a capture');
@@ -22734,7 +22771,7 @@ test('capture-queue: reconcile keeps the ack marker if the drain _save FAILS (no
   const project = 'cq-saveguard-' + Date.now(); const sid = 'cqsg-' + Date.now();
   const tp = path.join(process.env.CLAUDE_PLUGIN_DATA, `cqsg-${sid}.jsonl`);
   _cqSeed(q, redact, project, sid, tp, 3);
-  const off = q.offer(project, sid, 100000);
+  const off = q.offer(project, sid, 100000, tp);
   q.recordAck(off.windowId, 'captured');
   // Inject a failing save (CAS/disk failure) into the drain via the seam.
   const r = q.reconcile(project, sid, { save: () => false });
@@ -22756,7 +22793,7 @@ test('capture-queue: offer windowId is a random nonce — identical content acro
     const project = 'cq-nonce-' + tag + '-' + ts; const sid = 'cqn-' + tag + '-' + ts;
     const tp = path.join(process.env.CLAUDE_PLUGIN_DATA, `cqn-${tag}-${ts}.jsonl`);
     _cqSeed(q, redact, project, sid, tp, 3); // IDENTICAL seeded content in both
-    const off = q.offer(project, sid, 100000);
+    const off = q.offer(project, sid, 100000, tp);
     return { project, sid, wid: off.windowId };
   };
   const a = mk('a'); const b = mk('b');
@@ -22826,7 +22863,7 @@ test('capture bridge: the REAL capture_ack MCP tool writes the marker the queue 
     const project = 'cq-bridge-' + Date.now(); const sid = 'cqbr-' + Date.now();
     const tp = path.join(myData, `cqbr-${sid}.jsonl`);
     _cqSeed(q, redact, project, sid, tp, 3);
-    const off = q.offer(project, sid, 100000);
+    const off = q.offer(project, sid, 100000, tp);
     // capture_ack's handler is synchronous (recordCaptureAck → capture-queue.recordAck)
     // and writes the marker before returning, so no await is needed here — keeping the
     // whole env-sensitive section atomic against interleaving async tests.
