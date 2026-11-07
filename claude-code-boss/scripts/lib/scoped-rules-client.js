@@ -29,14 +29,14 @@ const fail = (code, message) => Object.assign(new Error(message), { code });
 
 /**
  * @param {{files?: string[], projectId?: string, idPrefix?: string, includeText?: boolean, limit?: number}} q
- * @param {{fetchImpl?: Function, runDir?: string, delays?: number[], timeoutMs?: number, downMs?: number, now?: () => number}} [o]
- *   timeoutMs: the whole lookup, tries and backoff included
+ * @param {{fetchImpl?: Function, runDir?: string, delays?: number[], timeoutMs?: number, downMs?: number, now?: () => number, wait?: (ms: number) => Promise<void>}} [o]
+ *   timeoutMs: the whole lookup, tries and backoff included; now/wait: the clock and the backoff wait
  * @returns {Promise<{count: number, rules: object[]}>}
  * @throws {Error} code MEMORY_SERVER_DOWN | LOOKUP_UNSUPPORTED | LOOKUP_REJECTED | LOOKUP_FAILED
  */
 async function lookupScopedRules(q, o = {}) {
-  const { fetchImpl = globalThis.fetch, delays = RETRY_DELAYS_MS, timeoutMs = BUDGET_MS, downMs = DOWN_MS, now = Date.now } = o;
-  const deadline = Date.now() + timeoutMs;
+  const { fetchImpl = globalThis.fetch, delays = RETRY_DELAYS_MS, timeoutMs = BUDGET_MS, downMs = DOWN_MS, now = Date.now, wait = sleep } = o;
+  const deadline = now() + timeoutMs;
   const runDir = o.runDir || process.env.MCP_RUN_DIR || path.join(os.homedir(), '.mcp-memory', 'run');
   if (now() < downUntil) throw fail('MEMORY_SERVER_DOWN', `the memory server refused the connection moments ago (${path.join(runDir, 'daemon.json')}); trying again in ${Math.ceil((downUntil - now()) / 1000)} s`);
   const body = { include_text: q.includeText !== false, limit: q.limit || 200 };
@@ -46,8 +46,8 @@ async function lookupScopedRules(q, o = {}) {
   let last = 'no address announced';
   for (const ms of [0, ...delays]) {
     if (ms) {
-      if (Date.now() + ms >= deadline) break;
-      await sleep(ms);
+      if (now() + ms >= deadline) break;
+      await wait(ms);
     }
     const base = readDaemonUrl(runDir, { label: 'scoped-rules', requirePort: true });
     if (!base) continue;
@@ -55,7 +55,7 @@ async function lookupScopedRules(q, o = {}) {
     try {
       res = await fetchImpl(`${String(base).replace(/\/+$/, '')}/api/v1/scoped-rules/lookup`, {
         method: 'POST', headers: { 'content-type': 'application/json' },
-        body: JSON.stringify(body), signal: AbortSignal.timeout(Math.max(1, deadline - Date.now())),
+        body: JSON.stringify(body), signal: AbortSignal.timeout(Math.max(1, deadline - now())),
       });
     } catch (err) {
       if (err && err.name === 'TimeoutError') throw fail('LOOKUP_FAILED', `scoped-rules lookup at ${base} did not answer within ${timeoutMs} ms`);
