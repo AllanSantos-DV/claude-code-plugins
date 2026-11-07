@@ -19321,9 +19321,9 @@ test('leitores: curation summary conta bloqueios do Stop, correcao de escape (br
     // one stuck window relented on every Stop before the relent fix: still ONE offer given up
     { eventName: 'capture.relented', payload: { windowId: 'c' }, ts: 6 }, { eventName: 'capture.relented', payload: { windowId: 'c' }, ts: 7 },
     { eventName: 'capture.adopted', payload: { cycles: 7 }, ts: 7 },
-    { eventName: 'capture.pruned', payload: { files: 2 }, ts: 8 }, { eventName: 'capture.pruned', payload: { files: 1 }, ts: 9 },
+    { eventName: 'capture.pruned', payload: { files: 2, cycles: 5 }, ts: 8 }, { eventName: 'capture.pruned', payload: { files: 1, cycles: 1 }, ts: 9 },
   ]).funnel;
-  assertEq(f, { offered: 4, untracked: 0, acked: 2, ackedNone: 1, relented: 1, open: 1, reoffered: 1, adopted: 1, adoptedCycles: 7, pruned: 3 });
+  assertEq(f, { offered: 4, untracked: 0, acked: 2, ackedNone: 1, relented: 1, open: 1, reoffered: 1, adopted: 1, adoptedCycles: 7, pruned: 3, prunedCycles: 6 });
   // offers from a build that never recorded the answer (no ackTracked) are not read as unanswered
   const old = aggregateCaptureRate([
     { eventName: 'capture.offered', payload: { windowId: 'x' }, ts: 1 }, { eventName: 'capture.offered', payload: { windowId: 'y' }, ts: 2 },
@@ -22533,11 +22533,11 @@ test('capture-queue.pruneOrphans: apaga o arquivo de sessoes ENCERRADAS do mesmo
   const fresh = mk(P, 'live-other', ['c9'], 60e3);
   const otherRepo = mk(`github_com_owner-${stamp}_repo-y`, 'old', ['Y1'], 9 * 864e5);
   try {
-    assertEq(q.pruneOrphans(P, 'me', { force: true }), { files: 2 });
+    assertEq(q.pruneOrphans(P, 'me', { force: true }), { files: 2, cycles: 3 });
     assertEq([fs.existsSync(stuck), fs.existsSync(legacy)], [false, false]);
     assertEq([fs.existsSync(fresh), fs.existsSync(otherRepo)], [true, true], 'live session and other repo untouched');
     assertEq(q.getState(P, 'me').queue, [], 'nothing was copied into the live session');
-    assertEq(q.pruneOrphans(P, 'me'), { files: 0 }, 'throttled to once an hour without force');
+    assertEq(q.pruneOrphans(P, 'me'), { files: 0, cycles: 0 }, 'throttled to once an hour without force');
   } finally { for (const f of [stuck, legacy, fresh, otherRepo, q._file(P, 'me')]) fs.rmSync(f, { force: true }); }
 });
 

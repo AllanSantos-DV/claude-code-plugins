@@ -51,7 +51,7 @@ function aggregateCaptureRate(events) {
   // records them (`ackTracked`): capture.acked only exists since 3.9.x, so 30 days of offers against a
   // few hours of acks read as "2 of 280 answered" while the transcripts showed 287 of 296 answered; and
   // before the relent fix one stuck window re-relented on every Stop (177 events from 8 windows).
-  const funnel = { offered: 0, untracked: 0, acked: 0, ackedNone: 0, relented: 0, open: 0, reoffered: 0, adopted: 0, adoptedCycles: 0, pruned: 0 };
+  const funnel = { offered: 0, untracked: 0, acked: 0, ackedNone: 0, relented: 0, open: 0, reoffered: 0, adopted: 0, adoptedCycles: 0, pruned: 0, prunedCycles: 0 };
   const tracked = new Set(); const ackedW = new Map(); const relentedW = new Set();
   for (const e of events || []) {
     const p = e.payload || {};
@@ -61,7 +61,7 @@ function aggregateCaptureRate(events) {
       case 'capture.relented': if (p.windowId) relentedW.add(p.windowId); break;
       case 'capture.reoffered': funnel.reoffered++; break;
       case 'capture.adopted': funnel.adopted++; funnel.adoptedCycles += Number(p.cycles) || 0; break;
-      case 'capture.pruned': funnel.pruned += Number(p.files) || 0; break;
+      case 'capture.pruned': funnel.pruned += Number(p.files) || 0; funnel.prunedCycles += Number(p.cycles) || 0; break;
       default: break;
     }
   }

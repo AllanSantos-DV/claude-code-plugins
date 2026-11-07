@@ -156,7 +156,7 @@ function run(event, deps) {
   // 2b. Queue files of ended sessions of this project are removed, not merged into this queue.
   if (!queue.getState(project, sid).offer) {
     const pruned = queue.pruneOrphans(project, sid);
-    if (pruned.files) metrics.fire('capture.pruned', { files: pruned.files }, { sessionId: sid, cwd: ev.cwd });
+    if (pruned.files) metrics.fire('capture.pruned', { files: pruned.files, cycles: pruned.cycles }, { sessionId: sid, cwd: ev.cwd });
   }
 
   const st = queue.getState(project, sid);

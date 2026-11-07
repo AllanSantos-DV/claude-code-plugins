@@ -332,10 +332,10 @@ function _queuePrefixes(project) {
  * cycles are never moved into another session's queue: a window only ever carries the
  * conversation of the session and transcript that asked for it. Checked at most once an hour
  * per session (it lists the runtime dir).
- * @returns {{files:number}}
+ * @returns {{files:number, cycles:number}} files deleted and the queued cycles they held
  */
 function pruneOrphans(project, sid, { now = Date.now(), staleMs = ORPHAN_STALE_MS, force = false } = {}) {
-  const out = { files: 0 };
+  const out = { files: 0, cycles: 0 };
   const own = _load(project, sid);
   if (!force && now - (own.pruneCheckedAt || 0) < PRUNE_CHECK_EVERY_MS) return out;
   const dir = _runtimeDir();
@@ -347,7 +347,13 @@ function pruneOrphans(project, sid, { now = Date.now(), staleMs = ORPHAN_STALE_M
     if (!prefixes.some((p) => n.startsWith(p)) || !n.endsWith('.json') || n === ownName) continue;
     try {
       const p = path.join(dir, n);
-      if (now - fs.statSync(p).mtimeMs > staleMs) { fs.unlinkSync(p); out.files++; }
+      if (now - fs.statSync(p).mtimeMs > staleMs) {
+        let held = 0;
+        try { const q = JSON.parse(fs.readFileSync(p, 'utf-8')).queue; held = Array.isArray(q) ? q.length : 0; } catch (err) { void err; }
+        fs.unlinkSync(p);
+        out.files++;
+        out.cycles += held;
+      }
     } catch (err) { console.error(`[capture-queue] prune ${n}: ${err.message}`); }
   }
   for (let i = 0; i < 5; i++) {
