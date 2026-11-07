@@ -1,5 +1,11 @@
 # Changelog
 
+## [3.15.2] - 2026-11-07
+
+### Fixed
+- **A janela de captura do Stop só mostra a conversa da própria sessão** (`scripts/lib/capture-queue.js`, `scripts/capture-dispatch.js`): a fila adotava ciclos de sessões encerradas do mesmo projeto e a janela entregava ao agente conversas de outras sessões. Cada ciclo agora leva o id da sessão e o caminho do transcript, e a janela só empacota os ciclos dos dois; ciclo alheio ou sem origem sai da fila sem saída nova. A adoção foi trocada por uma poda: o arquivo de fila parado há mais de 24 h é apagado, sem copiar ciclos (métrica `capture.pruned`). Ciclos sem ack de sessões mortas há mais de 24 h se perdem, e ciclos sem origem de uma fila viva gravada pela versão anterior saem uma vez.
+- **O teste do orçamento do cliente de regras por escopo não depende mais do relógio** (`scripts/lib/scoped-rules-client.js`): `lookupScopedRules` aceita `now` e `wait`, e o teste usa um relógio falso.
+
 ## [3.15.1] - 2026-11-07
 
 ### Fixed
