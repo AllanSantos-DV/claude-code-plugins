@@ -1,6 +1,6 @@
 # Changelog
 
-## [Unreleased]
+## [3.15.1] - 2026-11-07
 
 ### Fixed
 - **As regras por escopo chegam na mesma volta em que o arquivo é lido** (`scripts/lib/scope-rules.js` `inject` com `onTouch`, `scripts/scope-rules-hook.js`): antes, o Read só registrava o arquivo e as regras esperavam o prompt seguinte, então quem lia e editava na mesma volta editava sem elas, e uma sessão de um prompt só nunca as recebia. Agora o toque que liga um tipo novo (`codigo`, `teste`, `docs`, uma stack) entrega as regras desse tipo na hora. É uma consulta por conjunto de tipos, tentada uma vez mesmo se falhar, e cada regra continua entregue uma vez por sessão.
