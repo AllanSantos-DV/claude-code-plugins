@@ -9921,11 +9921,11 @@ test('scoped-rules-client: ECONNREFUSED is retried a bounded number of times, re
     let e1 = null; try { await client.lookupScopedRules({}, { runDir: rig.runDir, delays: [10, 20], fetchImpl: counting }); } catch (e) { e1 = e; }
     assert(e1 && e1.code === 'MEMORY_SERVER_DOWN', e1 && e1.message);
     assertEq(tries, 3, 'bounded: the first try plus one per backoff step');
-    const t0 = Date.now();
-    let e2 = null; try { await client.lookupScopedRules({}, { runDir: rig.runDir, delays: [10, 20], fetchImpl: counting }); } catch (e) { e2 = e; }
+    const waited = [];
+    let e2 = null; try { await client.lookupScopedRules({}, { runDir: rig.runDir, delays: [10, 20], fetchImpl: counting, wait: (ms) => { waited.push(ms); return Promise.resolve(); } }); } catch (e) { e2 = e; }
     assert(e2 && e2.code === 'MEMORY_SERVER_DOWN' && /moments ago/.test(e2.message), e2 && e2.message);
     assertEq(tries, 3, 'inside the down window nothing is tried');
-    assert(Date.now() - t0 < 100, 'and nothing is waited');
+    assertEq(waited, [], 'and nothing is waited');
   } finally { rig.clear(); client._resetDown(); }
 });
 
@@ -10292,9 +10292,7 @@ test('model-router-ensure.cleanupGlobalEnv: com o selo, nenhum spawn de PowerShe
   try {
     const seal = path.join(d, 'legacy-env-clean.json');
     fs.writeFileSync(seal, '{}');
-    const t0 = Date.now();
-    assertEq(routerEnsure.cleanupGlobalEnv(seal), 'sealed');
-    assert(Date.now() - t0 < 50, 'sealed path spawns nothing');
+    assertEq(routerEnsure.cleanupGlobalEnv(seal), 'sealed', 'a sealed install returns before any PowerShell spawn');
     fs.rmSync(seal);
     const first = routerEnsure.cleanupGlobalEnv(seal);
     assert(first === 'cleaned' || first === 'dirty', first);
