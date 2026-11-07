@@ -3,13 +3,13 @@
 <head>
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
-<title>claude-code-boss v3.15.0 — changelog</title>
+<title>claude-code-boss v3.15.1 — changelog</title>
 <meta name="description" content="O que mudou em cada versão do claude-code-boss, da mais recente para a mais antiga." />
 <link rel="canonical" href="https://allansantos-dv.github.io/claude-code-plugins/claude-code-boss/changelog.html">
 <meta property="og:type" content="website">
 <meta property="og:site_name" content="allansantos-plugins">
 <meta property="og:locale" content="pt_BR">
-<meta property="og:title" content="claude-code-boss v3.15.0 — changelog">
+<meta property="og:title" content="claude-code-boss v3.15.1 — changelog">
 <meta property="og:description" content="O que mudou em cada versão do claude-code-boss, da mais recente para a mais antiga.">
 <meta property="og:url" content="https://allansantos-dv.github.io/claude-code-plugins/claude-code-boss/changelog.html">
 <meta property="og:image" content="https://allansantos-dv.github.io/claude-code-plugins/claude-code-boss/og-card.jpg">
@@ -17,7 +17,7 @@
 <meta property="og:image:height" content="630">
 <meta property="og:image:alt" content="claude-code-boss: Menos repetição. Mais memória.">
 <meta name="twitter:card" content="summary_large_image">
-<meta name="twitter:title" content="claude-code-boss v3.15.0 — changelog">
+<meta name="twitter:title" content="claude-code-boss v3.15.1 — changelog">
 <meta name="twitter:description" content="O que mudou em cada versão do claude-code-boss, da mais recente para a mais antiga.">
 <meta name="twitter:image" content="https://allansantos-dv.github.io/claude-code-plugins/claude-code-boss/og-card.jpg">
 <script data-ccb-theme-script>
@@ -274,14 +274,14 @@ html{scroll-behavior:auto}
   <nav class="nav-links">
     <a href="index.html">← Apresentação</a>
     <a href="tech.html">Detalhes técnicos</a>
-    <a href="#top" class="ver">v3.15.0</a>
+    <a href="#top" class="ver">v3.15.1</a>
   </nav>
 <div class="ccb-theme" role="group" aria-label="Tema"><button type="button" data-ccb-theme="dark" aria-pressed="true">Dark</button><button type="button" data-ccb-theme="light" aria-pressed="false">Light</button></div>
 </header>
 
 <main class="wrap" id="top">
   <div class="page-head">
-    <p class="kick">changelog · v3.15.0</p>
+    <p class="kick">changelog · v3.15.1</p>
     <h1>O que mudou em cada versão</h1>
     <p class="intro">Histórico do claude-code-boss, da versão mais recente para a mais antiga. O registro completo, com cada correção, está no <a href="https://github.com/AllanSantos-DV/claude-code-plugins/blob/main/claude-code-boss/CHANGELOG.md">CHANGELOG.md</a>.</p>
     <div class="toc">
@@ -292,6 +292,7 @@ html{scroll-behavior:auto}
 
   <section id="resumo">
     <h2>Em linguagem simples</h2>
+    <p><b>3.15.1</b> (2026-11-07) · Duas correções. As regras que você guardou na memória chegam na mesma volta em que o arquivo é lido: antes, ler um arquivo só o registrava e as regras esperavam o prompt seguinte, então quem lia e editava na mesma volta editava sem elas, e uma sessão de um prompt só nunca as recebia. Agora o primeiro toque num tipo de arquivo novo entrega as regras desse tipo na hora, e cada regra continua chegando uma vez por sessão. E o aviso de versão nova diz os dois comandos que de fato atualizam: primeiro <code>claude plugin marketplace update</code>, depois <code>claude plugin update</code>, com o marketplace de onde o plugin foi instalado; a correção do doctor e o aviso de atualização automática bloqueada dão os mesmos dois comandos, na mesma ordem. Sem o primeiro, o segundo lê a cópia local do marketplace e responde que já está na última versão. Se essa cópia continua atrás da versão publicada por mais de 1 hora com a atualização automática ligada, o aviso diz isso uma vez; se ela não pode ser lida, avisa na hora com o erro.</p>
     <p><b>3.15.0</b> (2026-11-04) · As regras que você guardou na memória chegam pelo escopo do arquivo em que você está mexendo: o Boss pergunta ao servidor de memória só pelas regras dos arquivos que a sessão tocou e entrega cada uma uma vez por sessão, de novo depois de um /compact ou /clear. Um reinício breve do servidor de memória não derruba mais a chamada: a conexão recusada é tentada de novo algumas vezes antes de falhar, e as ferramentas do grafo seguem o servidor quando ele volta em outra porta. A faixa do Boss passa a seguir a sessão nova depois do /clear, em vez de mostrar a economia da sessão anterior. E, depois de reiniciar o daemon, o fim do turno não espera mais o resumo da faixa nem dispara o aviso de que o hook "decidiu nada". Também: o servidor de memória do Boss volta a funcionar nas sessões abertas antes de uma atualização, e versões antigas do plugin não ficam mais no disco depois de reiniciar o PC.</p>
     <p><b>3.14.4</b> (2026-11-03) · Menos espaço no disco. Cada atualização deixava a pasta da versão anterior do plugin para trás, e uma máquina chegou a guardar cerca de 40 cópias. Agora, a cada início de sessão e ao fim de um "Update now" bem-sucedido, só a versão instalada fica e as antigas, inclusive as que já estavam lá, são apagadas. Nada é apagado se a instalação atual não puder ser verificada, e uma instalação que falha nunca remove a versão que funciona. Voltar a uma versão antiga é baixá-la de novo do GitHub; nenhuma cópia é guardada.</p>
     <p><b>3.14.3</b> (2026-11-02) · Correção no aviso de atualização. O aviso "claude-code-boss foi atualizado" ainda se repetia quando uma sessão aberta antes da 3.14.2 continuava rodando: as versões antigas seguiam regravando a versão vista antiga, e a sessão nova seguinte anunciava a mesma atualização de novo. Agora a maior versão já vista fica guardada num campo próprio, que as versões antigas preservam sem mexer, e uma versão voltada para trás é ignorada. O aviso aparece uma vez só, mesmo com uma sessão antiga aberta.</p>
@@ -324,12 +325,13 @@ html{scroll-behavior:auto}
   </section>
 
   <section id="versoes">
-    <h2>Destaques por versão <span class="tag">121 releases</span></h2>
-    <p class="lead">O changelog completo (v1.0.0 → v3.15.0) vive no <a href="https://github.com/AllanSantos-DV/claude-code-plugins/blob/main/claude-code-boss/CHANGELOG.md">CHANGELOG.md</a>. Destaques recentes:</p>
+    <h2>Destaques por versão <span class="tag">122 releases</span></h2>
+    <p class="lead">O changelog completo (v1.0.0 → v3.15.1) vive no <a href="https://github.com/AllanSantos-DV/claude-code-plugins/blob/main/claude-code-boss/CHANGELOG.md">CHANGELOG.md</a>. Destaques recentes:</p>
     <div class="table-scroll">
       <table>
         <thead><tr><th>Versão</th><th>Destaque</th></tr></thead>
         <tbody>
+          <tr><td><b>v3.15.1</b></td><td>As regras por escopo chegam na mesma volta em que o arquivo é lido; o aviso de versão nova diz para atualizar o marketplace antes do plugin e avisa quando a cópia local do marketplace está parada ou não pode ser lida.</td></tr>
           <tr><td><b>v3.15.0</b></td><td>As regras do dono chegam pelo escopo do arquivo tocado, uma vez por sessão e de novo após /compact ou /clear; um reinício breve do servidor de memória não derruba mais a chamada; a faixa do Boss segue a sessão nova depois do /clear; o fim do turno não espera mais o resumo depois de reiniciar o daemon.</td></tr>
           <tr><td><b>v3.14.4</b></td><td>Só a versão instalada do plugin fica no disco: as antigas são removidas a cada início de sessão e após uma atualização bem-sucedida.</td></tr>
           <tr><td><b>v3.14.3</b></td><td>O aviso "plugin atualizado" não se repete mais enquanto uma sessão aberta antes da 3.14.2 continua rodando.</td></tr>
@@ -392,7 +394,7 @@ html{scroll-behavior:auto}
       <a href="https://github.com/AllanSantos-DV/claude-code-plugins/blob/main/claude-code-boss/README.md">README</a>
       <a href="https://github.com/AllanSantos-DV/claude-code-plugins">GitHub</a>
     </div>
-    <div class="legal">MIT · Allan Santos · claude-code-boss v3.15.0</div>
+    <div class="legal">MIT · Allan Santos · claude-code-boss v3.15.1</div>
   </div>
 </footer>
 

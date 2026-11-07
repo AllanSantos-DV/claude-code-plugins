@@ -3,22 +3,22 @@
 <head>
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
-<title>claude-code-boss v3.15.0 — detalhes técnicos</title>
-<meta name="description" content="Detalhes técnicos do claude-code-boss v3.15.0: daemon HTTP, hooks, Brain KB, Model Router Anthropic/OpenAI, MCP Memory, graph tools e dashboard." />
+<title>claude-code-boss v3.15.1 — detalhes técnicos</title>
+<meta name="description" content="Detalhes técnicos do claude-code-boss v3.15.1: daemon HTTP, hooks, Brain KB, Model Router Anthropic/OpenAI, MCP Memory, graph tools e dashboard." />
 <link rel="canonical" href="https://allansantos-dv.github.io/claude-code-plugins/claude-code-boss/tech.html">
 <meta property="og:type" content="website">
 <meta property="og:site_name" content="allansantos-plugins">
 <meta property="og:locale" content="pt_BR">
-<meta property="og:title" content="claude-code-boss v3.15.0 — detalhes técnicos">
-<meta property="og:description" content="Detalhes técnicos do claude-code-boss v3.15.0: daemon HTTP, hooks, Brain KB, Model Router Anthropic/OpenAI, MCP Memory, graph tools e dashboard.">
+<meta property="og:title" content="claude-code-boss v3.15.1 — detalhes técnicos">
+<meta property="og:description" content="Detalhes técnicos do claude-code-boss v3.15.1: daemon HTTP, hooks, Brain KB, Model Router Anthropic/OpenAI, MCP Memory, graph tools e dashboard.">
 <meta property="og:url" content="https://allansantos-dv.github.io/claude-code-plugins/claude-code-boss/tech.html">
 <meta property="og:image" content="https://allansantos-dv.github.io/claude-code-plugins/claude-code-boss/og-card.jpg">
 <meta property="og:image:width" content="1200">
 <meta property="og:image:height" content="630">
 <meta property="og:image:alt" content="claude-code-boss: Menos repetição. Mais memória.">
 <meta name="twitter:card" content="summary_large_image">
-<meta name="twitter:title" content="claude-code-boss v3.15.0 — detalhes técnicos">
-<meta name="twitter:description" content="Detalhes técnicos do claude-code-boss v3.15.0: daemon HTTP, hooks, Brain KB, Model Router Anthropic/OpenAI, MCP Memory, graph tools e dashboard.">
+<meta name="twitter:title" content="claude-code-boss v3.15.1 — detalhes técnicos">
+<meta name="twitter:description" content="Detalhes técnicos do claude-code-boss v3.15.1: daemon HTTP, hooks, Brain KB, Model Router Anthropic/OpenAI, MCP Memory, graph tools e dashboard.">
 <meta name="twitter:image" content="https://allansantos-dv.github.io/claude-code-plugins/claude-code-boss/og-card.jpg">
 <script data-ccb-theme-script>
 /* Shared theme; executed before styles and first paint. */
@@ -274,14 +274,14 @@ html{scroll-behavior:auto}
   <nav class="nav-links">
     <a href="index.html">← Apresentação</a>
     <a href="https://github.com/AllanSantos-DV/claude-code-plugins/blob/main/claude-code-boss/README.md">README</a>
-    <a href="#top" class="ver">v3.15.0</a>
+    <a href="#top" class="ver">v3.15.1</a>
   </nav>
 <div class="ccb-theme" role="group" aria-label="Tema"><button type="button" data-ccb-theme="dark" aria-pressed="true">Dark</button><button type="button" data-ccb-theme="light" aria-pressed="false">Light</button></div>
 </header>
 
 <main class="wrap" id="top">
   <div class="page-head">
-    <p class="kick">documentação técnica · v3.15.0</p>
+    <p class="kick">documentação técnica · v3.15.1</p>
     <h1>Arquitetura e funcionamento interno</h1>
     <p class="intro">Para quem quer saber <b>como funciona por baixo</b>: daemon HTTP único, pipeline de hooks, Brain KB em 3 camadas, Model Router Anthropic/OpenAI, backend MCP Memory, exploração de repositório por grafo e dashboard. Fontes: <a href="https://github.com/AllanSantos-DV/claude-code-plugins/blob/main/claude-code-boss/README.md">README</a> e <a href="https://github.com/AllanSantos-DV/claude-code-plugins/blob/main/claude-code-boss/CHANGELOG.md">CHANGELOG</a>.</p>
     <div class="toc">
@@ -368,8 +368,8 @@ html{scroll-behavior:auto}
       <h3>Como funciona</h3>
       <ul class="tight">
         <li><b>Documentos:</b> cada regra é um documento global <code>rule:&lt;tipo&gt;:&lt;slug&gt;</code>, com tipo <code>sempre</code>, <code>codigo</code>, <code>teste</code>, <code>docs</code> ou uma stack (<code>angular</code>, <code>java</code>, <code>python</code>, <code>dotnet</code>).</li>
-        <li><b>Evidência (PostToolUse):</b> em Read, Edit, Write, MultiEdit e NotebookEdit o hook só registra o arquivo tocado; não entrega nada.</li>
-        <li><b>Entrega (UserPromptSubmit):</b> entrega <code>sempre</code> e os tipos que os arquivos tocados ligam, <b>uma vez por tipo por sessão</b>. Medido em sessão real: 171 caracteres na primeira entrega, +177 ao tocar código, nada nos prompts seguintes.</li>
+        <li><b>Entrega no toque (PostToolUse):</b> em Read, Edit, Write, MultiEdit e NotebookEdit o hook registra o arquivo tocado e, se esse toque liga um tipo novo (<code>codigo</code>, <code>teste</code>, <code>docs</code>, uma stack), entrega as regras desse tipo na mesma volta (<code>inject</code> com <code>onTouch</code>). É uma consulta por conjunto de tipos, tentada uma vez mesmo se falhar; quem lê e edita na mesma volta já edita com as regras, e uma sessão de um prompt só também as recebe.</li>
+        <li><b>Entrega (UserPromptSubmit):</b> entrega <code>sempre</code> e os tipos ligados que ainda não foram entregues, <b>uma vez por tipo por sessão</b>. Medido em sessão real: 171 caracteres na primeira entrega, +177 ao tocar código, nada nos prompts seguintes.</li>
         <li><b>Reset (SessionStart):</b> com <code>source</code> <code>compact</code> ou <code>clear</code> o que foi entregue é zerado e a regra volta no prompt seguinte (318 caracteres re-entregues após um compact medido). O fim da sessão apaga o estado.</li>
         <li><b>Limites:</b> regra acima de <code>scopeRules.maxChars</code> (2000) é cortada com marca visível. Documento <code>rule:</code> com id ou conteúdo inválido é recusado.</li>
         <li><b>Journal:</b> recusas e entregas (ids e caracteres) vão para <code>.runtime/scope-rules.jsonl</code>; falha de leitura aparece como hook degradado.</li>
@@ -604,7 +604,7 @@ html{scroll-behavior:auto}
       <a href="changelog.html">Changelog</a>
       <a href="https://github.com/AllanSantos-DV/claude-code-plugins">GitHub</a>
     </div>
-    <div class="legal">MIT · Allan Santos · claude-code-boss v3.15.0</div>
+    <div class="legal">MIT · Allan Santos · claude-code-boss v3.15.1</div>
   </div>
 </footer>
 
