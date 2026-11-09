@@ -159,6 +159,7 @@ export async function startHttpDaemon({ pluginRoot, dataDir, port, host = '127.0
     }
     return moduleHookTools;
   };
+  const MODULE_HOOK_ROUTES = { '/hook/compaction-event': 'hook_compaction_event' };
   // Read-only GET routes for modules (hooks/boss.mjs polls one from every open session):
   // the answer is cached and a computation in flight is shared, so N sessions cost one.
   const MODULE_READ_ROUTES = { '/hook/boss-summary': 'hook_boss_summary' };
@@ -221,6 +222,32 @@ export async function startHttpDaemon({ pluginRoot, dataDir, port, host = '127.0
         res.end(JSON.stringify({ ok: true, shuttingDown: true }));
         // Let the response flush before we force connections shut.
         setTimeout(() => { shutdown(); }, 100);
+        return;
+      }
+
+      if (req.method === 'POST' && Object.prototype.hasOwnProperty.call(MODULE_HOOK_ROUTES, url)) {
+        const gate = requestAllowed(req, token, dataDir);
+        if (!gate.ok) {
+          res.writeHead(gate.code, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ error: gate.error }));
+          return;
+        }
+        const args = await readJsonBody(req);
+        if (!args || typeof args !== 'object') {
+          res.writeHead(400, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ error: 'body must be a JSON object (the hook tool arguments)' }));
+          return;
+        }
+        let tools;
+        try { tools = getModuleHookTools(); } catch (err) {
+          console.error(`[brain-http] ${url}: hook transport unavailable: ${err.message}`);
+          res.writeHead(503, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ error: `hook transport unavailable: ${err.message}` }));
+          return;
+        }
+        const out = await tools.handle(MODULE_HOOK_ROUTES[url], args);
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end((out && out.content && out.content[0] && out.content[0].text) || '{}');
         return;
       }
 

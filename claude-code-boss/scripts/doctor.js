@@ -283,6 +283,21 @@ function updateCommandsEn() {
   return `\`claude plugin marketplace update ${mkt}\` then \`claude plugin update claude-code-boss@${mkt}\``;
 }
 
+/** Sessions still running a compaction module older than the installed plugin (ctx.sessionModules, from the hello events). */
+function checkSessionModules(ctx) {
+  const base = { id: 'session-modules', label: 'Sessions on an old Boss', critical: false };
+  const m = ctx.sessionModules;
+  if (!m) return { ...base, status: 'ok', detail: 'not checked here', fix: '' };
+  if (m.error) return { ...base, status: 'warn', detail: `could not read the sessions' module versions: ${m.error}`, fix: '' };
+  if (!m.stale.length) return { ...base, status: 'ok', detail: `no session active since the update to ${m.installed} runs an older module`, fix: '' };
+  const ids = m.stale.slice(0, 5).map((s) => `${String(s.sessionId).slice(0, 8)} (${s.version || 'before the version was reported'})`).join(', ');
+  return {
+    ...base, status: 'warn',
+    detail: `${m.stale.length} session(s) active since the update to ${m.installed} still run an older compaction module (fixes not active): ${ids}`,
+    fix: 'Reopen those sessions (close and resume them) to activate the installed version.',
+  };
+}
+
 /** Does the installed Claude Code still contain every name the plugin depends on (ctx.claudeCompat, from scripts/compat-check.js)? A name can survive a behaviour change: this proves presence only. */
 function checkClaudeCompat(ctx) {
   const base = { id: 'claude-compat', label: 'Installed Claude Code vs what the plugin depends on', critical: false };
@@ -552,7 +567,7 @@ function checkSetup(ctx) {
   return out;
 }
 
-const CHECKS = [checkNode, checkDaemonNode, checkNativeDeps, checkEnv, checkDataDirs, checkModel, checkDaemon, checkNativeRuntime, checkEmbedderProbe, checkEmbedderGuard, checkCrashes, checkCostTuning, checkBossConfig, checkFixedCost, checkCompactionRate, checkClaudeCompat, checkSubagentContexts, checkSetup, checkHooksEvents];
+const CHECKS = [checkNode, checkDaemonNode, checkNativeDeps, checkEnv, checkDataDirs, checkModel, checkDaemon, checkNativeRuntime, checkEmbedderProbe, checkEmbedderGuard, checkCrashes, checkCostTuning, checkBossConfig, checkFixedCost, checkCompactionRate, checkClaudeCompat, checkSubagentContexts, checkSessionModules, checkSetup, checkHooksEvents];
 
 /** Run every pure check over a ctx snapshot (a check may return one result or a list). */
 function runChecks(ctx) {
@@ -761,6 +776,14 @@ async function gatherContext({ probe = false, audit = false, scanBudgetMs } = {}
     catch (e) { console.error(`[doctor] sub-agent contexts: ${e.message}`); subagents = { error: e.message }; }
   }
 
+  let sessionModules = null;
+  try {
+    const installed = require('../package.json').version;
+    // The install writes the plugin's files: package.json's mtime is when this version landed here.
+    const installedAt = fs.statSync(path.join(__dirname, '..', 'package.json')).mtimeMs;
+    sessionModules = { installed, stale: require('./lib/compaction-report.js').staleModuleSessions({ installed, installedAt }) };
+  } catch (e) { console.error(`[doctor] session modules: ${e.message}`); sessionModules = { error: e.message }; }
+
   let setup = null;
   try { setup = await require('./lib/setup-map.js').gatherSetup({ home, cwd: process.env.CLAUDE_PROJECT_DIR || process.cwd() }); } catch (e) { console.error(`[doctor] setup map: ${e.message}`); }
 
@@ -792,6 +815,7 @@ async function gatherContext({ probe = false, audit = false, scanBudgetMs } = {}
     compaction,
     claudeCompat,
     subagents,
+    sessionModules,
     setup,
   };
 }
