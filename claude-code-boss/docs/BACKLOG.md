@@ -1,3 +1,8 @@
+## Restauração da compactação a frio (t-restore, 2026-11-09)
+
+- [x] **Achado e corrigido na hora — a compactação a frio (limiar 30% + TTL por pasta) foi removida em 2026-11-02 sem ordem registrada** (`hooks/compaction.mjs`, `scripts/lib/compaction-core.mjs`, `scripts/lib/hooks-config.js`; commits 2a746c0, a65502e, 36d29e4, 8f6f845): restaurada do estado v3.14.0 com os tetos 150k/200k desligados (`DEFAULTS` 0/0, painel e docs alinhados); testes: padrão de 30% com a regra do TTL, tetos desligados, módulo sem porta fixa. A janela do roteador (d61f093) e `cost-tuning` ficaram como estão. Relatório: `docs/research/2026-11-09-compactacao-a-frio-removida-auditoria.md`.
+- [ ] **Pendente — causa do thrash de 2026-11-02** (gate do Boss ou `CLAUDE_AUTOCOMPACT_PCT_OVERRIDE=15` + `autoCompactWindow=200000` globais): experimento em instância isolada, evidência no relatório de entrega.
+
 ## Release 3.15.2 — lente de feature irmã (subagente haiku, só código e docs, 2026-11-07)
 
 - [x] **Achado e corrigido na hora — a métrica nova `capture.pruned` não tinha leitor** (`scripts/lib/capture-rate.js`, `scripts/dashboard.js` `CAPTURE_FUNNEL_EVENTS`, `dashboard/index.html` `captureFunnelLine`, `docs/FUNCOES.md`): o painel só lia `capture.adopted` e mostraria "0 adopted" para sempre. O funil conta `pruned` (arquivos), mantém `adopted` para o histórico e o rótulo diz "by older builds"; o teste do funil cobre os dois nomes.

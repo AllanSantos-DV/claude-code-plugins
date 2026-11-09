@@ -542,7 +542,11 @@ function auditBossConfig(f) {
   const env = (f.settings && f.settings.env) || {};
   const items = [];
   const actions = [];
-  items.push({ id: 'boss-compaction', label: 'Compaction (Claude Code)', status: 'ok', detail: 'managed by Claude Code; Boss does not set thresholds or start compaction', fix: '' });
+  const c = f.compaction || {};
+  const pct = c.thresholdPercent;
+  items.push(c.enabled === false
+    ? { id: 'boss-compaction', label: 'Compaction (boss)', status: 'warn', detail: 'controlled compaction is OFF: the engine alone compacts, with a warm cache and mid-turn', fix: 'What to do: turn it on in the dashboard (Compaction) or set compaction.enabled=true in hooks/user-config.json. (The `free` profile turns it off on purpose.)' }
+    : { id: 'boss-compaction', label: 'Compaction (boss)', status: 'ok', detail: `on, at ${pct}% of the model window (${Math.round(200000 * pct / 100)} tokens of 200k, ${Math.round(1000000 * pct / 100)} of 1M) — a percent, never a fixed number`, fix: '' });
   const w = env[WINDOW_KEY];
   const optedIn = f.costTuning && f.costTuning.autoCompactWindow != null && String(f.costTuning.autoCompactWindow) === String(w);
   // 1,000,000 = the largest window of any model: compaction at 967k is the engine default for a 1M model, not a squeeze.

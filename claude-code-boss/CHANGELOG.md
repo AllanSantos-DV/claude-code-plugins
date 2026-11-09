@@ -1,5 +1,10 @@
 # Changelog
 
+## [Unreleased]
+
+### Fixed
+- **A compactação a frio do Boss voltou, como o dono a desenhou** (`hooks/compaction.mjs`, `scripts/lib/compaction-core.mjs`, `scripts/lib/folder-ttl.js`): limiar do usuário em % da janela do modelo (padrão 30%); abaixo dele a pasta fica com o cache de 60 min, acima passa a 5 min (por pasta), e o corte a frio roda quando o cache esfria e o próximo prompt chega. Os tetos absolutos continuam **desligados** (`thresholdMaxTokens` 0, `warmCeilingTokens` 0). A remoção de 2026-11-02 (2a746c0, a65502e) não tinha ordem do dono registrada. A janela de compactação do roteador segue sem ser gravada pelo Boss.
+
 ## [3.15.2] - 2026-11-07
 
 ### Fixed

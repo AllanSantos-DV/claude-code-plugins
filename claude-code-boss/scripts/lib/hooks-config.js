@@ -397,24 +397,32 @@ function clampPhaseTokens(v) {
   if (!Number.isFinite(n)) return 400000;
   return Math.min(PHASE_TOKENS_RANGE[1], Math.max(PHASE_TOKENS_RANGE[0], Math.round(n)));
 }
+// A token cap: 0 = off, else 50k..2M; anything unreadable falls back to the default (never silently to "off").
+function clampTokenCap(v, dflt) {
+  if (v === undefined || v === null || v === '') return dflt;
+  const n = Number(v);
+  if (!Number.isFinite(n)) return dflt;
+  if (n <= 0) return 0;
+  return Math.min(2000000, Math.max(50000, Math.round(n)));
+}
 function getCompaction() {
   const c = _resolved().compaction || {};
   const core = require('./compaction-core.mjs');
   return {
-    enabled: false,
-    thresholdPercent: 0,
+    enabled: c.enabled !== false,
+    thresholdPercent: core.clampPercent(c.thresholdPercent ?? core.DEFAULTS.thresholdPercent),
     thresholdRange: [core.DEFAULTS.minThresholdPercent, core.DEFAULTS.maxThresholdPercent],
     // Absolute ceiling of the cold threshold and the warm ceiling (0 = off), in tokens: see compaction-core DEFAULTS.
-    thresholdMaxTokens: 0,
-    warmCeilingTokens: 0,
+    thresholdMaxTokens: clampTokenCap(c.thresholdMaxTokens, core.DEFAULTS.thresholdMaxTokens),
+    warmCeilingTokens: clampTokenCap(c.warmCeilingTokens, core.DEFAULTS.warmCeilingTokens),
     minIntervalMs: clampInterval(c.minIntervalMinutes ?? 10) * 60000,
     minIntervalRange: MIN_INTERVAL_RANGE,
     preserveRecentMessages: Number.isInteger(c.preserveRecentMessages) && c.preserveRecentMessages >= 0 ? c.preserveRecentMessages : 6,
     // Cold cut = model-free brief with a verbatim tail; the launch folder's TTL 1h→5m while every live session there
     // is past the threshold (lib/folder-ttl.js). Both on unless set to false.
-    mechanicalCut: false,
+    mechanicalCut: c.mechanicalCut !== false,
     briefTailTokens: Number.isFinite(Number(c.briefTailTokens)) ? Math.min(20000, Math.max(0, Math.round(Number(c.briefTailTokens)))) : core.DEFAULTS.briefTailTokens,
-    folderTtl: false,
+    folderTtl: c.folderTtl !== false,
     // Phase restart (opt-in): one notice to continue in a new session from a short handoff, past phaseRestartTokens
     // with a warm cache after a committed task. Off unless set to true (the dashboard measures this machine first).
     phaseRestart: c.phaseRestart === true,
@@ -452,16 +460,28 @@ function getFixedCost() {
  */
 function saveCompaction(patch) {
   const p = patch && typeof patch === 'object' ? patch : {};
+  const core = require('./compaction-core.mjs');
   const next = {};
-  for (const key of ['enabled', 'thresholdPercent', 'minIntervalMinutes', 'thresholdMaxTokens', 'warmCeilingTokens']) {
-    if (p[key] !== undefined) throw new Error('Compaction thresholds are managed by Claude Code, not Boss');
+  if (p.thresholdPercent !== undefined) {
+    if (!Number.isFinite(Number(p.thresholdPercent))) throw new Error('thresholdPercent must be a number');
+    next.thresholdPercent = core.clampPercent(p.thresholdPercent);
   }
+  if (p.minIntervalMinutes !== undefined) {
+    if (!Number.isFinite(Number(p.minIntervalMinutes))) throw new Error('minIntervalMinutes must be a number');
+    next.minIntervalMinutes = clampInterval(p.minIntervalMinutes);
+  }
+  for (const k of ['thresholdMaxTokens', 'warmCeilingTokens']) {
+    if (p[k] === undefined) continue;
+    if (!Number.isFinite(Number(p[k]))) throw new Error(`${k} must be a number (0 = off)`);
+    next[k] = clampTokenCap(p[k], 0);
+  }
+  if (p.enabled !== undefined) next.enabled = p.enabled === true;
   if (p.phaseRestart !== undefined) next.phaseRestart = p.phaseRestart === true;
   if (p.phaseRestartTokens !== undefined) {
     if (!Number.isFinite(Number(p.phaseRestartTokens))) throw new Error('phaseRestartTokens must be a number');
     next.phaseRestartTokens = clampPhaseTokens(p.phaseRestartTokens);
   }
-  if (!Object.keys(next).length) throw new Error('nothing to save (phaseRestart or phaseRestartTokens)');
+  if (!Object.keys(next).length) throw new Error('nothing to save (thresholdPercent, minIntervalMinutes, thresholdMaxTokens, warmCeilingTokens, enabled, phaseRestart or phaseRestartTokens)');
   const file = userConfigPath();
   const current = readUserConfigForWrite(file);
   current.compaction = { ...(isPlainObject(current.compaction) ? current.compaction : {}), ...next };

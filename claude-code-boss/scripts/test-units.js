@@ -3326,7 +3326,7 @@ test('dashboard /api/metrics/outcome: the Home Results panel reads the same summ
       assert.strictEqual(body.rangeDays, 30);
       assert.strictEqual(body.learning.captured, 2, JSON.stringify(body.learning));
       assert.deepStrictEqual(body.loopsAvoided, { denied: 2, sessions: 2 });
-      assert.deepStrictEqual([body.compaction.enabled, body.compaction.runs, body.compaction.measured, body.compaction.tokensCut], [false, 1, 1, 200000], JSON.stringify(body.compaction));
+      assert.deepStrictEqual([body.compaction.enabled, body.compaction.runs, body.compaction.measured, body.compaction.tokensCut], [true, 1, 1, 200000], JSON.stringify(body.compaction));
       assert(Array.isArray(body.byWeek) && body.curation && body.mechanical && body.window.projects >= 1);
       console.log('OK');
     })().catch((e) => { console.error(e.stack); process.exit(1); });
@@ -10396,11 +10396,9 @@ test('cost-tuning: TTL only for API-billed sessions (gateway, key, cloud) — no
   assertEq(costTuning.wanted(cfg, false), { ENABLE_TOOL_SEARCH: 'true' }, 'Tool Search always; no fixed compaction window by default');
   assertEq(costTuning.wanted(cfg, true), { CLAUDE_CODE_PROMPT_CACHE_TTL: '1h', ENABLE_TOOL_SEARCH: 'true' });
   assertEq(costTuning.wanted(costTuning.resolveConfig({ autoCompactWindow: 153000 }), true), { CLAUDE_CODE_PROMPT_CACHE_TTL: '1h', ENABLE_TOOL_SEARCH: 'true' }, 'the opt-in window is no longer an env var (it outranks /autocompact)');
-  assertEq(costTuning.wantedWindow(costTuning.resolveConfig({ autoCompactWindow: 153000 })), null, 'retired opt-ins cannot request a window');
-  assertEq([costTuning.wantedWindow(cfg), costTuning.wantedWindow(costTuning.resolveConfig({ enabled: false, autoCompactWindow: 153000 }))], [null, null]);
   assertEq(costTuning.wanted(costTuning.resolveConfig({ toolSearch: false }), false), {}, 'Tool Search can be turned off in the config');
   assertEq(costTuning.wanted(costTuning.resolveConfig({ enabled: false }), true), {});
-  assertEq(costTuning.resolveConfig({ cacheTtl: '2h', autoCompactWindow: 5 }), { enabled: true, toolSearch: true, cacheTtl: null, autoCompactWindow: null }, 'unknown TTL off, compaction unmanaged');
+  assertEq(costTuning.resolveConfig({ cacheTtl: '2h' }), { enabled: true, toolSearch: true, cacheTtl: null, autoCompactWindow: null }, 'unknown TTL off');
   assertEq(costTuning.resolveConfig({ autoCompactWindow: null }).autoCompactWindow, null, 'null = window not managed');
 });
 
@@ -10479,50 +10477,6 @@ test('cost-tuning.autoCompactNotices: the user is told about the migration and a
   assertEq(costTuning.autoCompactNotices({ migrated: false, window: null, env: {}, processEnv: {} }), { migrated: null, override: null }, 'no variable, no notice');
 });
 
-test('cost-tuning: applyCostTuning removes the owned window, adds none, warns about foreign settings', () => {
-  const hc = require('./lib/hooks-config.js');
-  const settings = path.join(os.homedir(), '.claude', 'settings.json');
-  const stateFile = path.join(require('../engine/lib/data-dir.js').globalDir(), 'cost-tuning-state.json');
-  assert(settings.startsWith(process.env.USERPROFILE) && stateFile.startsWith(process.env.USERPROFILE), 'temp HOME only');
-  const ucfg = hc.userConfigPath();
-  const keep = [settings, stateFile, ucfg].map((f) => [f, fs.existsSync(f) ? fs.readFileSync(f, 'utf8') : null]);
-  try {
-    for (const [f] of keep) { try { fs.unlinkSync(f); } catch (err) { void err; } }
-    fs.mkdirSync(path.dirname(settings), { recursive: true });
-    fs.mkdirSync(path.dirname(ucfg), { recursive: true });
-    fs.mkdirSync(path.dirname(stateFile), { recursive: true });
-    fs.writeFileSync(ucfg, JSON.stringify({ costTuning: { autoCompactWindow: 153000 } }));
-    hc._resetCache();
-    // the previous version had written the env var and owns it
-    fs.writeFileSync(settings, JSON.stringify({ env: { CLAUDE_CODE_AUTO_COMPACT_WINDOW: '153000', KEEP: '1' }, hooks: { X: 1 } }));
-    fs.writeFileSync(stateFile, JSON.stringify({ applied: { CLAUDE_CODE_AUTO_COMPACT_WINDOW: '153000' }, previous: { CLAUDE_CODE_AUTO_COMPACT_WINDOW: null }, yielded: {} }));
-    const out = {};
-    assertEq(routerEnsure.applyCostTuning({ ANTHROPIC_BASE_URL: 'http://100.124.248.83' }, out), true);
-    const s = JSON.parse(fs.readFileSync(settings, 'utf8'));
-    assertEq([s.env.CLAUDE_CODE_AUTO_COMPACT_WINDOW, s.env.KEEP, s.autoCompactWindow, s.hooks], [undefined, '1', undefined, { X: 1 }], 'owned env gone, no replacement window, the rest untouched');
-    assert(/removida do settings\.json/.test(out.migrated), `visible migration notice, got: ${out.migrated}`);
-    assertEq(JSON.parse(fs.readFileSync(stateFile, 'utf8')).window.applied, undefined);
-    const again = {};
-    routerEnsure.applyCostTuning({ ANTHROPIC_BASE_URL: 'http://100.124.248.83' }, again);
-    assertEq([again.migrated, again.override], [null, null], 'the migration is told once');
-    // someone else's env var outranks /autocompact: visible warning, never removed
-    const s2 = JSON.parse(fs.readFileSync(settings, 'utf8'));
-    s2.env.CLAUDE_CODE_AUTO_COMPACT_WINDOW = '300000';
-    fs.writeFileSync(settings, JSON.stringify(s2));
-    const foreign = {};
-    routerEnsure.applyCostTuning({ ANTHROPIC_BASE_URL: 'http://100.124.248.83' }, foreign);
-    assert(/CLAUDE_CODE_AUTO_COMPACT_WINDOW=300000 está definida.*vence o \/autocompact/.test(foreign.override), `override warning, got: ${foreign.override}`);
-    assertEq(JSON.parse(fs.readFileSync(settings, 'utf8')).env.CLAUDE_CODE_AUTO_COMPACT_WINDOW, '300000', 'a foreign value is left alone');
-    // turning the opt-in off restores the settings key to unset
-    fs.writeFileSync(ucfg, JSON.stringify({ costTuning: {} }));
-    hc._resetCache();
-    routerEnsure.applyCostTuning({ ANTHROPIC_BASE_URL: 'http://100.124.248.83' });
-    assertEq(JSON.parse(fs.readFileSync(settings, 'utf8')).autoCompactWindow, undefined, 'off → the key we wrote is removed');
-  } finally {
-    for (const [f, v] of keep) { if (v == null) { try { fs.unlinkSync(f); } catch (err) { void err; } } else fs.writeFileSync(f, v); }
-    hc._resetCache();
-  }
-});
 
 test('mergeRouterConfig: sem override → shipped inalterado (enabled:false fica false)', () => {
   const m = routerEnsure.mergeRouterConfig({ enabled: false, port: 13456, nim: { apiKey: '' } }, null);
@@ -10851,10 +10805,6 @@ test('Q24 run(): sessão com gateway próprio → o roteador NÃO se liga por ci
     assertEq(p.env.CLAUDE_CODE_AUTO_COMPACT_WINDOW, undefined);
   });
 
-  test('router-config.json shipped: no auto-compaction window', () => {
-    const cfg = JSON.parse(fs.readFileSync(path.join(__dirname, '..', 'config', 'router-config.json'), 'utf-8'));
-    assertEq(cfg.autoCompactWindow, undefined);
-  });
 }
 
 // ─── shells-config: buildCuratedInvocation (auto-redirect Parte A, Fase 1) ────
@@ -18949,13 +18899,13 @@ test('fixed-cost.auditBossConfig: compactacao em %, janela fixa, Tool Search e p
   const good = fixedCost.auditBossConfig({ ...base, settings: { env: { ENABLE_TOOL_SEARCH: 'true' }, enabledPlugins: { 'claude-code-boss@m': true } } });
   assertEq(good.items.every((i) => i.status === 'ok'), true, JSON.stringify(good.items));
   assertEq(good.actions, []);
-  assert(/managed by Claude Code/.test(good.items[0].detail) && !/%/.test(good.items[0].detail), good.items[0].detail);
+  assert(/at 30% of the model window/.test(good.items[0].detail), good.items[0].detail);
   const bad = fixedCost.auditBossConfig({
     ...base, compaction: { enabled: false, thresholdPercent: 30 },
     settings: { env: { CLAUDE_CODE_AUTO_COMPACT_WINDOW: '153000', ENABLE_TOOL_SEARCH: 'false' }, enabledPlugins: { 'claude-code-boss@m': false } },
   });
   const by = Object.fromEntries(bad.items.map((i) => [i.id, i]));
-  assertEq(by['boss-compaction'].status, 'ok');
+  assertEq(by['boss-compaction'].status, 'warn');
   assertEq(by['boss-fixed-window'].status, 'warn');
   assert(/153000/.test(by['boss-fixed-window'].detail) && /120000/.test(by['boss-fixed-window'].detail), 'diz que 153000 compacta em 120000');
   assertEq(by['boss-tool-search'].status, 'warn');
@@ -21620,23 +21570,30 @@ test('dashboard.getRouterConfig: byok.classifyRemote/byok.enabled/byok.mode/byok
 // avisava nada: o usuário via "salvo" sem saber que o timeout que digitou foi
 // descartado em silêncio. Mesma classe de bug que headers inválidos já evitavam
 // (aborta com `router.byokHeadersInvalid`) — este teste tranca o fix simétrico.
-test('dashboard: compaction remains native and no threshold controls are offered', () => {
-  const source = fs.readFileSync(path.join(ROOT, 'dashboard', 'index.html'), 'utf8');
-  assert(source.includes('Compaction is managed by Claude Code'));
-  for (const id of ['cmp-pct', 'cmp-max', 'cmp-warm', 'cmp-iv']) assert(!source.includes('id="' + id + '"'), id);
-  assert(!source.includes('async function saveCompactionConfig('));
+test('dashboard: o painel de compactação edita cold limit e warm ceiling em mil tokens, com dica, validação e padrão ligado', () => {
+  const src = fs.readFileSync(path.join(ROOT, 'dashboard', 'index.html'), 'utf-8');
+  for (const id of ['cmp-max', 'cmp-warm']) assert(src.includes('id="' + id + '"'), id + ' input must exist');
+  assert(/thresholdMaxTokens \?\? 0/.test(src) && /warmCeilingTokens \?\? 0/.test(src), 'the fields default to 0 (off) when the config omits them');
+  const fn = src.match(/async function saveCompactionConfig\(\)[\s\S]*?\n\}/);
+  assert(fn, 'saveCompactionConfig() not found');
+  assert(/thresholdMaxTokens: cap\('cmp-max'/.test(fn[0]) && /warmCeilingTokens: cap\('cmp-warm'/.test(fn[0]), 'both values are sent in the PUT body');
+  assert(/v < 50 \|\| v > 2000/.test(fn[0]) && /use 0 \(off\) or 50 to 2000/.test(fn[0]), 'out-of-range input is refused with a message, not clamped silently');
+  assert(/\* 1000/.test(fn[0]), 'the fields are in thousands of tokens and converted');
+  // one tooltip per number: the two new caps, the percent and the interval
+  const tips = [...src.matchAll(/data-tip="Default (150|200|30%|10 minutes)[^"]*"/g)].map(m => m[1]);
+  assertEq([...new Set(tips)].sort(), ['10 minutes', '150', '200', '30%'], 'each compaction number has a plain-language tooltip with its default');
+  assert(/0 turns (this limit|it) off/.test(src), 'the tooltips say how to disable each cap');
 });
 
-test('hooks-config: retired threshold writes are refused without changing user config', () => {
-  withTempHome(() => {
+test('hooks-config: o valor do painel (mil tokens x 1000) faz ida e volta e 0 desliga', () => {
+  withTempHome((home) => {
     const hc = require('./lib/hooks-config.js');
+    assert(hc.userConfigPath().startsWith(home), 'the user config must resolve inside the temp home, never the real one');
     hc._resetCache();
-    for (const patch of [{ enabled: true }, { thresholdPercent: 30 }, { thresholdMaxTokens: 150000 }, { warmCeilingTokens: 200000 }, { minIntervalMinutes: 10 }]) {
-      let error = null;
-      try { hc.saveCompaction(patch); } catch (caught) { error = caught; }
-      assert(error && /managed by Claude Code/.test(error.message), JSON.stringify(patch));
-    }
-    assert(!fs.existsSync(hc.userConfigPath()), 'no threshold configuration is written');
+    const saved = hc.saveCompaction({ thresholdMaxTokens: 120 * 1000, warmCeilingTokens: 0 });
+    assertEq([saved.thresholdMaxTokens, saved.warmCeilingTokens], [120000, 0], 'saved as typed, 0 stays off');
+    hc._resetCache();
+    assertEq([hc.getCompaction().thresholdMaxTokens, hc.getCompaction().warmCeilingTokens], [120000, 0], 'reopened');
   });
 });
 
@@ -23019,7 +22976,7 @@ test('user-config writers (auditoria 3.1.0): an unreadable user-config fails lou
     fs.mkdirSync(path.dirname(file), { recursive: true });
     for (const [name, call] of [
       ['saveProfile', () => hc.saveProfile('dev')],
-      ['saveCompaction', () => hc.saveCompaction({ phaseRestart: false })],
+      ['saveCompaction', () => hc.saveCompaction({ thresholdPercent: 40 })],
       ['setHookDisabled', () => hc.setHookDisabled('hook_x', true)],
       ['saveOverrides', () => hc.saveOverrides({ ...hc.load(), memoryRotate: { maxLines: 77 } })],
     ]) {
@@ -29929,56 +29886,6 @@ test('compaction-core.lastTurnDelivered: reads the engine\'s tool name field (`t
   assertEq(cmpCore.lastTurnDelivered([{ role: 'assistant', text: '', toolUses: [{ tool_use_id: 'b', tool: 'Read', input: { command: 'git commit -m x' } }] }]), false, 'another tool');
 });
 
-test('router enable/disable against real settings.json: no compaction window written, user values preserved', () => {
-  const { spawnSync } = require('child_process');
-  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-rsettings-'));
-  const settingsFile = path.join(home, '.claude', 'settings.json');
-  const child = path.join(home, 'child.js');
-  fs.mkdirSync(path.dirname(settingsFile), { recursive: true });
-  fs.writeFileSync(child, `
-    const fs = require('fs');
-    const ens = require(${JSON.stringify(path.join(ROOT, 'scripts', 'model-router-ensure.js'))});
-    const file = ${JSON.stringify(settingsFile)};
-    const read = () => JSON.parse(fs.readFileSync(file, 'utf8'));
-    const url = 'http://127.0.0.1:13456';
-    const out = {};
-    const scenario = (name, initial) => {
-      if (initial === null) { try { fs.unlinkSync(file); } catch (e) { if (e.code !== 'ENOENT') throw e; } } else fs.writeFileSync(file, JSON.stringify(initial));
-      out[name] = { enabled: ens.enableSettingsRouting(url) };
-      out[name].afterEnable = read();
-      ens.disableSettingsRouting();
-      out[name].afterDisable = read();
-    };
-    scenario('absent', {});
-    scenario('user', { autoCompactWindow: 500000 });
-    scenario('legacyEnv', { env: { CLAUDE_CODE_AUTO_COMPACT_WINDOW: '200000', KEEP: '1' } });
-    scenario('userEnv', { env: { CLAUDE_CODE_AUTO_COMPACT_WINDOW: '900000' } });
-    // A user key equal to the value old builds wrote (200000) is indistinguishable from ours: it stays.
-    scenario('user200k', { autoCompactWindow: 200000 });
-    fs.writeFileSync(file, JSON.stringify({ autoCompactWindow: 200000, env: { ENABLE_TOOL_SEARCH: 'true', KEEP: '1' } }));
-    ens.applySettingsTuning(false);
-    out.tuningOff = read();
-    console.log(JSON.stringify(out));
-  `);
-  try {
-    const r = spawnSync(process.execPath, [child], { encoding: 'utf8', windowsHide: true, timeout: 60000, env: { ...process.env, HOME: home, USERPROFILE: home, CLAUDE_PLUGIN_ROOT: ROOT, CLAUDE_PLUGIN_DATA: path.join(home, 'data'), CCB_TEST_SANDBOX: '1' } });
-    assertEq(r.status, 0, `child failed: ${r.stderr}`);
-    const out = JSON.parse(r.stdout.trim().split('\n').pop());
-    assertEq(out.absent.enabled, true);
-    assertEq(out.absent.afterEnable.autoCompactWindow, undefined, 'no window is written');
-    assertEq(out.absent.afterEnable.env.CLAUDE_AUTOCOMPACT_PCT_OVERRIDE, undefined, 'no percent override is written');
-    assert(!('CLAUDE_CODE_AUTO_COMPACT_WINDOW' in (out.absent.afterEnable.env || {})), 'never in the env');
-    assertEq(out.absent.afterDisable.autoCompactWindow, undefined, 'ours → removed on disable');
-    assertEq(out.user.afterEnable.autoCompactWindow, 500000, 'the user value is untouched');
-    assertEq(out.user.afterDisable.autoCompactWindow, 500000, 'and survives the disable');
-    assert(!('CLAUDE_CODE_AUTO_COMPACT_WINDOW' in (out.legacyEnv.afterEnable.env || {})), 'our old env value is migrated out');
-    assertEq(out.legacyEnv.afterEnable.env.KEEP, '1', 'foreign env intact');
-    assertEq(out.userEnv.afterEnable.env.CLAUDE_CODE_AUTO_COMPACT_WINDOW, '900000', 'the user\'s own env value is never touched');
-    assertEq(out.user200k.afterDisable.autoCompactWindow, 200000, 'disabling the router keeps a user autoCompactWindow of 200000');
-    assertEq(out.tuningOff.autoCompactWindow, 200000, 'tuning off keeps a user autoCompactWindow of 200000');
-    assertEq(out.tuningOff.env, { KEEP: '1' }, 'tuning off removes only our ENABLE_TOOL_SEARCH');
-  } finally { fs.rmSync(home, { recursive: true, force: true }); }
-});
 
 test('compaction-core.isMechanicalCut + chooseCompaction: the brief only with a COLD cache and never for a person\'s own /compact', () => {
   const plan = (ratio) => ({ ratio, duplicatesDropped: 0, verbatimTextIntact: true });
@@ -30286,15 +30193,15 @@ test('compaction-core.decideTurnEnd: an autonomous turn (no person prompt gated)
 });
 
 test('compaction-core.thresholdFor: a % of the window the engine applies (200K and 1M alike), clamped to the slider range, flagged past the engine point', () => {
-  assertEq(cmpCore.thresholdFor({ window: 1000000, engineAutoCompactAt: 967000 }), { thresholdTokens: 300000, percent: 30, aboveEngine: false }, 'legacy helper has no default 150k cap');
-  assertEq(cmpCore.thresholdFor({ window: 1000000, engineAutoCompactAt: 967000 }, { thresholdMaxTokens: 0 }), { thresholdTokens: 300000, percent: 30, aboveEngine: false }, 'cap 0 = off: the pure percent of before');
+  assertEq(cmpCore.thresholdFor({ window: 1000000, engineAutoCompactAt: 967000 }), { thresholdTokens: 300000, percent: 30, aboveEngine: false }, '1M window: 30% = 300k, no absolute cap by default');
+  assertEq(cmpCore.thresholdFor({ window: 1000000, engineAutoCompactAt: 967000 }, { thresholdMaxTokens: 150000 }), { thresholdTokens: 150000, percent: 30, aboveEngine: false, capped: true }, 'an explicit cap still applies: min(percent, cap)');
   assertEq(cmpCore.thresholdFor({ window: 1000000 }, { thresholdPercent: 10 }), { thresholdTokens: 100000, percent: 10, aboveEngine: false }, 'a percent already below the cap is not touched');
   assertEq(cmpCore.thresholdFor({ window: 300000, engineAutoCompactAt: 267000 }), { thresholdTokens: 90000, percent: 30, aboveEngine: false });
   assertEq(cmpCore.thresholdFor({ window: 200000, engineAutoCompactAt: 167000 }, { thresholdPercent: 50 }), { thresholdTokens: 100000, percent: 50, aboveEngine: false });
   assertEq(cmpCore.thresholdFor({ window: 153000, engineAutoCompactAt: 120000 }), { thresholdTokens: 45900, percent: 30, aboveEngine: false }, 'pure percent: no token floor');
   assertEq(cmpCore.thresholdFor({ window: 200000, engineAutoCompactAt: 167000 }).thresholdTokens, 60000, '30% of 200k = 60k, not 90k');
-  assertEq(cmpCore.thresholdFor({ window: 1000000, engineAutoCompactAt: 967000 }, { minThresholdTokens: 999999 }).thresholdTokens, 300000, 'no default cap or floor');
-  assertEq(cmpCore.thresholdFor({ window: 200000, engineAutoCompactAt: 150000 }, { thresholdPercent: 80 }), { thresholdTokens: 160000, percent: 80, aboveEngine: true },'past the engine point: flagged, never silently moved');
+  assertEq(cmpCore.thresholdFor({ window: 1000000, engineAutoCompactAt: 967000 }, { minThresholdTokens: 999999 }).thresholdTokens, 300000, 'no floor option exists any more: the pure percent');
+  assertEq(cmpCore.thresholdFor({ window: 200000, engineAutoCompactAt: 150000 }, { thresholdPercent: 80 }), { thresholdTokens: 160000, percent: 80, aboveEngine: true },'past the engine point: it compacts first — flagged, never silently moved');
   assertEq(cmpCore.thresholdFor({ window: 200000 }, { thresholdPercent: 95 }).percent, 80, 'clamped to the range top');
   assertEq(cmpCore.thresholdFor({ window: 200000 }, { thresholdPercent: 2 }).percent, 10, 'clamped to the range bottom');
   assertEq(cmpCore.thresholdFor({}).thresholdTokens, null, 'no window → no threshold');
@@ -30317,75 +30224,77 @@ test('compaction-core.decideTurnEnd: past the warm ceiling a WARM cache is cut a
   assertEq(cmpCore.decideTiming({ tokens: 210000, now: NOW, ttlMs: 3600000, lastAnswerAt: NOW - 20000, busy: false }, T), { action: 'wait', reason: 'cache-warm', dueInMs: 3600000 - 20000 }, "the person's prompt gate never cuts a warm cache (it would hold the prompt for a model call)");
 });
 
-test('hooks-config compaction: defaults and stale overrides cannot enable a Boss threshold', () => {
-  withTempHome(() => {
-    const hc = require('./lib/hooks-config.js');
-    const file = hc.userConfigPath();
-    const check = () => {
-      hc._resetCache();
-      const config = hc.getCompaction();
-      assertEq([config.enabled, config.thresholdPercent, config.thresholdMaxTokens, config.warmCeilingTokens, config.mechanicalCut, config.folderTtl], [false, 0, 0, 0, false, false]);
-      // the retired knobs (interval, recent-message floor, brief tail, slider range) are not exposed any more
-      assertEq(Object.keys(config).sort(), ['enabled', 'folderTtl', 'mechanicalCut', 'thresholdMaxTokens', 'thresholdPercent', 'warmCeilingTokens']);
-    };
-    check();
-    fs.mkdirSync(path.dirname(file), { recursive: true });
-    fs.writeFileSync(file, JSON.stringify({ compaction: { enabled: true, thresholdPercent: 30, thresholdMaxTokens: 150000, warmCeilingTokens: 200000, folderTtl: true, mechanicalCut: true, minIntervalMinutes: 5, preserveRecentMessages: 3, briefTailTokens: 9000 } }));
-    check();
-  });
+test('hooks-config compaction: thresholdMaxTokens / warmCeilingTokens are OFF by default, 0 keeps each off, garbage falls back (never silently to off), saves are clamped', () => {
+  const hc = require('./lib/hooks-config.js');
+  const file = hc.userConfigPath();
+  const c0 = hc.getCompaction();
+  assertEq([c0.thresholdMaxTokens, c0.warmCeilingTokens], [0, 0], 'caps are off by default (owner: percent only)');
+  assertEq([c0.enabled, c0.thresholdPercent, c0.folderTtl, c0.mechanicalCut], [true, 30, true, true], '30% default, per-folder TTL switch and cold cut on');
+  const out = hc.saveCompaction({ thresholdMaxTokens: 0, warmCeilingTokens: 10 });
+  assertEq([out.thresholdMaxTokens, out.warmCeilingTokens], [0, 50000], '0 = off; a tiny ceiling clamps to the 50k floor');
+  assertEq(hc.saveCompaction({ thresholdMaxTokens: 9e9 }).thresholdMaxTokens, 2000000, 'clamped to the top');
+  let threw = null;
+  try { hc.saveCompaction({ warmCeilingTokens: 'abc' }); } catch (err) { threw = err.message; }
+  assert(/warmCeilingTokens must be a number/.test(String(threw)), `garbage is refused loud: ${threw}`);
+  const cfg = JSON.parse(fs.readFileSync(file, 'utf8')); delete cfg.compaction.thresholdMaxTokens; delete cfg.compaction.warmCeilingTokens;
+  fs.writeFileSync(file, JSON.stringify(cfg, null, 2));
 });
 
-test('Boss compaction policy: the real hook entry does not register compaction and neither settings writer requests a threshold', async () => {
+test('cold compaction as the owner designed it: the user threshold defaults to 30% of the window; below it the folder keeps the long TTL, above it the short one', () => {
+  const ft = require('./lib/folder-ttl.js');
+  const cfg = require('./lib/hooks-config.js').getCompaction();
+  assertEq([cfg.enabled, cfg.thresholdPercent, cfg.folderTtl, cfg.mechanicalCut], [true, 30, true, true], 'shipped defaults: on, 30%, per-folder TTL, brief cut');
+  const now = Date.now();
+  for (const [window, tokens, ttl] of [[200000, 50000, null], [200000, 61000, '5m'], [1000000, 290000, null], [1000000, 310000, '5m']]) {
+    const th = cmpCore.thresholdFor({ window, engineAutoCompactAt: window * 0.967 }, { thresholdPercent: cfg.thresholdPercent, thresholdMaxTokens: cfg.thresholdMaxTokens });
+    const plan = ft.planFolder({ sessions: { a: { above: tokens >= th.thresholdTokens, seenAt: now } } }, now);
+    assertEq(plan.want, ttl, `window ${window}, ${tokens} tokens, threshold ${th.thresholdTokens}: ${ttl || 'long TTL kept'}`);
+  }
+  assertEq(cmpCore.decideTiming({ tokens: 310000, now, ttlMs: 5 * 60000, lastAnswerAt: now - 6 * 60000, busy: false }, { thresholdTokens: 300000, minIntervalMs: 600000 }).action, 'compact', 'cache went cold (5 min after the TTL switch) past the threshold: the cut runs on the next prompt');
+  assertEq(cmpCore.decideTiming({ tokens: 310000, now, ttlMs: 3600000, lastAnswerAt: now - 6 * 60000, busy: false }, { thresholdTokens: 300000, minIntervalMs: 600000 }).action, 'wait', 'still warm under the long TTL: never cut');
+});
+
+test('cold compaction: the absolute caps are OFF by default everywhere (core defaults, config reader, shipped config, dashboard)', () => {
+  assertEq([cmpCore.DEFAULTS.thresholdMaxTokens, cmpCore.DEFAULTS.warmCeilingTokens], [0, 0], 'core defaults');
+  require('./lib/hooks-config.js')._resetCache();
+  const hc = require('./lib/hooks-config.js');
+  assertEq([hc.getCompaction().thresholdMaxTokens, hc.getCompaction().warmCeilingTokens], [0, 0], 'config reader');
+  const shipped = JSON.parse(fs.readFileSync(path.join(ROOT, 'config', 'hooks-config.json'), 'utf8')).compaction;
+  assert(!shipped.thresholdMaxTokens && !shipped.warmCeilingTokens, 'shipped config sets no cap');
+  assertEq(cmpCore.thresholdFor({ window: 1000000, engineAutoCompactAt: 967000 }).thresholdTokens, 300000, '30% of a 1M window stays 300k');
+  assertEq(cmpCore.decideTurnEnd({ busy: false, gated: false, now: 1e8, tokens: 900000, ttlMs: 3600000, lastAnswerAt: 1e8 - 20000 }, { thresholdTokens: 300000, warmCeilingTokens: cmpCore.DEFAULTS.warmCeilingTokens, minIntervalMs: 600000 }).action, 'wait', 'a warm cache is never cut at turn end by default');
+});
+
+test('cold compaction hook module: no hard-coded port, no external service, registered by the hook entry', async () => {
+  const src = fs.readFileSync(path.join(ROOT, 'hooks', 'compaction.mjs'), 'utf8');
+  assert(!/https?:\/\/(127\.0\.0\.1|localhost)|:\d{4,5}\b/.test(src.replace(/\/\/.*$/gm, '')), 'no literal host:port in the module');
   const entry = await import(require('url').pathToFileURL(path.join(ROOT, 'hooks', 'index.mjs')).href);
   const events = [];
   entry.register((event) => { events.push(event); return { catch() {} }; });
-  assert(!events.includes('session.compact'), JSON.stringify(events));
-  assertEq([cmpCore.DEFAULTS.thresholdMaxTokens, cmpCore.DEFAULTS.warmCeilingTokens], [0, 0]);
-  assertEq(costTuning.wantedWindow({ enabled: true, autoCompactWindow: 150000 }), null);
-  assertEq(costTuning.resolveConfig({ autoCompactWindow: 200000 }).autoCompactWindow, null);
-  const preserved = { autoCompactWindow: 500000, env: { CLAUDE_AUTOCOMPACT_PCT_OVERRIDE: '80', CLAUDE_CODE_AUTO_COMPACT_WINDOW: '900000' } };
-  const plan = costTuning.planCostTuningAll(preserved, costTuning.wanted(costTuning.resolveConfig({ autoCompactWindow: 150000 }), false), costTuning.wantedWindow(), {});
-  assertEq(plan.settings.autoCompactWindow, 500000);
-  assertEq(plan.env.CLAUDE_CODE_AUTO_COMPACT_WINDOW, '900000');
-  assertEq(plan.env.CLAUDE_AUTOCOMPACT_PCT_OVERRIDE, '80');});
+  assert(events.includes('session.compact') && events.includes('prompt.submit'), JSON.stringify(events));
+});
 
-test('cost-tuning: retired windows are restored by ownership and stale opt-ins cannot return', () => {
-  const config = require('./lib/hooks-config.js');
-  const settingsFile = path.join(os.homedir(), '.claude', 'settings.json');
-  const stateFile = path.join(require('../engine/lib/data-dir.js').globalDir(), 'cost-tuning-state.json');
-  const configFile = config.userConfigPath();
-  assert(settingsFile.startsWith(process.env.USERPROFILE) && stateFile.startsWith(process.env.USERPROFILE), 'test HOME only');
-  const snapshots = [settingsFile, stateFile, configFile].map(file => [file, fs.existsSync(file) ? fs.readFileSync(file, 'utf8') : null]);
+test('hooks-config compaction: getCompaction clamps; saveCompaction writes the UPDATE-SAFE user-config (never the shipped file)', () => {
+  const hc = require('./lib/hooks-config.js');
+  const file = hc.userConfigPath();
+  assert(file.startsWith(process.env.USERPROFILE), `the suite's temp HOME, never the real one (${file})`);
+  const shippedBefore = fs.readFileSync(path.join(ROOT, 'config', 'hooks-config.json'), 'utf8');
+  const prev = fs.existsSync(file) ? fs.readFileSync(file, 'utf8') : null;
   try {
-    for (const file of [configFile, stateFile, settingsFile]) fs.mkdirSync(path.dirname(file), { recursive: true });
-    fs.writeFileSync(configFile, JSON.stringify({ costTuning: { autoCompactWindow: 150000 } }));
-    config._resetCache();
-    for (const previous of [null, 500000]) {
-      fs.writeFileSync(settingsFile, JSON.stringify({ autoCompactWindow: 200000, env: { KEEP: '1' }, hooks: { keep: true } }));
-      fs.writeFileSync(stateFile, JSON.stringify({ window: { applied: 200000, previous } }));
-      assertEq(routerEnsure.applyCostTuning({}), true);
-      const restored = JSON.parse(fs.readFileSync(settingsFile, 'utf8'));
-      assertEq(restored.autoCompactWindow, previous == null ? undefined : previous);
-      assertEq(restored.hooks, { keep: true });
-      assertEq(restored.env.KEEP, '1');
-      assertEq(restored.env.CLAUDE_CODE_AUTO_COMPACT_WINDOW, undefined);
-      assertEq(restored.env.CLAUDE_AUTOCOMPACT_PCT_OVERRIDE, undefined);
-      assertEq(routerEnsure.applyCostTuning({}), true);
-      assertEq(JSON.parse(fs.readFileSync(settingsFile, 'utf8')), restored, 'idempotent; no threshold returns');
-    }
-    fs.writeFileSync(settingsFile, JSON.stringify({ autoCompactWindow: 700000, env: { CLAUDE_CODE_AUTO_COMPACT_WINDOW: '900000', CLAUDE_AUTOCOMPACT_PCT_OVERRIDE: '80' } }));
-    fs.writeFileSync(stateFile, JSON.stringify({ window: { applied: 200000, previous: null } }));
-    assertEq(routerEnsure.applyCostTuning({}), true);
-    const preserved = JSON.parse(fs.readFileSync(settingsFile, 'utf8'));
-    assertEq(preserved.autoCompactWindow, 700000);
-    assertEq(preserved.env.CLAUDE_CODE_AUTO_COMPACT_WINDOW, '900000');
-    assertEq(preserved.env.CLAUDE_AUTOCOMPACT_PCT_OVERRIDE, '80');
+    const out = hc.saveCompaction({ thresholdPercent: 95, minIntervalMinutes: 0 });
+    assertEq([out.thresholdPercent, out.minIntervalMs], [80, 60000], 'clamped: 80% max, 1 min minimum');
+    assertEq(JSON.parse(fs.readFileSync(file, 'utf8')).compaction, { thresholdPercent: 80, minIntervalMinutes: 1 });
+    assertEq(hc.saveCompaction({ thresholdPercent: 25 }).minIntervalMs, 60000, 'a partial save keeps the other key');
+    assertEq(fs.readFileSync(path.join(ROOT, 'config', 'hooks-config.json'), 'utf8'), shippedBefore, 'the shipped file is untouched');
+    let threw = null;
+    try { hc.saveCompaction({}); } catch (err) { threw = err.message; }
+    assert(/nothing to save/.test(threw || ''), 'an empty save fails loud');
+    threw = null;
+    try { hc.saveCompaction({ thresholdPercent: 'abc' }); } catch (err) { threw = err.message; }
+    assert(/must be a number/.test(threw || ''), 'a non-number fails loud');
   } finally {
-    for (const [file, content] of snapshots) {
-      if (content == null) fs.rmSync(file, { force: true });
-      else fs.writeFileSync(file, content);
-    }
-    config._resetCache();
+    if (prev == null) { try { fs.unlinkSync(file); } catch (err) { void err; } } else fs.writeFileSync(file, prev);
+    hc._resetCache();
   }
 });
 
@@ -30578,7 +30487,7 @@ test('dashboard PUT /api/compaction/config {phaseRestart:true}: runs the measure
     const last = await call((req, res) => dash.getPhaseRestartMeasure(req, res), {});
     assertEq(last.body.measure.verdict, 'gain', 'the last measurement is kept for the panel');
     const ui = fs.readFileSync(path.join(ROOT, 'dashboard', 'index.html'), 'utf8');
-    assert(!ui.includes('id="cmp-pr"'), 'retired compaction controls are not offered by the panel');
+    assert(/onchange="savePhaseRestart\(this\.checked\)"/.test(ui) && /savePhaseRestart\(true, true\)/.test(ui), 'the panel switch measures, and offers "turn on anyway" when there is no gain');
   } finally {
     if (prevDir === undefined) delete process.env.CLAUDE_CONFIG_DIR; else process.env.CLAUDE_CONFIG_DIR = prevDir;
     if (prevCfg == null) { try { fs.unlinkSync(cfgFile); } catch (err) { void err; } } else fs.writeFileSync(cfgFile, prevCfg);
@@ -30804,12 +30713,12 @@ test('compaction-event.run: trail events land in the metrics store; turn records
     assertEq(reply.observed.afterCompaction, true, 'marked from the transcript (first call after the boundary)');
     assertEq(reply.lastMessageId, 'msg-a');
     assertEq(reply.ttl.observed, '5m');
-    assert(reply.config && reply.config.enabled === false && reply.config.thresholdPercent === 0, 'old modules receive the disabled policy on their next turn');
+    assert(reply.config && reply.config.thresholdPercent >= 10, 'the turn reply carries the current config (a slider change reaches open sessions)');
     const again = await ce.run({ ...base, transcript_path: f, payload: { kind: 'turn', host: 'gw.local', auth: 'api-key', sinceMessageId: 'msg-a' } });
     assertEq(again.recorded, 0, 'the same call is never recorded twice');
     assertEq(again.lastMessageId, 'msg-a');
     const hello = await ce.run({ ...base, payload: { kind: 'hello', host: 'gw.local', auth: 'api-key' } });
-    assert(hello.config && hello.config.enabled === false && hello.config.thresholdPercent === 0, 'hello disables old compaction modules');
+    assert(hello.config && hello.config.thresholdPercent >= 10 && hello.config.thresholdPercent <= 80, 'hello carries the config (threshold as % of the window)');
     assertEq(hello.ttl.observed, '5m', 'hello replies the window already observed for this host');
     assertEq((await ce.run({ ...base, payload: { kind: 'hello', host: 'other', auth: 'bearer' } })).ttl.observed, null, 'another host has no observation → null, never an assumed 5m');
     const s = store();
@@ -31348,7 +31257,7 @@ test('compaction hook: a session that never idles is cut at the end of a turn pa
       const transcript = path.join(dir, 'session.jsonl');
       const call = (id, at) => JSON.stringify({ type: 'assistant', timestamp: new Date(at).toISOString(), message: { id, model: 'claude-opus-5-5[1m]', usage: REOPEN_CALL } }) + '\n';
       fs.writeFileSync(transcript, '');
-      const config = { enabled: true, thresholdPercent: 30, thresholdMaxTokens: 150000, minIntervalMs: 600000, folderTtl: true, warmCeilingTokens };
+      const config = { enabled: true, thresholdPercent: 30, minIntervalMs: 600000, folderTtl: true, warmCeilingTokens, thresholdMaxTokens: 150000 };
       const out = { timers: [], compacts: 0, toasts: [], logs: [], gates: [] };
       const $ = {
         env: { get: async (k) => ({ CLAUDE_PLUGIN_DATA: dir, BRAIN_HTTP_PORT: '1' })[k] },
@@ -31909,7 +31818,7 @@ test('hook_compaction_event: daemon transport (payload arrives as an object, bad
   });
   const hooks = JSON.parse(fs.readFileSync(path.join(ROOT, 'hooks', 'hooks.json'), 'utf8'));
   assertEq(hooks.modules, ['./index.mjs']);
-  assert(!fs.readFileSync(path.join(ROOT, 'hooks', 'index.mjs'), 'utf8').includes("from './compaction.mjs'"), 'the live entry does not register compaction');
+  assert(fs.readFileSync(path.join(ROOT, 'hooks', 'index.mjs'), 'utf8').includes("from './compaction.mjs'"), 'the one entry registers the compaction');
   assert(fs.existsSync(path.join(ROOT, 'hooks', 'compaction.mjs')), 'module file shipped');
   const hc = require('./lib/hooks-config.js');
   assertEq(hc.resolveProfileConfig({ profile: 'free' }).compaction.enabled, false, 'free = passthrough');
@@ -31918,11 +31827,11 @@ test('hook_compaction_event: daemon transport (payload arrives as an object, bad
   const shipped = shippedAll.compaction;
   // The shipped file merges OVER the profile preset: an `enabled: true` here silently beat
   // `free`'s `enabled: false` (pre-release audit 3.1.0). On by default comes from `!== false`.
-  assertEq(shipped.enabled, false, 'the shipped block disables Boss compaction in every profile');
-  assertEq(shipped.thresholdPercent, undefined); assertEq(shipped.hardCeilingTokens, undefined, 'no shipped threshold');
+  assertEq(shipped.enabled, undefined, 'no enabled flag in the shipped block (it would override the free preset)');
+  assertEq(shipped.thresholdPercent, 30); assertEq(shipped.hardCeilingTokens, undefined, 'no ceiling');
   // Resolved over the REAL shipped file, the way production does it:
   assertEq(hc.resolveProfileConfig({ ...shippedAll, profile: 'free' }).compaction.enabled, false, 'free switches compaction off for real');
-  assertEq(hc.resolveProfileConfig({ ...shippedAll, profile: 'standard' }).compaction.enabled, false, 'standard also ships disabled');
+  assertEq(hc.resolveProfileConfig({ ...shippedAll, profile: 'standard' }).compaction.enabled, undefined, 'standard: on by default (!== false)');
   assertEq(hc.resolveProfileConfig({ ...shippedAll, profile: 'free', compaction: { ...shipped, enabled: true } }).compaction.enabled, true, 'an explicit user choice still wins');
 });
 
@@ -32134,12 +32043,12 @@ test('http-daemon GET /hook/boss-summary: a computation slower than the reply an
   }
 });
 
-test('hooks module: ONE entry registers the Boss band without intercepting native compaction', async () => {
+test('hooks module: hooks.json names ONE entry (the engine refuses a second) and it registers compaction and the Boss band', async () => {
   const hooksJson = JSON.parse(fs.readFileSync(path.join(ROOT, 'hooks', 'hooks.json'), 'utf8'));
   assertEq(hooksJson.modules, ['./index.mjs']);
   const entry = await import(require('url').pathToFileURL(path.join(ROOT, 'hooks', 'index.mjs')).href);
   const hooks = collectModuleHooks(entry.register);
-  assert(!findHook(hooks, 'session.compact'), 'Boss never intercepts native compaction');
+  assert(findHook(hooks, 'session.compact'), 'compaction registered');
   assert(findHook(hooks, 'command.run', { command: 'boss' }) && findHook(hooks, 'ui.render', { component: 'AbovePrompt' }), 'boss registered');
   // The engine refuses an event registered twice without a matcher in one plugin (claude plugin validate).
   const unmatched = hooks.filter((x) => !x.matcher).map((x) => x.event);

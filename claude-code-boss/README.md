@@ -32,7 +32,7 @@ Nada mais a configurar.
 - **O valor cresce com o uso, e é medido.** Decisões que o modelo tomava toda vez viram regras do projeto;
   `node scripts/outcome-report.js` mostra quantas, quantos comandos já são resolvidos por script, quais lições foram
   lembradas e citadas, e como isso muda conforme o projeto ganha sessões. Também poupa token: cache de 1 hora,
-  compactação nativa do Claude Code, custo fixo por mensagem cortado. [Como cada ganho é medido](docs/ECONOMY.md) ·
+  compactação só com o cache frio, custo fixo por mensagem cortado. [Como cada ganho é medido](docs/ECONOMY.md) ·
   [função por função, com os loops de aprendizado e de curadoria](docs/FUNCOES.md).
 - **Ele lembra.** Cada projeto tem a sua memória. As lições certas entram na conversa
   sozinhas, e um prompt em português encontra uma lição escrita em inglês.
@@ -244,27 +244,86 @@ prazo interno de `timeout − 1 s`.
 > ou o seletor na aba **Hooks** do dashboard. Override individual em `hooks-config.json`
 > ainda vence o preset. Vale a partir do próximo turno (sem reiniciar o Claude Code).
 
-## Compactação nativa do Claude Code
+## Compactação controlada
 
-O Boss não define limiares de compactação, não inicia cortes a frio ou a quente e não intercepta
-a compactação automática nem o comando manual `/compact`. As sessões seguem os padrões e as
-configurações do próprio Claude Code.
+Módulo de *function hook* do Claude Code (`hooks/compaction.mjs`, registrado pela entrada única
+`hooks/index.mjs` declarada em `modules` no `hooks.json`; exige Claude Code 2.1.274+). Decisões puras em
+`scripts/lib/compaction-core.mjs` (ESM, usado pelo módulo e pelo Node).
 
-Os antigos limites de 150k/200k, o percentual do Boss e os controles correspondentes do painel estão
-retirados. Overrides antigos em `compaction` ou `costTuning.autoCompactWindow` não os reativam.
-O Boss não define `CLAUDE_CODE_AUTO_COMPACT_WINDOW`, `CLAUDE_AUTOCOMPACT_PCT_OVERRIDE` nem uma nova
-`autoCompactWindow`. Na próxima abertura, valores escritos pelo cost-tuning anterior são restaurados
-pelo registro de propriedade; configurações próprias do usuário ou do orquestrador são preservadas.
-O orquestrador pode gerenciar seus próprios limites apenas na janela dele, fora do Boss.
-
-O painel mantém as medições históricas; elas não são prova de compactação na versão atual.
-As bibliotecas e o transporte antigos permanecem para compatibilidade com sessões ainda abertas,
-que recebem `enabled: false` na próxima consulta ao daemon. Abra uma sessão nova para carregar o
-módulo atual, que não registra os hooks de compactação.
-
-O cost-tuning continua cuidando de `ENABLE_TOOL_SEARCH=true` e, somente em sessões cobradas por API,
-`CLAUDE_CODE_PROMPT_CACHE_TTL=1h`. O estado de propriedade preserva os valores anteriores e respeita
-alterações do usuário. Esses ajustes não mudam o limiar de compactação.
+- **Quando**: dois gatilhos, ambos com padrão ligado e editáveis no painel. (1) No `prompt.submit` de uma pessoa
+  com a sessão ociosa, se o contexto passou do limiar **e** o cache do provedor já expirou, o prompt é segurado, o
+  `/compact` roda e o mesmo texto é reenviado como seu. Com o cache válido ele espera. (2) Se o cache nunca esfria
+  (agentes trabalhando sem pausa), no **fim do turno** o corte vem quando o contexto passa do teto com cache quente
+  (`warmCeilingTokens`, opcional, **desligado** por padrão) — nunca no portão do prompt da pessoa. A medição está em [docs/COMPACTION-MEASUREMENT.md](docs/COMPACTION-MEASUREMENT.md).
+- **Corte frio sem modelo**: com o cache frio, nas compactações que o boss inicia e na automática do engine a frio, o
+  histórico vira o "brief": seus pedidos na íntegra, uma linha por ferramenta (arquivo, URL, comando), as mensagens dos
+  últimos ~2 mil tokens na íntegra (`briefTailTokens`). Não há chamada de resumo. Em 6 compactações reais, guardou ~81% do que
+  os turnos seguintes citaram, contra 73% do resumo do modelo. O seu `/compact` continua com o resumo do modelo, e uma poda
+  de 85% ou mais tem prioridade. Desliga com `mechanicalCut: false`.
+- **Cache de 5 min por pasta** (`folderTtl`, `scripts/lib/folder-ttl.js`): cada sessão diz ao daemon se passou do %.
+  Enquanto TODAS as sessões abertas no mesmo cwd de abertura passaram, o boss grava `env.CLAUDE_CODE_PROMPT_CACHE_TTL=5m` no
+  `<cwd>/.claude/settings.local.json` (o Claude Code relê o arquivo na hora, e ele vale acima do env do usuário), o cache
+  esfria em 5 min e o corte vem. Depois do corte, quando uma sessão da pasta fica abaixo, ao fechar, ou quando uma sessão
+  some por 5 min (ela avisa a cada 2 min), o valor anterior volta. Uma subpasta é outra pasta (cada sessão lê só o arquivo do
+  próprio cwd, medido). Cada sessão só é cortada com o próprio cache frio. Um valor seu no arquivo nunca é sobrescrito, e um
+  arquivo criado pelo boss vai para o `info/exclude` do git. Não age com `FORCE_PROMPT_CACHING_5M` nem com o TTL no
+  `--settings`, que ganham do arquivo.
+- **Sessões autônomas**: um turno que nenhum prompt de pessoa abriu (mensagem de outra sessão, notificação de
+  tarefa, comando na fila) não passa pelo gate. No fim dele, passado o limiar, o boss compacta se o cache já
+  esfriou; com o cache quente, agenda nova checagem para quando ele vencer. Nada é segurado nem reenviado.
+- **Limiar**: um % (`thresholdPercent`, padrão 30, faixa 10–80) da janela que o engine aplica naquele
+  prompt — o limite do modelo ou uma janela de compactação menor (`CLAUDE_CODE_AUTO_COMPACT_WINDOW`) —, então
+  o mesmo ajuste serve a modelos de 200K e de 1M e acompanha o `/model` (30% de 200k = 60k; 30% de 1M = 300k). O corte a frio
+  é o % puro; `thresholdMaxTokens` é um teto opcional, **desligado** (0) por padrão (o dono decidiu limiar só em %).
+  `0` mantém cada teto desligado (`thresholdMaxTokens` 0 volta ao % puro; `warmCeilingTokens` 0 volta a nunca cortar com cache quente);
+  faixa 50 a 2000 mil. Um limiar além do ponto de auto-compact do engine é sinalizado (o engine compactaria antes). Ajuste no painel
+  **Compaction & cache** (slider do %, campos *Cold limit* e *Warm ceiling* em mil tokens, cada um com dica) (gravado em `~/.claude/claude-code-boss/hooks/user-config.json`, sobrevive a
+  updates; sessões abertas pegam no próximo turno).
+  A validade é a **observada** nas respostas reais de cada host (`ephemeral_5m` / `ephemeral_1h`;
+  medido: assinatura 1 h, um gateway de API 5 min); sem observação, assume a mais longa.
+- **O quê**: em toda compactação (manual, o limiar automático do engine, a do gate) o boss calcula a
+  poda — texto de usuário e assistente intacto; resultados de ferramenta superados (leitura refeita,
+  comando que falhou e depois passou, saída grande antiga) truncados com uma nota do motivo — e só a
+  aplica se ela cortar **85% ou mais**; abaixo disso roda o resumo do próprio engine, com cache quente
+  ou frio. Motivo, medido nas transcrições reais (2026-10-11): depois de uma poda (que mantinha
+  60–95%) as chamadas seguintes liam ~600k de contexto e custavam US$0,50 cada; depois de um resumo,
+  ~110k e US$0,075. A primeira chamada: US$2,99 contra US$0,25.
+- **Reinício em fases** (opcional, **desligado por padrão**): passado `phaseRestartTokens` (400 mil), com o cache
+  quente e no primeiro prompt seu depois de um turno que fez `git commit`, a sessão recebe **um** aviso (menos de 80
+  tokens) sugerindo escrever um handoff curto e seguir a próxima fase numa sessão nova, e você vê um toast. Um aviso
+  por cruzamento do limiar: volta a valer só depois que o contexto desce (compactação ou sessão nova). O texto do seu
+  prompt não muda. Para ligar (painel **Compaction & cache** → *Phase restart*), o boss primeiro mede as transcrições
+  desta máquina, só leitura (`node scripts/phase-restart-measure.js`): replay das chamadas reais dos últimos 30 dias,
+  preço oficial por modelo, contra o que o boss já faz. Com ganho medido, liga e mostra quanto; sem ganho, fica
+  desligado e oferece *ligar mesmo assim*. O replay não mede qualidade de resposta, só dólares.
+- **Retomada** (`--resume`, `-c`): depois de uma compactação feita por hook o engine recarrega o
+  histórico original com as cópias intercaladas (a API passava a ver cada tool_use duas vezes e
+  rejeitava o thinking). O primeiro prompt detecta as cópias e compacta antes de qualquer envio (o resumo também as remove).
+- **Não age** em sessão headless (`-p`/SDK: o engine não deixa um plugin compactar ali — o `/compact`
+  manual e o limiar automático continuam passando pela mesma escolha), no perfil `free`, nem com
+  `compaction.enabled: false`. Config em `hooks-config.json` → `compaction` (`thresholdPercent` 30, `thresholdMaxTokens` 0 e
+  `warmCeilingTokens` 0 (tetos desligados), `minIntervalMinutes` 10, `preserveRecentMessages` 6); `GET/PUT /api/compaction/config`.
+- **Observabilidade**: o módulo envia cada evento ao daemon (`POST /hook/compaction-event`, mesmo
+  token do `/mcp`) → metrics store: `compaction.gate` (decisão e motivo, idade e TTL do cache),
+  `compaction.run` (um por compactação — auto do engine, `/compact`, poda ou brief: estado do cache naquele momento
+  `cache` quente/frio com idade desde a última resposta e TTL, tamanho antes/depois, quem rodou `ranBy` boss/engine e se
+  o engine aceitou o corte `engineAccepted`; caracteres cortados, cópias do engine removidas), `compaction.cold` (cada
+  vez que o cache de uma sessão expira: hora da última resposta, ociosidade, TTL, tokens no contexto e quem viu —
+  o timer do fim do turno, a próxima entrada de qualquer origem, a reabertura da sessão ou a compactação), `compaction.settled`
+  (tokens antes/depois, medidos no turno seguinte), `compaction.resume`, `compaction.error` e
+  `cache.turn` (por chamada de API: host, tipo de credencial, modelo, cache lido/gravado, janela
+  contratada, primeira chamada depois de uma compactação). Painel **Compaction & cache** na Home,
+  `GET /api/metrics/compaction` e o log de eventos do Insights. `node scripts/compaction-report.js 14 --cache` cruza os
+  dois logs: por dia (ou `--period week`), compactações com cache quente × frio e a lista das quentes.
+- **Janela e validade do cache** (`costTuning`, `scripts/lib/cost-tuning.js`): no início de cada sessão o boss
+  grava no `env` do `~/.claude/settings.json` `ENABLE_TOOL_SEARCH=true` (as definições das ferramentas MCP carregam sob
+  demanda) e, só com chave de API, gateway ou provedor de nuvem, `CLAUDE_CODE_PROMPT_CACHE_TTL=1h` (com 5 min, cada
+  espera maior regravava o contexto inteiro). `CLAUDE_CODE_AUTO_COMPACT_WINDOW` é opt-in (`autoCompactWindow`, desligado
+  por padrão): a janela fixa de 153k fazia o engine compactar perto de 120k, no meio do turno e com o cache quente. O que
+  o boss grava e o valor anterior ficam em `~/.claude/claude-code-boss/cost-tuning-state.json` (um 153000 gravado por
+  versões anteriores volta ao valor de antes); tudo volta com `costTuning.enabled: false` ou no perfil `free`.
+  Um valor que você mudar depois ou um valor seu (TTL, Tool Search `false`/`auto`) ficam como estão. Config: `cacheTtl`
+  (`1h` ou `null`), `toolSearch` (padrão `true`), `autoCompactWindow` (100000–1000000, ou `null`). Vale a partir da próxima sessão.
 
 ## Faixa acima do prompt e `/boss`
 
