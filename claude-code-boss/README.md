@@ -4,8 +4,8 @@ Plugin para Claude Code Desktop — **v3.15.2**
 
 **Cada sessão rende mais que a anterior.** O claude-code-boss faz o seu Claude Code lembrar o que
 deu certo e errado em cada projeto, resolver por regra o que antes ele decidia no improviso
-(comandos que enchem a tela, erros que se repetem) e cortar custo fixo por mensagem.
-O ganho cresce com o uso: numa máquina nova ele começa pelo básico; com o tempo, a memória,
+(comandos que enchem a tela, erros que se repetem) e compactar o contexto na hora que custa menos.
+O ganho cresce com o uso: numa máquina nova ele só compacta na hora certa; com o tempo, a memória,
 os scripts curados e as decisões mecânicas fazem a diferença. Tudo roda na sua máquina, sem chave de API.
 
 | Dark | Light |
@@ -40,8 +40,13 @@ Nada mais a configurar.
   só o resumo. A sessão começa dizendo quanto isso economizou.
 - **Ele aprende.** Quando você corrige o agente, a correção vira uma lição na hora. Lição
   que se repete fica mais forte, e o mesmo erro não roda duas vezes à toa.
-- **Ele deixa a compactação com o Claude Code.** O Boss não define limiares nem faz cortes: a compactação
-  automática e o `/compact` seguem o padrão do próprio Claude Code (ver [Compactação nativa](#compactação-nativa-do-claude-code)).
+- **Ele compacta na hora certa.** Quando o contexto passa do limite que você escolhe (um % da janela
+  do modelo, no slider do painel) e o cache do provedor já expirou, o próximo prompt que você manda é segurado, o contexto é compactado e o mesmo prompt segue — na
+  hora em que regravar o cache já seria pago de qualquer jeito. Quem compacta é o resumo do próprio
+  Claude Code; a poda do boss (texto intacto, só resultados de ferramenta velhos cortados) só entra
+  quando corta 85% ou mais, porque o que ela mantém é relido a cada chamada e sai mais caro que o
+  resumo (medido). Sessões autônomas (só mensagens de outra sessão ou de tarefas) compactam no fim do
+  turno, também só com o cache frio. O painel mostra o que foi feito e o que o cache pagou.
 - **Ele corta o custo fixo.** Na primeira sessão depois de cada atualização, o doctor mede o que vai em
   toda mensagem (servidores MCP, skills, plugins) contra o uso real dos últimos 30 dias, aplica as
   correções reversíveis e diz o que mudou. `node scripts/doctor.js --undo` desfaz tudo.

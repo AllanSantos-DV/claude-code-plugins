@@ -1,6 +1,6 @@
-# Compactação: medição histórica (limiares retirados)
+# Compactação: como os limiares padrão foram medidos
 
-> **Estado atual:** os limiares de 150 000 (corte a frio) e 200 000 (teto com cache quente) descritos abaixo **não estão em vigor**. O Boss não define limiares nem compacta: a compactação automática e o `/compact` seguem o Claude Code, e a configuração efetiva do Boss fica sempre desligada. Este arquivo guarda só a medição de 2026-11-02 que originou esses números, como histórico; ela não descreve o comportamento da versão atual e não serve de prova de que ele compacta.
+Fonte dos padrões `thresholdMaxTokens` = 150 000 (corte a frio) e `warmCeilingTokens` = 200 000 (corte no fim do turno com cache quente). Arquivo independente: o texto vale sem o resto da documentação.
 
 ## Dados
 
@@ -32,7 +32,7 @@ Com o limiar antigo (30% de uma janela de 1M = 300k, só com cache frio) a sess�
 
 Custo real replayado: orq-24 principal US$ 15,98; subagentes US$ 52,41; nj-28 principal US$ 40,20; subagentes US$ 29,08.
 
-Simulando o corte a frio em 150k e o teto quente em 200k (números hipotéticos, não aplicados), as duas sessões principais caem 36,4% e 36,9% (US$ 15,98 → ~10,2 e US$ 40,20 → ~25,4). Subir o teto quente para 250k ou 300k derruba o ganho da segunda sessão para 29,5% e 28,5%. Baixá-lo para 175k dá 37,1% e 40,4%, ao custo de cortes com resumo do modelo em maior número. 200k guarda quase todo o ganho com cerca de metade desses cortes.
+Com o corte a frio em 150k e o teto quente em 200k, as duas sessões principais caem 36,4% e 36,9% (US$ 15,98 → ~10,2 e US$ 40,20 → ~25,4). Subir o teto quente para 250k ou 300k derruba o ganho da segunda sessão para 29,5% e 28,5%. Baixá-lo para 175k dá 37,1% e 40,4%, ao custo de cortes com resumo do modelo em maior número. 200k guarda quase todo o ganho com cerca de metade desses cortes.
 
 ## Qualidade
 
@@ -42,6 +42,6 @@ A simulação mede dólares, não qualidade. Em 6 compactações reais, o corte 
 
 - Um dia, duas sessões principais e 17 subagentes: é amostra, não população.
 - Subagentes não são alcançados pelo Boss; o ganho deles depende da compactação do próprio engine.
-- Os controles editáveis no painel para esses dois números foram retirados junto com os limiares.
+- A preferência do usuário vence: ambos os números são editáveis no painel (**Compaction & cache**) e `0` desliga cada um.
 
-Ver o histórico que o Boss registrou na sua máquina (cortes de versões anteriores): `node scripts/compaction-report.js 14 --cache`. O script de replay por limiar foi escrito para esta medição e não é distribuído com o plugin.
+Ver o que o Boss cortou na sua máquina: `node scripts/compaction-report.js 14 --cache`. O script de replay por limiar foi escrito para esta medição e não é distribuído com o plugin.
