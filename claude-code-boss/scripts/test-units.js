@@ -29345,8 +29345,7 @@ test('plugin-updater.killStale: so casa modulos da PASTA DE CACHE do plugin, nao
     for (const n of moduleCalled) {
       const m = daemonSrc.match(new RegExp(`'(/hook/[a-z-]+)':\\s*'${n}'`));
       assert(m, `${n} has a daemon route`);
-      // hook_compaction_event: its module was removed; the route stays for sessions opened before the update.
-      if (n !== 'hook_compaction_event') assert(modulesSrc.includes(m[1]), `${n}: its route ${m[1]} is called by a hooks module`);
+      assert(modulesSrc.includes(m[1]), `${n}: its route ${m[1]} is called by a hooks module`);
     }
     for (const h of hookEntries) {
       assertEq(h.server, 'plugin:claude-code-boss:brain-server');
@@ -29776,11 +29775,146 @@ test('plugin-updater.killStale: so casa modulos da PASTA DE CACHE do plugin, nao
   });
 }
 
-// ─── compaction belongs to Claude Code (removed hook + core; metrics of past runs stay) ──
+// ─── controlled compaction (hooks/compaction.mjs → compaction-core / compaction-event / metrics) ──
+
+const cmpCore = require('./lib/compaction-core.mjs'); // ESM by require (Node >= 22.13, package.json engines)
+
+function cmpSession() {
+  const big = (c, n = 5000) => c.repeat(n);
+  const user = (text, handle) => ({ role: 'user', text, toolUses: [], handle });
+  const call = (id, tool, input, handle, text = '') => ({ role: 'assistant', text, toolUses: [{ tool_use_id: id, tool, input }], handle });
+  const result = (id, text, handle, isError = false) => ({ role: 'user', text: '', toolUses: [], toolResults: [{ tool_use_id: id, text, isError }], handle });
+  return [
+    user('Plan: PINNED-DECISION-42 = never touch module.exports', 'h0'),
+    call('r1', 'Read', { file_path: 'src/p.js' }, 'h1', 'Reading the parser.'),
+    result('r1', big('a'), 'h2'),
+    call('b1', 'Bash', { command: 'npm test' }, 'h3'),
+    result('b1', big('E', 900), 'h4', true),
+    call('e1', 'Edit', { file_path: 'src/p.js', old_string: 'x', new_string: 'y' }, 'h5', 'Decision: keep the signature.'),
+    result('e1', 'ok', 'h6'),
+    call('b2', 'Bash', { command: 'npm test' }, 'h7'),
+    result('b2', 'all green', 'h8'),
+    user('document it', 'h9'),
+    call('r2', 'Read', { file_path: 'README.md' }, 'h10'),
+    result('r2', big('r', 100), 'h11'),
+    user('go on', 'h12'),
+    call('w1', 'Write', { file_path: 'README.md', content: 'doc' }, 'h13'),
+    result('w1', 'ok', 'h14'),
+  ];
+}
+
+test('compaction-core.planCompaction: stale results truncated with a note, every text verbatim, untouched messages are the engine objects', () => {
+  const msgs = cmpSession();
+  const p = cmpCore.planCompaction(msgs);
+  const why = Object.fromEntries(p.pruned.map((x) => [x.tool_use_id, x.reason]));
+  assertEq(why.r1, 'superseded-read');
+  assertEq(why.b1, 'failed-then-fixed');
+  assert(!('r2' in why), 'r2 is inside the pinned newest messages');
+  assertEq(p.verbatimTextIntact, true);
+  for (let i = 0; i < msgs.length; i++) assertEq(p.messages[i].text, msgs[i].text, `text ${i} verbatim`);
+  assert(p.messages[0] === msgs[0] && p.messages[6] === msgs[6], 'untouched → same object (engine handle kept)');
+  assertEq(p.messages[2].handle, undefined, 'a rebuilt message carries no handle');
+  assert(/\[compaction: \d+ chars of this Read result pruned — a later read\/edit of src\/p\.js supersedes it\]/.test(p.messages[2].toolResults[0].text), 'the cut says why');
+  assert(p.ratio > 0.5, `ratio ${p.ratio}`);
+  const none = cmpCore.planCompaction([msgs[0], msgs[1], { role: 'user', text: '', toolUses: [], toolResults: [{ tool_use_id: 'r1', text: 'tiny', isError: false }] }]);
+  assertEq(none.pruned.length, 0);
+  assert(none.ratio < cmpCore.DEFAULTS.minReductionRatio, 'nothing stale → below the minimum → the engine summary runs');
+});
+
+test('compaction-core.buildBrief: model-free brief — user text verbatim, tool outputs dropped, errors kept short, tail never starts on an orphan result', () => {
+  const msgs = cmpSession();
+  const b = cmpCore.buildBrief(msgs, { preserveRecentMessages: 3, briefTailTokens: 0, memoryNote: 'MEMORY-NOTE' });
+  assertEq(b.userTextIntact, true);
+  assert(b.messages[0] === msgs[0], 'first message kept as the engine object');
+  const brief = b.messages[1];
+  assertEq(brief.role, 'user');
+  assert(brief.text.includes('USER: document it') && brief.text.includes('MEMORY-NOTE'), 'user text verbatim + memory note');
+  assert(brief.text.includes('· Read src/p.js') && brief.text.includes('! Bash failed: EEEE'), 'calls as lines, failed result as a short head');
+  assert(!brief.text.includes('aaaaaaaaaa'), 'a successful tool output is dropped');
+  // Tail of 3 would start at a result (w1's) → the call must be pulled in with it.
+  const tailUses = new Set(); const tail = b.messages.slice(2);
+  for (const m of tail) for (const u of m.toolUses || []) tailUses.add(u.tool_use_id);
+  for (const m of tail) for (const r of m.toolResults || []) assert(tailUses.has(r.tool_use_id), `no orphan result ${r.tool_use_id}`);
+  assert(b.charsAfter < b.charsBefore / 2, `brief ${b.charsAfter} vs ${b.charsBefore}`);
+  assertEq(cmpCore.buildBrief(msgs.slice(0, 2), { preserveRecentMessages: 6, briefTailTokens: 0 }).cutMessages, 0, 'nothing to condense → history unchanged');
+});
+
+test('compaction-core.buildBrief: the verbatim tail by tokens (briefTailTokens, default 2000) — newest messages up to the budget, never an orphan result', () => {
+  assertEq(cmpCore.DEFAULTS.briefTailTokens, 2000, 'the calibrated 2k tail (6 real compactions: ~81% kept vs 73% for the summary)');
+  const msgs = cmpSession();
+  const small = cmpCore.buildBrief(msgs, { briefTailTokens: 1 }); // 1 token: only the newest message (+ its call)
+  const tailSmall = small.messages.slice(2);
+  assert(tailSmall.length >= 1 && tailSmall.length <= 2, `tiny budget keeps the newest message(s): ${tailSmall.length}`);
+  const big = cmpCore.buildBrief(msgs, { briefTailTokens: 200 }); // README read result (~100 chars) etc.
+  assert(big.messages.length - 2 > tailSmall.length, 'a larger budget keeps more messages verbatim');
+  for (const b of [small, big]) {
+    const uses = new Set(); const tail = b.messages.slice(2);
+    for (const m of tail) for (const u of m.toolUses || []) uses.add(u.tool_use_id);
+    for (const m of tail) for (const r of m.toolResults || []) assert(uses.has(r.tool_use_id), `no orphan result ${r.tool_use_id}`);
+    assertEq(b.userTextIntact, true);
+    assert(tail.every((m) => msgs.includes(m)), 'the tail messages are the engine objects (handles kept)');
+  }
+  const all = cmpCore.buildBrief(msgs, { briefTailTokens: 1e9 });
+  assertEq(all.cutMessages, 0, 'a budget past the whole history condenses nothing');
+});
+
+function hugeTailSession(hugeAt) {
+  const user = (text) => ({ role: 'user', text, toolUses: [] });
+  const call = (id, text = '') => ({ role: 'assistant', text, toolUses: [{ tool_use_id: id, tool: 'Read', input: { file_path: `f-${id}.js` } }] });
+  const result = (id, text) => ({ role: 'user', text: '', toolUses: [], toolResults: [{ tool_use_id: id, text, isError: false }] });
+  const msgs = [user('Plan: start')];
+  for (let i = 0; i < 6; i++) msgs.push(call(`s${i}`, `step ${i}`), result(`s${i}`, 'x'.repeat(2000)));
+  const huge = [call('big'), result('big', 'H'.repeat(400000))];
+  if (hugeAt === 'middle') msgs.push(...huge, user('ok, now the small ones'), call('t1', 'small'), result('t1', 'tiny'));
+  else msgs.push(...huge);
+  return msgs;
+}
+
+test('compaction-core.buildBrief: a huge result inside the tail window does not ride along — the brief shrinks, the newest messages stay', () => {
+  const msgs = hugeTailSession('middle');
+  const b = cmpCore.buildBrief(msgs, {});
+  assert(b.cutMessages > 0, 'something was condensed');
+  assert(b.charsAfter < b.charsBefore / 10, `the 400k result went into the condensed part: ${b.charsAfter} of ${b.charsBefore}`);
+  const last = msgs[msgs.length - 1];
+  assert(b.messages[b.messages.length - 1] === last, 'the newest message is still the engine object');
+  assertEq(b.userTextIntact, true);
+  const uses = new Set(); for (const m of b.messages.slice(2)) for (const u of m.toolUses || []) uses.add(u.tool_use_id);
+  for (const m of b.messages.slice(2)) for (const r of m.toolResults || []) assert(uses.has(r.tool_use_id), `no orphan result ${r.tool_use_id}`);
+});
+
+test('compaction-core.buildBrief: when the newest message is the huge result the brief cannot halve the history — it says so (cuts nothing) so the engine summary runs', () => {
+  const msgs = hugeTailSession('newest');
+  const b = cmpCore.buildBrief(msgs, {});
+  assertEq(b.cutMessages, 0, 'a brief that does not make the history smaller is not applied');
+  assertEq(b.messages.length, msgs.length, 'history unchanged');
+  assert(b.charsAfter <= b.charsBefore, 'never bigger than what it replaces');
+  assert(msgs.every((m, i) => b.messages[i] === m), 'the very same objects, untouched');
+  assertEq(cmpCore.buildBrief(cmpSession(), { preserveRecentMessages: 3, briefTailTokens: 0 }).cutMessages > 0, true, 'an ordinary history is still condensed');
+});
 
 // Regression (2026-10-28): every real brief (27 in 14 days) was refused by the engine — "returned messages[1] that has
 // toolUses that are not a list of { tool_use_id, tool, input }" — and Claude Code ran its own model summary on the cold
 // cache (52–270 s each) while the metrics recorded 'brief'.
+test('compaction-core.compactResultError: the engine contract for a session.compact result — the brief and the pruned history pass it, the old brief message did not', () => {
+  const msgs = cmpSession();
+  assertEq(cmpCore.compactResultError(msgs), null, 'the engine\'s own history passes');
+  for (const opts of [{ preserveRecentMessages: 3, briefTailTokens: 0 }, { briefTailTokens: 1 }]) {
+    const b = cmpCore.buildBrief(msgs, opts);
+    assert(b.cutMessages > 0, `the brief cuts (${JSON.stringify(opts)})`);
+    assertEq(cmpCore.compactResultError(b.messages), null, `the brief is accepted (${JSON.stringify(opts)})`);
+    assertEq(b.messages[1].toolUses, [], 'the brief message carries an empty toolUses list');
+  }
+  assertEq(cmpCore.compactResultError(cmpCore.planCompaction(msgs).messages), null, 'the pruned history is accepted');
+  assertEq(cmpCore.compactResultError([msgs[0], { role: 'user', text: 'brief' }]), 'messages[1] that has toolUses that are not a list of { tool_use_id, tool, input }', 'the shape every real brief had: refused, word for word as the engine says it');
+  assertEq(cmpCore.compactResultError([]), 'an empty messages (a compaction leaves at least one)');
+  assertEq(cmpCore.compactResultError(null), 'messages that are not a list');
+  assertEq(cmpCore.compactResultError([{ role: 'system', text: '', toolUses: [] }]), 'messages[0] that has a role that is neither user nor assistant');
+  assertEq(cmpCore.compactResultError([{ role: 'user', toolUses: [] }]), 'messages[0] that has no text (a string)');
+  assertEq(cmpCore.compactResultError([{ role: 'user', text: '', toolUses: [], handle: 7 }]), 'messages[0] that has a handle that is not a string');
+  assertEq(cmpCore.compactResultError([{ role: 'assistant', text: '', toolUses: [{ tool_use_id: 'x', tool: 'Read' }] }]), 'messages[0] that has toolUses that are not a list of { tool_use_id, tool, input }', 'input is required');
+  assertEq(cmpCore.compactResultError([{ role: 'user', text: '', toolUses: [], toolResults: [{ tool_use_id: 'x' }] }]), 'messages[0] that has toolResults that are not a list of { tool_use_id, text, isError }');
+});
+
 test('compaction-metrics: a brief is counted as a brief (no model call), never as the engine\'s summary; the dashboard says so', () => {
   const { summarizeCompaction } = require('./lib/compaction-metrics.js');
   const run = (outcome) => ({ ts: 1, eventName: 'compaction.run', sessionId: 's', payload: { outcome, trigger: 'manual', reason: 'reopen-cache-cold' } });
@@ -29788,6 +29922,11 @@ test('compaction-metrics: a brief is counted as a brief (no model call), never a
   assertEq([r.total, r.brief, r.pruned, r.nativeSummary], [4, 2, 1, 1]);
   const html = fs.readFileSync(path.join(ROOT, 'dashboard', 'index.html'), 'utf8');
   assert(html.includes('${r.brief || 0} brief (no model call) · ${r.nativeSummary} model summary'), 'the Compactions tile separates the brief from the model summary');
+});
+
+test('compaction-core.lastTurnDelivered: reads the engine\'s tool name field (`tool`), not only `name`', () => {
+  assertEq(cmpCore.lastTurnDelivered([{ role: 'user', text: 'do it', toolUses: [] }, { role: 'assistant', text: '', toolUses: [{ tool_use_id: 'b', tool: 'Bash', input: { command: 'git commit -m x' } }] }]), true, 'engine shape');
+  assertEq(cmpCore.lastTurnDelivered([{ role: 'assistant', text: '', toolUses: [{ tool_use_id: 'b', tool: 'Read', input: { command: 'git commit -m x' } }] }]), false, 'another tool');
 });
 
 test('router enable/disable against real settings.json: no compaction window written, user values preserved', () => {
@@ -29839,6 +29978,37 @@ test('router enable/disable against real settings.json: no compaction window wri
     assertEq(out.tuningOff.autoCompactWindow, 200000, 'tuning off keeps a user autoCompactWindow of 200000');
     assertEq(out.tuningOff.env, { KEEP: '1' }, 'tuning off removes only our ENABLE_TOOL_SEARCH');
   } finally { fs.rmSync(home, { recursive: true, force: true }); }
+});
+
+test('compaction-core.isMechanicalCut + chooseCompaction: the brief only with a COLD cache and never for a person\'s own /compact', () => {
+  const plan = (ratio) => ({ ratio, duplicatesDropped: 0, verbatimTextIntact: true });
+  assertEq(cmpCore.isMechanicalCut({ warm: true, trigger: 'manual', reason: 'over-threshold-cache-cold' }), false, 'warm: never');
+  assertEq(cmpCore.isMechanicalCut({ warm: false, trigger: 'manual', reason: 'over-threshold-cache-cold' }), true, 'our gate runs /compact (trigger manual) with a reason');
+  assertEq(cmpCore.isMechanicalCut({ warm: false, trigger: 'manual', reason: null }), false, 'a person\'s /compact keeps the summary');
+  assertEq(cmpCore.isMechanicalCut({ warm: false, trigger: 'auto', reason: null }), true, 'a cold engine auto-compaction');
+  assertEq(cmpCore.chooseCompaction({ plan: plan(0.3), trigger: 'manual', warm: false, mechanical: true }), { ours: true, kind: 'brief', why: 'cold-mechanical' });
+  assertEq(cmpCore.chooseCompaction({ plan: plan(0.9), trigger: 'manual', warm: false, mechanical: true }).kind, 'prune', 'a >= 85% pruning still wins (it keeps every message)');
+  assertEq(cmpCore.chooseCompaction({ plan: plan(0.3), trigger: 'manual', warm: false, mechanical: true }, { mechanicalCut: false }).kind, null, 'mechanicalCut off → the summary');
+  assertEq(cmpCore.chooseCompaction({ plan: { ratio: 0.3, verbatimTextIntact: false }, trigger: 'auto', warm: false, mechanical: true }).kind, 'brief', 'the brief rebuilds user text itself');
+  const hook = fs.readFileSync(path.join(ROOT, 'hooks', 'compaction.mjs'), 'utf8');
+  assert(/isMechanicalCut\(\{ warm, trigger: e\.trigger, reason: ctx\.compactReason \}\)/.test(hook), 'the hook judges the brief by warm + trigger + our reason');
+  assertEq((hook.match(/mechanical, mechanicalCut: ctx\.config\.mechanicalCut !== false/g) || []).length, 2, 'both run events (summary/prune and brief) record what chose the cut (compactacao-router-07: 0 briefs in 315 runs could not tell "never fires" from "not yet")');
+  assert(/if \(!b\.cutMessages \|\| !b\.userTextIntact \|\| invalid\)[\s\S]{0,500}return engineRuns\(\$, ctx, run, e, next\);/.test(hook), 'a brief that cuts nothing, loses user text or breaks the engine contract → the engine summary');
+  assert(/await leaveAbove\(\$, ctx\);\s*run\.data = \{\s*\.\.\.base, outcome: 'brief'/.test(hook), 'the folder TTL is released BEFORE the brief is handed back');
+  assert(/const r = await engineRuns\(\$, ctx, run, e, next\);[^\n]*\n\s*await leaveAbove\(\$, ctx\);/.test(hook) && /await leaveAbove\(\$, ctx\);\s*oursRuns\(\$, ctx, run, plan\.messages\);\s*\$\.ui\.toast\(`compaction: every message kept/.test(hook), 'pruning and the engine summary release it too (any compaction leaves the session below)');
+  assert(/if \(!reply \|\| !\(reply\.recorded > 0\)\) return;/.test(hook) && /const tokens = \(Number\(o\.input\) \|\| 0\) \+ \(Number\(o\.read\) \|\| 0\) \+ \(Number\(o\.write\) \|\| 0\);/.test(hook), '"above" comes from the last REAL call (a held prompt\'s turn has none and usage() is stale)');
+  assert(/ctx\.awaitCallAfterCut = true;/.test(hook) && /ctx\.awaitCallAfterCut = false; \/\/ a real call after the cut/.test(hook), 'after a cut, readings are stale until a real call is observed');
+  assert(/if \(ctx\.transcriptPath\) \{ const \{ reply \} = await observeCalls\(\$, ctx\); await folderFromReply\(\$, ctx, reply\); \}/.test(hook), 'the heartbeat picks up calls that landed after their turn ended (the switch no longer waits a turn)');
+  assert(/on\('session\.end'[\s\S]{0,400}reportFolder\(\$, ctx, \{ end: true \}\)[\s\S]{0,300}observeCalls\(\$, ctx\)/.test(hook), 'session.end leaves the folder BEFORE the transcript read (short budget)');
+  assert(/if \(!d && ctx\.awaitCallAfterCut\) d = \{ action: 'none', reason: 'just-compacted' \};/.test(hook) && /if \(ctx\.awaitCallAfterCut\) return; \/\/ just compacted/.test(hook), 'neither the gate nor the turn-end rule compacts again from a pre-cut reading (E2E: a second, needless summary)');
+  assert(/if \(seen > 0\) ctx\.sessionTtlMs = seen;/.test(hook), 'the TTL in use is the latest call\'s (a 1h→5m switch is seen)');
+});
+
+test('compaction hook: with folderTtl off the session still leaves its folder once, so a 5m left by the time it was on is restored', () => {
+  const hook = fs.readFileSync(path.join(ROOT, 'hooks', 'compaction.mjs'), 'utf8');
+  assert(/if \(ctx\.config\.folderTtl === false\) \{[\s\S]{0,500}if \(ctx\.folderOffReleased\) return;\s*ctx\.folderOffReleased = true;\s*end = true;/.test(hook), 'off → one folder-end, then silent');
+  assert(!/!ctx\.configLoaded \|\| ctx\.config\.folderTtl === false\) return;/.test(hook), 'the old early return for folderTtl:false is gone');
+  assert(/end \? 'folder-end' : 'folder'/.test(hook), 'the leave is a folder-end (the daemon restores what is ours and sweeps dead owners)');
 });
 
 // ─── folder TTL (lib/folder-ttl.js): 1h → 5m while EVERY live session of the launch folder is past the threshold ──
@@ -30008,6 +30178,145 @@ test('compaction-event: folder / folder-end reach folder-ttl with the session id
   assert(threw, 'a folder report needs the session id');
 });
 
+test('compaction-core.chooseCompaction: the engine SUMMARY unless pruning cuts >= 85% — warm or cold, auto or manual (pruned sessions re-read the kept 75–95% on every call: measured US$0.50/call vs US$0.075 after a summary)', () => {
+  const plan = (ratio, extra = {}) => ({ ratio, duplicatesDropped: 0, verbatimTextIntact: true, ...extra });
+  const c = (s) => cmpCore.chooseCompaction(s);
+  const summary = { ours: false, kind: null, why: 'summary-is-cheaper' };
+  // The real compactions measured in the transcripts (docs/research/compaction-cache, 2026-10-11).
+  assertEq(c({ plan: plan(0.18), trigger: 'auto', warm: true }), summary, 'claude-code 09/10 12:41: 18% cut, warm → summary');
+  assertEq(c({ plan: plan(0.18), trigger: 'auto', warm: false }), summary, 'cerne 10/10 11:43: 18% cut with a COLD cache still re-read ~900k per call afterwards → summary');
+  assertEq(c({ plan: plan(0.37), trigger: 'manual', warm: false }), summary, 'claude-code 10/10 01:12: manual /compact, 37% cut → summary');
+  assertEq(c({ plan: plan(0.18), trigger: 'manual', warm: true }), summary, 'self-forge 10/10 17:35: manual, 18% cut → summary');
+  assertEq(c({ plan: plan(0.26, { duplicatesDropped: 3 }), trigger: 'manual', warm: false }), summary, 'engine copies of a resumed history: the summary drops them too');
+  assertEq(c({ plan: plan(0.05), trigger: 'manual', warm: false }), summary);
+  for (const [trigger, warm] of [['auto', true], ['auto', false], ['manual', true], ['manual', false]]) {
+    assertEq(c({ plan: plan(0.9), trigger, warm }), { ours: true, kind: 'prune', why: 'big-cut' }, `>= 85% cut prunes (${trigger}, warm=${warm})`);
+  }
+  assertEq(c({ plan: plan(0.9, { verbatimTextIntact: false }), trigger: 'manual', warm: false }).ours, false, 'never a broken transcript');
+  assertEq(cmpCore.DEFAULTS.minReductionRatio, 0.85, 'one bar for every trigger and cache state');
+  assertEq(cmpCore.DEFAULTS.warmMinReductionRatio, undefined, 'no separate warm bar any more');
+  assertEq(cmpCore.isCacheWarm({ now: 1000, lastAnswerAt: 900, ttlMs: 300 }), true);
+  assertEq(cmpCore.isCacheWarm({ now: 1000, lastAnswerAt: 600, ttlMs: 300 }), false);
+  assertEq(cmpCore.isCacheWarm({ now: 1000, lastAnswerAt: null, ttlMs: 300 }), true, 'unknown → warm (auto-compaction fires right after turns)');
+  const hook = fs.readFileSync(path.join(ROOT, 'hooks', 'compaction.mjs'), 'utf8');
+  assert(/chooseCompaction\(\{ plan, trigger: e\.trigger, warm, mechanical \}/.test(hook) && /isCacheWarm\(/.test(hook) && !/plan\.ratio >= ctx\.config\.minReductionRatio/.test(hook), 'the session.compact hook decides through chooseCompaction (the old ratio-only rule is gone)');
+  assert(/const warm = ctx\.busy \|\| isCacheWarm\(/.test(hook), 'an auto-compaction in the middle of a turn counts as warm (the turn keeps the cache alive, whatever the last answer\'s age)');
+  assert(/why: invalid \? `result-invalid: \$\{invalid\}` : choice\.why, cacheWarm: warm/.test(hook), 'the run event records why (a refused pruned list included) and whether the cache was warm');
+});
+
+test('compaction-core.planCompaction: a resumed history rebuilt with the engine\'s copies — exact tool-id duplicates dropped, text never matched', () => {
+  const msgs = cmpSession();
+  // the engine's reconstruction after a hook compaction: the kept copies after the originals
+  const copies = msgs.slice(1, 9).map((m) => ({ ...m, handle: 'copy-' + m.handle }));
+  const resumed = [...msgs.slice(0, 9), ...copies, { role: 'user', text: 'go on', toolUses: [], handle: 'again' }, ...msgs.slice(9)];
+  const p = cmpCore.planCompaction(resumed);
+  const copyIdsWithTools = copies.filter((m) => (m.toolUses || []).length || (m.toolResults || []).length).length;
+  assertEq(p.duplicatesDropped, copyIdsWithTools, 'every copy carrying tool ids dropped');
+  assert(!p.messages.some((m) => String(m.handle || '').startsWith('copy-') && ((m.toolUses || []).length || (m.toolResults || []).length)), 'no tool copy survives');
+  const ids = p.messages.flatMap((m) => (m.toolUses || []).map((u) => u.tool_use_id));
+  assertEq(ids.length, new Set(ids).size, 'each tool_use once — the pairing the API checks');
+  assert(p.messages.some((m) => m.handle === 'again' && m.text === 'go on'), 'a repeated plain-text message is legitimate and kept');
+  assertEq(p.verbatimTextIntact, true);
+  assertEq(cmpCore.planCompaction(msgs).duplicatesDropped, 0, 'a normal history has none');
+  // The REAL shape (fixture captured from an interactive --continue after a hook compaction):
+  // copies interleaved with their originals, thinking-only rows doubled inside each block.
+  const fx = JSON.parse(fs.readFileSync(path.join(SCRIPTS, '__fixtures__', 'compaction-resumed-history.json'), 'utf8')).messages;
+  const real = cmpCore.planCompaction(fx, { preserveRecentMessages: 0 });
+  assertEq([fx.length, real.messages.length, real.duplicatesDropped], [52, 32, 20], 'the resumed history back to the session it was');
+  const useIds = real.messages.flatMap((m) => (m.toolUses || []).map((u) => u.tool_use_id));
+  assertEq(useIds.length, new Set(useIds).size, 'each tool_use once (the pairing the API checks)');
+  const shape = real.messages.slice(1, 5).map((m) => ((m.toolUses || []).length ? 'use' : (m.toolResults || []).length ? 'res' : m.text ? 'text' : 'thinking')).join(',');
+  assertEq(shape, 'thinking,use,res,thinking', 'one thinking row per response again (the doubled one was what the API rejected)');
+  assertEq(real.verbatimTextIntact, true);
+  const U = (t) => ({ role: 'user', text: t, toolUses: [] });
+  const A = (t) => ({ role: 'assistant', text: t, toolUses: [] });
+  const plain = cmpCore.planCompaction([U('ok'), A('a'), U('ok'), A('a'), A('a')], { preserveRecentMessages: 0 });
+  assertEq(plain.duplicatesDropped, 0, 'a block not doubled exactly (a, a, a) and repeated user text are never touched');
+});
+
+test('compaction-core.decideTiming: waits for the cache to expire, compacts cold or at the ceiling, never busy/cooldown/no-reading, unknown TTL = the longer window', () => {
+  const T = { thresholdTokens: 250000, minIntervalMs: 600000 };
+  const d = (s) => cmpCore.decideTiming({ busy: false, now: 10_000_000, ...s }, T);
+  assertEq(d({ tokens: 100000, lastAnswerAt: 0, ttlMs: 300000 }), { action: 'none', reason: 'below-threshold' });
+  assertEq(d({ tokens: 260000, lastAnswerAt: 10_000_000 - 60000, ttlMs: 300000 }), { action: 'wait', reason: 'cache-warm', dueInMs: 240000 });
+  assertEq(d({ tokens: 260000, lastAnswerAt: 10_000_000 - 300000, ttlMs: 300000 }), { action: 'compact', reason: 'cache-cold' });
+  // NEVER with a warm cache, however far past the threshold (owner's rule: no ceiling — if it
+  // never cools, the engine's own auto-compaction runs, through our pruning).
+  assertEq(d({ tokens: 950000, lastAnswerAt: 10_000_000 - 1000, ttlMs: 3600000 }), { action: 'wait', reason: 'cache-warm', dueInMs: 3599000 });
+  assertEq(d({ tokens: 500000, busy: true }).action, 'none');
+  assertEq(d({ tokens: 500000, lastCompactAt: 10_000_000 - 60000 }), { action: 'none', reason: 'cooldown' });
+  assertEq(d({}), { action: 'none', reason: 'no-reading' });
+  // 10 min idle, no TTL observed: assume 1h (5 min would compact with the cache alive) → wait.
+  assertEq(d({ tokens: 260000, lastAnswerAt: 10_000_000 - 600000 }), { action: 'wait', reason: 'cache-warm', dueInMs: 3600000 - 600000 });
+  // No answer seen yet: the cache age is unknown — never "cold" (a fresh session's first prompt).
+  assertEq(d({ tokens: 260000, ttlMs: 300000 }), { action: 'none', reason: 'cache-age-unknown' });
+  assertEq(cmpCore.decideTiming({ busy: false, now: 1, tokens: 900000, lastAnswerAt: 0, ttlMs: 1 }, {}), { action: 'none', reason: 'no-window' }, 'no window reading = no threshold = never act on a guess');
+});
+
+test('compaction-core.resumedAnswerAt: a resumed session reads as cold under any TTL (its first request re-writes the history), never newer than the real last answer', () => {
+  const NOW = 100_000_000;
+  const T = { thresholdTokens: 250000, minIntervalMs: 600000 };
+  const at = cmpCore.resumedAnswerAt(NOW, 360); // resumed 6 min after the last answer
+  assertEq(at, NOW - cmpCore.RESUMED_CACHE_AGE_MS, 'a 6 min pause still counts as older than the 1h TTL');
+  assertEq(cmpCore.decideTiming({ busy: false, now: NOW, tokens: 470000, lastAnswerAt: at, ttlMs: 3600000 }, T), { action: 'compact', reason: 'cache-cold' }, 'past the threshold, 1h TTL: the first prompt of a resumed session is cut');
+  assertEq(cmpCore.decideTiming({ busy: false, now: NOW, tokens: 100000, lastAnswerAt: at, ttlMs: 3600000 }, T), { action: 'none', reason: 'below-threshold' }, 'below the threshold nothing changes');
+  assertEq(cmpCore.isCacheWarm({ now: NOW, lastAnswerAt: at, ttlMs: 3600000 }), false, 'the cut is the model-free one, not a summary call');
+  assertEq(cmpCore.resumedAnswerAt(NOW, 5 * 3600), NOW - 5 * 3600000, 'an older real answer is kept');
+  assertEq(cmpCore.resumedAnswerAt(NOW, null), NOW - cmpCore.RESUMED_CACHE_AGE_MS, 'no age reported: still cold');
+  const hook = fs.readFileSync(path.join(__dirname, '..', 'hooks', 'compaction.mjs'), 'utf8');
+  assert(/if \(e\.source === 'resume'\) \{[\s\S]{0,120}ctx\.lastAnswerAt = resumedAnswerAt\(now, e\.seconds_since_last_response\);/.test(hook), 'the SessionStart handler applies it to resume only');
+});
+
+test('compaction-core.decideTurnEnd: an autonomous turn (no person prompt gated) past the threshold compacts at its end ONLY with a cold cache — warm waits; person turns, busy, cooldown, no reading stay out', () => {
+  const T = { thresholdTokens: 60000, minIntervalMs: 600000 };
+  const NOW = 100_000_000;
+  const d = (s) => cmpCore.decideTurnEnd({ busy: false, gated: false, now: NOW, ttlMs: 3600000, lastAnswerAt: NOW - 3600000, ...s }, T);
+  assertEq(d({ tokens: 100000 }), { action: 'compact', reason: 'turn-end-cache-cold' }, 'idle >= ttl: cold, compact');
+  assertEq(d({ tokens: 100000, lastAnswerAt: NOW - 60000 }), { action: 'wait', reason: 'cache-warm', dueInMs: 3600000 - 60000 }, 'warm: NEVER compacted (14/10: 15 warm compactions in one session)');
+  assertEq(d({ tokens: 59999 }), { action: 'none', reason: 'below-threshold' });
+  assertEq(d({ tokens: 100000, gated: true }), { action: 'none', reason: 'prompt-gated' }, 'a person\'s prompt was judged by the gate already');
+  assertEq(d({ tokens: 100000, busy: true }), { action: 'none', reason: 'busy' });
+  assertEq(d({ tokens: 100000, lastCompactAt: NOW - 60000 }), { action: 'none', reason: 'cooldown' }, 'no cost loop');
+  assertEq(d({ tokens: 100000, lastCompactAt: NOW - 600000 }).action, 'compact', 'cooldown over');
+  assertEq(d({ tokens: 100000, lastAnswerAt: undefined }), { action: 'none', reason: 'cache-age-unknown' });
+  assertEq(d({}), { action: 'none', reason: 'no-reading' });
+  assertEq(cmpCore.decideTurnEnd({ busy: false, gated: false, now: 1, tokens: 900000 }, {}), { action: 'none', reason: 'no-window' });
+  const hook = fs.readFileSync(path.join(ROOT, 'hooks', 'compaction.mjs'), 'utf8');
+  assert(/decideTurnEnd\(/.test(hook) && /ctx\.gated = true/.test(hook) && /turnEndTimer/.test(hook), 'the module decides at turn.complete, re-checks when the cache is due cold, and the prompt gate marks the turn as judged');
+});
+
+test('compaction-core.thresholdFor: a % of the window the engine applies (200K and 1M alike), clamped to the slider range, flagged past the engine point', () => {
+  assertEq(cmpCore.thresholdFor({ window: 1000000, engineAutoCompactAt: 967000 }), { thresholdTokens: 300000, percent: 30, aboveEngine: false }, 'legacy helper has no default 150k cap');
+  assertEq(cmpCore.thresholdFor({ window: 1000000, engineAutoCompactAt: 967000 }, { thresholdMaxTokens: 0 }), { thresholdTokens: 300000, percent: 30, aboveEngine: false }, 'cap 0 = off: the pure percent of before');
+  assertEq(cmpCore.thresholdFor({ window: 1000000 }, { thresholdPercent: 10 }), { thresholdTokens: 100000, percent: 10, aboveEngine: false }, 'a percent already below the cap is not touched');
+  assertEq(cmpCore.thresholdFor({ window: 300000, engineAutoCompactAt: 267000 }), { thresholdTokens: 90000, percent: 30, aboveEngine: false });
+  assertEq(cmpCore.thresholdFor({ window: 200000, engineAutoCompactAt: 167000 }, { thresholdPercent: 50 }), { thresholdTokens: 100000, percent: 50, aboveEngine: false });
+  assertEq(cmpCore.thresholdFor({ window: 153000, engineAutoCompactAt: 120000 }), { thresholdTokens: 45900, percent: 30, aboveEngine: false }, 'pure percent: no token floor');
+  assertEq(cmpCore.thresholdFor({ window: 200000, engineAutoCompactAt: 167000 }).thresholdTokens, 60000, '30% of 200k = 60k, not 90k');
+  assertEq(cmpCore.thresholdFor({ window: 1000000, engineAutoCompactAt: 967000 }, { minThresholdTokens: 999999 }).thresholdTokens, 300000, 'no default cap or floor');
+  assertEq(cmpCore.thresholdFor({ window: 200000, engineAutoCompactAt: 150000 }, { thresholdPercent: 80 }), { thresholdTokens: 160000, percent: 80, aboveEngine: true },'past the engine point: flagged, never silently moved');
+  assertEq(cmpCore.thresholdFor({ window: 200000 }, { thresholdPercent: 95 }).percent, 80, 'clamped to the range top');
+  assertEq(cmpCore.thresholdFor({ window: 200000 }, { thresholdPercent: 2 }).percent, 10, 'clamped to the range bottom');
+  assertEq(cmpCore.thresholdFor({}).thresholdTokens, null, 'no window → no threshold');
+  assertEq(cmpCore.clampPercent('x'), 30, 'garbage → the default');
+});
+
+test('compaction-core.decideTurnEnd: past the warm ceiling a WARM cache is cut at the end of the turn (a session that never idles); below it, off (0), or in the cooldown it still waits', () => {
+  const NOW = 100_000_000;
+  const T = { thresholdTokens: 150000, warmCeilingTokens: 200000, minIntervalMs: 600000 };
+  const d = (s, o = T) => cmpCore.decideTurnEnd({ busy: false, gated: false, now: NOW, ttlMs: 3600000, lastAnswerAt: NOW - 20000, ...s }, o);
+  assertEq(d({ tokens: 210000 }), { action: 'compact', reason: 'turn-end-warm-ceiling' }, 'warm, past the ceiling: cut');
+  assertEq(d({ tokens: 199999 }), { action: 'wait', reason: 'cache-warm', dueInMs: 3600000 - 20000 }, 'warm, past the cold threshold but under the ceiling: waits for the cold cut');
+  assertEq(d({ tokens: 210000 }, { ...T, warmCeilingTokens: 0 }).action, 'wait', '0 = off: a warm cache is never cut');
+  assertEq(d({ tokens: 210000, lastCompactAt: NOW - 60000 }), { action: 'none', reason: 'cooldown' }, 'no cost loop');
+  assertEq(d({ tokens: 210000, busy: true }), { action: 'none', reason: 'busy' });
+  assertEq(d({ tokens: 210000, gated: true }), { action: 'none', reason: 'prompt-gated' });
+  assertEq(d({ tokens: 210000, lastAnswerAt: NOW - 3600000 }), { action: 'compact', reason: 'turn-end-cache-cold' }, 'cold stays the cold cut (the brief)');
+  assertEq(d({ tokens: 180000 }, { ...T, warmCeilingTokens: 100000 }).action, 'compact', 'a ceiling under the cold threshold is lifted to it: never cuts below the threshold');
+  assertEq(d({ tokens: 140000 }, { ...T, warmCeilingTokens: 100000 }).action, 'none', '... and below the threshold nothing happens');
+  assertEq(cmpCore.decideTiming({ tokens: 210000, now: NOW, ttlMs: 3600000, lastAnswerAt: NOW - 20000, busy: false }, T), { action: 'wait', reason: 'cache-warm', dueInMs: 3600000 - 20000 }, "the person's prompt gate never cuts a warm cache (it would hold the prompt for a model call)");
+});
+
 test('hooks-config compaction: defaults and stale overrides cannot enable a Boss threshold', () => {
   withTempHome(() => {
     const hc = require('./lib/hooks-config.js');
@@ -30026,33 +30335,19 @@ test('hooks-config compaction: defaults and stale overrides cannot enable a Boss
   });
 });
 
-test('Boss compaction policy: the gate hook and its core are gone, the hook entry registers no compaction, and no settings writer requests a threshold or window', async () => {
-  for (const gone of ['hooks/compaction.mjs', 'scripts/lib/compaction-core.mjs']) assert(!fs.existsSync(path.join(ROOT, gone)), `${gone} must stay removed (compaction belongs to Claude Code)`);
-  const hooksJson = JSON.parse(fs.readFileSync(path.join(ROOT, 'hooks', 'hooks.json'), 'utf8'));
-  assert(!/compaction/.test(JSON.stringify(hooksJson.modules || [])), 'no compaction module in hooks.json');
+test('Boss compaction policy: the real hook entry does not register compaction and neither settings writer requests a threshold', async () => {
   const entry = await import(require('url').pathToFileURL(path.join(ROOT, 'hooks', 'index.mjs')).href);
   const events = [];
   entry.register((event) => { events.push(event); return { catch() {} }; });
   assert(!events.includes('session.compact'), JSON.stringify(events));
+  assertEq([cmpCore.DEFAULTS.thresholdMaxTokens, cmpCore.DEFAULTS.warmCeilingTokens], [0, 0]);
   assertEq(costTuning.wantedWindow({ enabled: true, autoCompactWindow: 150000 }), null);
   assertEq(costTuning.resolveConfig({ autoCompactWindow: 200000 }).autoCompactWindow, null);
   const preserved = { autoCompactWindow: 500000, env: { CLAUDE_AUTOCOMPACT_PCT_OVERRIDE: '80', CLAUDE_CODE_AUTO_COMPACT_WINDOW: '900000' } };
   const plan = costTuning.planCostTuningAll(preserved, costTuning.wanted(costTuning.resolveConfig({ autoCompactWindow: 150000 }), false), costTuning.wantedWindow(), {});
   assertEq(plan.settings.autoCompactWindow, 500000);
   assertEq(plan.env.CLAUDE_CODE_AUTO_COMPACT_WINDOW, '900000');
-  assertEq(plan.env.CLAUDE_AUTOCOMPACT_PCT_OVERRIDE, '80');
-  // The router's two settings writers: the planned env never carries our window, whatever the config says.
-  const planned = routerEnsure.planEnableEnv({}, 'http://127.0.0.1:13456', 200000, () => true).env;
-  assert(!('CLAUDE_CODE_AUTO_COMPACT_WINDOW' in planned), 'planEnableEnv never writes the window');
-  assert(!('CLAUDE_CODE_AUTO_COMPACT_WINDOW' in routerEnsure.planTuningEnv({}, 200000).env), 'planTuningEnv never writes the window');
-  const src = fs.readFileSync(path.join(ROOT, 'scripts', 'model-router-ensure.js'), 'utf8');
-  // The settings key is only written from the cost-tuning plan (restoration of an old value); from a clean file it asks for none.
-  assertEq(costTuning.wantedWindow(), null);
-  const clean = costTuning.planCostTuningAll({}, costTuning.wanted(costTuning.resolveConfig({}), true), costTuning.wantedWindow(), {});
-  assert(!('autoCompactWindow' in clean.settings) && !('CLAUDE_CODE_AUTO_COMPACT_WINDOW' in clean.env), 'a clean settings.json gets no compaction window from the cost-tuning plan');
-  assert(!/(?:s|settings)\.autoCompactWindow\s*=(?!\s*plan\.settings\.autoCompactWindow)[^=]/.test(src), 'model-router-ensure.js never assigns settings.autoCompactWindow from anything but the plan');
-  assert(!/CLAUDE_CODE_AUTO_COMPACT_WINDOW\s*=\s*String/.test(src) && !/next\.CLAUDE_CODE_AUTO_COMPACT_WINDOW\s*=\s*[^=]/.test(src), 'model-router-ensure.js never assigns the window env var');
-});
+  assertEq(plan.env.CLAUDE_AUTOCOMPACT_PCT_OVERRIDE, '80');});
 
 test('cost-tuning: retired windows are restored by ownership and stale opt-ins cannot return', () => {
   const config = require('./lib/hooks-config.js');
@@ -30094,7 +30389,7 @@ test('cost-tuning: retired windows are restored by ownership and stale opt-ins c
   }
 });
 
-// ─── phase restart (opt-in setting + read-only measurement: lib/phase-restart-measure.js) ──
+// ─── phase restart (opt-in notice + read-only measurement: lib/phase-restart-measure.js, hooks/compaction.mjs) ──
 
 // A synthetic transcript: `steps` = [{ ctx, gapMin, person?, commit?, out? }] → JSONL lines (one API call per step).
 function phaseTranscript(steps, t0 = Date.now() - 3 * 3600000) {
@@ -30117,6 +30412,103 @@ const HEAVY_STEPS = [
   ...Array.from({ length: 60 }, (_, i) => ({ ctx: 456000 + i * 500 })),
 ];
 const LIGHT_STEPS = [{ ctx: 50000, person: 'hi' }, { ctx: 60000, commit: true }, { ctx: 61000, person: 'next' }, { ctx: 65000 }];
+
+test('phase-restart core: notice only past the threshold, warm, after a committed turn, once per crossing; off by default; ≤ 80 tokens', () => {
+  const on = { phaseRestart: true, phaseRestartTokens: 400000 };
+  const base = { tokens: 450000, warm: true, delivered: true, notified: false };
+  assertEq(cmpCore.decidePhaseRestart(base, {}), { notify: false, reason: 'off' }, 'off unless set to true');
+  assertEq(cmpCore.decidePhaseRestart(base, { phaseRestart: 'yes' }).reason, 'off', 'only a real true turns it on');
+  assertEq(cmpCore.decidePhaseRestart(base, on), { notify: true, reason: 'phase-boundary' });
+  assertEq(cmpCore.decidePhaseRestart({ ...base, tokens: 399999 }, on).reason, 'below-threshold');
+  assertEq(cmpCore.decidePhaseRestart({ ...base, warm: false }, on).reason, 'cache-cold', 'a cold cache is the cold cut\'s');
+  assertEq(cmpCore.decidePhaseRestart({ ...base, delivered: false }, on).reason, 'no-task-boundary');
+  assertEq(cmpCore.decidePhaseRestart({ ...base, notified: true }, on).reason, 'already-notified');
+  assertEq(cmpCore.decidePhaseRestart({ ...base, tokens: null }, on).reason, 'no-reading');
+  assertEq(cmpCore.decidePhaseRestart({ ...base, tokens: 450000 }, { phaseRestart: true }).notify, true, 'default threshold 400k');
+  const msgs = (turn) => [{ role: 'user', text: 'first' }, { role: 'assistant', text: '', toolUses: [{ name: 'Bash', input: { command: 'git commit -m a' } }] }, ...turn];
+  assertEq(cmpCore.lastTurnDelivered(msgs([])), true, 'the last turn ran git commit');
+  assertEq(cmpCore.lastTurnDelivered(msgs([{ role: 'user', text: '', toolResults: [{ text: 'ok' }] }, { role: 'assistant', text: 'done', toolUses: [] }])), true, 'tool results do not end the turn');
+  assertEq(cmpCore.lastTurnDelivered(msgs([{ role: 'user', text: 'another ask' }, { role: 'assistant', text: 'ok', toolUses: [] }])), false, 'a later person turn without a commit');
+  assertEq(cmpCore.lastTurnDelivered([{ role: 'assistant', toolUses: [{ name: 'Bash', input: { command: 'git -C x commit -am y' } }] }]), true, 'git options before commit');
+  assertEq(cmpCore.lastTurnDelivered([{ role: 'assistant', toolUses: [{ name: 'Bash', input: { command: 'git log --grep commit' } }] }]), false, 'not a commit');
+  assertEq(cmpCore.lastTurnDelivered(null), false);
+  const notice = cmpCore.phaseRestartNotice(912345);
+  assert(notice.includes('~912k tokens') && /handoff/.test(notice) && /new session/.test(notice), notice);
+  assert(cmpCore.estimateTokens([notice]) <= cmpCore.PHASE_RESTART_NOTICE_MAX_TOKENS, `notice ≤ 80 tokens (${cmpCore.estimateTokens([notice])})`);
+});
+
+// The compaction module run for real against a fake engine: what the prompt gate hands down.
+async function phaseGateRun({ config, tokens, messages, coldMs = 0, prompts = 1 }) {
+  const cmp = await import(require('url').pathToFileURL(path.join(ROOT, 'hooks', 'compaction.mjs')).href);
+  const hooks = collectModuleHooks(cmp.register);
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-phase-gate-'));
+  fs.writeFileSync(path.join(dir, 'brain-http.token'), 'tok');
+  const calls = { messages: 0, toasts: [], events: [], logs: [], downstream: [] };
+  let now = 1_000_000_000;
+  const env = { CLAUDE_PLUGIN_DATA: dir, BRAIN_HTTP_PORT: '1' };
+  const $ = {
+    env: { get: async (k) => env[k] },
+    fs: { read: async (p) => fs.readFileSync(p, 'utf8') },
+    http: { fetch: async (url, init) => {
+      if (url.split('?')[0].endsWith('/health')) return { status: 200, ok: true, text: JSON.stringify({ dataDir: dir }) };
+      const payload = JSON.parse(JSON.parse(init.body).payload);
+      calls.events.push(payload);
+      return { status: 200, ok: true, text: JSON.stringify(payload.kind === 'hello' ? { config } : {}) };
+    } },
+    session: {
+      id: async () => 'sid-phase', cwd: async () => dir, root: async () => dir, authorize: async () => null,
+      usage: async () => ({ context: { tokens, window: 1000000, breakdown: { rawMaxTokens: 1000000, autoCompactThreshold: 967000 } } }),
+      messages: async () => { calls.messages++; return messages; },
+    },
+    clock: { now: async () => now, after: () => {} },
+    ui: { log: (t) => calls.logs.push(t), toast: (t) => calls.toasts.push(t) },
+    command: { run: async () => { throw new Error('no compaction expected in these runs'); } },
+    prompt: { submit: async () => { throw new Error('no re-send expected'); } },
+  };
+  await findHook(hooks, 'session.start').fn($, { isInteractive: true }, async (e) => e);
+  if (coldMs) {
+    await findHook(hooks, 'turn.complete').fn($, {}, async () => ({}));
+    now += coldMs;
+  }
+  const submit = findHook(hooks, 'prompt.submit').fn;
+  for (let i = 0; i < prompts; i++) {
+    const out = await submit($, { text: `p${i}`, origin: { kind: 'composer' }, context: ['ctx-in'] }, async (e) => { calls.downstream.push(e); return e; });
+    assert(!out.drop, `prompt not held: ${out.drop}`);
+  }
+  fs.rmSync(dir, { recursive: true, force: true });
+  return calls;
+}
+const PHASE_CFG = { enabled: true, thresholdPercent: 80, minIntervalMs: 600000, folderTtl: false, phaseRestartTokens: 400000, warmCeilingTokens: 0, thresholdMaxTokens: 0 };
+const COMMITTED = [{ role: 'user', text: 'do it' }, { role: 'assistant', text: '', toolUses: [{ name: 'Bash', input: { command: 'git commit -m x' } }] }];
+
+test('compaction hook phase restart (default off): the prompt goes down unchanged, no toast, the history is never read', async () => {
+  for (const config of [PHASE_CFG, { ...PHASE_CFG, phaseRestart: false }]) {
+    const r = await phaseGateRun({ config, tokens: 500000, messages: COMMITTED });
+    assertEq(r.downstream.map((e) => e.context), [['ctx-in']], 'context untouched');
+    assertEq([r.toasts.length, r.messages], [0, 0], 'no toast, no $.session.messages()');
+    assert(!r.events.some((e) => e.action === 'phase-restart-notice'), 'no notice event');
+  }
+});
+
+test('compaction hook phase restart (on): one ≤80-token notice past 400k, warm, after a commit — once per crossing; cold, below or no commit → nothing', async () => {
+  const config = { ...PHASE_CFG, phaseRestart: true };
+  const r = await phaseGateRun({ config, tokens: 500000, messages: COMMITTED, prompts: 2 });
+  assertEq(r.downstream[0].context.length, 2, 'the notice is added after the incoming context');
+  assertEq(r.downstream[0].context[0], 'ctx-in');
+  assert(r.downstream[0].context[1].startsWith('[boss] Phase restart: context ~500k tokens'), r.downstream[0].context[1]);
+  assertEq(r.downstream[0].text, 'p0', 'the person text itself is never changed');
+  assertEq(r.downstream[1].context, ['ctx-in'], 'the second prompt of the same crossing: nothing');
+  assertEq(r.toasts.length, 1, 'one toast for the person');
+  assertEq(r.events.filter((e) => e.action === 'phase-restart-notice').length, 1, 'recorded once');
+  const cold = await phaseGateRun({ config, tokens: 500000, messages: COMMITTED, coldMs: 2 * 3600000 });
+  assertEq([cold.downstream[0].context, cold.toasts.length], [['ctx-in'], 0], 'cold cache: nothing');
+  const below = await phaseGateRun({ config, tokens: 399000, messages: COMMITTED });
+  assertEq([below.downstream[0].context, below.messages], [['ctx-in'], 0], 'below the threshold: nothing, history not read');
+  const noCommit = await phaseGateRun({ config, tokens: 500000, messages: [{ role: 'user', text: 'x' }, { role: 'assistant', text: 'y', toolUses: [] }] });
+  assertEq([noCommit.downstream[0].context, noCommit.toasts.length], [['ctx-in'], 0], 'no task boundary: nothing');
+  const off = await phaseGateRun({ config: { ...config, enabled: false }, tokens: 500000, messages: COMMITTED });
+  assertEq(off.downstream[0].context, ['ctx-in'], 'compaction off (free profile) turns the notice off too');
+});
 
 test('phase-restart-measure: series flags person prompts after a commit; a heavy session shows a gain, a light one none; the replay is pure', () => {
   const m = require('./lib/phase-restart-measure.js');
@@ -30226,6 +30618,14 @@ test('hooks-config saveOverrides (dashboard PUT /api/hooks/config): only the cha
     if (prev == null) { try { fs.unlinkSync(file); } catch (err) { void err; } } else fs.writeFileSync(file, prev);
     hc._resetCache();
   }
+});
+
+test('compaction-core.classifyResume: re-expanded = the reloaded history carries the engine copies (exact), never a size guess', () => {
+  const fx = JSON.parse(fs.readFileSync(path.join(SCRIPTS, '__fixtures__', 'compaction-resumed-history.json'), 'utf8')).messages;
+  assertEq(cmpCore.classifyResume({ messages: fx, lastTokens: 31070 }), { reexpanded: true, copies: 20, lastTokens: 31070 }, 'the real resumed history after a hook compaction');
+  const clean = cmpCore.dropEngineCopies(fx).list;
+  assertEq(cmpCore.classifyResume({ messages: clean, lastTokens: 75720 }).reexpanded, false, 'an uncompacted resumed session — the size guess said true here (false positive, measured)');
+  assertEq(cmpCore.classifyResume({ messages: cmpSession(), lastTokens: 1000 }).reexpanded, false, 'a long normal history is not re-expanded however small the last reading');
 });
 
 test('compaction-metrics.summarizeCompaction: when/how much/cache per host — exact cuts, measured tokens, observed window', () => {
@@ -30431,6 +30831,8 @@ test('compaction-event.run: trail events land in the metrics store; turn records
 // a "hit" by parseCacheUsage, which leaves its window null. Real session a91f3364 (security-check, 18/10): 155 gates
 // judged by the 1h host window, waited, and 62 cold re-writes followed with no cut. Measured rows, not invented ones.
 const POST_SWITCH_CALL = { input_tokens: 3, output_tokens: 900, cache_read_input_tokens: 17753, cache_creation_input_tokens: 380829, cache_creation: { ephemeral_5m_input_tokens: 380829, ephemeral_1h_input_tokens: 0 } };
+const PRE_SWITCH_CALL = { input_tokens: 3, output_tokens: 900, cache_read_input_tokens: 0, cache_creation_input_tokens: 299000, cache_creation: { ephemeral_5m_input_tokens: 0, ephemeral_1h_input_tokens: 299000 } };
+
 test('compaction-event.run turn: a hit that WRITES at 5m proves a 5 min window (the folder-TTL sessions are all hits on the 1h system prefix)', async () => {
   await withCmpStore(async (ce) => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-cmp-hit5m-'));
@@ -30443,6 +30845,817 @@ test('compaction-event.run turn: a hit that WRITES at 5m proves a 5 min window (
   });
 });
 
+// The module run for real against a fake engine, its daemon calls answered by the REAL compaction-event.run.
+async function folderCutRun(ce, { gated }) {
+  const cmp = await import(require('url').pathToFileURL(path.join(ROOT, 'hooks', 'compaction.mjs')).href);
+  const hooks = collectModuleHooks(cmp.register);
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-folder-cut-'));
+  fs.writeFileSync(path.join(dir, 'brain-http.token'), 'tok');
+  const transcript = path.join(dir, 'session.jsonl');
+  const row = (id, usage) => JSON.stringify({ type: 'assistant', message: { id, model: 'm1', usage } }) + '\n';
+  fs.writeFileSync(transcript, row('msg-1', PRE_SWITCH_CALL));
+  const config = { enabled: true, thresholdPercent: 30, minIntervalMs: 600000, folderTtl: true, warmCeilingTokens: 0, thresholdMaxTokens: 0 };
+  const out = { compacts: 0, timers: [], logs: [] };
+  let now = 1_000_000_000;
+  const env = { CLAUDE_PLUGIN_DATA: dir, BRAIN_HTTP_PORT: '1' };
+  const $ = {
+    env: { get: async (k) => env[k] },
+    fs: { read: async (p) => fs.readFileSync(p, 'utf8') },
+    http: { fetch: async (url, init) => {
+      if (url.split('?')[0].endsWith('/health')) return { status: 200, ok: true, text: JSON.stringify({ dataDir: dir }) };
+      const body = JSON.parse(init.body);
+      const payload = JSON.parse(body.payload);
+      let reply = {};
+      if (payload.kind === 'hello') reply = { config };
+      else if (payload.kind === 'folder' || payload.kind === 'folder-end') reply = { folderTtl: { ttl: '5m', live: 1, allAbove: true, action: 'none' } }; // never the real global state
+      else if (payload.kind === 'turn') reply = { ...(await ce.run({ ...body, payload })), config };
+      return { status: 200, ok: true, text: JSON.stringify(reply) };
+    } },
+    session: {
+      id: async () => 'sid-folder-cut', cwd: async () => dir, root: async () => dir, authorize: async () => ({ kind: 'api-key' }),
+      usage: async () => ({ context: { tokens: 400000, window: 1000000, breakdown: { rawMaxTokens: 1000000, autoCompactThreshold: 967000 } } }),
+      messages: async () => [],
+    },
+    clock: { now: async () => now, after: (ms, fn) => { out.timers.push({ ms, fn }); } },
+    ui: { log: (t) => out.logs.push(t), toast: () => {} },
+    command: { run: async () => { out.compacts++; } },
+    prompt: { submit: async () => {} },
+  };
+  const flush = async () => { for (let i = 0; i < 20; i++) await new Promise((r) => setImmediate(r)); };
+  const fire = async (pred) => { const i = out.timers.findIndex(pred); assert(i >= 0, `timer expected (${out.timers.map((t) => t.ms)})`); const [t] = out.timers.splice(i, 1); t.fn(); await flush(); };
+  await findHook(hooks, 'classic.SessionStart').fn($, { transcript_path: transcript, source: 'startup' }, async (e) => e);
+  await findHook(hooks, 'session.start').fn($, { isInteractive: true }, async (e) => e);
+  await fire((t) => t.ms === 1); // the folder join: hello + report + heartbeat
+  const submit = findHook(hooks, 'prompt.submit').fn;
+  const turn = async () => {
+    await findHook(hooks, 'turn.start').fn($, {}, async (e) => e);
+    await findHook(hooks, 'turn.complete').fn($, {}, async () => ({}));
+    await fire((t) => t.ms === 1); // afterTurn (+ turnEnd when no person prompt went through the gate)
+  };
+  // Turn 1, before the switch: the call wrote 1h.
+  if (gated) await submit($, { text: 'p1', origin: { kind: 'composer' } }, async (e) => e);
+  await turn();
+  if (gated) {
+    // Turn 2, after the switch: the call reads the 1h system prefix and re-writes the rest at 5m.
+    now += 30000;
+    await submit($, { text: 'p2', origin: { kind: 'composer' } }, async (e) => e);
+    fs.appendFileSync(transcript, row('msg-2', POST_SWITCH_CALL));
+    await turn();
+    now += 6 * 60000; // the person comes back after 6 min: the 5m cache is cold
+    out.held = await submit($, { text: 'p3', origin: { kind: 'composer' } }, async (e) => e);
+  } else {
+    // Autonomous turn whose 5m call lands in the transcript after turn.complete: turnEnd armed by the 1h window.
+    out.armedMs = out.timers.filter((t) => t.ms > 120000).map((t) => t.ms);
+    fs.appendFileSync(transcript, row('msg-2', POST_SWITCH_CALL));
+    now += 120000;
+    await fire((t) => t.ms === 120000); // the heartbeat picks the late call up
+    out.rearmedMs = out.timers.filter((t) => t.ms > 1000 && t.ms !== 120000).map((t) => t.ms);
+    now += 5 * 60000;
+    const due = out.timers.filter((t) => t.ms > 1000 && t.ms !== 120000 && t.ms < 3600000);
+    for (const t of due) { out.timers.splice(out.timers.indexOf(t), 1); t.fn(); }
+    await flush();
+  }
+  fs.rmSync(dir, { recursive: true, force: true });
+  return out;
+}
+
+// The heartbeat alone, against a fake engine: only the notices it logs over `beats` ticks (withTranscript: classic SessionStart seen).
+// folderAnswer: what the daemon answers to the heartbeat's folder report ({status, text}), default a healthy reply.
+async function heartbeatNotices({ withTranscript, beats, folderAnswer }) {
+  const cmp = await import(require('url').pathToFileURL(path.join(ROOT, 'hooks', 'compaction.mjs')).href);
+  const hooks = collectModuleHooks(cmp.register);
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-heartbeat-'));
+  fs.writeFileSync(path.join(dir, 'brain-http.token'), 'tok');
+  const transcript = path.join(dir, 'session.jsonl');
+  fs.writeFileSync(transcript, '');
+  const config = { enabled: true, thresholdPercent: 30, minIntervalMs: 600000, folderTtl: true, warmCeilingTokens: 0, thresholdMaxTokens: 0 };
+  const out = { timers: [], logs: [], trail: [] };
+  const env = { CLAUDE_PLUGIN_DATA: dir, BRAIN_HTTP_PORT: '1' };
+  const $ = {
+    env: { get: async (k) => env[k] },
+    fs: { read: async (p) => fs.readFileSync(p, 'utf8') },
+    http: { fetch: async (url, init) => {
+      if (url.split('?')[0].endsWith('/health')) {
+        const nonce = new URL(url).searchParams.get('nonce');
+        return { status: 200, ok: true, text: JSON.stringify({ dataDir: dir, proof: require('crypto').createHmac('sha256', 'tok').update(nonce).digest('hex') }) };
+      }
+      const payload = JSON.parse(JSON.parse(init.body).payload);
+      if (payload.kind === 'error') out.trail.push(payload);
+      if (folderAnswer && payload.kind === 'folder') { const a = folderAnswer(); return { status: a.status, ok: a.status === 200, text: a.text }; }
+      const reply = payload.kind === 'hello' ? { config } : payload.kind === 'folder' || payload.kind === 'folder-end' ? { folderTtl: { ttl: '5m', live: 1, allAbove: true, action: 'none' } } : {};
+      return { status: 200, ok: true, text: JSON.stringify(reply) };
+    } },
+    session: {
+      id: async () => 'sid-heartbeat', cwd: async () => dir, root: async () => dir, authorize: async () => ({ kind: 'api-key' }),
+      usage: async () => ({ context: { tokens: 400000, window: 1000000, breakdown: { rawMaxTokens: 1000000, autoCompactThreshold: 967000 } } }),
+      messages: async () => [],
+    },
+    clock: { now: async () => 1_000_000_000, after: (ms, fn) => { out.timers.push({ ms, fn }); } },
+    ui: { log: (t) => out.logs.push(t), toast: () => {} },
+    command: { run: async () => {} },
+    prompt: { submit: async () => {} },
+  };
+  const flush = async () => { for (let i = 0; i < 20; i++) await new Promise((r) => setImmediate(r)); };
+  const fire = async (pred) => { const i = out.timers.findIndex(pred); assert(i >= 0, `timer expected (${out.timers.map((t) => t.ms)})`); const [t] = out.timers.splice(i, 1); t.fn(); await flush(); };
+  if (withTranscript) await findHook(hooks, 'classic.SessionStart').fn($, { transcript_path: transcript, source: 'startup' }, async (e) => e);
+  await findHook(hooks, 'session.start').fn($, { isInteractive: true }, async (e) => e);
+  await fire((t) => t.ms === 1);
+  for (let i = 0; i < beats; i++) await fire((t) => t.ms === 120000);
+  fs.rmSync(dir, { recursive: true, force: true });
+  return { shown: out.logs.filter((l) => /no transcript path/.test(l)), trail: out.trail.filter((e) => e.stage === 'heartbeat'), logs: out.logs };
+}
+
+test('compaction hook: a daemon that fail-opens the heartbeat\'s folder report (deadline missed, worker exited with code 1) shows the person nothing; any other failure is still said', async () => {
+  const degradedMsg = (why) => `[claude-code-boss] hook hook_compaction_event degradado no daemon (fail-open): ${why}`;
+  const answers = [
+    () => ({ status: 200, text: JSON.stringify({ systemMessage: degradedMsg('hook-worker exited (code 1)') }) }),
+    () => ({ status: 200, text: JSON.stringify({ systemMessage: degradedMsg('prazo de 9000ms estourado no hook-worker (hook_compaction_event)') }) }),
+    () => ({ status: 503, text: degradedMsg('prazo de 9000ms estourado no hook-worker (hook_compaction_event)') }),
+  ];
+  let i = 0;
+  const r = await heartbeatNotices({ withTranscript: false, beats: 3, folderAnswer: () => answers[i++ % answers.length]() });
+  assertEq(r.logs, [], `a degraded daemon reply never reaches the screen, got ${JSON.stringify(r.logs)}`);
+  const other = await heartbeatNotices({ withTranscript: false, beats: 1, folderAnswer: () => ({ status: 500, text: 'boom' }) });
+  assert(other.logs.some((l) => /folder heartbeat failed: hook_compaction_event folder: daemon answered 500 boom/.test(l)), `a real failure is still shown: ${JSON.stringify(other.logs)}`);
+});
+
+test('compaction hook: the heartbeat does not warn about a missing transcript path when it has one (dangling else in 3.13.0)', async () => {
+  const r = await heartbeatNotices({ withTranscript: true, beats: 3 });
+  assertEq(r.shown.length, 0, `a transcript path exists and no cold-watch condition holds: no notice, got ${JSON.stringify(r.shown)}`);
+  assertEq(r.trail.length, 0, 'and nothing is recorded either');
+});
+
+test('compaction hook: without a transcript path (reloaded or resumed session) the heartbeat shows the person nothing and records it once in the trail', async () => {
+  const r = await heartbeatNotices({ withTranscript: false, beats: 3 });
+  assertEq(r.shown.length, 0, `nothing on the screen, got ${JSON.stringify(r.shown)}`);
+  assertEq(r.trail.length, 1, `one trail record over 3 beats, got ${r.trail.length}`);
+  assertEq(r.trail[0].outcome, 'no-transcript-path');
+});
+
+test('compaction hook + compaction-event: after the 5m folder switch, a person back after 6 min is cut (it waited for 1h before)', async () => {
+  await withCmpStore(async (ce) => {
+    const r = await folderCutRun(ce, { gated: true });
+    assert(r.held && /compacting first/.test(r.held.drop || ''), `the prompt is held for the cut, got ${JSON.stringify(r.held)} ${r.logs.join(' | ')}`);
+  });
+});
+
+test('compaction hook: a turn-end re-check armed by the 1h window is re-armed by the heartbeat once the 5m write lands, and the cut comes', async () => {
+  await withCmpStore(async (ce) => {
+    const r = await folderCutRun(ce, { gated: false });
+    assertEq(r.armedMs, [3601000, 3601000], 'the turn-end re-check and the expiry timer, both armed by the 1h window (the turn\'s 5m call not in the transcript yet)');
+    assert(r.rearmedMs.some((ms) => ms < 300000), `re-armed by the 5m window (${r.rearmedMs}) ${r.logs.join(' | ')}`);
+    assertEq(r.compacts, 1, 'compacted once the 5m cache went cold');
+  });
+});
+
+
+// ── A session reopened after hours idle, far past the threshold (owner report, 3.10.1: 788k tokens, idle > 3h, the
+// prompt went out and the whole context was re-written cold, no cut). The module run for real against a fake engine;
+// its daemon calls answered by the REAL compaction-event.run, reading a REAL transcript file.
+const REOPEN_CALL = { input_tokens: 4, output_tokens: 600, cache_read_input_tokens: 0, cache_creation_input_tokens: 787396, cache_creation: { ephemeral_5m_input_tokens: 0, ephemeral_1h_input_tokens: 787396 } };
+
+async function reopenedRun(ce, o) {
+  const cmp = await import(require('url').pathToFileURL(path.join(ROOT, 'hooks', 'compaction.mjs')).href);
+  const hooks = collectModuleHooks(cmp.register);
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-reopen-'));
+  fs.writeFileSync(path.join(dir, 'brain-http.token'), 'tok');
+  const now = Date.now();
+  const sid = 'sid-reopen-0123';
+  const cfgDir = path.join(dir, 'claude-config');
+  const transcript = o.noTranscript ? null : path.join(o.transcriptByIdOnly ? path.join(cfgDir, 'projects', 'C--some-project') : dir, o.transcriptByIdOnly ? `${sid}.jsonl` : 'session.jsonl');
+  if (transcript) {
+    fs.mkdirSync(path.dirname(transcript), { recursive: true });
+    const row = (id, ago, usage, extra = {}) => JSON.stringify({ type: 'assistant', timestamp: new Date(now - ago).toISOString(), message: { id, model: 'claude-opus-5-5[1m]', usage }, ...extra }) + '\n';
+    fs.writeFileSync(transcript, row('msg-old', o.lastCallAgoMs, REOPEN_CALL) + (o.boundaryAfter ? JSON.stringify({ type: 'system', subtype: 'compact_boundary' }) + '\n' : ''));
+  }
+  const config = { enabled: true, thresholdPercent: 30, minIntervalMs: 600000, folderTtl: true, warmCeilingTokens: 0, thresholdMaxTokens: 0 };
+  const out = { logs: [], gates: [], timers: [], compacts: 0, toasts: [], hello: null, folders: [] };
+  const env = { CLAUDE_PLUGIN_DATA: dir, BRAIN_HTTP_PORT: '1', CLAUDE_CONFIG_DIR: cfgDir };
+  const prevCfgDir = process.env.CLAUDE_CONFIG_DIR;
+  process.env.CLAUDE_CONFIG_DIR = cfgDir;
+  const bigHistory = o.historyChars ? [{ role: 'user', text: 'x'.repeat(o.historyChars) }] : [];
+  const $ = {
+    env: { get: async (k) => env[k] },
+    fs: { read: async (p) => fs.readFileSync(p, 'utf8') },
+    http: { fetch: async (url, init) => {
+      if (url.split('?')[0].endsWith('/health')) return { status: 200, ok: true, text: JSON.stringify({ dataDir: dir }) };
+      const body = JSON.parse(init.body);
+      const payload = JSON.parse(body.payload);
+      let reply = {};
+      if (payload.kind === 'hello') { out.hello = payload; reply = { config, installedVersion: o.installedVersion }; }
+      else if (payload.kind === 'folder' || payload.kind === 'folder-end') { out.folders.push(payload); reply = { folderTtl: { ttl: '5m', live: 1, allAbove: true, action: 'none' } }; }
+      else if (payload.kind === 'gate') out.gates.push(payload);
+      else if (payload.kind === 'turn' || payload.kind === 'tail' || payload.kind.startsWith('held')) reply = { ...(await ce.run({ ...body, payload })), config };
+      return { status: 200, ok: true, text: JSON.stringify(reply) };
+    } },
+    session: {
+      id: async () => sid, cwd: async () => dir, root: async () => dir, authorize: async () => ({ kind: 'api-key' }),
+      usage: async () => ({ context: { tokens: o.usageTokens ?? null, window: o.window === undefined ? 1000000 : o.window, breakdown: o.window === null ? {} : { rawMaxTokens: o.window ?? 1000000, autoCompactThreshold: 967000 } } }),
+      messages: async () => bigHistory,
+    },
+    clock: { now: async () => now, after: (ms, fn) => { out.timers.push({ ms, fn }); } },
+    ui: { log: (t) => out.logs.push(t), toast: (t) => out.toasts.push(t) },
+    command: { run: async () => { out.compacts++; } },
+    prompt: { submit: async () => {} },
+  };
+  const flush = async () => { for (let i = 0; i < 20; i++) await new Promise((r) => setImmediate(r)); };
+  try {
+    if (o.source) await findHook(hooks, 'classic.SessionStart').fn($, { transcript_path: o.noTranscriptPath ? '' : transcript || '', source: o.source, ...(o.startFields || {}) }, async (e) => e);
+    await findHook(hooks, 'session.start').fn($, { isInteractive: true }, async (e) => e);
+    const i = out.timers.findIndex((t) => t.ms === 1);
+    if (i >= 0) { const [t] = out.timers.splice(i, 1); t.fn(); await flush(); }
+    out.compactsBeforePrompt = out.compacts;
+    out.held = await findHook(hooks, 'prompt.submit').fn($, { text: 'continue', origin: o.origin || { kind: 'composer' } }, async (e) => e);
+    await flush();
+    out.lastGate = out.gates[out.gates.length - 1] || null;
+    return out;
+  } finally {
+    if (prevCfgDir === undefined) delete process.env.CLAUDE_CONFIG_DIR; else process.env.CLAUDE_CONFIG_DIR = prevCfgDir;
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+}
+const HELD = /compacting first/;
+// Cut before the first prompt reaches the model: at reopen (the session is judged as it opens) or by holding the prompt.
+const cutBeforePrompt = (r) => r.compactsBeforePrompt === 1 || Boolean(r.held && HELD.test(r.held.drop || ''));
+const heldOrWhy = (r) => `held=${JSON.stringify(r.held)} gate=${JSON.stringify(r.lastGate && { a: r.lastGate.action, r: r.lastGate.reason, t: r.lastGate.tokens, idle: r.lastGate.idleMs })} logs=${r.logs.join(' | ')}`;
+const H3 = 3 * 3600000 + 600000;
+
+test('compaction hook, session reopened > 3h idle at 788k tokens (1M window): the first prompt is held for the cold cut — startup with the age unknown to the module', async () => {
+  await withCmpStore(async (ce) => {
+    const r = await reopenedRun(ce, { source: 'startup', usageTokens: 788000, lastCallAgoMs: H3 });
+    assert(cutBeforePrompt(r), `held for the cut — ${heldOrWhy(r)}`);
+  });
+});
+
+test('compaction hook, session reopened > 3h idle: the size comes from the transcript when the live session reports none', async () => {
+  await withCmpStore(async (ce) => {
+    const r = await reopenedRun(ce, { source: 'startup', usageTokens: null, lastCallAgoMs: H3 });
+    assert(cutBeforePrompt(r), `held for the cut — ${heldOrWhy(r)}`);
+  });
+});
+
+test('compaction hook, session whose classic SessionStart never arrived (no transcript path, TTL state never recorded): the daemon finds the transcript by session id', async () => {
+  await withCmpStore(async (ce) => {
+    const r = await reopenedRun(ce, { source: null, transcriptByIdOnly: true, usageTokens: 788000, lastCallAgoMs: H3 });
+    assert(cutBeforePrompt(r), `held for the cut — ${heldOrWhy(r)}`);
+  });
+});
+
+test('compaction hook, resumed (--resume) > 3h idle: cut with the size from the live session, from the SessionStart reading, or estimated from the reloaded history', async () => {
+  await withCmpStore(async (ce) => {
+    for (const [label, o] of [
+      ['live usage', { usageTokens: 788000 }],
+      ['SessionStart context_tokens', { usageTokens: null, startFields: { context_tokens: 788000, seconds_since_last_response: 3 * 3600 }, noTranscript: true }],
+      ['reloaded history estimate', { usageTokens: null, historyChars: 3200000, noTranscript: true }],
+    ]) {
+      const r = await reopenedRun(ce, { source: 'resume', lastCallAgoMs: H3, ...o });
+      assert(cutBeforePrompt(r), `${label}: held for the cut — ${heldOrWhy(r)}`);
+    }
+  });
+});
+
+test('compaction hook, reopened session: a WARM cache (last call 1 min ago) or no history at all is never cut — the gate says why', async () => {
+  await withCmpStore(async (ce) => {
+    const warm = await reopenedRun(ce, { source: 'startup', usageTokens: 788000, lastCallAgoMs: 60000 });
+    assert(!(warm.held && warm.held.drop), `warm cache not held — ${heldOrWhy(warm)}`);
+    assertEq(warm.lastGate && warm.lastGate.reason, 'cache-warm');
+    const fresh = await reopenedRun(ce, { source: 'startup', usageTokens: 788000, noTranscript: true });
+    assert(!(fresh.held && fresh.held.drop), `a session with no history is not cut — ${heldOrWhy(fresh)}`);
+    assertEq(fresh.lastGate && fresh.lastGate.reason, 'cache-age-unknown');
+    const small = await reopenedRun(ce, { source: 'startup', usageTokens: 50000, lastCallAgoMs: H3 });
+    assert(!(small.held && small.held.drop), `below the threshold not held — ${heldOrWhy(small)}`);
+  });
+});
+
+test('compaction hook, reopened session: a compaction after the transcript\'s last call makes its size stale — never trusted', async () => {
+  await withCmpStore(async (ce) => {
+    const r = await reopenedRun(ce, { source: 'startup', usageTokens: null, boundaryAfter: true, lastCallAgoMs: H3 });
+    assert(!(r.held && r.held.drop), `a pre-cut reading must not hold the prompt — ${heldOrWhy(r)}`);
+    assertEq(r.lastGate && r.lastGate.reason, 'no-reading');
+  });
+});
+
+// ── Owner report (2026-10-27): 875k tokens, idle > 1h, the next prompt re-loaded the whole context cold. On this machine
+// every such case was a session reopened (SessionStart `resume`) whose first input was a PEER message, which the prompt
+// gate never judges (it cannot hold and re-send it with its sender) — so nothing cut before it.
+const H1 = 3600000 + 600000;
+test('compaction hook, session reopened > 1h idle at 875k tokens whose first input is a PEER message: cut before that message (at reopen)', async () => {
+  await withCmpStore(async (ce) => {
+    const peer = { kind: 'peer', from: 'uds:x', name: 'orchestrator' };
+    for (const source of ['resume', 'startup']) {
+      const r = await reopenedRun(ce, { source, usageTokens: 875000, lastCallAgoMs: H1, origin: peer });
+      assertEq(r.compactsBeforePrompt, 1, `${source}: compacted before the peer message — ${heldOrWhy(r)}`);
+      assert(!(r.held && r.held.drop), `${source}: the peer message is never dropped (it cannot be re-sent with its sender)`);
+      assertEq(r.gates.find((g) => g.action === 'compact').reason, 'reopen-cache-cold');
+      assertEq(r.compacts, 1, `${source}: one cut, not a second one at the prompt`);
+    }
+  });
+});
+
+test('compaction hook, reopened session: a person\'s first prompt after the cut at reopen is not held again; warm / small / fresh reopen cuts nothing', async () => {
+  await withCmpStore(async (ce) => {
+    const person = await reopenedRun(ce, { source: 'resume', usageTokens: 875000, lastCallAgoMs: H1 });
+    assertEq([person.compactsBeforePrompt, person.compacts], [1, 1], `cut once, at reopen — ${heldOrWhy(person)}`);
+    assert(!(person.held && person.held.drop), 'the prompt goes on: the context was already cut');
+    for (const [label, o] of [['warm', { source: 'startup', usageTokens: 875000, lastCallAgoMs: 60000 }], ['small', { source: 'startup', usageTokens: 50000, lastCallAgoMs: H1 }], ['fresh', { source: 'startup', usageTokens: 875000, noTranscript: true }]]) {
+      const r = await reopenedRun(ce, { ...o, origin: { kind: 'peer' } });
+      assertEq(r.compactsBeforePrompt, 0, `${label}: nothing cut at reopen — ${heldOrWhy(r)}`);
+    }
+  });
+});
+
+// ── Hardening of the cold cut (lens findings of the cold-cut fix): the held prompt survives the process, the folder report
+// carries the real side of the threshold at reopen, a prompt with attachments is said, not silent.
+test('compaction hook, reopened session: the first folder report carries the real side of the threshold — warm and above → above; cold (about to be cut) or small → not', async () => {
+  await withCmpStore(async (ce) => {
+    const warm = await reopenedRun(ce, { source: 'startup', usageTokens: 875000, lastCallAgoMs: 60000 });
+    assertEq(warm.folders[0] && warm.folders[0].above, true, `a warm reopen above the threshold joins its folder as above — ${warm.logs.join(' | ')}`);
+    const cold = await reopenedRun(ce, { source: 'startup', usageTokens: 875000, lastCallAgoMs: H1 });
+    assertEq(cold.folders[0] && cold.folders[0].above, false, 'a cold reopen is cut at once: it does not claim above while the cut runs');
+    assertEq(cold.compactsBeforePrompt, 1, 'and it is cut');
+    const small = await reopenedRun(ce, { source: 'startup', usageTokens: 50000, lastCallAgoMs: 60000 });
+    assertEq(small.folders[0] && small.folders[0].above, false, 'below the threshold → not above');
+  });
+});
+
+// A session whose person's prompt the gate holds for the cut: opened warm, idle past the cache window, then the prompt.
+async function heldPromptRun(ce, { failHeld = false, dieBeforeResend = false } = {}) {
+  const cmp = await import(require('url').pathToFileURL(path.join(ROOT, 'hooks', 'compaction.mjs')).href);
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-held-'));
+  fs.writeFileSync(path.join(dir, 'brain-http.token'), 'tok');
+  const now0 = Date.now();
+  let now = now0;
+  const transcript = path.join(dir, 'session.jsonl');
+  fs.writeFileSync(transcript, JSON.stringify({ type: 'assistant', timestamp: new Date(now0 - 30000).toISOString(), message: { id: 'msg-1', model: 'claude-opus-5-5[1m]', usage: REOPEN_CALL } }) + '\n');
+  const config = { enabled: true, thresholdPercent: 30, minIntervalMs: 600000, folderTtl: true, warmCeilingTokens: 0, thresholdMaxTokens: 0 };
+  const heldDir = path.join(require('../engine/lib/data-dir.js').dataDir(), '.runtime');
+  const heldFile = path.join(heldDir, 'held-prompt-sid-held-0123.json');
+  const mk = () => {
+    const out = { timers: [], compacts: 0, submitted: [], logs: [], toasts: [] };
+    const $ = {
+      env: { get: async (k) => ({ CLAUDE_PLUGIN_DATA: dir, BRAIN_HTTP_PORT: '1' })[k] },
+      fs: { read: async (p) => fs.readFileSync(p, 'utf8') },
+      http: { fetch: async (url, init) => {
+        if (url.split('?')[0].endsWith('/health')) return { status: 200, ok: true, text: JSON.stringify({ dataDir: dir }) };
+        const body = JSON.parse(init.body); const payload = JSON.parse(body.payload);
+        let reply = {};
+        if (payload.kind === 'hello') reply = { config };
+        else if (payload.kind === 'folder' || payload.kind === 'folder-end') reply = { folderTtl: { ttl: '1h', live: 1, allAbove: false, action: 'none' } };
+        else if (payload.kind === 'held' && failHeld) return { status: 500, ok: false, text: 'disk full' };
+        else if (payload.kind === 'turn' || payload.kind === 'tail' || payload.kind.startsWith('held')) reply = { ...(await ce.run({ ...body, payload })), config };
+        return { status: 200, ok: true, text: JSON.stringify(reply) };
+      } },
+      session: {
+        id: async () => 'sid-held-0123', cwd: async () => dir, root: async () => dir, authorize: async () => ({ kind: 'api-key' }),
+        usage: async () => ({ context: { tokens: 875000, window: 1000000, breakdown: { rawMaxTokens: 1000000, autoCompactThreshold: 967000 } } }),
+        messages: async () => [],
+      },
+      clock: { now: async () => now, after: (ms, fn) => { out.timers.push({ ms, fn }); } },
+      ui: { log: (t) => out.logs.push(t), toast: (t) => out.toasts.push(t) },
+      command: { run: async () => { out.compacts++; } },
+      prompt: { submit: async (a) => { out.submitted.push(a.text); } },
+    };
+    return { out, $, hooks: collectModuleHooks(cmp.register) };
+  };
+  const flush = async () => { for (let i = 0; i < 20; i++) await new Promise((r) => setImmediate(r)); };
+  const fireShort = async (out) => { for (const t of out.timers.filter((x) => x.ms === 1)) { out.timers.splice(out.timers.indexOf(t), 1); t.fn(); } await flush(); };
+  const open = async (m, source) => {
+    await findHook(m.hooks, 'classic.SessionStart').fn(m.$, { transcript_path: transcript, source }, async (e) => e);
+    await findHook(m.hooks, 'session.start').fn(m.$, { isInteractive: true }, async (e) => e);
+    await fireShort(m.out);
+  };
+  try {
+    const m = mk();
+    await open(m, 'startup');
+    const result = { m, heldFile, exists: () => fs.existsSync(heldFile), read: () => JSON.parse(fs.readFileSync(heldFile, 'utf8')) };
+    now = now0 + H1; // past the cache window: the person's prompt is held for the cut
+    let nextCalled = false;
+    result.held = await findHook(m.hooks, 'prompt.submit').fn(m.$, { text: 'my careful prompt', origin: { kind: 'composer' } }, async (e) => { nextCalled = true; return e; });
+    result.nextCalled = nextCalled;
+    result.existsAfterHold = fs.existsSync(heldFile);
+    result.textAfterHold = result.existsAfterHold ? JSON.parse(fs.readFileSync(heldFile, 'utf8')).text : null;
+    if (!dieBeforeResend) { await fireShort(m.out); result.existsAfterResend = fs.existsSync(heldFile); }
+    else {
+      // The process dies during the cut (its timers never run); the session is opened again by a new one.
+      const m2 = mk();
+      await open(m2, 'resume');
+      result.m2 = m2;
+      result.existsAfterRecover = fs.existsSync(heldFile);
+      const m3 = mk();
+      await open(m3, 'resume');
+      result.m3 = m3;
+    }
+    return result;
+  } finally { fs.rmSync(dir, { recursive: true, force: true }); fs.rmSync(heldFile, { force: true }); }
+}
+
+test('compaction hook, held prompt: kept on disk while the cut runs and removed once it is re-sent', async () => {
+  await withCmpStore(async (ce) => {
+    const r = await heldPromptRun(ce);
+    assert(r.held && /compacting first/.test(r.held.drop || ''), `the prompt is held — ${JSON.stringify(r.held)} ${r.m.out.logs.join(' | ')}`);
+    assertEq(r.textAfterHold, 'my careful prompt', 'its text is on disk before the original is dropped');
+    assertEq(r.m.out.submitted, ['my careful prompt'], 'and re-sent after the cut');
+    assertEq(r.existsAfterResend, false, 'the copy is removed once it went out');
+  });
+});
+
+test('compaction hook, held prompt: a session that dies during the cut shows the text at the next open, once', async () => {
+  await withCmpStore(async (ce) => {
+    const r = await heldPromptRun(ce, { dieBeforeResend: true });
+    assertEq(r.m.out.submitted, [], 'the dead process never re-sent it');
+    assert(r.m2.out.logs.some((l) => l.includes('my careful prompt')) && r.m2.out.toasts.some((t) => /never sent/.test(t)), `the next open gives it back — ${r.m2.out.logs.join(' | ')}`);
+    assertEq(r.existsAfterRecover, false, 'taken back: removed');
+    assert(!r.m3.out.logs.some((l) => l.includes('my careful prompt')), 'and said only once');
+  });
+});
+
+test('compaction hook, held prompt: if its copy cannot be kept the prompt goes on uncut — it is never dropped unprotected', async () => {
+  await withCmpStore(async (ce) => {
+    const r = await heldPromptRun(ce, { failHeld: true });
+    assert(!(r.held && r.held.drop) && r.nextCalled, `not dropped — ${JSON.stringify(r.held)}`);
+    assert(r.m.out.logs.some((l) => /could not keep your prompt safe/.test(l)), 'said');
+    assertEq(r.m.out.compacts, 0, 'no cut it could not stand behind');
+  });
+});
+
+test('compaction hook: a person\'s prompt WITH attachments over a cold cache goes on (they cannot be re-sent), says so, and the turn-end rule cuts right after', async () => {
+  await withCmpStore(async (ce) => {
+    const cmp = await import(require('url').pathToFileURL(path.join(ROOT, 'hooks', 'compaction.mjs')).href);
+    const hooks = collectModuleHooks(cmp.register);
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-attach-'));
+    fs.writeFileSync(path.join(dir, 'brain-http.token'), 'tok');
+    let now = Date.now();
+    const transcript = path.join(dir, 'session.jsonl');
+    const call = (id, at) => JSON.stringify({ type: 'assistant', timestamp: new Date(at).toISOString(), message: { id, model: 'claude-opus-5-5[1m]', usage: REOPEN_CALL } }) + '\n';
+    fs.writeFileSync(transcript, call('msg-1', now - 30000));
+    const config = { enabled: true, thresholdPercent: 30, minIntervalMs: 600000, folderTtl: true, warmCeilingTokens: 0, thresholdMaxTokens: 0 };
+    const out = { timers: [], compacts: 0, toasts: [], logs: [] };
+    const $ = {
+      env: { get: async (k) => ({ CLAUDE_PLUGIN_DATA: dir, BRAIN_HTTP_PORT: '1' })[k] },
+      fs: { read: async (p) => fs.readFileSync(p, 'utf8') },
+      http: { fetch: async (url, init) => {
+        if (url.split('?')[0].endsWith('/health')) return { status: 200, ok: true, text: JSON.stringify({ dataDir: dir }) };
+        const body = JSON.parse(init.body); const payload = JSON.parse(body.payload);
+        let reply = {};
+        if (payload.kind === 'hello') reply = { config };
+        else if (payload.kind === 'folder' || payload.kind === 'folder-end') reply = { folderTtl: { ttl: '1h', live: 1, allAbove: false, action: 'none' } };
+        else if (payload.kind === 'turn' || payload.kind === 'tail') reply = { ...(await ce.run({ ...body, payload })), config };
+        return { status: 200, ok: true, text: JSON.stringify(reply) };
+      } },
+      session: {
+        id: async () => 'sid-attach', cwd: async () => dir, root: async () => dir, authorize: async () => ({ kind: 'api-key' }),
+        usage: async () => ({ context: { tokens: 875000, window: 1000000, breakdown: { rawMaxTokens: 1000000, autoCompactThreshold: 967000 } } }),
+        messages: async () => [],
+      },
+      clock: { now: async () => now, after: (ms, fn) => { out.timers.push({ ms, fn }); } },
+      ui: { log: (t) => out.logs.push(t), toast: (t) => out.toasts.push(t) },
+      command: { run: async () => { out.compacts++; } },
+      prompt: { submit: async () => {} },
+    };
+    const flush = async () => { for (let i = 0; i < 20; i++) await new Promise((r) => setImmediate(r)); };
+    const fireShort = async () => { for (const t of out.timers.filter((x) => x.ms === 1)) { out.timers.splice(out.timers.indexOf(t), 1); t.fn(); } await flush(); };
+    try {
+      await findHook(hooks, 'classic.SessionStart').fn($, { transcript_path: transcript, source: 'startup' }, async (e) => e);
+      await findHook(hooks, 'session.start').fn($, { isInteractive: true }, async (e) => e);
+      await fireShort();
+      now += H1; // cold
+      let passed = false;
+      const held = await findHook(hooks, 'prompt.submit').fn($, { text: 'see this', attachments: [{ type: 'image' }], origin: { kind: 'composer' } }, async (e) => { passed = true; return e; });
+      assert(passed && !(held && held.drop), 'the prompt goes on with its attachments');
+      assert(out.toasts.some((t) => /attachments/.test(t)), `the person is told — ${out.toasts.join(' | ')}`);
+      await findHook(hooks, 'turn.start').fn($, {}, async (e) => e);
+      fs.appendFileSync(transcript, call('msg-2', now));
+      await findHook(hooks, 'turn.complete').fn($, {}, async () => ({}));
+      await fireShort();
+      const due = out.timers.filter((t) => t.ms > 120000);
+      assert(due.length, `the turn-end re-check is armed (timers ${out.timers.map((t) => t.ms)})`);
+      now += H1;
+      for (const t of due) { out.timers.splice(out.timers.indexOf(t), 1); t.fn(); }
+      await flush();
+      assertEq(out.compacts, 1, 'cut as soon as the cache went cold again');
+    } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+  });
+});
+
+test('compaction hook: a session that never idles is cut at the end of a turn past the warm ceiling (warm cache, gate trail says why); with the ceiling off it is not', async () => {
+  const cmp = await import(require('url').pathToFileURL(path.join(ROOT, 'hooks', 'compaction.mjs')).href);
+  for (const [warmCeilingTokens, expected] of [[200000, 1], [0, 0]]) {
+    await withCmpStore(async (ce) => {
+      const hooks = collectModuleHooks(cmp.register);
+      const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-warmceil-'));
+      fs.writeFileSync(path.join(dir, 'brain-http.token'), 'tok');
+      const now = Date.now();
+      const transcript = path.join(dir, 'session.jsonl');
+      const call = (id, at) => JSON.stringify({ type: 'assistant', timestamp: new Date(at).toISOString(), message: { id, model: 'claude-opus-5-5[1m]', usage: REOPEN_CALL } }) + '\n';
+      fs.writeFileSync(transcript, '');
+      const config = { enabled: true, thresholdPercent: 30, thresholdMaxTokens: 150000, minIntervalMs: 600000, folderTtl: true, warmCeilingTokens };
+      const out = { timers: [], compacts: 0, toasts: [], logs: [], gates: [] };
+      const $ = {
+        env: { get: async (k) => ({ CLAUDE_PLUGIN_DATA: dir, BRAIN_HTTP_PORT: '1' })[k] },
+        fs: { read: async (p) => fs.readFileSync(p, 'utf8') },
+        http: { fetch: async (url, init) => {
+          if (url.split('?')[0].endsWith('/health')) return { status: 200, ok: true, text: JSON.stringify({ dataDir: dir }) };
+          const body = JSON.parse(init.body); const payload = JSON.parse(body.payload);
+          let reply = {};
+          if (payload.kind === 'hello') reply = { config };
+          else if (payload.kind === 'folder' || payload.kind === 'folder-end') reply = { folderTtl: { ttl: '1h', live: 1, allAbove: false, action: 'none' } };
+          else if (payload.kind === 'turn' || payload.kind === 'tail') reply = { ...(await ce.run({ ...body, payload })), config };
+          else if (payload.kind === 'gate') out.gates.push(payload);
+          return { status: 200, ok: true, text: JSON.stringify(reply) };
+        } },
+        session: {
+          id: async () => 'sid-warmceil', cwd: async () => dir, root: async () => dir, authorize: async () => ({ kind: 'api-key' }),
+          usage: async () => ({ context: { tokens: 260000, window: 1000000, breakdown: { rawMaxTokens: 1000000, autoCompactThreshold: 967000 } } }),
+          messages: async () => [],
+        },
+        clock: { now: async () => now, after: (ms, fn) => { out.timers.push({ ms, fn }); } },
+        ui: { log: (t) => out.logs.push(t), toast: (t) => out.toasts.push(t) },
+        command: { run: async () => { out.compacts++; } },
+        prompt: { submit: async () => {} },
+      };
+      const flush = async () => { for (let i = 0; i < 20; i++) await new Promise((r) => setImmediate(r)); };
+      const fireShort = async () => { for (const t of out.timers.filter((x) => x.ms === 1)) { out.timers.splice(out.timers.indexOf(t), 1); t.fn(); } await flush(); };
+      try {
+        await findHook(hooks, 'classic.SessionStart').fn($, { transcript_path: transcript, source: 'startup' }, async (e) => e);
+        await findHook(hooks, 'session.start').fn($, { isInteractive: true }, async (e) => e);
+        await fireShort();
+        out.compacts = 0; // the reopen look (a 30 s old answer: warm) never cuts
+        await findHook(hooks, 'turn.start').fn($, {}, async (e) => e);
+        fs.appendFileSync(transcript, call('msg-2', now));
+        await findHook(hooks, 'turn.complete').fn($, {}, async () => ({}));
+        await fireShort();
+        assertEq(out.compacts, expected, `ceiling ${warmCeilingTokens}: warm cache at 260k tokens, 1M window (cold threshold capped at 150k)`);
+        if (expected) assert(out.gates.some((g) => g.action === 'compact' && g.reason === 'turn-end-warm-ceiling' && g.thresholdTokens === 150000), `the trail says why — ${JSON.stringify(out.gates)}`);
+      } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+    });
+  }
+});
+
+test('compaction hook: a failed hook is logged with its readable cause — the engine\'s plain-data failure, an Error, a string — never "[object Object]"', async () => {
+  const cmp = await import(require('url').pathToFileURL(path.join(ROOT, 'hooks', 'compaction.mjs')).href);
+  const core = await import(require('url').pathToFileURL(path.join(SCRIPTS, 'lib', 'compaction-core.mjs')).href);
+  const handlers = {};
+  cmp.register((event) => ({ catch(fn) { handlers[event] = fn; return this; } }));
+  const cases = [
+    [{ kind: 'throw', message: 'daemon answered 500', budget: 1000 }, 'throw: daemon answered 500'],
+    [{ kind: 'timeout', budget: 1000 }, 'timed out after 1000 ms'],
+    [{ kind: 'timeout', message: 'rejected', budget: 1000 }, 'timed out after 1000 ms: rejected'],
+    [new Error('boom'), 'boom'],
+    ['plain', 'plain'],
+    [{ weird: 1 }, '{"weird":1}'],
+  ];
+  for (const [event, label] of [['session.compact', "pruning failed, the engine's own compaction runs"], ['prompt.submit', 'prompt gate failed, the prompt goes on uncompacted']]) {
+    for (const [error, readable] of cases) {
+      const logs = [];
+      let replayed = null;
+      const next = Object.assign(async (e) => { replayed = e; return 'engine'; }, { error });
+      const r = await handlers[event]({ ui: { log: (t) => logs.push(t) } }, { x: 1 }, next);
+      assertEq(r, 'engine', `${event}: the engine's own path still runs`);
+      assertEq(replayed, { x: 1 }, `${event}: the engine gets the original event`);
+      assertEq(logs, [`compaction: ${label}: ${readable}`], `${event}: ${JSON.stringify(error)}`);
+      assert(!logs[0].includes('[object Object]'), 'never the default object string');
+    }
+  }
+  assertEq(core.describeFailure(undefined), 'unknown error');
+});
+
+// Claude Code 2.1.312's own check of a session.compact result, transcribed from its build independently of
+// compaction-core (so the end-to-end test does not grade the hook with the hook's own rule).
+function engineRefusal(list) {
+  const D = (v) => v !== null && typeof v === 'object' && !Array.isArray(v);
+  if (!Array.isArray(list)) return 'messages that are not a list';
+  if (!list.length) return 'an empty messages (a compaction leaves at least one)';
+  for (let i = 0; i < list.length; i++) {
+    const { role, text, handle, toolUses, toolResults } = list[i] || {};
+    let why = null;
+    if (role !== 'user' && role !== 'assistant') why = 'has a role that is neither user nor assistant';
+    else if (typeof text !== 'string') why = 'has no text (a string)';
+    else if (!(handle === undefined || typeof handle === 'string')) why = 'has a handle that is not a string';
+    else if (!(Array.isArray(toolUses) && toolUses.every((c) => D(c) && typeof c.tool_use_id === 'string' && typeof c.tool === 'string' && D(c.input)))) why = 'has toolUses that are not a list of { tool_use_id, tool, input }';
+    else if (!(toolResults === undefined || (Array.isArray(toolResults) && toolResults.every((c) => D(c) && typeof c.tool_use_id === 'string' && typeof c.text === 'string')))) why = 'has toolResults that are not a list of { tool_use_id, text, isError }';
+    if (why) return `messages[${i}] that ${why}`;
+  }
+  return null;
+}
+
+// The engine's side of session.compact, as Claude Code does it: a returned list is checked against its contract; a
+// refused one goes to the hook's .catch with next.error, and next() there is the engine's model summary.
+async function engineCompactRun({ messages, trigger = 'auto', coldMs = 2 * 3600000, config = { enabled: true, folderTtl: false }, refuse = engineRefusal }) {
+  const cmp = await import(require('url').pathToFileURL(path.join(ROOT, 'hooks', 'compaction.mjs')).href);
+  const reg = {};
+  cmp.register((event, fn) => { reg[event] = { fn }; return { catch(c) { reg[event].catch = c; return this; } }; });
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-engine-compact-'));
+  fs.writeFileSync(path.join(dir, 'brain-http.token'), 'tok');
+  const out = { summaries: 0, events: [], logs: [], toasts: [], refused: null, result: null };
+  let now = 1_000_000_000;
+  const timers = [];
+  const env = { CLAUDE_PLUGIN_DATA: dir, BRAIN_HTTP_PORT: '1' };
+  const $ = {
+    env: { get: async (k) => env[k] },
+    fs: { read: async (p) => fs.readFileSync(p, 'utf8') },
+    http: { fetch: async (url, init) => {
+      if (url.split('?')[0].endsWith('/health')) return { status: 200, ok: true, text: JSON.stringify({ dataDir: dir }) };
+      const payload = JSON.parse(JSON.parse(init.body).payload);
+      out.events.push(payload);
+      return { status: 200, ok: true, text: JSON.stringify(payload.kind === 'hello' ? { config } : {}) };
+    } },
+    session: { id: async () => 'sid-engine', cwd: async () => dir, root: async () => dir, authorize: async () => null,
+      usage: async () => ({ context: { tokens: 400000, window: 1000000, breakdown: { rawMaxTokens: 1000000, autoCompactThreshold: 967000 } } }),
+      messages: async () => messages },
+    clock: { now: async () => now, after: (ms, fn) => { timers.push({ ms, fn }); } },
+    ui: { log: (t) => out.logs.push(t), toast: (t) => out.toasts.push(t) },
+  };
+  try {
+    await reg['session.start'].fn($, { isInteractive: true }, async (e) => e);
+    await reg['turn.complete'].fn($, {}, async () => ({}));
+    now += coldMs;
+    const armed = timers.length; // only what the compaction itself arms runs (the acceptance wait)
+    const e = { trigger, messages };
+    const summary = async () => { out.summaries++; return { messages: [{ role: 'user', text: 'MODEL SUMMARY', toolUses: [] }] }; };
+    try {
+      const r = await reg['session.compact'].fn($, e, summary);
+      const refused = r && r.messages ? refuse(r.messages) : null;
+      if (refused) throw Object.assign(new Error(refused), { refused });
+      out.result = r;
+    } catch (err) {
+      out.refused = err.refused || String(err);
+      out.result = await reg['session.compact'].catch($, e, Object.assign(summary, { error: { kind: 'throw', message: `returned ${err.refused || err}` } }));
+    }
+    await new Promise((res) => setImmediate(res));
+    for (const t of timers.slice(armed)) t.fn();
+    await new Promise((res) => setImmediate(res));
+    return out;
+  } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+}
+
+function briefOnlySession() { // pruning cannot reach 85% here (no stale big results): the cold cut is the brief
+  const msgs = [{ role: 'user', text: 'Plan: KEEP-ME-7', toolUses: [], handle: 'h0' }];
+  for (let i = 0; i < 40; i++) {
+    msgs.push({ role: 'user', text: `step ${i}: ${'detail '.repeat(40)}`, toolUses: [], handle: `u${i}` });
+    msgs.push({ role: 'assistant', text: `done ${i}: ${'answer '.repeat(400)}`, toolUses: [{ tool_use_id: `t${i}`, tool: 'Bash', input: { command: `echo ${i}` } }], handle: `a${i}` });
+    msgs.push({ role: 'user', text: '', toolUses: [], toolResults: [{ tool_use_id: `t${i}`, text: `out ${i}`, isError: false }], handle: `r${i}` });
+  }
+  return msgs;
+}
+
+test('compaction hook end to end (fake engine with Claude Code\'s contract): a cold auto-compaction is answered by the brief — accepted, no model summary; the trail says brief', async () => {
+  const msgs = briefOnlySession();
+  assert(cmpCore.planCompaction(msgs).ratio < cmpCore.DEFAULTS.minReductionRatio, 'pruning alone cannot answer: the brief path is the one exercised');
+  const r = await engineCompactRun({ messages: msgs });
+  assertEq(r.refused, null, `the engine accepts the hook's history (refused: ${r.refused})`);
+  assertEq(r.summaries, 0, 'no model summary ran');
+  assert(r.result && Array.isArray(r.result.messages) && r.result.messages.length < msgs.length, 'the brief replaced the history');
+  assert(r.result.messages[1].text.startsWith('[Compaction brief:') && r.result.messages[1].text.includes('USER: step 0'), 'the brief text, user messages verbatim');
+  const runs = r.events.filter((e) => e.kind === 'run');
+  assertEq(runs.map((e) => [e.outcome, e.why]), [['brief', 'cold-mechanical']], 'one run, recorded as what really happened');
+  assert(!r.logs.some((l) => /pruning failed|breaks the engine's contract/.test(l)), `nothing failed: ${r.logs.join(' | ')}`);
+});
+
+test('compaction hook: a cut the engine refuses anyway is recorded as the engine\'s summary (error event), never only as a brief', async () => {
+  const msgs = briefOnlySession();
+  const cmp = await import(require('url').pathToFileURL(path.join(ROOT, 'hooks', 'compaction.mjs')).href);
+  const reg = {};
+  cmp.register((event, fn) => { reg[event] = { fn }; return { catch(c) { reg[event].catch = c; return this; } }; });
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-engine-refuse-'));
+  try {
+    fs.writeFileSync(path.join(dir, 'brain-http.token'), 'tok');
+    const events = []; const logs = [];
+    const $ = { env: { get: async (k) => ({ CLAUDE_PLUGIN_DATA: dir, BRAIN_HTTP_PORT: '1' })[k] }, fs: { read: async (p) => fs.readFileSync(p, 'utf8') },
+      http: { fetch: async (url, init) => {
+        if (url.split('?')[0].endsWith('/health')) return { status: 200, ok: true, text: JSON.stringify({ dataDir: dir }) };
+        const payload = JSON.parse(JSON.parse(init.body).payload); events.push(payload);
+        return { status: 200, ok: true, text: JSON.stringify(payload.kind === 'hello' ? { config: { enabled: true, folderTtl: false } } : {}) };
+      } },
+      session: { id: async () => 'sid-refuse', cwd: async () => dir, root: async () => dir, authorize: async () => null, usage: async () => ({ context: {} }), messages: async () => msgs },
+      clock: { now: async () => 1, after: () => {} }, ui: { log: (t) => logs.push(t), toast: () => {} } };
+    await reg['session.start'].fn($, { isInteractive: true }, async (e) => e);
+    let summaries = 0;
+    const next = Object.assign(async () => { summaries++; return 'engine-summary'; }, { error: { kind: 'throw', message: 'returned messages[1] that has toolUses that are not a list of { tool_use_id, tool, input }' } });
+    await reg['session.compact'].fn($, { trigger: 'manual', messages: msgs }, async () => 'engine'); // loads the config (warm → engine path)
+    const res = await reg['session.compact'].catch($, { trigger: 'manual', messages: msgs }, next);
+    await new Promise((resolve) => setImmediate(resolve));
+    assertEq([res, summaries], ['engine-summary', 1], 'never a broken transcript: the engine path runs');
+    const err = events.find((e) => e.kind === 'error');
+    assert(err && err.stage === 'session.compact' && err.outcome === 'native-summary' && /toolUses/.test(err.cause), `refusal recorded: ${JSON.stringify(events.map((e) => e.kind))}`);
+  } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+});
+
+const CACHE_STATE_KEYS = ['compactionId', 'cache', 'lastAnswerAt', 'idleMs', 'ttlMs', 'ttlSource', 'tokensBefore', 'tokensAfter', 'ranBy', 'engineAccepted'];
+
+test('compaction run event: every compaction says the cache state (warm/cold, idle age, TTL) next to the size before and after, who ran it and whether the engine took the cut', async () => {
+  const cold = await engineCompactRun({ messages: briefOnlySession() });
+  const [b] = cold.events.filter((e) => e.kind === 'run');
+  for (const key of CACHE_STATE_KEYS) assert(key in b, `the run event carries ${key}: ${JSON.stringify(b)}`);
+  assertEq([b.outcome, b.ranBy, b.cache, b.idleMs, b.ttlMs, b.ttlSource, b.engineAccepted], ['brief', 'boss', 'cold', 2 * 3600000, 3600000, 'unknown-assumed-longest', true], 'cold brief, 2 h idle, accepted');
+  assert(b.tokensBefore === 400000 && b.tokensAfter > 0 && b.tokensAfter < b.tokensBefore, `both sizes: ${b.tokensBefore} → ${b.tokensAfter}`);
+  assertEq(cold.events.filter((e) => e.kind === 'cold').map((e) => [e.detectedBy, e.idleMs, e.tokens]), [['compaction', 2 * 3600000, 400000]], 'the expiry is recorded before the cut, by the compaction that saw it');
+
+  const warm = await engineCompactRun({ messages: briefOnlySession(), coldMs: 60000 });
+  const [w] = warm.events.filter((e) => e.kind === 'run');
+  for (const key of CACHE_STATE_KEYS) assert(key in w, `the run event carries ${key}: ${JSON.stringify(w)}`);
+  assertEq([w.outcome, w.ranBy, w.cache, w.warmBy, w.idleMs, w.engineAccepted, warm.summaries], ['native-summary', 'engine', 'warm', 'ttl', 60000, null, 1], 'warm auto: the engine summary, 1 min idle');
+  assert(w.tokensAfter === cmpCore.estimateTokens([{ role: 'user', text: 'MODEL SUMMARY', toolUses: [] }]) && typeof w.engineMs === 'number', 'the summary\'s size and the engine\'s time');
+  assertEq(warm.events.filter((e) => e.kind === 'cold').length, 0, 'a warm cache has no expiry');
+});
+
+test('compaction run event: a cut the engine refuses is said once, as the engine\'s summary with engineAccepted false — never as the brief', async () => {
+  const r = await engineCompactRun({ messages: briefOnlySession(), refuse: () => 'messages[1] that has a contract this build does not know' });
+  assertEq(r.summaries, 1, 'the engine summary ran');
+  const runs = r.events.filter((e) => e.kind === 'run');
+  assertEq(runs.map((e) => [e.outcome, e.refusedOutcome, e.ranBy, e.engineAccepted, e.cache]), [['native-summary', 'brief', 'engine', false, 'cold']], `one run event: ${JSON.stringify(runs)}`);
+  assert(/^engine-refused: /.test(runs[0].why) && runs[0].tokensAfter > 0, runs[0].why);
+  const err = r.events.find((e) => e.kind === 'error');
+  assertEq(err && err.compactionId, runs[0].compactionId, 'the error and the run name the same compaction');
+});
+
+/** The module with a controllable clock and timers (runAll fires what is due) and a daemon that records every event. */
+async function cmpColdHarness({ tokens = 300000 } = {}) {
+  const cmp = await import(require('url').pathToFileURL(path.join(ROOT, 'hooks', 'compaction.mjs')).href);
+  const reg = {};
+  cmp.register((event, fn) => { reg[event] = { fn }; return { catch(c) { reg[event].catch = c; return this; } }; });
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-cold-'));
+  fs.writeFileSync(path.join(dir, 'brain-http.token'), 'tok');
+  const h = { reg, dir, now: 1_000_000_000, timers: [], events: [], logs: [] };
+  h.$ = {
+    env: { get: async (k) => ({ CLAUDE_PLUGIN_DATA: dir, BRAIN_HTTP_PORT: '1' })[k] },
+    fs: { read: async (p) => fs.readFileSync(p, 'utf8') },
+    http: { fetch: async (url, init) => {
+      if (url.split('?')[0].endsWith('/health')) return { status: 200, ok: true, text: JSON.stringify({ dataDir: dir }) };
+      const payload = JSON.parse(JSON.parse(init.body).payload);
+      h.events.push(payload);
+      return { status: 200, ok: true, text: JSON.stringify(payload.kind === 'hello' ? { config: { enabled: true, folderTtl: false } } : {}) };
+    } },
+    session: { id: async () => 'sid-cold', cwd: async () => dir, root: async () => dir, authorize: async () => null,
+      usage: async () => ({ context: { tokens, window: 1000000, breakdown: { rawMaxTokens: 1000000, autoCompactThreshold: 967000 } } }), messages: async () => [] },
+    clock: { now: async () => h.now, after: (ms, fn) => { h.timers.push({ at: h.now + ms, fn }); } },
+    ui: { log: (t) => h.logs.push(t), toast: () => {} },
+  };
+  h.settle = () => new Promise((res) => setImmediate(res));
+  h.runDue = async () => {
+    for (let round = 0; round < 5; round++) {
+      const due = h.timers.filter((t) => t.at <= h.now + 1); // after(1, …) = right away
+      h.timers = h.timers.filter((t) => t.at > h.now + 1);
+      for (const t of due) t.fn();
+      for (let i = 0; i < 20; i++) await h.settle();
+    }
+  };
+  h.colds = () => h.events.filter((e) => e.kind === 'cold');
+  h.done = () => fs.rmSync(dir, { recursive: true, force: true });
+  return h;
+}
+
+test('compaction.cold: the timer armed after a turn records the expiry once (answer time, idle, TTL, tokens); the next input does not repeat it', async () => {
+  const h = await cmpColdHarness();
+  try {
+    await h.reg['session.start'].fn(h.$, { isInteractive: true }, async (e) => e);
+    await h.runDue();
+    await h.reg['turn.complete'].fn(h.$, {}, async () => ({}));
+    const answerAt = h.now;
+    await h.runDue();
+    assertEq(h.colds().length, 0, 'warm until the TTL passes');
+    h.now += 3600000 + 1000;
+    await h.runDue();
+    assertEq(h.colds().map((e) => [e.detectedBy, e.answerAt, e.coldAt, e.idleMs, e.ttlMs, e.ttlSource, e.tokens]),
+      [['timer', answerAt, answerAt + 3600000, 3601000, 3600000, 'unknown-assumed-longest', 300000]], JSON.stringify(h.colds()));
+    await h.reg['prompt.submit'].fn(h.$, { text: 'hi', origin: { kind: 'peer' } }, async (e) => e);
+    assertEq(h.colds().length, 1, 'one event per answer');
+  } finally { h.done(); }
+});
+
+test('compaction.cold: with no timer alive (the session process was closed), the next input of any origin records the expiry; a warm input records nothing', async () => {
+  const h = await cmpColdHarness();
+  try {
+    await h.reg['session.start'].fn(h.$, { isInteractive: true }, async (e) => e);
+    await h.runDue();
+    await h.reg['turn.complete'].fn(h.$, {}, async () => ({}));
+    await h.runDue();
+    h.timers = []; // the timer died with the process
+    h.now += 60000;
+    await h.reg['prompt.submit'].fn(h.$, { text: 'warm', origin: { kind: 'peer' } }, async (e) => e);
+    assertEq(h.colds().length, 0, 'warm: nothing');
+    h.now += 2 * 3600000;
+    await h.reg['prompt.submit'].fn(h.$, { text: 'cold', origin: { kind: 'peer' } }, async (e) => e);
+    assertEq(h.colds().map((e) => [e.detectedBy, e.input, e.idleMs]), [['next-input', 'peer', 2 * 3600000 + 60000]]);
+  } finally { h.done(); }
+});
+
+test('compaction.cold: a session reopened over a cold history records the expiry at the reopen, with the real age (not the one the resume rules use)', async () => {
+  const h = await cmpColdHarness();
+  try {
+    h.$.http.fetch = (orig => async (url, init) => {
+      if (!url.split('?')[0].endsWith('/health') && JSON.parse(JSON.parse(init.body).payload).kind === 'tail') {
+        h.events.push({ kind: 'tail' });
+        return { status: 200, ok: true, text: JSON.stringify({ tail: { at: h.now - 5 * 60000, tokens: 250000, model: 'claude-opus-5-5' } }) };
+      }
+      return orig(url, init);
+    })(h.$.http.fetch);
+    await h.reg['classic.SessionStart'].fn(h.$, { source: 'resume', transcript_path: '', context_tokens: 250000, seconds_since_last_response: 300 }, async (e) => e);
+    await h.reg['session.start'].fn(h.$, { isInteractive: true }, async (e) => e);
+    await h.runDue();
+    const c = h.colds();
+    assertEq(c.map((e) => [e.detectedBy, e.resumed, e.idleMs]), [['reopen', true, 300000]], JSON.stringify(c));
+  } finally { h.done(); }
+});
 
 test('compaction-cache-cross: per day, compactions over a warm vs a cold cache, the warm ones listed; expiries once per session and answer; a warm run after its own expiry is a disagreement', () => {
   const { crossCacheState, formatCross, periodOf } = require('./lib/compaction-cache-cross.js');
@@ -30529,6 +31742,106 @@ test('runtime-sweep: a held-prompt copy nobody came back for is removed after th
   } finally { fs.rmSync(dir, { recursive: true, force: true }); }
 });
 
+// Open session: a PERSON's turn, then idle past the TTL, then a peer message. The turn-end re-check used to be armed only
+// after turns no person's prompt went through, so after a person's turn nothing cut while idle and the peer re-loaded it all.
+test('compaction hook, open session idle > 1h after a PERSON\'s turn: the cold cut comes while idle, before the next (peer) message', async () => {
+  await withCmpStore(async (ce) => {
+    const cmp = await import(require('url').pathToFileURL(path.join(ROOT, 'hooks', 'compaction.mjs')).href);
+    const hooks = collectModuleHooks(cmp.register);
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-open-idle-'));
+    fs.writeFileSync(path.join(dir, 'brain-http.token'), 'tok');
+    let now = Date.now();
+    const transcript = path.join(dir, 'session.jsonl');
+    const call = (id, at) => JSON.stringify({ type: 'assistant', timestamp: new Date(at).toISOString(), message: { id, model: 'claude-opus-5-5[1m]', usage: REOPEN_CALL } }) + '\n';
+    fs.writeFileSync(transcript, call('msg-1', now - 30000));
+    const config = { enabled: true, thresholdPercent: 30, minIntervalMs: 600000, folderTtl: true, warmCeilingTokens: 0, thresholdMaxTokens: 0 };
+    const out = { timers: [], compacts: 0, gates: [], logs: [] };
+    const $ = {
+      env: { get: async (k) => ({ CLAUDE_PLUGIN_DATA: dir, BRAIN_HTTP_PORT: '1' })[k] },
+      fs: { read: async (p) => fs.readFileSync(p, 'utf8') },
+      http: { fetch: async (url, init) => {
+        if (url.split('?')[0].endsWith('/health')) return { status: 200, ok: true, text: JSON.stringify({ dataDir: dir }) };
+        const body = JSON.parse(init.body); const payload = JSON.parse(body.payload);
+        let reply = {};
+        if (payload.kind === 'hello') reply = { config };
+        else if (payload.kind === 'folder' || payload.kind === 'folder-end') reply = { folderTtl: { ttl: '1h', live: 1, allAbove: false, action: 'none' } };
+        else if (payload.kind === 'gate') out.gates.push(payload);
+        else if (payload.kind === 'turn' || payload.kind === 'tail') reply = { ...(await ce.run({ ...body, payload })), config };
+        return { status: 200, ok: true, text: JSON.stringify(reply) };
+      } },
+      session: {
+        id: async () => 'sid-open-idle', cwd: async () => dir, root: async () => dir, authorize: async () => ({ kind: 'api-key' }),
+        usage: async () => ({ context: { tokens: 875000, window: 1000000, breakdown: { rawMaxTokens: 1000000, autoCompactThreshold: 967000 } } }),
+        messages: async () => [],
+      },
+      clock: { now: async () => now, after: (ms, fn) => { out.timers.push({ ms, fn }); } },
+      ui: { log: (t) => out.logs.push(t), toast: () => {} },
+      command: { run: async () => { out.compacts++; } },
+      prompt: { submit: async () => {} },
+    };
+    const flush = async () => { for (let i = 0; i < 20; i++) await new Promise((r) => setImmediate(r)); };
+    const fireShort = async () => { for (const t of out.timers.filter((x) => x.ms === 1)) { out.timers.splice(out.timers.indexOf(t), 1); t.fn(); } await flush(); };
+    try {
+      await findHook(hooks, 'classic.SessionStart').fn($, { transcript_path: transcript, source: 'startup' }, async (e) => e);
+      await findHook(hooks, 'session.start').fn($, { isInteractive: true }, async (e) => e);
+      await fireShort();
+      const submit = findHook(hooks, 'prompt.submit').fn;
+      await submit($, { text: 'person asks', origin: { kind: 'composer' } }, async (e) => e); // warm: goes on
+      await findHook(hooks, 'turn.start').fn($, {}, async (e) => e);
+      fs.appendFileSync(transcript, call('msg-2', now));
+      await findHook(hooks, 'turn.complete').fn($, {}, async () => ({}));
+      await fireShort();
+      const due = out.timers.filter((t) => t.ms > 120000);
+      assert(due.length, `a re-check is armed after the person's turn (timers ${out.timers.map((t) => t.ms)}) ${out.logs.join(' | ')}`);
+      now += H1;
+      for (const t of due) { out.timers.splice(out.timers.indexOf(t), 1); t.fn(); }
+      await flush();
+      assertEq(out.compacts, 1, `cut while idle, cache cold — gates ${JSON.stringify(out.gates.map((g) => `${g.action}/${g.reason}`))}`);
+      const held = await submit($, { text: 'from a peer', origin: { kind: 'peer' } }, async (e) => e);
+      assert(!(held && held.drop), 'the peer message goes on, onto the cut context');
+      assertEq(out.compacts, 1, 'no second cut');
+    } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+  });
+});
+
+test('compaction-core.fallbackWindow: the model name, then the observed size, then 200k — never "no window"', async () => {
+  const core = await import(require('url').pathToFileURL(path.join(ROOT, 'scripts', 'lib', 'compaction-core.mjs')).href);
+  assertEq(core.fallbackWindow({ model: 'claude-opus-5-5[1m]', tokens: 10 }), { window: 1000000, source: 'fallback-model' });
+  assertEq(core.fallbackWindow({ model: 'claude-opus-5-5', tokens: 788000 }), { window: 1000000, source: 'fallback-observed' });
+  assertEq(core.fallbackWindow({ tokens: 150000 }), { window: 200000, source: 'fallback-default' });
+  assertEq(core.fallbackWindow(), { window: 200000, source: 'fallback-default' });
+});
+
+test('compaction hook, the engine reports NO window on a reopened 788k session: the gate judges by a fallback window and still cuts (it switched itself off before)', async () => {
+  await withCmpStore(async (ce) => {
+    const live = await reopenedRun(ce, { source: 'startup', usageTokens: 788000, window: null, lastCallAgoMs: H3 });
+    assert(cutBeforePrompt(live), `live size, no window — ${heldOrWhy(live)}`);
+    assertEq(live.lastGate.windowSource, 'fallback-model', 'the transcript\'s [1m] model beats the size');
+    const bare = await reopenedRun(ce, { source: 'startup', usageTokens: 788000, window: null, noTranscript: true });
+    assertEq(bare.lastGate.windowSource, 'fallback-observed', 'no model known: a context past 200k can only be a 1M window');
+    assertEq(bare.lastGate.thresholdTokens, 300000);
+    const tail = await reopenedRun(ce, { source: 'startup', usageTokens: null, window: null, lastCallAgoMs: H3 });
+    assert(cutBeforePrompt(tail), `transcript size and model, no window — ${heldOrWhy(tail)}`);
+    assertEq(tail.lastGate.windowSource, 'fallback-model');
+    const small = await reopenedRun(ce, { source: 'startup', usageTokens: 50000, window: null, noTranscript: true });
+    assert(!(small.held && small.held.drop), `${heldOrWhy(small)}`);
+    assertEq(small.lastGate.windowSource, 'fallback-default');
+  });
+});
+
+test('compaction hook: hello reports the module version; a session older than the installed plugin is told once, visibly, to reopen', async () => {
+  await withCmpStore(async (ce) => {
+    const pkgVersion = require('../package.json').version;
+    assertEq(fs.readFileSync(path.join(ROOT, 'hooks', 'compaction.mjs'), 'utf8').match(/const MODULE_VERSION = '([^']+)'/)[1], pkgVersion, 'the constant follows package.json (sync-version)');
+    const old = await reopenedRun(ce, { source: 'startup', usageTokens: 1000, lastCallAgoMs: 60000, installedVersion: '99.0.0' });
+    assertEq(old.hello.moduleVersion, pkgVersion);
+    assertEq(old.toasts.filter((t) => /old Boss/.test(t)).length, 1, `one notice, got ${JSON.stringify(old.toasts)}`);
+    assert(/reopen the session/.test(old.toasts.join(' ')) && old.logs.some((l) => /old Boss/.test(l)), 'toast and log both say it');
+    const same = await reopenedRun(ce, { source: 'startup', usageTokens: 1000, lastCallAgoMs: 60000, installedVersion: pkgVersion });
+    assertEq(same.toasts.filter((t) => /old Boss/.test(t)), [], 'same version: silent');
+  });
+});
+
 test('compaction-event hello: records the module version (null = a module from before it was sent) and answers the installed one', async () => {
   await withCmpStore(async (ce, store) => {
     const pkgVersion = require('../package.json').version;
@@ -30580,6 +31893,37 @@ test('compaction-report.staleModuleSessions + doctor.checkSessionModules: sessio
   const res2 = doctor.runChecks({ sessionModules: { installed: '3.10.2', stale: live } }).find((r) => r.id === 'session-modules');
   assert(/active since the update/.test(res2.detail), res2.detail);
   assertEq(doctor.runChecks({}).find((r) => r.id === 'session-modules').status, 'ok', 'not probed → says so');
+});
+
+test('hook_compaction_event: daemon transport (payload arrives as an object, bad events degrade visibly); module in hooks.json; free profile turns compaction off', async () => {
+  const ht = require('./lib/hook-tools.js');
+  const tools = ht.createHookTools({ pluginRoot: ROOT });
+  assert(tools.definitions.some((d) => d.name === 'hook_compaction_event'), 'tool listed');
+  assert(tools.definitions[0].inputSchema.properties.payload, 'payload field in the schema');
+  await withCmpStore(async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-cmp-ht-'));
+    const out = await ht.runHookInline(ROOT, 'hook_compaction_event', { session_id: 'sid-ht', cwd: dir, payload: JSON.stringify({ kind: 'gate', action: 'wait', reason: 'cache-warm' }) });
+    assertEq(out, '{}');
+    const bad = await ht.runHookInline(ROOT, 'hook_compaction_event', { session_id: 'sid-ht', cwd: dir, payload: '{"x":1}' });
+    assert(/systemMessage/.test(bad) && /payload\.kind is required/.test(bad), 'a bad event degrades VISIBLY (systemMessage), never a silent {}');
+  });
+  const hooks = JSON.parse(fs.readFileSync(path.join(ROOT, 'hooks', 'hooks.json'), 'utf8'));
+  assertEq(hooks.modules, ['./index.mjs']);
+  assert(!fs.readFileSync(path.join(ROOT, 'hooks', 'index.mjs'), 'utf8').includes("from './compaction.mjs'"), 'the live entry does not register compaction');
+  assert(fs.existsSync(path.join(ROOT, 'hooks', 'compaction.mjs')), 'module file shipped');
+  const hc = require('./lib/hooks-config.js');
+  assertEq(hc.resolveProfileConfig({ profile: 'free' }).compaction.enabled, false, 'free = passthrough');
+  assertEq(hc.resolveProfileConfig({ profile: 'dev' }).compaction, undefined, 'dev keeps the shipped default (on)');
+  const shippedAll = JSON.parse(fs.readFileSync(path.join(ROOT, 'config', 'hooks-config.json'), 'utf8'));
+  const shipped = shippedAll.compaction;
+  // The shipped file merges OVER the profile preset: an `enabled: true` here silently beat
+  // `free`'s `enabled: false` (pre-release audit 3.1.0). On by default comes from `!== false`.
+  assertEq(shipped.enabled, false, 'the shipped block disables Boss compaction in every profile');
+  assertEq(shipped.thresholdPercent, undefined); assertEq(shipped.hardCeilingTokens, undefined, 'no shipped threshold');
+  // Resolved over the REAL shipped file, the way production does it:
+  assertEq(hc.resolveProfileConfig({ ...shippedAll, profile: 'free' }).compaction.enabled, false, 'free switches compaction off for real');
+  assertEq(hc.resolveProfileConfig({ ...shippedAll, profile: 'standard' }).compaction.enabled, false, 'standard also ships disabled');
+  assertEq(hc.resolveProfileConfig({ ...shippedAll, profile: 'free', compaction: { ...shipped, enabled: true } }).compaction.enabled, true, 'an explicit user choice still wins');
 });
 
 test('http-daemon POST /hook/compaction-event: REAL daemon — token-gated like /mcp; a module reaches hook_compaction_event end to end', async () => {
@@ -31911,14 +33255,14 @@ test('compat-check: a binary missing one name is reported (exit 1, the name list
   const { spawnSync } = require('child_process');
   const cc = require('./compat-check.js');
   const deps = cc.dependencies();
-  assert(deps.some((d) => d.kind === 'hook-event' && d.name === 'PreToolUse') && deps.some((d) => d.kind === 'mod-api' && d.name === 'session.usage') && deps.some((d) => d.kind === 'env' && d.name === 'CLAUDE_CODE_PROMPT_CACHE_TTL'), 'collects hook events, module API and engine env names from the source');
+  assert(deps.some((d) => d.kind === 'hook-event' && d.name === 'PreToolUse') && deps.some((d) => d.kind === 'mod-api' && d.name === 'session.compact') && deps.some((d) => d.kind === 'env' && d.name === 'CLAUDE_CODE_PROMPT_CACHE_TTL'), 'collects hook events, module API and engine env names from the source');
   assert(!deps.some((d) => d.name.startsWith('CLAUDE_CODE_BOSS_')), 'the plugin\'s own switches are not engine names');
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-compat-'));
   const fake = path.join(dir, 'claude.exe');
-  fs.writeFileSync(fake, deps.filter((d) => d.name !== 'session.usage').map((d) => d.name).join('\n'));
+  fs.writeFileSync(fake, deps.filter((d) => d.name !== 'session.compact').map((d) => d.name).join('\n'));
   const r = spawnSync(process.execPath, [path.join(__dirname, 'compat-check.js'), '--bin', fake], { encoding: 'utf8' });
   assertEq(r.status, 1);
-  assert(/MISSING mod-api\s+session\.usage/.test(r.stdout) && /1 missing/.test(r.stdout), r.stdout.slice(-300));
+  assert(/MISSING mod-api\s+session\.compact/.test(r.stdout) && /1 missing/.test(r.stdout), r.stdout.slice(-300));
   fs.writeFileSync(fake, deps.map((d) => d.name).join('\n'));
   assertEq(spawnSync(process.execPath, [path.join(__dirname, 'compat-check.js'), '--bin', fake], { encoding: 'utf8' }).status, 0);
   const none = spawnSync(process.execPath, [path.join(__dirname, 'compat-check.js'), '--bin', path.join(dir, 'absent.exe')], { encoding: 'utf8' });

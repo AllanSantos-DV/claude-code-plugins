@@ -14,7 +14,7 @@
  *
  * Pure planners (`buildAudit`, `planActions`) take plain data so they are unit-tested without a machine;
  * the gatherers do the I/O and report what they could not read (`errors`), never throw and never guess.
- * Tokens are estimated at 4 chars/token (the old compaction core's rule) — an estimate, labelled as such.
+ * Tokens are estimated at 4 chars/token (same as compaction-core) — an estimate, labelled as such.
  *
  * Every fix is reversible and journaled in the undo file (`undoPath`): `applyActions` records how to put
  * it back, `undoActions` does. Servers are removed/re-added through Claude Code's own `claude mcp` CLI

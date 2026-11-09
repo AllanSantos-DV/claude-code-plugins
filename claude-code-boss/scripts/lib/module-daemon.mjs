@@ -1,6 +1,6 @@
 // The brain daemon's address and local token, for function-hook MODULES (hooks/*.mjs): they run
 // with no Node, so they reach the boss over HTTP through the module's `$` (`$.env`, `$.fs`, `$.http`).
-// Used by hooks/boss.mjs.
+// Shared by hooks/compaction.mjs and hooks/boss.mjs.
 
 const slashes = (p) => String(p).replace(/\\/g, '/').replace(/\/+$/, '');
 // A local absolute path: a drive (C:/…) or a POSIX root — never a UNC/network path (//host/…).

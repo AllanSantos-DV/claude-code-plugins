@@ -639,11 +639,13 @@ function enableSettingsRouting(url) {
     log(`AVISO: settings.json já tem ANTHROPIC_BASE_URL custom ("${s.env.ANTHROPIC_BASE_URL}") — preservado, roteador NÃO sobrescreve.`);
     return false;
   }
-  if (!plan.changed) return true; // já no estado desejado → no-op (não reescreve)
-  s.env = plan.env; // a janela de compactação nunca é gravada: pertence ao Claude Code
+  const win = planTuningWindow(s, acw.value);
+  if (!plan.changed && !win.changed) return true; // já no estado desejado → no-op (não reescreve)
+  s.env = plan.env;
+  if (win.changed) s.autoCompactWindow = win.value;
   try {
     writeSettings(s);
-    log(`settings.json: ANTHROPIC_BASE_URL → ${url}; ENABLE_TOOL_SEARCH=${s.env.ENABLE_TOOL_SEARCH}; CLAUDE_CODE_ATTRIBUTION_HEADER=${s.env.CLAUDE_CODE_ATTRIBUTION_HEADER}`);
+    log(`settings.json: ANTHROPIC_BASE_URL → ${url}; ENABLE_TOOL_SEARCH=${s.env.ENABLE_TOOL_SEARCH}; autoCompactWindow=${s.autoCompactWindow}; CLAUDE_CODE_ATTRIBUTION_HEADER=${s.env.CLAUDE_CODE_ATTRIBUTION_HEADER}`);
     return true;
   } catch (e) {
     log(`AVISO: não foi possível escrever settings.json: ${e.message}`);
@@ -666,7 +668,7 @@ function applySettingsTuning(on) {
   try {
     writeSettings(s);
     log(on
-      ? `settings.json: tuning SEM proxy — ENABLE_TOOL_SEARCH=${(s.env || {}).ENABLE_TOOL_SEARCH} (ANTHROPIC_BASE_URL NÃO é publicada — a janela de 1M é preservada).`
+      ? `settings.json: tuning SEM proxy — ENABLE_TOOL_SEARCH=${(s.env || {}).ENABLE_TOOL_SEARCH}; autoCompactWindow=${s.autoCompactWindow} (ANTHROPIC_BASE_URL NÃO é publicada — a janela de 1M é preservada).`
       : 'settings.json: tuning removido (só o que era nosso).');
     return true;
   } catch (e) {

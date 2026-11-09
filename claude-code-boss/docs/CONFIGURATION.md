@@ -39,8 +39,8 @@ config efetiva (lida por ensure/server/dashboard)
 | `fallback.enabled` | bool | `false` | Rede de segurança no 429 (passthrough cache-safe) |
 | `fallback.triggerStatuses` | int[] | `[429]` | Status HTTP que disparam o plano B |
 | `fallback.cooldown.*` | obj | ver shipped | Circuit breaker: `noHeaderMs`, `tripAfter`, `probeSuppressMs`, `minMs`, `maxMs` |
-| `contextTuning.enabled` | bool | `false` | Grava env-tuning SEM proxy (`ENABLE_TOOL_SEARCH`). Nunca grava janela ou percentual de compactação: isso é do Claude Code |
-| `autoCompactWindow` | int | `200000` | Não grava nada. Só identifica (e remove ao desligar) o valor que versões antigas do Boss gravaram em `settings.json`; um valor seu diferente é preservado |
+| `contextTuning.enabled` | bool | `false` | Grava env-tuning SEM proxy (`ENABLE_TOOL_SEARCH`, `AUTO_COMPACT_WINDOW`) |
+| `autoCompactWindow` | int | `200000` | Teto do contexto ativo (clampado [50000, 1000000]) |
 | `port` | int | `13456` | Porta FIXA do proxy |
 | `routing.ceiling` | bool | `true` | Nunca escala acima do modelo do dropdown |
 | `routing.catalog.enabled` | bool | `true` | Catálogo dinâmico via GET /v1/models da Anthropic |
@@ -117,7 +117,7 @@ nenhum                       → off            (cinza)
 |-----|----------------|-----------------|
 | `ANTHROPIC_BASE_URL=http://127.0.0.1:13456` | router ativo (qualquer modo ≠ off) | modo off (só se for NOSSO valor localhost) |
 | `ENABLE_TOOL_SEARCH=true` | router ativo OU contextTuning on | disable (só o valor nosso) |
-| `CLAUDE_CODE_AUTO_COMPACT_WINDOW` | **nunca gravada** (versões antigas gravavam 200000: o Boss a remove, só se o valor for o dele) | — |
+| `CLAUDE_CODE_AUTO_COMPACT_WINDOW=200000` | idem | idem |
 | `CLAUDE_CODE_ATTRIBUTION_HEADER=0` | router ativo (melhora cache atrás de gateway) | idem |
 
 **Garantia:** uma `ANTHROPIC_BASE_URL` custom de terceiro é **preservada** — o plugin nunca clobbera valor que não é dele.
@@ -222,7 +222,9 @@ Shipped em `claude-code-boss/config/hooks-config.json`; override do usuário em 
 | `captureTriggerEvidence` | `false` | OPT-IN: captura snippets de triggers de shadow policies |
 | `specFunnel.enabled` | `false` | OPT-IN, desligado por padrão: injeta no SessionStart e no SubagentStart (junto das políticas, mesmo bloco `[BRAIN policy]`) uma instrução curta "procure o que já existe e reaproveite antes de escrever; entregue o menor diff; diga o que pulou". Só vale ligar em projeto **sem** CLAUDE.md/AGENTS.md/regras próprias: medido em projeto cru, o reaproveitamento de helper subiu de 58% para 100%, a custo de +9% a +17% por execução; quem já tem regras não ganha e só paga. Para ligar, ponha `{ "specFunnel": { "enabled": true } }` em `<globalDir>/hooks/user-config.json` (só `true` liga; vale numa sessão nova). Respeita `policyInject.enabled=false` |
 | `compaction.*` (limiares, percentual, tetos 150k/200k, gate, corte a frio/quente) | — | A compactação pertence ao Claude Code. O Boss não define limiares, não compacta e não intercepta a compactação automática nem o `/compact`. A configuração efetiva fica sempre desligada (`enabled: false`, `thresholdPercent`, `thresholdMaxTokens`, `warmCeilingTokens` = `0`, sem corte mecânico nem TTL de pasta), mesmo com um `user-config.json` antigo. Os antigos 150000/200000 foram retirados; o painel não tem mais esses controles |
-| `compaction.phaseRestart` | `false` | **Sem efeito hoje:** o aviso saía do módulo de compactação, retirado; o painel ainda guarda a chave (registrado no backlog). Descrição original — Reinício em fases: um aviso (< 80 tokens) para seguir a próxima fase numa sessão nova com um handoff curto, passado `phaseRestartTokens`, com cache quente, depois de um turno com `git commit`. Ligar pelo painel mede antes as transcrições (só leitura) e só liga direto se houver ganho |
+| `compaction.minIntervalMinutes` | `10` | Intervalo mínimo (1–60) entre duas compactações do gate |
+| `compaction.preserveRecentMessages` | `6` | Mensagens mais novas que a poda nunca toca |
+| `compaction.phaseRestart` | `false` | Reinício em fases: um aviso (< 80 tokens) para seguir a próxima fase numa sessão nova com um handoff curto, passado `phaseRestartTokens`, com cache quente, depois de um turno com `git commit`. Ligar pelo painel mede antes as transcrições (só leitura) e só liga direto se houver ganho |
 | `compaction.phaseRestartTokens` | `400000` | Limiar do aviso (100 mil–900 mil tokens) |
 
 Trocar perfil: `/dashboard` → aba Hooks, ou `/boss-profile <standard|dev|free>`.

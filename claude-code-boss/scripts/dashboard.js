@@ -1708,7 +1708,7 @@ async function getCurationSummary(req, res, url) {
   }
 }
 
-// Past measurements of the removed controlled compaction: when it held a prompt to compact, how much
+// Controlled compaction (hooks/compaction.mjs): when it held a prompt to compact, how much
 // it cut, what the provider cache did (window per host, price of the first turn after).
 async function getCompactionSummary(req, res, url) {
   try {

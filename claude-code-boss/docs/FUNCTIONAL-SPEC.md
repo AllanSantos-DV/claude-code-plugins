@@ -23,7 +23,7 @@ Um **plugin para Claude Code** que adiciona três capacidades principais ao assi
 |----------|-------|---------------------|
 | **Custo de API** | Sempre usa modelo caro (opus/sonnet) | Roteia para modelo mais barato que resolve a task |
 | **Rate limit (429)** | Sessão trava, usuário espera | Fallback automático para NVIDIA/BYOK, sessão continua |
-| **Janela de contexto** | 200K fixo, estoura rápido | Compactação nativa do Claude Code + tool-search (menos definições por mensagem); o Boss não define janela nem limiar |
+| **Janela de contexto** | 200K fixo, estoura rápido | Auto-compact + tool-search → 1M efetivo |
 | **Conhecimento perdido** | Lições morrem na sessão | Brain KB persiste, busca semântica, loop de aprendizado |
 | **Comandos repetidos** | Digita tudo manual | Curadoria detecta → cria wrapper → 1 tecla |
 | **Erros repetidos** | Mesmo erro toda sessão | Brain captura correção → injeta na próxima sessão |
@@ -62,7 +62,7 @@ Um **plugin para Claude Code** que adiciona três capacidades principais ao assi
 |---------|-----------|---------|
 | **Sticky Router** | Classifica 1x, fixa modelo | Preserva prompt cache (modelo constante) |
 | **Ceiling (teto)** | Nunca sobe acima do modelo escolhido | Usuário controla custo máximo |
-| **Context Tuning** | `ENABLE_TOOL_SEARCH=true` (sem janela de compactação: é do Claude Code) | Menos tokens de definição de ferramenta por mensagem |
+| **Context Tuning** | `ENABLE_TOOL_SEARCH=true` + `CLAUDE_CODE_AUTO_COMPACT_WINDOW=200000` | ~50-70% redução tokens input |
 | **Fallback 429** | NVIDIA/BYOK quando janela esgota | Sessão nunca trava por rate limit |
 | **NVIDIA Key** | Gratuita em build.nvidia.com | Plano B gratuito |
 | **BYOK** | Endpoint próprio (OpenRouter, etc) | Controle total de custo/modelos |
@@ -272,7 +272,7 @@ sempre devolvem `{}` respondem na hora; cada hook tem prazo de `timeout − 1 s`
 |----------|--------|-------|
 | `ANTHROPIC_BASE_URL` | Router ativo | `http://127.0.0.1:13456` |
 | `ENABLE_TOOL_SEARCH` | contextTuning ou router ativo | `true` |
-| `CLAUDE_CODE_AUTO_COMPACT_WINDOW` | nunca gravada (valor antigo do Boss é removido) | — |
+| `CLAUDE_CODE_AUTO_COMPACT_WINDOW` | contextTuning ou router ativo | `200000` |
 | `CLAUDE_CODE_ATTRIBUTION_HEADER` | Router ativo | `0` |
 
 ---
@@ -405,7 +405,7 @@ tail -f ~/.claude/plugins/data/claude-code-boss/model-router/router.log
 | **Ceiling** | Teto de modelo — nunca escala acima do dropdown do usuário |
 | **Fallback 429** | Rede de segurança: passthrough Anthropic, só intervém no rate limit |
 | **BYOK** | Bring Your Own Key — endpoint Anthropic-compatível do usuário |
-| **Context Tuning** | Variável de ambiente que reduz tokens (tool-search); compactação fica com o Claude Code |
+| **Context Tuning** | Variáveis de ambiente que reduzem tokens (tool-search + auto-compact) |
 | **Brain KB** | Base de conhecimento semântica com loop de aprendizado |
 | **Curadoria** | Pipeline: detecta repetição → gera wrapper → shell curado |
 | **Shim** | Wrapper do `claude.exe` (Windows) que injeta `ANTHROPIC_BASE_URL` |
