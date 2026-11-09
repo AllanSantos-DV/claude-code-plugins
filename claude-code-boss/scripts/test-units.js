@@ -21580,8 +21580,8 @@ test('dashboard: o painel de compactação edita cold limit e warm ceiling em mi
   assert(/v < 50 \|\| v > 2000/.test(fn[0]) && /use 0 \(off\) or 50 to 2000/.test(fn[0]), 'out-of-range input is refused with a message, not clamped silently');
   assert(/\* 1000/.test(fn[0]), 'the fields are in thousands of tokens and converted');
   // one tooltip per number: the two new caps, the percent and the interval
-  const tips = [...src.matchAll(/data-tip="Default (150|200|30%|10 minutes)[^"]*"/g)].map(m => m[1]);
-  assertEq([...new Set(tips)].sort(), ['10 minutes', '150', '200', '30%'], 'each compaction number has a plain-language tooltip with its default');
+  const tips = [...src.matchAll(/data-tip="Default (0 \(off\)|30%|10 minutes)[^"]*"/g)].map(m => m[1]);
+  assertEq([...new Set(tips)].sort(), ['0 (off)', '10 minutes', '30%'], 'each compaction number has a plain-language tooltip with its default');
   assert(/0 turns (this limit|it) off/.test(src), 'the tooltips say how to disable each cap');
 });
 
