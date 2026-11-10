@@ -15700,9 +15700,10 @@ test('dashboard.fetchByokModelIds: só headers do BYOK; has_more → truncated; 
     assert(/passa do teto de 4 MB/.test(endless.error), endless.error);
 
     mode = 'drip';
-    const drip = await Promise.race([dash.fetchByokModelIds(300), new Promise(r => setTimeout(() => r('pendurou'), 3000))]);
+    // Inatividade 20× maior que o intervalo do pingo: na suíte cheia o event loop atrasa os pingos.
+    const drip = await Promise.race([dash.fetchByokModelIds(1000), new Promise(r => setTimeout(() => r('pendurou'), 5000))]);
     assert(drip !== 'pendurou', 'catálogo que pinga bytes não pode prender a busca');
-    assert(/não terminou em 600ms/.test(drip.error), drip.error);
+    assert(/não terminou em 2000ms/.test(drip.error), drip.error);
 
     mode = 'utf8';
     const u8 = await dash.fetchByokModelIds(5000);
@@ -19559,11 +19560,11 @@ test('doctor.runChecks + summarize: criticalFail flagged, counts add up', () => 
     hooksEvents: ['Stop'],
   };
   const results = doctor.runChecks(ctx);
-  assertEq(results.length, 20);
+  assertEq(results.length, 21);
   const s = doctor.summarize(results);
   assert(s.criticalFail, 'old node → criticalFail');
   assertEq(s.ok, false);
-  assertEq(s.counts.ok + s.counts.warn + s.counts.fail, 20);
+  assertEq(s.counts.ok + s.counts.warn + s.counts.fail, 21);
 });
 
 test('doctor.runChecks: all-healthy ctx → ok summary', () => {
@@ -30644,6 +30645,65 @@ test('doctor.checkCompactionRate + compaction-report.formatReport: warns only on
   assertEq(/default threshold is unchanged/.test(txt), true);
 });
 
+test('compaction-metrics.compactionFloors: median tokensAfter of the cuts measured on the first call after them, per project, against the latest gate threshold', () => {
+  const { compactionFloors, FIRST_CALL } = require('./lib/compaction-metrics.js');
+  const settled = (project, ts, tokensAfter, extra = {}) => ({ eventName: 'compaction.settled', project, ts, sessionId: `s-${ts}`, payload: JSON.stringify({ tokensAfter, measuredOn: FIRST_CALL, ...extra }) });
+  const gate = (project, ts, thresholdTokens) => ({ eventName: 'compaction.gate', project, ts, payload: { thresholdTokens } });
+  const rows = [
+    settled('orq', 1, 100000), settled('orq', 3, 121000), settled('orq', 2, 110000),
+    settled('orq', 9, 5000, { measuredOn: undefined }), // measured on the turn's last call: not a floor sample
+    gate('orq', 1, 50000), gate('orq', 5, 60000),
+    settled('other', 4, 55000), settled('other', 6, 64000), gate('other', 2, 60000),
+    settled('nogate', 7, 70000),
+    { eventName: 'cache.turn', project: 'orq', ts: 8, payload: {} },
+  ];
+  const by = Object.fromEntries(compactionFloors(rows).map((f) => [f.project, f]));
+  assertEq(by.orq, { project: 'orq', floor: 110000, cuts: 3, thresholdTokens: 60000, sessionId: 's-3' }, 'odd count: the middle cut; the latest gate threshold; the latest measured session');
+  assertEq([by.other.floor, by.other.cuts, by.other.thresholdTokens], [59500, 2, 60000], 'even count: the mean of the two middle cuts');
+  assertEq(by.nogate.thresholdTokens, null, 'no gate recorded: no threshold to compare with');
+  assertEq(compactionFloors([settled('x', 1, 9000, { measuredOn: undefined })]), [], 'only old-style samples: nothing measured');
+});
+
+test('compaction-metrics.largestInstructions: the n largest instruction files of a transcript, each at its largest copy', () => {
+  const { largestInstructions } = require('./lib/compaction-metrics.js');
+  const att = (files) => JSON.stringify({ type: 'attachment', attachment: { type: 'instructions', files } });
+  const jsonl = [
+    att([{ path: '/p/CLAUDE.md', content: 'x'.repeat(500) }, { path: '/h/.claude/CLAUDE.md', content: 'y'.repeat(300) }]),
+    JSON.stringify({ type: 'user', message: { content: 'instructions' } }),
+    '{"type":"attachment","instructions" broken',
+    att([{ path: '/p/CLAUDE.md', content: 'x'.repeat(800) }, { path: '/p/AGENTS.md', content: 'z'.repeat(400) }, { path: '/p/rules.md', content: 'r'.repeat(10) }]),
+  ].join('\n');
+  assertEq(largestInstructions(jsonl, 3), [{ path: '/p/CLAUDE.md', chars: 800 }, { path: '/p/AGENTS.md', chars: 400 }, { path: '/h/.claude/CLAUDE.md', chars: 300 }]);
+  assertEq(largestInstructions('', 3), []);
+});
+
+test('doctor.checkCompactionFloor + gatherCompactionFloor: warns when a folder\'s floor reaches the threshold, naming its largest instruction files', () => {
+  const doctor = require('./doctor.js');
+  const { FIRST_CALL } = require('./lib/compaction-metrics.js');
+  const settled = (project, ts, tokensAfter) => ({ eventName: 'compaction.settled', project, ts, sessionId: `${project}-sess`, payload: { tokensAfter, measuredOn: FIRST_CALL } });
+  const gate = (project, thresholdTokens) => ({ eventName: 'compaction.gate', project, ts: 1, payload: { thresholdTokens } });
+  const rows = [settled('orq', 2, 100000), settled('orq', 3, 121000), gate('orq', 60000), settled('lean', 2, 40000), gate('lean', 60000)];
+  const asked = [];
+  const transcript = JSON.stringify({ type: 'attachment', attachment: { type: 'instructions', files: [{ path: '/orq/CLAUDE.md', content: 'x'.repeat(140391) }, { path: '/home/CLAUDE.md', content: 'y'.repeat(5000) }] } });
+  const ctx = { compactionFloor: doctor.gatherCompactionFloor(rows, { find: (sid) => { asked.push(sid); return `/t/${sid}.jsonl`; }, read: () => transcript }) };
+  assertEq(asked, ['orq-sess'], 'only the folder at or above the threshold has its transcript read');
+  const res = doctor.runChecks(ctx).find((r) => r.id === 'compaction-floor');
+  assertEq(res.status, 'warn');
+  assert(/orq: floor 111k \(median of 2 cut\(s\)\) >= threshold 60k/.test(res.detail), res.detail);
+  assert(/this folder never drops below the threshold: permanent 5m TTL and a brief on every cold pause/.test(res.detail), res.detail);
+  assert(/largest instruction files: \/orq\/CLAUDE\.md \(140,391 chars\), \/home\/CLAUDE\.md \(5,000 chars\)/.test(res.detail), res.detail);
+  assert(!/lean/.test(res.detail), 'a folder below the threshold is not flagged');
+  const lean = doctor.runChecks({ compactionFloor: doctor.gatherCompactionFloor([settled('lean', 2, 40000), gate('lean', 60000)], { find: () => { throw new Error('not read'); } }) }).find((r) => r.id === 'compaction-floor');
+  assertEq([lean.status, /lean: floor 40k < threshold 60k/.test(lean.detail)], ['ok', true]);
+  const missing = doctor.runChecks({ compactionFloor: doctor.gatherCompactionFloor(rows, { find: () => null }) }).find((r) => r.id === 'compaction-floor');
+  assert(/instruction files not read: transcript of session orq-sess not found/.test(missing.detail), 'a missing transcript is said, the warning stays');
+  const none = doctor.runChecks({ compactionFloor: doctor.gatherCompactionFloor(rows, { find: (sid) => `/t/${sid}.jsonl`, read: () => '' }) }).find((r) => r.id === 'compaction-floor');
+  assert(/its latest session carries no instruction file/.test(none.detail), none.detail);
+  assertEq(doctor.runChecks({}).find((r) => r.id === 'compaction-floor').status, 'ok', 'not probed → says so, no alarm');
+  assertEq(doctor.runChecks({ compactionFloor: { error: 'x' } }).find((r) => r.id === 'compaction-floor').status, 'warn', 'a read failure is shown, not hidden');
+  assertEq(doctor.runChecks({ compactionFloor: { floors: [] } }).find((r) => r.id === 'compaction-floor').status, 'ok');
+});
+
 function cmpTranscript(dir, rows) {
   const f = path.join(dir, 'session.jsonl');
   fs.writeFileSync(f, rows.map((r) => JSON.stringify(r)).join('\n') + '\n');
@@ -30985,6 +31045,7 @@ test('compaction hook + compaction-event: settled measures the first call after 
     const r = await settledAfterCutRun(ce, { lateCall: false });
     assertEq(r.settled.length, 1, `one settled event, got ${JSON.stringify(r.settled)} ${r.logs.join(' | ')}`);
     assertEq([r.settled[0].tokensBefore, r.settled[0].tokensAfter, r.settled[0].tokensCut], [167135, 121052, 46083]);
+    assertEq(r.settled[0].measuredOn, 'first-call-after-cut', 'the event says which call it measured (doctor compaction-floor reads only these)');
   });
 });
 

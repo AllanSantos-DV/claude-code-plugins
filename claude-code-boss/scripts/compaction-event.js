@@ -259,4 +259,4 @@ async function run(ev) {
   throw new Error(`compaction-event: unknown kind '${kind}'`);
 }
 
-module.exports = { run, readNewApiCalls, ttlVerdictFor, HELD_PREFIX };
+module.exports = { run, readNewApiCalls, ttlVerdictFor, findTranscript, HELD_PREFIX };

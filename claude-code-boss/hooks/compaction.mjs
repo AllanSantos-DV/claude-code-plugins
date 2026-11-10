@@ -313,7 +313,7 @@ function settleFrom($, ctx, id, reply) {
   ctx.pendingSettle = null;
   emit($, ctx, 'settled', {
     reason: settle.reason, trigger: settle.trigger, prevented: settle.prevented === true, tokensBefore: settle.tokensBefore, tokensAfter: after,
-    tokensCut: settle.tokensBefore != null ? settle.tokensBefore - after : null,
+    tokensCut: settle.tokensBefore != null ? settle.tokensBefore - after : null, measuredOn: 'first-call-after-cut',
     host: id.host, auth: id.auth,
   });
 }

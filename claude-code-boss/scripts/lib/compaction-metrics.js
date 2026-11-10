@@ -158,4 +158,63 @@ function compactionTile(cfg, rows) {
   return { enabled, mechanicalCut: enabled && (!cfg || cfg.mechanicalCut !== false), runs: s.runs.total, measured: s.settled.count, tokensCut: s.settled.tokensCut };
 }
 
-module.exports = { summarizeCompaction, compactionTile, COMPACTION_EVENTS };
+/** Which settled events measured the first API call after the cut (older ones measured the turn's last call, larger). */
+const FIRST_CALL = 'first-call-after-cut';
+
+/**
+ * Per project, the context a cut leaves (median `tokensAfter` of the settled events measured on the first call after
+ * the cut) against the threshold the gate last measured with. A floor at or above the threshold means the folder
+ * never drops below it.
+ * @param {Array} rows  metric rows ({eventName, payload, project, sessionId, ts}); other events are ignored
+ * @returns {Array<{project:string, floor:number, cuts:number, thresholdTokens:number|null, sessionId:string|null}>}
+ */
+function compactionFloors(rows) {
+  const by = new Map();
+  const of = (p) => { if (!by.has(p)) by.set(p, { afters: [], gateTs: -Infinity, thresholdTokens: null, settledTs: -Infinity, sessionId: null }); return by.get(p); };
+  for (const r of rows || []) {
+    const name = r.eventName || r.event_name;
+    if (name !== 'compaction.settled' && name !== 'compaction.gate') continue;
+    let p = r.payload || {};
+    if (typeof p === 'string') { try { p = JSON.parse(p); } catch (err) { void err; continue; } }
+    const g = of(r.project || '?');
+    const ts = Number(r.ts) || 0;
+    if (name === 'compaction.gate') {
+      if (Number(p.thresholdTokens) > 0 && ts >= g.gateTs) { g.gateTs = ts; g.thresholdTokens = Number(p.thresholdTokens); }
+    } else if (p.measuredOn === FIRST_CALL && Number(p.tokensAfter) > 0) {
+      g.afters.push(Number(p.tokensAfter));
+      if (ts >= g.settledTs) { g.settledTs = ts; g.sessionId = r.sessionId || r.session_id || null; }
+    }
+  }
+  const out = [];
+  for (const [project, g] of by) {
+    if (!g.afters.length) continue;
+    const a = g.afters.sort((x, y) => x - y);
+    const mid = a.length >> 1;
+    out.push({ project, floor: a.length % 2 ? a[mid] : Math.round((a[mid - 1] + a[mid]) / 2), cuts: a.length, thresholdTokens: g.thresholdTokens, sessionId: g.sessionId });
+  }
+  return out;
+}
+
+/**
+ * The largest instruction files (CLAUDE.md, rules) a session's transcript carries, by characters.
+ * @param {string} jsonl  the transcript text
+ * @param {number} [n=3]
+ * @returns {Array<{path:string, chars:number}>}
+ */
+function largestInstructions(jsonl, n = 3) {
+  const size = new Map();
+  for (const line of String(jsonl || '').split('\n')) {
+    if (!line.includes('"instructions"')) continue;
+    let r;
+    try { r = JSON.parse(line); } catch (err) { void err; continue; }
+    const files = r && r.type === 'attachment' && r.attachment && r.attachment.type === 'instructions' ? r.attachment.files : null;
+    for (const f of Array.isArray(files) ? files : []) {
+      if (!f || !f.path) continue;
+      const chars = String(f.content || '').length;
+      if (chars > (size.get(f.path) || 0)) size.set(f.path, chars);
+    }
+  }
+  return [...size].map(([path, chars]) => ({ path, chars })).sort((a, b) => b.chars - a.chars).slice(0, n);
+}
+
+module.exports = { summarizeCompaction, compactionTile, compactionFloors, largestInstructions, COMPACTION_EVENTS, FIRST_CALL };

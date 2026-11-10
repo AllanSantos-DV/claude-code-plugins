@@ -277,6 +277,45 @@ function checkCompactionRate(ctx) {
   };
 }
 
+/**
+ * Per project, the post-cut floor against the threshold (compaction-metrics.compactionFloors), and for each folder
+ * whose floor reaches it the largest instruction files of its latest measured session.
+ * @param {Array} rows  the compaction trail rows (compaction-report.loadCompactionRows)
+ * @param {{find?:(sessionId:string)=>string|null, read?:(file:string)=>string}} [io]
+ */
+function gatherCompactionFloor(rows, { find = require('./compaction-event.js').findTranscript, read = (f) => fs.readFileSync(f, 'utf8') } = {}) {
+  const cm = require('./lib/compaction-metrics.js');
+  const floors = cm.compactionFloors(rows);
+  for (const f of floors) {
+    if (!(f.thresholdTokens > 0) || f.floor < f.thresholdTokens || !f.sessionId) continue;
+    const file = find(f.sessionId);
+    if (!file) { f.instructionsError = `transcript of session ${f.sessionId} not found`; continue; }
+    try { f.instructions = cm.largestInstructions(read(file), 3); } catch (e) { console.error(`[doctor] compaction floor instructions: ${e.message}`); f.instructionsError = e.message; }
+  }
+  return { floors };
+}
+
+/** Folders whose context after a cut is already at or above the cold-compaction threshold (ctx.compactionFloor; read by `--cost`). */
+function checkCompactionFloor(ctx) {
+  const base = { id: 'compaction-floor', label: 'Compaction floor vs threshold', critical: false };
+  const c = ctx.compactionFloor;
+  if (!c) return { ...base, status: 'ok', detail: 'not measured here (run `doctor --cost`)', fix: '' };
+  if (c.error) return { ...base, status: 'warn', detail: `could not read the compaction history: ${c.error}`, fix: '' };
+  const k = (n) => `${Math.round(n / 1000)}k`;
+  const measured = c.floors.filter((f) => f.thresholdTokens > 0);
+  if (!measured.length) return { ...base, status: 'ok', detail: 'no cut measured on the first call after it yet (or no threshold recorded)', fix: '' };
+  const bad = measured.filter((f) => f.floor >= f.thresholdTokens);
+  if (!bad.length) return { ...base, status: 'ok', detail: measured.map((f) => `${f.project}: floor ${k(f.floor)} < threshold ${k(f.thresholdTokens)} (${f.cuts} cut(s))`).join('; '), fix: '' };
+  const files = (f) => (f.instructions && f.instructions.length
+    ? `; largest instruction files: ${f.instructions.map((i) => `${i.path} (${i.chars.toLocaleString('en-US')} chars)`).join(', ')}`
+    : f.instructionsError ? `; instruction files not read: ${f.instructionsError}` : '; its latest session carries no instruction file');
+  return {
+    ...base, status: 'warn',
+    detail: bad.map((f) => `${f.project}: floor ${k(f.floor)} (median of ${f.cuts} cut(s)) >= threshold ${k(f.thresholdTokens)} — this folder never drops below the threshold: permanent 5m TTL and a brief on every cold pause${files(f)}`).join(' | '),
+    fix: 'Shrink what every session of that folder loads (the instruction files above), or raise its compaction window; the threshold is not changed automatically.',
+  };
+}
+
 /** The two commands that bring a release in: the marketplace copy first, or `plugin update` reports the old version as the latest. */
 function updateCommandsEn() {
   const mkt = require('./lib/marketplace-autoupdate.js').marketplaceOf(pluginRoot()) || 'allansantos-plugins';
@@ -567,7 +606,7 @@ function checkSetup(ctx) {
   return out;
 }
 
-const CHECKS = [checkNode, checkDaemonNode, checkNativeDeps, checkEnv, checkDataDirs, checkModel, checkDaemon, checkNativeRuntime, checkEmbedderProbe, checkEmbedderGuard, checkCrashes, checkCostTuning, checkBossConfig, checkFixedCost, checkCompactionRate, checkClaudeCompat, checkSubagentContexts, checkSessionModules, checkSetup, checkHooksEvents];
+const CHECKS = [checkNode, checkDaemonNode, checkNativeDeps, checkEnv, checkDataDirs, checkModel, checkDaemon, checkNativeRuntime, checkEmbedderProbe, checkEmbedderGuard, checkCrashes, checkCostTuning, checkBossConfig, checkFixedCost, checkCompactionRate, checkCompactionFloor, checkClaudeCompat, checkSubagentContexts, checkSessionModules, checkSetup, checkHooksEvents];
 
 /** Run every pure check over a ctx snapshot (a check may return one result or a list). */
 function runChecks(ctx) {
@@ -753,14 +792,15 @@ async function gatherContext({ probe = false, audit = false, scanBudgetMs } = {}
     } catch (e) { console.error(`[doctor] fixed cost: ${e.message}`); fixedCost = { error: e.message }; }
   }
 
-  let compaction = null;
+  let compaction = null; let compactionFloor = null;
   if (audit) {
     try {
       const cr = require('./lib/compaction-report.js');
       const rows = cr.loadCompactionRows({ days: 30, budgetMs: share(0.2) });
       compaction = cr.summarizeCompaction(rows).episodes;
       if (rows.partial) compaction.partial = true;
-    } catch (e) { console.error(`[doctor] compaction history: ${e.message}`); compaction = { error: e.message }; }
+      compactionFloor = gatherCompactionFloor(rows);
+    } catch (e) { console.error(`[doctor] compaction history: ${e.message}`); compaction = { error: e.message }; compactionFloor = { error: e.message }; }
   }
 
   // Both read big files (the Claude Code binary, 30 days of sub-agent transcripts): opt-in like the fixed-cost audit.
@@ -813,6 +853,7 @@ async function gatherContext({ probe = false, audit = false, scanBudgetMs } = {}
     bossConfig,
     fixedCost,
     compaction,
+    compactionFloor,
     claudeCompat,
     subagents,
     sessionModules,
@@ -927,7 +968,7 @@ if (require.main === module) {
 
 module.exports = {
   runChecks, summarize, applyFixes, FIXERS, checkCostTuning, checkBossConfig, checkFixedCost, checkSetup, bossPluginId, gatherContext, formatReport,
-  checkNode, checkDaemonNode, checkNativeDeps, checkEnv, checkDataDirs, checkModel, checkDaemon, checkNativeRuntime, checkEmbedderProbe, checkEmbedderGuard, checkCrashes, checkHooksEvents,
+  checkNode, checkDaemonNode, checkNativeDeps, checkEnv, checkDataDirs, checkModel, checkDaemon, checkNativeRuntime, checkEmbedderProbe, checkEmbedderGuard, checkCrashes, checkHooksEvents, checkCompactionFloor, gatherCompactionFloor,
   findDataDirCandidates, probeEmbedder, gatherNative, gatherCrashes, MIN_MSVCP,
   STANDARD_EVENTS, MIN_NODE,
 };

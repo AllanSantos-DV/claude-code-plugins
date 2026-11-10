@@ -2,9 +2,13 @@
 
 ## [Unreleased]
 
+### Added
+- **O doctor avisa quando uma pasta nunca desce abaixo do limiar de compactação** (`scripts/doctor.js` check `compaction-floor`, `scripts/lib/compaction-metrics.js`): com `--cost`, compara por pasta a mediana do contexto que sobra depois de cada corte (a primeira chamada depois dele) com o limiar. Quando o piso alcança o limiar, avisa que o TTL fica em 5m e que cada pausa fria dispara um brief, e lista os 3 maiores arquivos de instrução da pasta. Só leitura: o limiar não muda.
+
 ### Fixed
 - **A compactação a frio do Boss voltou, como o dono a desenhou** (`hooks/compaction.mjs`, `scripts/lib/compaction-core.mjs`, `scripts/lib/folder-ttl.js`): limiar do usuário em % da janela do modelo (padrão 30%); abaixo dele a pasta fica com o cache de 60 min, acima passa a 5 min (por pasta), e o corte a frio roda quando o cache esfria e o próximo prompt chega. Os tetos absolutos continuam **desligados** (`thresholdMaxTokens` 0, `warmCeilingTokens` 0). A remoção de 2026-11-02 (2a746c0, a65502e) não tinha ordem do dono registrada. A janela de compactação do roteador segue sem ser gravada pelo Boss.
 - **O tamanho depois de uma compactação é o da primeira chamada após o corte** (`hooks/compaction.mjs`, `scripts/compaction-event.js`): antes, `compaction.settled` usava a última chamada do turno. Um turno que continuava depois do resumo automático crescia de novo, e a trilha registrava quase nada cortado. Num caso real, 169.780 → 20.137 apareceu como 609 tokens cortados.
+- **`docs/COMPACTION-MEASUREMENT.md` marca a economia do replay como limite superior**: o replay usou o tamanho do resumo como contexto depois do corte; a primeira chamada depois dele recarrega instruções e listagens (55–64k numa pasta comum, 100–121k na pasta do orchestrador). O documento também diz que os tetos 150k/200k vêm desligados por padrão.
 
 ## [3.15.2] - 2026-11-07
 
