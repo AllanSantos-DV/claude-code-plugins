@@ -18922,6 +18922,15 @@ test('fixed-cost.auditBossConfig: compactacao em %, janela fixa, Tool Search e p
   assertEq(opted.items.find((i) => i.id === 'boss-fixed-window').status, 'ok');
 });
 
+test('doctor: o item "Compaction (boss)" recebe a compactação resolvida — sem ela o detalhe dizia "undefined% … NaN tokens"', () => {
+  const src = fs.readFileSync(path.join(__dirname, 'doctor.js'), 'utf8');
+  const call = src.match(/fc\.auditBossConfig\(\{[^\n]*\}\)/);
+  assert(call && /compaction: hooksCfg\.getCompaction\(\)/.test(call[0]), call ? call[0] : 'auditBossConfig call not found');
+  const resolved = require('./lib/hooks-config.js').getCompaction();
+  const item = fixedCost.auditBossConfig({ settings: {}, compaction: resolved, costTuning: { autoCompactWindow: null }, pluginId: null }).items[0];
+  assert(!/undefined|NaN/.test(item.detail), item.detail);
+});
+
 test('doctor.checkBossConfig/checkFixedCost: um resultado por item, autofix compartilhado, e o fixer roda uma vez so', () => {
   const bossConfig = fixedCost.auditBossConfig({ compaction: { enabled: true, thresholdPercent: 30 }, costTuning: { autoCompactWindow: null }, pluginId: null, settings: { env: { CLAUDE_CODE_AUTO_COMPACT_WINDOW: '100000' } } });
   const rs = doctor.runChecks({ bossConfig });
