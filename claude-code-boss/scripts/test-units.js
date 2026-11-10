@@ -1076,7 +1076,7 @@ test('mcp-client: per-call timeoutMs reaches the transport; our own timeout is n
   try { await c.callTool('ingest_conversation', { raw: 'x' }, { timeoutMs: 15000 }); } catch (err) { error = err; }
   assert(error && /timed out/.test(error.message), 'the timeout surfaces');
   assertEq([sends, reconnects], [1, 0], 'no second upload on top of the one the server may still be running');
-  assertEq(seenOpts.timeoutMs, 15000, 'per-call timeout reaches the transport');
+  assert(seenOpts.timeoutMs <= 15000 && seenOpts.timeoutMs > 14000, `per-call timeout reaches the transport: ${seenOpts.timeoutMs}`);
   sends = 0;
   c._sendRequest = async () => { sends += 1; const e = new Error('connect ECONNREFUSED 127.0.0.1:1'); e.code = 'ECONNREFUSED'; throw e; };
   try { await c.callTool('search_memory', { query: 'q' }); } catch (err) { void err; }
@@ -1090,6 +1090,57 @@ test('mcp-client: per-call timeoutMs reaches the transport; our own timeout is n
   const r = await c.callTool('ingest_conversation', { raw: 'x' });
   assertEq(r.ok, true);
   assertEq([sends, reconnects], [2, 1], 'an expired session was never processed → reconnect + retry');
+});
+
+test('mcp-client: timeoutMs is ONE budget for the whole call — a hung connect, the restart probes, the reconnect and the retry never add up past it; an abort stops it at once', async () => {
+  const McpClient = require('../engine/mcp-client.js');
+  const hang = () => new Promise(() => {});
+  const timed = async (fn) => { const t0 = Date.now(); let err = null; try { await fn(); } catch (e) { err = e; } return { err, ms: Date.now() - t0 }; };
+  const logged = [];
+  const realErr = console.error;
+  console.error = (m) => logged.push(String(m));
+  try {
+    const c1 = new McpClient({ transport: 'http', serverUrl: 'http://127.0.0.1:1' });
+    c1.connect = hang;
+    let r = await timed(() => c1.callTool('search_memory', { query: 'q' }, { timeoutMs: 200 }));
+    assert(r.err && r.err.code === 'DEADLINE' && /timed out: its 200 ms budget ran out during connect/.test(r.err.message), String(r.err && r.err.message));
+    assert(r.ms < 1500, `a hung connect is cut at the budget: ${r.ms}ms`);
+
+    const c2 = new McpClient({ transport: 'http', serverUrl: 'http://127.0.0.1:1' });
+    c2._initialized = true;
+    let sends = 0;
+    c2._sendRequest = async () => { sends += 1; throw Object.assign(new Error('connect ECONNREFUSED 127.0.0.1:1'), { code: 'ECONNREFUSED' }); };
+    c2._awaitRestartedServer = hang;
+    c2._reconnect = hang;
+    r = await timed(() => c2.callTool('search_memory', { query: 'q' }, { timeoutMs: 200 }));
+    assert(r.err && r.err.code === 'DEADLINE' && /restart probes/.test(r.err.message), String(r.err && r.err.message));
+    assert(r.ms < 1500 && sends === 1, `probes cut at the budget, no second send: ${r.ms}ms, ${sends} send(s)`);
+    c2._awaitRestartedServer = async () => true;
+    r = await timed(() => c2.callTool('search_memory', { query: 'q' }, { timeoutMs: 200 }));
+    assert(r.err && r.err.code === 'DEADLINE' && /the reconnect/.test(r.err.message), String(r.err && r.err.message));
+
+    const c3 = new McpClient({ transport: 'http', serverUrl: 'http://127.0.0.1:1' });
+    c3._initialized = true;
+    c3._reconnect = async () => {};
+    const budgets = [];
+    c3._sendRequest = async (m, p, o) => { budgets.push(o.timeoutMs); await new Promise((res) => setTimeout(res, 120)); throw Object.assign(new Error('read ECONNRESET'), { code: 'ECONNRESET' }); };
+    r = await timed(() => c3.callTool('search_memory', { query: 'q' }, { timeoutMs: 200 }));
+    assertEq(budgets.length, 2, 'a read cut mid-call is retried once');
+    assert(budgets[1] < budgets[0] && budgets[1] <= 80, `the retry only gets what is left of the budget: ${budgets}`);
+    assert(r.ms < 600, `the whole call stays near its budget: ${r.ms}ms`);
+
+    const c4 = new McpClient({ transport: 'http', serverUrl: 'http://127.0.0.1:1' });
+    c4.connect = hang;
+    const ac = new AbortController();
+    setTimeout(() => ac.abort(new Error('hook deadline')), 50);
+    r = await timed(() => c4.callTool('compose_recall', {}, { signal: ac.signal }));
+    assert(r.err && r.err.code === 'ABORTED' && r.ms < 1000, `abort during connect: ${r.err && r.err.message} in ${r.ms}ms`);
+
+    const c5 = new McpClient({ transport: 'http', serverUrl: 'http://127.0.0.1:1' });
+    c5._initialized = true;
+    c5._sendRequest = async () => ({ ok: true });
+    assertEq((await c5.callTool('search_memory', {}, {})).ok, true, 'no budget given → unchanged path');
+  } finally { console.error = realErr; }
 });
 
 test('mcp-auto-update: parseia check_update textual e rejeita shape inválido', () => {

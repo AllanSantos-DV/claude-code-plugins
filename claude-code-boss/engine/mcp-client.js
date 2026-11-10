@@ -13,6 +13,17 @@ function abortError(method, signal) {
   return Object.assign(new Error(`MCP request "${method}" aborted${why}`), { code: 'ABORTED', name: 'AbortError' });
 }
 
+/** The error of a call whose budget ran out; `step` names where (connect, probes, reconnect, retry). */
+function deadlineError(name, ms, step) {
+  return Object.assign(new Error(`MCP call "${name}" timed out: its ${ms} ms budget ran out during ${step}`), { code: 'DEADLINE' });
+}
+
+/** One budget per call, from its `timeoutMs` and `signal`: the connect, probes, reconnect and retry all draw from it. */
+function callBudget(name, opts) {
+  const ms = Number.isFinite(opts.timeoutMs) && opts.timeoutMs > 0 ? opts.timeoutMs : 0;
+  return { name, ms, deadline: ms ? Date.now() + ms : 0, signal: opts.signal };
+}
+
 /** Connection-phase failures: the request never left this machine, so repeating it cannot duplicate it. */
 const UNDELIVERED_CODES = new Set(['ECONNREFUSED', 'ENOTFOUND', 'EAI_AGAIN', 'EADDRNOTAVAIL', 'EHOSTUNREACH', 'ENETUNREACH']);
 /** Failures after the request may have reached the daemon (reset, timeout, hang up): outcome unknown. */
@@ -295,16 +306,50 @@ class McpClient extends EventEmitter {
   }
 
   /**
-   * @param {{ timeoutMs?: number }} [opts] `timeoutMs` overrides requestTimeout for
-   *   this call (a hook with a hard deadline must give up before it).
+   * Waits for `promise` only while the call's budget lasts. Past the deadline (or on abort) the caller gets the
+   * error at once; the step itself keeps running and only its late failure is logged.
    */
-  async callTool(name, args = {}, opts = {}, _retryCount = 0) {
-    if (!this._initialized) await this.connect();
+  async _within(promise, budget, step) {
+    if (!budget || (!budget.deadline && !budget.signal)) return promise;
+    let timer;
+    let onAbort;
+    let gaveUp = false;
+    const guard = new Promise((_, reject) => {
+      const giveUp = (err) => { gaveUp = true; reject(err); };
+      if (budget.signal && budget.signal.aborted) return giveUp(abortError(budget.name, budget.signal));
+      if (budget.deadline) {
+        const left = budget.deadline - Date.now();
+        if (left <= 0) return giveUp(deadlineError(budget.name, budget.ms, step));
+        timer = setTimeout(() => giveUp(deadlineError(budget.name, budget.ms, step)), left);
+      }
+      if (budget.signal) {
+        onAbort = () => giveUp(abortError(budget.name, budget.signal));
+        budget.signal.addEventListener('abort', onAbort, { once: true });
+      }
+    });
     try {
-      return await this._sendRequest('tools/call', { name, arguments: args }, opts);
+      return await Promise.race([promise, guard]);
+    } finally {
+      clearTimeout(timer);
+      if (onAbort) budget.signal.removeEventListener('abort', onAbort);
+      if (gaveUp) promise.catch((late) => console.error(`[MCP] ${step} for "${budget.name}" failed after its caller gave up: ${late && late.message}`));
+    }
+  }
+
+  /**
+   * @param {{ timeoutMs?: number, signal?: AbortSignal }} [opts] `timeoutMs` is the budget of the WHOLE call
+   *   (connect, the request, a reconnect and its one retry), so a hook with a hard deadline gets an answer or an
+   *   error before it; `signal` cancels it.
+   */
+  async callTool(name, args = {}, opts = {}, _retryCount = 0, _budget = callBudget(name, opts)) {
+    if (!this._initialized) await this._within(this.connect(), _budget, 'connect');
+    try {
+      const left = _budget.deadline ? _budget.deadline - Date.now() : 0;
+      if (_budget.deadline && left <= 0) throw deadlineError(name, _budget.ms, 'the retry');
+      return await this._sendRequest('tools/call', { name, arguments: args }, _budget.deadline ? { ...opts, timeoutMs: left } : opts);
     } catch (err) {
       // The caller gave up (its deadline): retrying would only redo the slow call.
-      if (err && err.code === 'ABORTED') throw err;
+      if (err && (err.code === 'ABORTED' || err.code === 'DEADLINE')) throw err;
       // The daemon dropped our HTTP session (idle TTL, ~30min). Reconnect (fresh
       // initialize → new session id) and retry the SAME call exactly ONCE. This
       // keeps long-lived stdio brain-servers (opencode/Claude Code sessions that
@@ -312,8 +357,9 @@ class McpClient extends EventEmitter {
       if (err && err.code === 'SESSION_EXPIRED' && this.transport === 'http') {
         if (_retryCount >= 1) throw err; // max 1 retry — no infinite loop
         try {
-          await this._reconnect();
+          await this._within(this._reconnect(), _budget, 'the reconnect');
         } catch (reconnectErr) {
+          if (reconnectErr.code === 'ABORTED' || reconnectErr.code === 'DEADLINE') throw reconnectErr;
           // Wrap original error with reconnect failure context for debugging
           const wrapped = new Error(`SESSION_EXPIRED: reconnect failed: ${reconnectErr.message}`);
           wrapped.code = 'SESSION_EXPIRED';
@@ -321,7 +367,7 @@ class McpClient extends EventEmitter {
           wrapped.reconnectError = reconnectErr;
           throw wrapped;
         }
-        return this.callTool(name, args, opts, _retryCount + 1);
+        return this.callTool(name, args, opts, _retryCount + 1, _budget);
       }
 
       // Daemon restarted on a new port (daemon.json updated), or is down: re-read the announcement,
@@ -338,17 +384,18 @@ class McpClient extends EventEmitter {
         }
         if (kind) {
           console.error(`[MCP] Connection error (${err.code || err.message}), re-discovering daemon URL and retrying once`);
-          if (kind === 'undelivered') await this._awaitRestartedServer(opts.signal);
+          if (kind === 'undelivered') await this._within(this._awaitRestartedServer(opts.signal), _budget, 'the restart probes');
           try {
-            await this._reconnect(err.code || err.message);
+            await this._within(this._reconnect(err.code || err.message), _budget, 'the reconnect');
           } catch (reconnectErr) {
+            if (reconnectErr.code === 'ABORTED' || reconnectErr.code === 'DEADLINE') throw reconnectErr;
             const wrapped = new Error(`DAEMON_RESTART: reconnect failed: ${reconnectErr.message}`);
             wrapped.code = 'DAEMON_RESTART';
             wrapped.originalError = err;
             wrapped.reconnectError = reconnectErr;
             throw wrapped;
           }
-          return this.callTool(name, args, opts, _retryCount + 1);
+          return this.callTool(name, args, opts, _retryCount + 1, _budget);
         }
       }
 
