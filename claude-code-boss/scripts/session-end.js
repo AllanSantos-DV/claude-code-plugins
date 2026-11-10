@@ -15,6 +15,7 @@ function run(event, opts = {}) {
   if (!sid) return false;
   require('./lib/glob-injected.js').reset(sid, opts);
   require('./lib/scope-rules.js').forget(sid, opts);
+  require('./lib/read-burst.js').forget(sid, opts);
   return require('./lib/session-root.js').forgetSessionRoot(sid, opts);
 }
 

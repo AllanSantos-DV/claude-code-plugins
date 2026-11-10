@@ -16,6 +16,7 @@
  * State per session and sub-agent under `<data>/.runtime/read-burst/`; every delivery and the
  * outcome of each delivered run (files read afterwards, how many were in the bundle) are appended
  * to `<data>/.runtime/read-burst.jsonl` (rotated at 1 MB, lib/log-rotate.js), the same hit metric the replay used.
+ * SessionEnd closes the open runs and removes the state; runtime-sweep removes what an unclean end left.
  */
 const fs = require('fs');
 const path = require('path');
@@ -180,4 +181,31 @@ async function onTool(ev, { root, minCalls = 3, maxTokens = 6000, maxPerSession 
   return deliver(ev, base, key, job);
 }
 
-module.exports = { onTool, themeOf, themeKey, relKey, stateFile, journalFile, READ_TOOL, RESET_TOOL, CONTEXT_CAP };
+/**
+ * SessionEnd: journal the outcome of each open delivered run of the session (main and sub-agents) and remove its state.
+ * @returns {number} state files removed
+ */
+function forget(sessionId, { base } = {}) {
+  if (!sessionId) return 0;
+  const dir = path.dirname(stateFile(base, 'x'));
+  const prefix = `${safeId(sessionId)}-`;
+  let names = [];
+  try { names = fs.readdirSync(dir); } catch (err) {
+    if (err.code !== 'ENOENT') console.error(`[read-burst] forget: ${dir}: ${err.message}`);
+    return 0;
+  }
+  let removed = 0;
+  for (const name of names) {
+    if (!name.startsWith(prefix) || !name.endsWith('.json')) continue;
+    const key = name.slice(0, -'.json'.length);
+    const st = readState(base, key);
+    if (st.run.delivered) closeRun(base, { session_id: sessionId, agent_id: key.slice(prefix.length) }, st);
+    inflight.delete(stateFile(base, key));
+    try { fs.unlinkSync(path.join(dir, name)); removed++; } catch (err) {
+      if (err.code !== 'ENOENT') console.error(`[read-burst] forget: ${name}: ${err.message}`);
+    }
+  }
+  return removed;
+}
+
+module.exports = { onTool, forget, themeOf, themeKey, relKey, stateFile, journalFile, READ_TOOL, RESET_TOOL, CONTEXT_CAP };

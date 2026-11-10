@@ -20226,6 +20226,25 @@ test('read-burst: the outcome journal rotates at 1 MB instead of growing without
   } finally { fs.rmSync(base, { recursive: true, force: true }); }
 });
 
+test('read-burst: SessionEnd journals the outcome of the session\'s open delivered run and removes its state (main and sub-agents), another session\'s stays', () => {
+  const rb = require('./lib/read-burst.js');
+  const base = fcTmp('rbend');
+  try {
+    const put = (key, st) => { const f = rb.stateFile(base, key); fs.mkdirSync(path.dirname(f), { recursive: true }); fs.writeFileSync(f, JSON.stringify(st)); return f; };
+    const open = { run: { calls: 5, theme: 't', reads: ['x.js', 'a.js', 'b.js'], delivered: { theme: 't', files: ['a.js'], readsBefore: 1 } }, themes: ['t'], deliveries: 1 };
+    const main = put('S1-main', open);
+    const sub = put('S1-a1', { run: { calls: 1, theme: null, reads: [], delivered: null }, themes: [], deliveries: 0 });
+    const other = put('S2-main', open);
+    require('./session-end.js').run({ session_id: 'S1' }, { base });
+    assert(!fs.existsSync(main) && !fs.existsSync(sub) && fs.existsSync(other), 'only the ended session\'s state went');
+    const j = fs.readFileSync(rb.journalFile(base), 'utf8').trim().split('\n').map((l) => JSON.parse(l));
+    assertEq(j.map((x) => [x.event, x.session, x.agent, x.readAfter, x.hits]), [['closed', 'S1', 'main', 2, 1]], 'the delivered run is closed once; the sub-agent run had no delivery');
+    assertEq(rb.forget('S1', { base }), 0, 'twice: nothing left, no error');
+    const none = fcTmp('rbnone');
+    try { assertEq(rb.forget('S3', { base: none }), 0, 'no state folder: nothing to do'); } finally { fs.rmSync(none, { recursive: true, force: true }); }
+  } finally { fs.rmSync(base, { recursive: true, force: true }); }
+});
+
 test('read-burst: code search down still delivers the task-map sections and warns once per session and error signature; concurrent calls at the threshold build once; the hook follows its config', async () => {
   const rb = require('./lib/read-burst.js');
   const cb = require('./lib/context-bundle.js');
