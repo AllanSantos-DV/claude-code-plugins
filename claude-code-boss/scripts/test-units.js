@@ -2985,6 +2985,24 @@ test('session-root: SessionStart records session_id → root; read back by id; u
   } finally { sr._resetMemo(); fs.rmSync(base, { recursive: true, force: true }); }
 });
 
+test('session-root: a record created while the folder mtime stays the same (a busy disk) still invalidates the root index', () => {
+  const sr = require('./lib/session-root.js');
+  const base = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-sroot-tick-'));
+  try {
+    sr._resetMemo();
+    sr.recordSessionRoot('a', 'C:\\w\\p', { base, projectId: 'env/one' });
+    const dir = path.join(base, '.runtime', 'session-roots');
+    const tick = new Date('2026-01-01T00:00:00Z');
+    fs.utimesSync(dir, tick, tick);
+    const before = fs.statSync(dir).mtimeMs;
+    assertEq(sr.envProjectIdForRoot('C:\\w\\p', { base }), 'env/one', 'one session with the override');
+    sr.recordSessionRoot('b', 'C:\\w\\p', { base });
+    fs.utimesSync(dir, tick, tick);
+    assertEq(fs.statSync(dir).mtimeMs, before, 'precondition: the folder mtime did not move');
+    assertEq(sr.envProjectIdForRoot('C:\\w\\p', { base }), '', 'the new record is seen → the override is not inherited');
+  } finally { fs.rmSync(base, { recursive: true, force: true }); sr._resetMemo(); }
+});
+
 test('session-root: envProjectIdForRoot reads the records once per folder change (not every MCP call); new/rewritten/forgotten records invalidate it; SessionEnd forgets the session', () => {
   const sr = require('./lib/session-root.js');
   const sessionEnd = require('./session-end.js');

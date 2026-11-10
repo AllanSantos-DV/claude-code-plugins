@@ -23,11 +23,11 @@ const { writeJsonAtomic } = require('../../engine/lib/atomic-write.js');
 const TTL_MS = 7 * 86400_000;
 const MEMO_MAX = 256;
 const _memo = new Map();
-// Per records folder: { mtimeMs, byRoot: Map<normalized root, Set<projectId>> }. The
-// daemon asks envProjectIdForRoot on EVERY model MCP call; re-reading every record each
-// time (123 files measured 2026-10-11) held its main thread 145–210ms per burst. Rebuilt
-// only when the folder's mtime moves — records are created/replaced by rename (atomic
-// write) and removed by unlink, all of which touch the folder's mtime.
+// Per records folder: { sig, byRoot: Map<normalized root, Set<projectId>> }. The daemon
+// asks envProjectIdForRoot on EVERY model MCP call; re-reading every record each time (123
+// files measured 2026-10-11) held its main thread 145–210ms per burst. Rebuilt only when
+// the folder's mtime or its file names change: under load a record created right after a
+// rebuild can leave the folder's mtime unchanged, and the new name still forces the rebuild.
 const _rootIndex = new Map();
 const ROOT_INDEX_MAX = 16;
 
@@ -112,13 +112,14 @@ function rootIndexOf(dir) {
     if (err.code !== 'ENOENT') console.error(`[session-root] stat failed: ${err.message}`);
     return null;
   }
-  const hit = _rootIndex.get(dir);
-  if (hit && hit.mtimeMs === mtimeMs) return hit.byRoot;
   let names;
   try { names = fs.readdirSync(dir); } catch (err) {
     if (err.code !== 'ENOENT') console.error(`[session-root] list failed: ${err.message}`);
     return null;
   }
+  const sig = `${mtimeMs}|${names.slice().sort().join('|')}`;
+  const hit = _rootIndex.get(dir);
+  if (hit && hit.sig === sig) return hit.byRoot;
   const byRoot = new Map();
   for (const f of names) {
     if (!f.endsWith('.json')) continue;
@@ -130,9 +131,9 @@ function rootIndexOf(dir) {
       byRoot.get(k).add(String(j.projectId || ''));
     } catch (err) { void err; /* raced with a write/prune: skip that record */ }
   }
-  // Keyed by the mtime read BEFORE listing: a record landing mid-read moves it again.
+  // Keyed by the mtime and names read BEFORE parsing: a record landing mid-read changes them again.
   if (_rootIndex.size >= ROOT_INDEX_MAX && !_rootIndex.has(dir)) _rootIndex.clear();
-  _rootIndex.set(dir, { mtimeMs, byRoot });
+  _rootIndex.set(dir, { sig, byRoot });
   return byRoot;
 }
 
