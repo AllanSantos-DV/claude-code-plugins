@@ -32926,6 +32926,21 @@ test('runtime-sweep: a held-prompt copy nobody came back for is removed after th
   } finally { fs.rmSync(dir, { recursive: true, force: true }); }
 });
 
+test('runtime-sweep: read-burst state left by a session that never reached SessionEnd goes after the state TTL, a young one stays', () => {
+  const { sweepSessionState } = require('./runtime-sweep.js');
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-rt-rb-'));
+  try {
+    const sub = path.join(dir, 'read-burst'); fs.mkdirSync(sub);
+    const old = path.join(sub, 'S1-main.json'); const young = path.join(sub, 'S2-main.json'); const tmp = path.join(sub, 'S3-main.json.tmp');
+    for (const f of [old, young, tmp]) fs.writeFileSync(f, '{}');
+    const past = new Date(Date.now() - 8 * 86400000); fs.utimesSync(old, past, past); fs.utimesSync(tmp, past, past);
+    assertEq(sweepSessionState(dir), 1);
+    assert(!fs.existsSync(old) && fs.existsSync(young) && fs.existsSync(tmp), 'only the old state file went');
+    fs.rmSync(sub, { recursive: true });
+    assertEq(sweepSessionState(dir), 0, 'no read-burst folder yet: nothing to do, no error');
+  } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+});
+
 // Open session: a PERSON's turn, then idle past the TTL, then a peer message. The turn-end re-check used to be armed only
 // after turns no person's prompt went through, so after a person's turn nothing cut while idle and the peer re-loaded it all.
 test('compaction hook, open session idle > 1h after a PERSON\'s turn: the cold cut comes while idle, before the next (peer) message', async () => {

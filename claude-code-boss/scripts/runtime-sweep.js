@@ -16,17 +16,31 @@ const DAY_MS = 86400000;
 const STATE_TTL_MS = 7 * DAY_MS;
 // Per-session state files nobody removes when the session ends (no timestamp in the name: age by mtime).
 const STATE_PREFIXES = ['session-start-', 'session-summary-', 'skill-outcome-settled-', 'research-followup-', 'held-prompt-'];
+// Folders of per-session state where every file is one session's (a session that ended without SessionEnd leaves it).
+const STATE_DIRS = ['read-burst'];
+
+function removeIfOld(file, maxAgeMs, now) {
+  try {
+    if (now - fs.statSync(file).mtimeMs > maxAgeMs) { fs.unlinkSync(file); return 1; }
+  } catch (err) {
+    if (err.code !== 'ENOENT') console.error(`[runtime-sweep] ${file}: ${err.message}`);
+  }
+  return 0;
+}
 
 /** Delete per-session state files older than `maxAgeMs`; returns how many went. */
 function sweepSessionState(dir, maxAgeMs = STATE_TTL_MS, now = Date.now()) {
   let removed = 0;
   for (const f of fs.readdirSync(dir)) {
-    if (!STATE_PREFIXES.some((p) => f.startsWith(p))) continue;
-    try {
-      if (now - fs.statSync(path.join(dir, f)).mtimeMs > maxAgeMs) { fs.unlinkSync(path.join(dir, f)); removed++; }
-    } catch (err) {
-      if (err.code !== 'ENOENT') console.error(`[runtime-sweep] ${f}: ${err.message}`);
+    if (STATE_PREFIXES.some((p) => f.startsWith(p))) removed += removeIfOld(path.join(dir, f), maxAgeMs, now);
+  }
+  for (const d of STATE_DIRS) {
+    const sub = path.join(dir, d);
+    let names = [];
+    try { names = fs.readdirSync(sub); } catch (err) {
+      if (err.code !== 'ENOENT') console.error(`[runtime-sweep] ${sub}: ${err.message}`);
     }
+    for (const f of names) if (f.endsWith('.json')) removed += removeIfOld(path.join(sub, f), maxAgeMs, now);
   }
   return removed;
 }
