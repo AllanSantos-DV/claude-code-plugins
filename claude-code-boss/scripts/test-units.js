@@ -20751,6 +20751,35 @@ test('G7: the dispatcher CLI exits on its own after answering (model-router-ensu
   assert(o.systemMessage === undefined || typeof o.systemMessage === 'string', out);
 });
 
+test('user-prompt-submit-dispatcher.userNotices: "auto-update on", "plugin updated" and "version available" reach the visible line, once each', () => {
+  const base = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-upsnotice-'));
+  const keys = ['HOME', 'USERPROFILE', 'CLAUDE_PLUGIN_ROOT', 'CLAUDE_PLUGIN_DATA', 'CLAUDE_CODE_BOSS_AUTO_UPDATE', 'DISABLE_UPDATES', 'DISABLE_AUTOUPDATER', 'CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC', 'FORCE_AUTOUPDATE_PLUGINS'];
+  const saved = Object.fromEntries(keys.map((k) => [k, process.env[k]]));
+  try {
+    const home = path.join(base, 'home'); const root = path.join(base, 'plugin');
+    const global = path.join(home, '.claude', 'claude-code-boss');
+    fs.mkdirSync(global, { recursive: true }); fs.mkdirSync(root, { recursive: true });
+    for (const k of keys) delete process.env[k];
+    Object.assign(process.env, { HOME: home, USERPROFILE: home, CLAUDE_PLUGIN_ROOT: root, CLAUDE_PLUGIN_DATA: path.join(base, 'data') });
+    fs.writeFileSync(path.join(root, 'package.json'), JSON.stringify({ version: '3.16.0' }));
+    fs.writeFileSync(path.join(global, 'marketplace-autoupdate.json'), JSON.stringify({ marketplace: 'allansantos-plugins', status: 'enabled', notified: false }));
+    fs.writeFileSync(path.join(global, 'update-state.json'), JSON.stringify({ seenVersion: '3.15.2', highestSeen: '3.15.2', latest: '3.17.0', checkedAt: Date.now() }));
+    const { userNotices } = require('./user-prompt-submit-dispatcher.js');
+    const ev = { session_id: 'ups-notice-test', hook_event_name: 'UserPromptSubmit' };
+    const line = userNotices(ev);
+    assert(/liguei a atualização automática do plugin/.test(line), `auto-update switched on is shown: ${line}`);
+    assert(/foi atualizado: 3\.15\.2 → 3\.16\.0/.test(line), `"plugin updated" is shown: ${line}`);
+    assert(/versão 3\.17\.0 disponível \(instalada: 3\.16\.0\)/.test(line), `"version available" is shown: ${line}`);
+    assertEq(userNotices(ev), null, 'each is told once: the next prompt shows nothing');
+    process.env.CLAUDE_CODE_BOSS_AUTO_UPDATE = '0';
+    fs.writeFileSync(path.join(global, 'update-state.json'), JSON.stringify({ seenVersion: '3.16.0', highestSeen: '3.16.0', latest: '3.18.0', checkedAt: Date.now() }));
+    assertEq(userNotices(ev), null, 'opted out: no "available" notice');
+  } finally {
+    for (const k of keys) { if (saved[k] === undefined) delete process.env[k]; else process.env[k] = saved[k]; }
+    fs.rmSync(base, { recursive: true, force: true });
+  }
+});
+
 test('user-prompt-submit-dispatcher.dispatch: no signals → null', async () => {
   const d = require('./user-prompt-submit-dispatcher.js');
   const fakes = [

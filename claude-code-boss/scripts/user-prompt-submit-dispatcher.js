@@ -146,6 +146,7 @@ async function linkNoticeFor(event) {
   }
 }
 
+/** UserPromptSubmit hook: reads the event on stdin, prints the agent context and the user's visible line. */
 async function main() {
   const raw = await readStdin();
   const event = parsePayload(raw) || {};
@@ -165,7 +166,24 @@ async function main() {
     const doctor = require('./doctor-first-run.js').takeNotice();
     if (doctor) text = text ? `${text}${SEP}${doctor}` : doctor;
   } catch (err) { console.error(`[claude-code-boss:user-prompt-submit-dispatcher] doctor first-run notice: ${err.message}`); }
+  // Still alive: keeps this session's plugin dir out of the cache prune however long it stays open.
+  try {
+    require('./lib/session-root.js').touchSessionRecord(event.session_id);
+    require('./lib/plugin-dir-heal.js').healOpenSessions();
+  } catch (err) { console.error(`[claude-code-boss:user-prompt-submit-dispatcher] session record touch: ${err.message}`); }
   const out = {};
+  const shown = userNotices(event, { welcome, link });
+  if (shown) out.systemMessage = shown;
+  if (text) out.hookSpecificOutput = { hookEventName: eventName, additionalContext: text };
+  if (Object.keys(out).length) { emitJson(out); return; }
+  emitEmpty();
+}
+
+/**
+ * The prompt's user-visible line (systemMessage), or null: welcome, broken MCP link,
+ * auto-update switched on, "plugin updated" / "version available", hook failures.
+ */
+function userNotices(event, { welcome = null, link = null } = {}) {
   // Once, after SessionStart turned plugin auto-update on: say so and how to turn it off.
   let autoUpdate = null;
   try { autoUpdate = require('./lib/marketplace-autoupdate.js').takeAutoUpdateNotice(); } catch (err) { console.error(`[claude-code-boss:user-prompt-submit-dispatcher] auto-update notice: ${err.message}`); }
@@ -175,20 +193,12 @@ async function main() {
     const root = process.env.CLAUDE_PLUGIN_ROOT && !process.env.CLAUDE_PLUGIN_ROOT.includes('${') ? process.env.CLAUDE_PLUGIN_ROOT : require('path').resolve(__dirname, '..');
     updates = require('./lib/update-notice.js').takeUpdateNotices({ root });
   } catch (err) { console.error(`[claude-code-boss:user-prompt-submit-dispatcher] update notice: ${err.message}`); }
-  // Still alive: keeps this session's plugin dir out of the cache prune however long it stays open.
-  try {
-    require('./lib/session-root.js').touchSessionRecord(event.session_id);
-    require('./lib/plugin-dir-heal.js').healOpenSessions();
-  } catch (err) { console.error(`[claude-code-boss:user-prompt-submit-dispatcher] session record touch: ${err.message}`); }
   // A hook that failed or timed out earlier in this session: Claude Code names only the
   // event, so say which plugin owns it (lib/hook-owner.js — best effort, never faked).
   let hookFailures = null;
   try { hookFailures = require('./lib/hook-owner.js').takeFailureNotices({ event }); } catch (err) { console.error(`[claude-code-boss:user-prompt-submit-dispatcher] hook-owner notice: ${err.message}`); }
   const shown = [welcome, link && link.user, autoUpdate, ...updates, hookFailures].filter(Boolean);
-  if (shown.length) out.systemMessage = shown.join(' ');
-  if (text) out.hookSpecificOutput = { hookEventName: eventName, additionalContext: text };
-  if (Object.keys(out).length) { emitJson(out); return; }
-  emitEmpty();
+  return shown.length ? shown.join(' ') : null;
 }
 
 // model-router-ensure leaves handles behind (it always ended with process.exit):
@@ -204,4 +214,4 @@ if (require.main === module) {
   });
 }
 
-module.exports = { dispatch, DETECTORS, SEP, withTimeout };
+module.exports = { dispatch, DETECTORS, SEP, withTimeout, userNotices };
