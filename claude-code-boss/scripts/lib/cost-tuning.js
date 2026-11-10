@@ -154,14 +154,41 @@ function planWindowSetting(settings, want, state) {
   return result();
 }
 
+/** The window the old model router wrote "only if absent" and never recorded as its own. */
+const LEGACY_WINDOW = 200000;
+
+/**
+ * Removes the router's legacy window once. Without an ownership record it is indistinguishable from a user choice,
+ * so the check runs a single time (`legacyWindowChecked`) and a value the user sets afterwards stays. Removing it never
+ * shrinks a window: Claude Code falls back to the model's native one, which is at least as large.
+ */
+function dropLegacyWindow(win, state) {
+  if (state && state.legacyWindowChecked) return win;
+  const w = win.state;
+  const settings = { ...win.settings };
+  const notes = [...win.notes];
+  if (w.applied == null && !('yielded' in w) && settings[WINDOW_SETTING_KEY] === LEGACY_WINDOW) {
+    delete settings[WINDOW_SETTING_KEY];
+    notes.push(`${WINDOW_SETTING_KEY}: ${LEGACY_WINDOW} → unset (legacy value written by an earlier boss; Claude Code uses the model's native window)`);
+  }
+  return { ...win, settings, notes };
+}
+
 /**
  * Env plan and settings-key plan of the cost knobs in one result (what the hook applies and the doctor reports).
  * @returns {{env:object, settings:object, state:object, changed:boolean, notes:string[]}}
  */
 function planCostTuningAll(settings, want, wantWin, state) {
   const e = planCostTuning((settings || {}).env, want, state);
-  const win = planWindowSetting(settings, wantWin, state);
-  return { env: e.env, settings: win.settings, state: { ...e.state, window: win.state }, changed: e.changed || win.changed, notes: [...e.notes, ...win.notes] };
+  const win = dropLegacyWindow(planWindowSetting(settings, wantWin, state), state);
+  const winChanged = win.settings[WINDOW_SETTING_KEY] !== (settings || {})[WINDOW_SETTING_KEY];
+  return {
+    env: e.env,
+    settings: win.settings,
+    state: { ...e.state, window: win.state, legacyWindowChecked: true },
+    changed: e.changed || winChanged,
+    notes: [...e.notes, ...win.notes],
+  };
 }
 
 /**

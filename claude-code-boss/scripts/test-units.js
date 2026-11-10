@@ -10488,6 +10488,47 @@ test('cost-tuning: the opt-in window goes to the top-level autoCompactWindow key
   assertEq([all.env, all.settings.autoCompactWindow, all.state.window.applied, all.changed], [{ KEEP: '1', ENABLE_TOOL_SEARCH: 'true' }, 153000, 153000, true], 'the env var we wrote before is removed and the window moves to the settings key in one plan');
 });
 
+test('cost-tuning: the 200000 window the old router wrote without ownership is removed once; a value set afterwards, another value or an owned/yielded one stays', () => {
+  const legacy = costTuning.planCostTuningAll({ autoCompactWindow: 200000, KEEP: 1 }, {}, null, {});
+  assertEq([legacy.settings, legacy.changed, legacy.state.legacyWindowChecked], [{ KEEP: 1 }, true, true]);
+  assert(legacy.notes.some((n) => /autoCompactWindow: 200000 → unset \(legacy/.test(n)), `visible note, got: ${legacy.notes}`);
+  const again = costTuning.planCostTuningAll({ autoCompactWindow: 200000 }, {}, null, legacy.state);
+  assertEq([again.settings.autoCompactWindow, again.changed], [200000, false], 'checked once: a 200000 the user sets afterwards is theirs');
+  const other = costTuning.planCostTuningAll({ autoCompactWindow: 500000 }, {}, null, {});
+  assertEq([other.settings.autoCompactWindow, other.changed, other.state.legacyWindowChecked], [500000, false, true], 'not the legacy value: the user\'s own');
+  const yielded = costTuning.planCostTuningAll({ autoCompactWindow: 200000 }, {}, null, { window: { yielded: 200000 } });
+  assertEq([yielded.settings.autoCompactWindow, yielded.changed], [200000, false], 'a value the user changed after an owned one stays');
+  const owned = costTuning.planCostTuningAll({ autoCompactWindow: 200000 }, {}, null, { window: { applied: 200000, previous: 500000 } });
+  assertEq([owned.settings.autoCompactWindow, owned.state.window], [500000, {}], 'an owned value follows the ownership restore, not the legacy rule');
+});
+
+test('cost-tuning: applyCostTuning removes the legacy 200000 from the temp HOME settings.json once and keeps it when set again', () => {
+  const hc = require('./lib/hooks-config.js');
+  const settings = path.join(os.homedir(), '.claude', 'settings.json');
+  const stateFile = path.join(require('../engine/lib/data-dir.js').globalDir(), 'cost-tuning-state.json');
+  assert(settings.startsWith(process.env.USERPROFILE) && stateFile.startsWith(process.env.USERPROFILE), 'temp HOME only');
+  const ucfg = hc.userConfigPath();
+  const keep = [settings, stateFile, ucfg].map((f) => [f, fs.existsSync(f) ? fs.readFileSync(f, 'utf8') : null]);
+  try {
+    for (const [f] of keep) { try { fs.unlinkSync(f); } catch (err) { void err; } }
+    hc._resetCache();
+    fs.mkdirSync(path.dirname(settings), { recursive: true });
+    fs.mkdirSync(path.dirname(stateFile), { recursive: true });
+    fs.writeFileSync(stateFile, JSON.stringify({ applied: {}, previous: {}, yielded: {}, window: {} }));
+    fs.writeFileSync(settings, JSON.stringify({ autoCompactWindow: 200000, hooks: { X: 1 } }));
+    assertEq(routerEnsure.applyCostTuning({}), true);
+    const after = JSON.parse(fs.readFileSync(settings, 'utf8'));
+    assertEq([after.autoCompactWindow, after.hooks], [undefined, { X: 1 }], 'the legacy key is gone, the rest untouched');
+    assertEq(JSON.parse(fs.readFileSync(stateFile, 'utf8')).legacyWindowChecked, true);
+    fs.writeFileSync(settings, JSON.stringify({ ...after, autoCompactWindow: 200000 }));
+    assertEq(routerEnsure.applyCostTuning({}), true);
+    assertEq(JSON.parse(fs.readFileSync(settings, 'utf8')).autoCompactWindow, 200000, 'set again by the user: stays');
+  } finally {
+    for (const [f, v] of keep) { if (v == null) { try { fs.unlinkSync(f); } catch (err) { void err; } } else fs.writeFileSync(f, v); }
+    hc._resetCache();
+  }
+});
+
 test('cost-tuning.autoCompactNotices: the user is told about the migration and about an env var that outranks /autocompact', () => {
   const m = costTuning.autoCompactNotices({ migrated: true, window: 153000, env: {}, processEnv: { CLAUDE_CODE_AUTO_COMPACT_WINDOW: '153000' } });
   assert(/153000.*saiu da variável CLAUDE_CODE_AUTO_COMPACT_WINDOW.*"autoCompactWindow".*\/autocompact.*vale/.test(m.migrated) && m.override === null, `migration notice, got: ${m.migrated}`);
