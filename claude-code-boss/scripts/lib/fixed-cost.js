@@ -108,6 +108,7 @@ function oauthNames(home, errors) {
 // ── MCP: real usage + injected tool names from the transcripts ───────────────
 
 const NAME_RE = /"name":"mcp__([^"]+?)__([^"]+)"/g;
+const AGENT_RE = /"subagent_type":"([^"]+)"/g;
 const tsOf = (line) => { const m = /"timestamp":"([^"]+)"/.exec(line); return m ? (Date.parse(m[1]) || 0) : 0; };
 
 /**
@@ -116,18 +117,21 @@ const tsOf = (line) => { const m = /"timestamp":"([^"]+)"/.exec(line); return m 
  *   - `assistantMessages` / `sessions`: how many billed requests each session really makes;
  *   - `oldestMs`: how far back the history actually reaches (evidence that "no calls" means something);
  *   - `delta`: the newest `deferred_tools_delta` attachment (the exact tool names injected into a session and
- *     the servers that failed or were pending), preferring the transcripts of `cwd`'s own project.
+ *     the servers that failed or were pending), preferring the transcripts of `cwd`'s own project;
+ *   - `byAgent`: sub-agent invocations per `subagent_type` (count, last call);
+ *   - `agentListing`: the agent listing Claude Code sent at the start of the newest session (the first
+ *     `agent_listing_delta` of that transcript), preferring `cwd`'s own project.
  * Streams line by line and only parses the few lines that matter. Newest transcripts first; with `budgetMs` it stops
  * once the budget is spent and sets `partial` (a first-session hook must not scan gigabytes).
  * @param {{home?:string, cwd?:string, days?:number, now?:number, budgetMs?:number}} [opts]
- * @returns {Promise<{partial?:boolean, byPrefix:object, sessions:number, assistantMessages:number, oldestMs:number, delta:(object|null), errors:string[], ms:number}>}
+ * @returns {Promise<{partial?:boolean, byPrefix:object, byAgent:object, sessions:number, assistantMessages:number, oldestMs:number, delta:(object|null), agentListing:(object|null), errors:string[], ms:number}>}
  */
 async function scanUsage({ home = os.homedir(), cwd = process.cwd(), days = 30, now = Date.now(), budgetMs = Infinity } = {}) {
   const t0 = Date.now();
   const cutoff = now - days * DAY;
   const root = path.join(home, '.claude', 'projects');
   const own = cwd.replace(/[^a-zA-Z0-9]/g, '-');
-  const out = { byPrefix: {}, byBackend: {}, sessions: 0, assistantMessages: 0, oldestMs: now, delta: null, errors: [], ms: 0 };
+  const out = { byPrefix: {}, byBackend: {}, byAgent: {}, sessions: 0, assistantMessages: 0, oldestMs: now, delta: null, agentListing: null, errors: [], ms: 0 };
   let dirs = [];
   try { dirs = fs.readdirSync(root); } catch (err) { out.errors.push(`${root}: ${err.message}`); return out; }
   const files = [];
@@ -146,13 +150,34 @@ async function scanUsage({ home = os.homedir(), cwd = process.cwd(), days = 30, 
   files.sort((a, b) => b.mtime - a.mtime);
   let bestOwn = { ts: 0, line: '' };
   let bestAny = { ts: 0, line: '' };
+  let listOwn = { ts: 0, line: '' };
+  let listAny = { ts: 0, line: '' };
   for (const { f, dir, birth } of files) {
     if (Date.now() - t0 > budgetMs) { out.partial = true; out.errors.push(`transcript scan stopped after ${budgetMs}ms budget; ${out.sessions} of ${files.length} transcripts read`); break; }
     out.sessions++;
     out.oldestMs = Math.min(out.oldestMs, birth);
     const rl = readline.createInterface({ input: fs.createReadStream(f, { encoding: 'utf8' }), crlfDelay: Infinity });
+    let listingSeen = false;
     try {
       for await (const line of rl) {
+        // Later deltas only add or remove a few agents: the first one of a transcript is the whole listing.
+        if (!listingSeen && line.includes('"agent_listing_delta"') && line.includes('"addedLines"')) {
+          listingSeen = true;
+          const t = tsOf(line);
+          if (t >= listAny.ts) listAny = { ts: t, line };
+          if (dir === own && t >= listOwn.ts) listOwn = { ts: t, line };
+          continue;
+        }
+        if (line.includes('"subagent_type":"')) {
+          const ts = tsOf(line);
+          if (!ts || ts >= cutoff) {
+            for (const m of line.matchAll(AGENT_RE)) {
+              const e = out.byAgent[m[1]] || (out.byAgent[m[1]] = { calls: 0, lastAt: 0 });
+              e.calls++;
+              if (ts > e.lastAt) e.lastAt = ts;
+            }
+          }
+        }
         if (line.includes('"type":"assistant"') && !line.includes('"isSidechain":true')) out.assistantMessages++;
         if (line.includes('"deferred_tools_delta"') && line.includes('"addedNames"')) {
           const t = tsOf(line);
@@ -185,6 +210,13 @@ async function scanUsage({ home = os.homedir(), cwd = process.cwd(), days = 30, 
       const a = JSON.parse(win.line).attachment || {};
       out.delta = { at: win.ts, names: a.addedNames || [], failed: a.failedMcpServers || [], pending: a.pendingMcpServers || [], own: win === bestOwn };
     } catch (err) { out.errors.push(`deferred_tools_delta: ${err.message}`); }
+  }
+  const lw = listOwn.line ? listOwn : listAny;
+  if (lw.line) {
+    try {
+      const a = JSON.parse(lw.line).attachment || {};
+      out.agentListing = { at: lw.ts, types: a.addedTypes || [], lines: a.addedLines || [], own: lw === listOwn };
+    } catch (err) { out.errors.push(`agent_listing_delta: ${err.message}`); }
   }
   out.ms = Date.now() - t0;
   return out;
@@ -354,6 +386,29 @@ function listSkills({ home = os.homedir(), cwd = process.cwd() } = {}) {
   return { skills, overrides: settings.skillOverrides || {}, errors };
 }
 
+/**
+ * The user's and the project's own agent files (`~/.claude/agents/*.md`, `<cwd>/.claude/agents/*.md`). Their listing
+ * line goes into every session; they are the user's files — reported, never removed.
+ */
+function listAgents({ home = os.homedir(), cwd = process.cwd() } = {}) {
+  const errors = [];
+  const agents = [];
+  for (const [dir, source] of [[path.join(home, '.claude', 'agents'), 'user'], [path.join(cwd, '.claude', 'agents'), 'project']]) {
+    let names = [];
+    try { names = fs.readdirSync(dir); } catch (err) { if (err.code !== 'ENOENT') errors.push(`${dir}: ${err.message}`); continue; }
+    for (const n of names) {
+      if (!n.endsWith('.md')) continue;
+      const file = path.join(dir, n);
+      try {
+        const fm = parseFrontmatter(fs.readFileSync(file, 'utf8'));
+        const name = fm.name || n.slice(0, -3);
+        agents.push({ name, source, file, listedTokens: estTokens(`- ${name}: ${fm.description || ''}`) });
+      } catch (err) { errors.push(`${file}: ${err.message}`); }
+    }
+  }
+  return { agents, errors };
+}
+
 /** Claude Code's own counters in ~/.claude.json: skillUsage / pluginUsage ({ name: {usageCount,lastUsedAt} }). */
 function readUsageCounters(home) {
   const errors = [];
@@ -508,18 +563,36 @@ function buildAudit(f) {
     actions.push({ kind: 'plugin-disable', target: p.id, tokens: p.cost, why: p.reason, whyCode: p.whyCode, whyArgs: p.whyArgs });
   }
 
+  // Agents are only reported: the listing is measured from what Claude Code really sent when a transcript has it, and a
+  // user agent is named as unused only with enough history behind the verdict. Nothing is removed.
+  const own = new Map((f.agents || []).map((a) => [a.name, a]));
+  const listing = usage.agentListing && usage.agentListing.types.length ? usage.agentListing : null;
+  const lineOf = (name) => listing && listing.lines.find((l) => l.startsWith(`- ${name}:`));
+  const agentRows = (listing ? listing.types : [...own.keys()]).map((name) => {
+    const a = own.get(name);
+    const line = lineOf(name);
+    const u = (usage.byAgent || {})[name] || { calls: 0, lastAt: 0 };
+    return { name, source: a ? a.source : 'other', tokens: line ? estTokens(line) : (a ? a.listedTokens : estTokens(`- ${name}`)), calls: u.calls, lastAt: u.lastAt, used: u.lastAt >= cutoff };
+  });
+  const agents = {
+    measured: !!listing, rows: agentRows,
+    unusedUser: enoughHistory ? agentRows.filter((r) => r.source === 'user' && !r.used).map((r) => r.name) : [],
+  };
+
   const sum = (rows, k) => rows.reduce((n, r) => n + (r[k] || 0), 0);
   const perMessage = (tokens) => (tokens * price.read) / 1e6;
   const perSession = (tokens) => (tokens * (price.write + (msgsPerSession - 1) * price.read)) / 1e6;
   const saveTokens = sum(actions, 'tokens');
   return {
     days, now, historyDays, sessions: usage.sessions, msgsPerSession, enoughHistory, toolSearch,
-    mcp, skills, plugins, actions, instructions: f.instructions || [],
+    mcp, skills, plugins, agents, actions, instructions: f.instructions || [],
     totals: {
       mcpTokens: sum(mcp, 'perMessageTokens'), skillTokens: sum(skills, 'listedNow'), instructionTokens: sum(f.instructions || [], 'tokens'),
       mcpServers: mcp.length, mcpUsed: mcp.filter((r) => r.calls > 0).length,
       skillsTotal: skills.length, skillsUsed: skills.filter((s) => s.used).length, skillsHidden: skills.filter((s) => s.override !== 'on').length,
       pluginsTotal: plugins.length, pluginsUsed: plugins.filter((p) => p.used).length,
+      agentsTotal: agentRows.length, agentsUser: agentRows.filter((r) => r.source === 'user').length,
+      agentsUsed: agentRows.filter((r) => r.used).length, agentTokens: sum(agentRows, 'tokens'), agentsUserUnused: agents.unusedUser.length,
     },
     savings: { tokens: saveTokens, perMessageUsd: perMessage(saveTokens), perSessionUsd: perSession(saveTokens) },
     price,
@@ -576,6 +649,7 @@ async function runAudit({ home = os.homedir(), cwd = process.cwd(), days = 30, k
   const ms = listMcpServers({ home, cwd });
   const sk = listSkills({ home, cwd });
   const pl = listPlugins({ home });
+  const ag = listAgents({ home, cwd });
   const ins = listInstructionFiles({ home, cwd });
   const counters = readUsageCounters(home);
   const usage = await scan({ home, cwd, days, now, budgetMs: scanBudgetMs });
@@ -589,8 +663,8 @@ async function runAudit({ home = os.homedir(), cwd = process.cwd(), days = 30, k
       probes[s.name] = await probeFn(s, { env });
     }));
   }
-  errors.push(...ms.errors, ...sk.errors, ...pl.errors, ...ins.errors, ...counters.errors, ...usage.errors);
-  const audit = buildAudit({ days, now, servers: ms.servers, usage, probes, oauth, toolSearch: ts !== 'false', skills: sk.skills, overrides: sk.overrides, counters, plugins: pl.plugins, instructions: ins.files, keep });
+  errors.push(...ms.errors, ...sk.errors, ...pl.errors, ...ag.errors, ...ins.errors, ...counters.errors, ...usage.errors);
+  const audit = buildAudit({ days, now, servers: ms.servers, usage, probes, oauth, toolSearch: ts !== 'false', skills: sk.skills, overrides: sk.overrides, counters, plugins: pl.plugins, agents: ag.agents, instructions: ins.files, keep });
   audit.errors = errors;
   audit.scanMs = usage.ms;
   return audit;
@@ -765,6 +839,10 @@ function formatAudit(a) {
   L.push('');
   L.push(`Instruction files (yours, never edited): ${a.instructions.map((i) => `${path.basename(i.path)} ${i.tokens} tok`).join(', ') || 'none'} — ${t.instructionTokens} tokens per message.`);
   L.push('');
+  L.push(`Agents: ${t.agentsTotal} listed (${t.agentsUser} yours in ~/.claude/agents), ${t.agentsUsed} invoked in ${a.days}d — ${t.agentTokens} tokens in every session's context (${a.agents.measured ? 'measured from the listing Claude Code sent' : 'estimated from the agent files'}).`);
+  if (a.agents.unusedUser.length) L.push(`    Yours not invoked in ${a.days}d (${a.agents.unusedUser.length}): ${a.agents.unusedUser.join(', ')} — move a file out of ~/.claude/agents to drop it from every session (never done here).`);
+  else if (!a.enoughHistory && t.agentsUser) L.push(`    Only ${a.historyDays.toFixed(0)} day(s) of history: not enough to call any agent unused.`);
+  L.push('');
   L.push(`Plugins: ${t.pluginsTotal} installed, ${t.pluginsUsed} used in ${a.days}d.`);
   for (const p of a.plugins) L.push(`    ${p.id} ${p.enabled ? 'enabled' : 'disabled'} ${p.used ? 'used' : 'NOT used'} → ${p.verdict}: ${p.reason}`);
   L.push('');
@@ -780,6 +858,6 @@ function formatAudit(a) {
 module.exports = {
   estTokens, parseRpcBody, PRICING, SKILL_LISTING_CHARS, sanitize, DAY,
   installedPluginRoots, listMcpServers, oauthNames, scanUsage, backendKey, toolNamesByServer, probeHttpTools, expandEnv,
-  auditBossConfig, parseFrontmatter, listSkills, listInstructionFiles, readUsageCounters, listPlugins, buildAudit, runAudit,
+  auditBossConfig, parseFrontmatter, listSkills, listAgents, listInstructionFiles, readUsageCounters, listPlugins, buildAudit, runAudit,
   undoPath, resolveClaudeBin, applyActions, undoActions, listJournal, formatAudit,
 };

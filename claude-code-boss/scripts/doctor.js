@@ -425,7 +425,7 @@ function checkFixedCost(ctx) {
   if (!a) return { ...base, status: 'ok', detail: 'not measured in this run (it reads 30 days of transcripts: run `node scripts/doctor.js --cost`)', fix: '' };
   if (a.error) return { ...base, status: 'warn', detail: `could not measure: ${a.error}`, fix: 'What to do: run `node scripts/doctor.js --cost` in a terminal to see the error, then fix the file it names.' };
   const t = a.totals;
-  const detail = `${t.mcpServers} MCP server(s) (${t.mcpUsed} called in ${a.days}d, ${t.mcpTokens} tok), ${t.skillsTotal} skills (${t.skillsUsed} used, ${t.skillTokens} tok), ${t.pluginsTotal} plugin(s) (${t.pluginsUsed} used), instruction files ${t.instructionTokens} tok`;
+  const detail = `${t.mcpServers} MCP server(s) (${t.mcpUsed} called in ${a.days}d, ${t.mcpTokens} tok), ${t.skillsTotal} skills (${t.skillsUsed} used, ${t.skillTokens} tok), ${t.pluginsTotal} plugin(s) (${t.pluginsUsed} used), ${t.agentsTotal} agents listed (${t.agentTokens} tok; ${t.agentsUserUnused} of yours not invoked in ${a.days}d), instruction files ${t.instructionTokens} tok`;
   if (!a.actions.length) return { ...base, status: 'ok', detail, fix: '' };
   return {
     ...base, status: 'warn',

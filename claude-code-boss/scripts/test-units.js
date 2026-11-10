@@ -18602,6 +18602,54 @@ test('fixed-cost.scanUsage: conta chamadas por servidor na janela, sessoes, mens
   fs.rmSync(home, { recursive: true, force: true });
 });
 
+test('fixed-cost agents: mede a listagem que o Claude Code mandou, nomeia so os agentes do usuario sem uso em 30d, nunca remove', async () => {
+  const home = fcTmp('agents');
+  const cwd = path.join(home, 'work', 'proj');
+  const own = cwd.replace(/[^a-zA-Z0-9]/g, '-');
+  // The transcript files are born now; a clock 20 days ahead gives the audit enough history to judge.
+  const now = Date.now() + 20 * 86400000;
+  const ts = (d) => new Date(now - d * 86400000).toISOString();
+  const agentFile = (n, body) => fcWrite(path.join(home, '.claude', 'agents', `${n}.md`), body);
+  agentFile('a', '---\nname: a\ndescription: Used one\n---\nbody');
+  agentFile('b', '---\nname: b\ndescription: Never used\n---\nbody');
+  agentFile('c', '---\nname: custom-c\ndescription: Used long ago\n---\nbody');
+  const lines = ['- a: Used one (Tools: All tools)', '- b: Never used (Tools: All tools)', '- custom-c: Used long ago (Tools: Read)', '- Explore: Built-in search agent (Tools: All tools)'];
+  const listing = (d, types, added) => fcLine({ type: 'attachment', timestamp: ts(d), attachment: { type: 'agent_listing_delta', addedTypes: types, addedLines: added } });
+  const spawn = (d, type) => fcLine({ type: 'assistant', timestamp: ts(d), message: { content: [{ type: 'tool_use', name: 'Agent', input: { subagent_type: type, prompt: 'x' } }] } });
+  const quoted = fcLine({ type: 'user', timestamp: ts(1), message: { content: 'he wrote "subagent_type":"b" in prose' } });
+  fcWrite(path.join(home, '.claude', 'projects', own, 's1.jsonl'),
+    listing(3, ['a', 'b', 'custom-c', 'Explore'], lines) + spawn(2, 'a') + spawn(1, 'a') + spawn(40, 'custom-c') + quoted + listing(1, ['late'], ['- late: added later']));
+  const u = await fixedCost.scanUsage({ home, cwd, days: 30, now });
+  assertEq(u.agentListing.types, ['a', 'b', 'custom-c', 'Explore'], 'a listagem e a primeira do transcrito (a inteira), nao o delta parcial seguinte');
+  assertEq(u.agentListing.own, true);
+  assertEq(u.byAgent.a.calls, 2);
+  assertEq(u.byAgent['custom-c'], undefined, 'chamada fora da janela nao conta');
+  assertEq(u.byAgent.b, undefined, 'texto citado (aspas escapadas no JSON) nao e invocacao');
+
+  const audit = await fixedCost.runAudit({ home, cwd, days: 30, now, probe: false });
+  assertEq(audit.agents.measured, true);
+  assertEq(audit.totals.agentsTotal, 4);
+  assertEq(audit.totals.agentsUser, 3);
+  assertEq(audit.totals.agentTokens, lines.reduce((n, l) => n + fixedCost.estTokens(l), 0), 'tokens medidos pelas linhas que o Claude Code mandou');
+  assertEq(audit.agents.unusedUser, ['b', 'custom-c'], 'so agentes do usuario; o embutido Explore nao e nomeado');
+  assert(audit.actions.every((x) => !/agent/.test(x.kind)), 'nenhuma acao automatica sobre agentes');
+  assert(fs.existsSync(path.join(home, '.claude', 'agents', 'b.md')), 'arquivo do agente intacto');
+  const report = fixedCost.formatAudit(audit);
+  assert(report.includes('Yours not invoked in 30d (2): b, custom-c'), report);
+  assert(/Agents: 4 listed \(3 yours/.test(report), report);
+  const check = doctor.checkFixedCost({ fixedCost: audit });
+  assert(check.detail.includes('4 agents listed') && check.detail.includes('2 of yours not invoked in 30d'), check.detail);
+
+  const young = await fixedCost.runAudit({ home, cwd, days: 30, now: Date.now(), probe: false });
+  assertEq(young.agents.unusedUser, [], 'sem historico suficiente nenhum agente e chamado de sem uso');
+
+  fs.rmSync(path.join(home, '.claude', 'projects'), { recursive: true, force: true });
+  const est = await fixedCost.runAudit({ home, cwd, days: 30, now, probe: false });
+  assertEq(est.agents.measured, false, 'sem transcrito com a listagem, estima pelos arquivos');
+  assertEq(est.totals.agentsTotal, 3);
+  fs.rmSync(home, { recursive: true, force: true });
+});
+
 test('fixed-cost.scanUsage: com orcamento de tempo esgotado para de ler, marca parcial e avisa; sem orcamento le tudo', async () => {
   const home = fcTmp('scan-budget');
   const cwd = path.join(home, 'proj');
@@ -28243,8 +28291,8 @@ test('cooldown-stamp: absent → off; stamped → on until ms elapses; settleWit
 test('settleWithin: synchronous work that starves the loop does not make a detector with pending I/O time out', async () => {
   const { settleWithin } = require('../engine/lib/settle-within.js');
   const reads = async () => { for (let i = 0; i < 3; i++) await fs.promises.readFile(__filename.replace(/test-units\.js$/, 'doctor.js'), 'utf8').then((s) => s.length); return 'done'; };
-  const guarded = settleWithin(reads(), 300);
-  const end = Date.now() + 1300;
+  const guarded = settleWithin(reads(), 1000);
+  const end = Date.now() + 2300;
   while (Date.now() < end) { /* the starving neighbour */ }
   assertEq((await guarded).status, 'ok');
   const never = settleWithin(new Promise(() => {}), 300);
