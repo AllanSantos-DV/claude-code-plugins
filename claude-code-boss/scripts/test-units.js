@@ -29905,7 +29905,7 @@ test('compaction-core.isMechanicalCut + chooseCompaction: the brief only with a 
   assert(/const r = await engineRuns\(\$, ctx, run, e, next\);[^\n]*\n\s*await leaveAbove\(\$, ctx\);/.test(hook) && /await leaveAbove\(\$, ctx\);\s*oursRuns\(\$, ctx, run, plan\.messages\);\s*\$\.ui\.toast\(`compaction: every message kept/.test(hook), 'pruning and the engine summary release it too (any compaction leaves the session below)');
   assert(/if \(!reply \|\| !\(reply\.recorded > 0\)\) return;/.test(hook) && /const tokens = \(Number\(o\.input\) \|\| 0\) \+ \(Number\(o\.read\) \|\| 0\) \+ \(Number\(o\.write\) \|\| 0\);/.test(hook), '"above" comes from the last REAL call (a held prompt\'s turn has none and usage() is stale)');
   assert(/ctx\.awaitCallAfterCut = true;/.test(hook) && /ctx\.awaitCallAfterCut = false; \/\/ a real call after the cut/.test(hook), 'after a cut, readings are stale until a real call is observed');
-  assert(/if \(ctx\.transcriptPath\) \{ const \{ reply \} = await observeCalls\(\$, ctx\); await folderFromReply\(\$, ctx, reply\); \}/.test(hook), 'the heartbeat picks up calls that landed after their turn ended (the switch no longer waits a turn)');
+  assert(/if \(ctx\.transcriptPath\) \{ const \{ id, reply \} = await observeCalls\(\$, ctx\); settleFrom\(\$, ctx, id, reply\); await folderFromReply\(\$, ctx, reply\); \}/.test(hook), 'the heartbeat picks up calls that landed after their turn ended (the switch no longer waits a turn)');
   assert(/on\('session\.end'[\s\S]{0,400}reportFolder\(\$, ctx, \{ end: true \}\)[\s\S]{0,300}observeCalls\(\$, ctx\)/.test(hook), 'session.end leaves the folder BEFORE the transcript read (short budget)');
   assert(/if \(!d && ctx\.awaitCallAfterCut\) d = \{ action: 'none', reason: 'just-compacted' \};/.test(hook) && /if \(ctx\.awaitCallAfterCut\) return; \/\/ just compacted/.test(hook), 'neither the gate nor the turn-end rule compacts again from a pre-cut reading (E2E: a second, needless summary)');
   assert(/if \(seen > 0\) ctx\.sessionTtlMs = seen;/.test(hook), 'the TTL in use is the latest call\'s (a 1h→5m switch is seen)');
@@ -30914,6 +30914,86 @@ test('compaction hook: a turn-end re-check armed by the 1h window is re-armed by
     assertEq(r.armedMs, [3601000, 3601000], 'the turn-end re-check and the expiry timer, both armed by the 1h window (the turn\'s 5m call not in the transcript yet)');
     assert(r.rearmedMs.some((ms) => ms < 300000), `re-armed by the 5m window (${r.rearmedMs}) ${r.logs.join(' | ')}`);
     assertEq(r.compacts, 1, 'compacted once the 5m cache went cold');
+  });
+});
+
+// Real case (orchestrador, 2026-11-09): the engine's auto summary cut 169,780 → 20,137 mid-turn; the first call after it
+// had 121,052 and the turn went on to 166,526. compaction.settled said tokensAfter 166,526 (609 cut): the turn's last call.
+async function settledAfterCutRun(ce, { lateCall }) {
+  const cmp = await import(require('url').pathToFileURL(path.join(ROOT, 'hooks', 'compaction.mjs')).href);
+  const hooks = collectModuleHooks(cmp.register);
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-settled-'));
+  fs.writeFileSync(path.join(dir, 'brain-http.token'), 'tok');
+  const transcript = path.join(dir, 'session.jsonl');
+  const call = (id, tokens) => JSON.stringify({ type: 'assistant', message: { id, model: 'm1', usage: { input_tokens: 2, output_tokens: 100, cache_read_input_tokens: tokens - 2, cache_creation_input_tokens: 0 } } }) + '\n';
+  fs.writeFileSync(transcript, call('msg-1', 167135));
+  const config = { enabled: true, thresholdPercent: 30, minIntervalMs: 600000, folderTtl: true, warmCeilingTokens: 0, thresholdMaxTokens: 0 };
+  const out = { timers: [], logs: [], settled: [] };
+  let usageTokens = 167135;
+  const env = { CLAUDE_PLUGIN_DATA: dir, BRAIN_HTTP_PORT: '1' };
+  const $ = {
+    env: { get: async (k) => env[k] },
+    fs: { read: async (p) => fs.readFileSync(p, 'utf8') },
+    http: { fetch: async (url, init) => {
+      if (url.split('?')[0].endsWith('/health')) return { status: 200, ok: true, text: JSON.stringify({ dataDir: dir }) };
+      const body = JSON.parse(init.body);
+      const payload = JSON.parse(body.payload);
+      let reply = {};
+      if (payload.kind === 'hello') reply = { config };
+      else if (payload.kind === 'folder' || payload.kind === 'folder-end') reply = { folderTtl: { ttl: '1h', live: 1, allAbove: false, action: 'none' } };
+      else if (payload.kind === 'settled') out.settled.push(payload);
+      else if (payload.kind === 'turn') reply = { ...(await ce.run({ ...body, payload })), config };
+      return { status: 200, ok: true, text: JSON.stringify(reply) };
+    } },
+    session: {
+      id: async () => 'sid-settled', cwd: async () => dir, root: async () => dir, authorize: async () => ({ kind: 'api-key' }),
+      usage: async () => ({ context: { tokens: usageTokens, window: 200000, breakdown: { rawMaxTokens: 200000, autoCompactThreshold: 167000 } } }),
+      messages: async () => [],
+    },
+    clock: { now: async () => 1_000_000_000, after: (ms, fn) => { out.timers.push({ ms, fn }); } },
+    ui: { log: (t) => out.logs.push(t), toast: () => {} },
+    command: { run: async () => {} },
+    prompt: { submit: async () => {} },
+  };
+  const flush = async () => { for (let i = 0; i < 20; i++) await new Promise((r) => setImmediate(r)); };
+  const fire = async (pred) => { const i = out.timers.findIndex(pred); assert(i >= 0, `timer expected (${out.timers.map((t) => t.ms)})`); const [t] = out.timers.splice(i, 1); t.fn(); await flush(); };
+  try {
+    await findHook(hooks, 'classic.SessionStart').fn($, { transcript_path: transcript, source: 'startup' }, async (e) => e);
+    await findHook(hooks, 'session.start').fn($, { isInteractive: true }, async (e) => e);
+    await fire((t) => t.ms === 1);
+    await findHook(hooks, 'turn.start').fn($, {}, async (e) => e);
+    await findHook(hooks, 'session.compact').fn($, { trigger: 'auto', messages: [{ role: 'user', text: 'task', toolUses: [] }] }, async () => ({ messages: [{ role: 'user', text: 'summary', toolUses: [] }] }));
+    await flush();
+    fs.appendFileSync(transcript, JSON.stringify({ type: 'system', subtype: 'compact_boundary' }) + '\n');
+    if (!lateCall) fs.appendFileSync(transcript, call('msg-2', 121052) + call('msg-3', 166526));
+    usageTokens = 166526;
+    await findHook(hooks, 'turn.complete').fn($, {}, async () => ({}));
+    await fire((t) => t.ms === 1);
+    out.atTurnEnd = out.settled.slice();
+    if (lateCall) {
+      fs.appendFileSync(transcript, call('msg-2', 121052));
+      await fire((t) => t.ms === 120000);
+    }
+    return out;
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+}
+
+test('compaction hook + compaction-event: settled measures the first call after the cut, not the turn\'s last call', async () => {
+  await withCmpStore(async (ce) => {
+    const r = await settledAfterCutRun(ce, { lateCall: false });
+    assertEq(r.settled.length, 1, `one settled event, got ${JSON.stringify(r.settled)} ${r.logs.join(' | ')}`);
+    assertEq([r.settled[0].tokensBefore, r.settled[0].tokensAfter, r.settled[0].tokensCut], [167135, 121052, 46083]);
+  });
+});
+
+test('compaction hook: a first call after the cut that lands after turn.complete is measured by the heartbeat, not guessed at turn end', async () => {
+  await withCmpStore(async (ce) => {
+    const r = await settledAfterCutRun(ce, { lateCall: true });
+    assertEq(r.atTurnEnd.length, 0, `nothing said before the call after the cut is seen, got ${JSON.stringify(r.atTurnEnd)}`);
+    assertEq(r.settled.length, 1, `said once the heartbeat sees it ${r.logs.join(' | ')}`);
+    assertEq(r.settled[0].tokensAfter, 121052);
   });
 });
 

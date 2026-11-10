@@ -59,7 +59,7 @@ function newCtx() {
     start: null,             // classic SessionStart: { source, lastTokens, secondsSince }
     resumeChecked: false,
     compactReason: null,     // why the next compaction runs (set by the gate)
-    pendingSettle: null,     // a compaction whose effect the next turn measures
+    pendingSettle: null,     // a compaction whose effect the first API call after it measures
     lastMessageId: null,     // newest API call already recorded as cache.turn
     turnEndTimer: 0,         // token of the pending turn-end re-check (a newer one supersedes)
     holding: false,          // this process holds a person's prompt for the cut (its copy on disk is live, not an orphan)
@@ -200,7 +200,7 @@ function startHeartbeat($, ctx) {
   ctx.heartbeat = true;
   const beat = () => $.clock.after(FOLDER_HEARTBEAT_MS, () => {
     (async () => {
-      if (ctx.transcriptPath) { const { reply } = await observeCalls($, ctx); await folderFromReply($, ctx, reply); }
+      if (ctx.transcriptPath) { const { id, reply } = await observeCalls($, ctx); settleFrom($, ctx, id, reply); await folderFromReply($, ctx, reply); }
       else if (!ctx.noTranscriptSaid) { // a reloaded or resumed session never sees SessionStart: nothing the person can act on, so it goes to the trail (once), not to the screen
         ctx.noTranscriptSaid = true;
         emit($, ctx, 'error', { stage: 'heartbeat', outcome: 'no-transcript-path', cause: 'classic SessionStart not seen — calls not observed' });
@@ -301,11 +301,27 @@ async function observeCalls($, ctx) {
   return { id, reply };
 }
 
+/**
+ * The cut's effect, said once the first real API call after it is observed (the daemon marks it from the transcript's
+ * compact_boundary). Not the turn's last call: a turn that goes on after an auto compaction grows back, and the trail
+ * recorded 609 tokens cut for a 169k → 20k summary.
+ */
+function settleFrom($, ctx, id, reply) {
+  const settle = ctx.pendingSettle;
+  const after = reply && reply.afterCut ? reply.afterCut.tokens : null;
+  if (!settle || after == null) return;
+  ctx.pendingSettle = null;
+  emit($, ctx, 'settled', {
+    reason: settle.reason, trigger: settle.trigger, prevented: settle.prevented === true, tokensBefore: settle.tokensBefore, tokensAfter: after,
+    tokensCut: settle.tokensBefore != null ? settle.tokensBefore - after : null,
+    host: id.host, auth: id.auth,
+  });
+}
+
 async function afterTurn($, ctx) {
   try {
-    const settle = ctx.pendingSettle;
-    ctx.pendingSettle = null;
     const { id, reply } = await observeCalls($, ctx);
+    settleFrom($, ctx, id, reply);
     await folderFromReply($, ctx, reply);
     if (ctx.interactive && ctx.config.folderTtl !== false && ctx.folder) {
       try { await reportFolder($, ctx); } catch (err) {
@@ -314,17 +330,6 @@ async function afterTurn($, ctx) {
       startHeartbeat($, ctx);
     }
     await watchCold($, ctx); // after the observation: the TTL is the one this turn's writes proved
-    if (settle) {
-      const { context } = await $.session.usage();
-      const after = context.tokens ?? ctx.measuredTokens ?? null;
-      // The cache price of the first call after the compaction is in cache.turn (afterCompaction,
-      // marked from the transcript) — its row may land after this turn.complete (interactive).
-      emit($, ctx, 'settled', {
-        reason: settle.reason, trigger: settle.trigger, prevented: settle.prevented === true, tokensBefore: settle.tokensBefore, tokensAfter: after,
-        tokensCut: settle.tokensBefore != null && after != null ? settle.tokensBefore - after : null,
-        host: id.host, auth: id.auth,
-      });
-    }
   } catch (err) {
     backgroundFailed($, 'turn observation failed', err);
   }
@@ -797,7 +802,7 @@ export const register = (on) => {
     // report of any session (and the next session start).
     try { await reportFolder($, ctx, { end: true }); } catch (err) { backgroundFailed($, 'folder leave failed', err); }
     if (ctx.config.enabled && ctx.transcriptPath) {
-      try { await observeCalls($, ctx); } catch (err) { backgroundFailed($, 'end-of-session observation failed', err); }
+      try { const { id, reply } = await observeCalls($, ctx); settleFrom($, ctx, id, reply); } catch (err) { backgroundFailed($, 'end-of-session observation failed', err); }
     }
     if (ctx.run && ctx.run.ours && !ctx.run.emitted) sayRun($, ctx, ctx.run, { engineAccepted: null, acceptance: 'session-ended-before-confirmation' });
     return next(e);

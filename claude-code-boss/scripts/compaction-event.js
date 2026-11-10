@@ -15,6 +15,7 @@
  *              kind, model, cache read/write and the contracted window (ephemeral_5m /
  *              ephemeral_1h). Replies the window this turn proved, so the module waits
  *              for the REAL TTL of the host it talks to (subscription and API differ).
+ *              `afterCut` = the size of the first call after a compact_boundary among the new ones (what a cut left).
  *   tail     → when the transcript's last API call happened and how large the context was (a session the module
  *              has seen no turn of: reopened, resumed, or whose SessionStart never arrived); records nothing
  *   gate | run | resume | settled | error | cold → `compaction.<kind>` (the trail; cold = a cache expiry)
@@ -195,6 +196,7 @@ async function run(ev) {
     // Calls lost between the last one seen and the tail window: counted, not silently dropped.
     if (info.gap) await metrics.record('cache.turn.gap', { ...info.gap, tailBytes: TAIL_BYTES, sinceMessageId: data.sinceMessageId }, ctx);
     let observed = null;
+    let afterCut = null;
     for (const c of calls) {
       const u = c.usage;
       const parsed = cacheCycle().parseCacheUsage(u);
@@ -217,9 +219,10 @@ async function run(ev) {
         afterCompaction: c.afterCompaction,
       };
       await metrics.record('cache.turn', observed, ctx);
+      if (c.afterCompaction && !afterCut) afterCut = { messageId: c.id, tokens: observed.input + observed.read + observed.write };
     }
     return {
-      observed, recorded: calls.length,
+      observed, afterCut, recorded: calls.length,
       lastMessageId: calls.length ? calls[calls.length - 1].id : (data.sinceMessageId || null),
       ttl: ttlVerdictFor(hostKey, storedCacheTurns()),
       config: compactionConfig(), // the dashboard slider reaches open sessions from their next turn
