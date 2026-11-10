@@ -20209,6 +20209,23 @@ test('read-burst: a run of read-only calls gets the bundle for the agent\'s firs
   } finally { fs.rmSync(root, { recursive: true, force: true }); fs.rmSync(base, { recursive: true, force: true }); }
 });
 
+test('read-burst: the outcome journal rotates at 1 MB instead of growing without bound', async () => {
+  const rb = require('./lib/read-burst.js');
+  const base = fcTmp('rbrot');
+  try {
+    const jf = rb.journalFile(base);
+    fs.mkdirSync(path.dirname(jf), { recursive: true });
+    fs.writeFileSync(jf, `${'x'.repeat(1024 * 1024 - 10)}\n`);
+    const sf = rb.stateFile(base, 'S9-main');
+    fs.mkdirSync(path.dirname(sf), { recursive: true });
+    fs.writeFileSync(sf, JSON.stringify({ run: { calls: 3, theme: 't', reads: ['a.js'], delivered: { theme: 't', files: ['a.js'], readsBefore: 0 } }, themes: ['t'], deliveries: 1 }));
+    await rb.onTool({ hook_event_name: 'PostToolUse', session_id: 'S9', tool_name: 'Bash', tool_input: {} }, { root: base, base, build: async () => { throw new Error('not built'); } });
+    assert(fs.existsSync(`${jf}.1`) && fs.statSync(`${jf}.1`).size >= 1024 * 1024 - 10, 'the full journal shifted to .1');
+    const lines = fs.readFileSync(jf, 'utf8').trim().split('\n').map((l) => JSON.parse(l));
+    assertEq(lines.map((l) => [l.event, l.hits]), [['closed', 1]], 'the new entry starts a fresh file');
+  } finally { fs.rmSync(base, { recursive: true, force: true }); }
+});
+
 test('read-burst: code search down still delivers the task-map sections and warns once per session and error signature; concurrent calls at the threshold build once; the hook follows its config', async () => {
   const rb = require('./lib/read-burst.js');
   const cb = require('./lib/context-bundle.js');

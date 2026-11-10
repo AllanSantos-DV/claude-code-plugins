@@ -15,12 +15,13 @@
  *
  * State per session and sub-agent under `<data>/.runtime/read-burst/`; every delivery and the
  * outcome of each delivered run (files read afterwards, how many were in the bundle) are appended
- * to `<data>/.runtime/read-burst.jsonl`, the same hit metric the replay used.
+ * to `<data>/.runtime/read-burst.jsonl` (rotated at 1 MB, lib/log-rotate.js), the same hit metric the replay used.
  */
 const fs = require('fs');
 const path = require('path');
 const { dataDir } = require('../../engine/lib/data-dir.js');
 const { writeJsonAtomic } = require('../../engine/lib/atomic-write.js');
+const { appendRotating } = require('../../engine/lib/log-rotate.js');
 const notices = require('./notice-once.js');
 
 const ORIGIN = `[hook-origin=${require('./hook-owner.js').BOSS_ORIGIN}]`;
@@ -76,8 +77,7 @@ function writeState(base, key, st) {
 
 function journal(base, entry) {
   try {
-    fs.mkdirSync(path.dirname(journalFile(base)), { recursive: true });
-    fs.appendFileSync(journalFile(base), `${JSON.stringify({ at: new Date().toISOString(), ...entry })}\n`);
+    appendRotating(journalFile(base), JSON.stringify({ at: new Date().toISOString(), ...entry }));
   } catch (err) { console.error(`[read-burst] journal write failed: ${err.message}`); }
 }
 
