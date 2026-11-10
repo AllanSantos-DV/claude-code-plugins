@@ -1,5 +1,13 @@
 # Changelog
 
+## [Unreleased]
+
+### Fixed
+- **O diário da rajada de leitura não cresce mais sem limite** (`scripts/lib/read-burst.js`): `.runtime/read-burst.jsonl` passa a girar em 1 MB, guardando 3 arquivos.
+- **A rajada de leitura entregue e ainda aberta quando a sessão termina é fechada e medida** (`scripts/session-end.js`, `scripts/lib/read-burst.js` `forget`): o SessionEnd grava quantos dos arquivos lidos depois já estavam no pacote e apaga o estado da sessão, do agente principal e dos subagentes.
+- **O estado da rajada de leitura de uma sessão que terminou sem SessionEnd sai depois de 7 dias** (`scripts/runtime-sweep.js`): a limpeza do início de sessão agora olha a pasta `.runtime/read-burst/`.
+- **A atualização pelo dashboard não imprime mais o aviso de depreciação DEP0190 do Node** (`scripts/lib/plugin-updater.js`): no Windows o `npm install` vai como uma linha só para o shell, sem lista de argumentos; o comando é o mesmo.
+
 ## [3.16.0] - 2026-11-10
 
 ### Removed
