@@ -15,14 +15,10 @@
  * `git add`/`gh pr merge` to read-only scripts in the replay). For any other script a
  * variant is NOT rewritten: it runs raw, no hint, and is reported as `uncovered` so the
  * metrics show which scripts deserve extending.
- * `CCB_RAW=1 <cmd>` is the escape hatch when the raw output is genuinely needed.
  */
 const path = require('path');
 const { canonicalSig, principalSegment, indexOfShellMeta } = require('../../engine/lib/command-signature.js');
 const { classifySegment } = require('../../engine/lib/curation-families.js');
-
-// `CCB_RAW=1 cmd` (Bash) or `$env:CCB_RAW=1; cmd` (PowerShell).
-const RAW_ESCAPE = /(^|\s|\$env:)CCB_RAW=1(\s|;|$)/;
 
 // PowerShell: what a part may NOT contain for the rewrite to be exact. The redirect splits on
 // `;`/`&&`/`||` the way a shell does, which holds for a plain command line but not for script
@@ -160,16 +156,20 @@ function invocationFor(shell, projectRoot, { reportPath = '', ps = false } = {})
 }
 
 const ENV_PREFIX = /^(?:[A-Za-z_][A-Za-z0-9_]*=(?:"[^"]*"|'[^']*'|[^\s"']*)\s+)+/;
+const ASSIGNMENT = /[A-Za-z_][A-Za-z0-9_]*=(?:"[^"]*"|'[^']*'|[^\s"']*)/g;
 
 /**
  * The leading `VAR=value` assignments of a part, kept for the rewrite: `NODE_ENV=test npm test`
- * lost its NODE_ENV when it became the script call (rtk re-prepends them too).
+ * lost its NODE_ENV when it became the script call (rtk re-prepends them too). `CCB_RAW` is dropped:
+ * the redirect has no raw escape, and curated scripts written earlier print their raw output on it.
  * @param {string} part
  * @returns {string} '' or the assignments followed by one space
  */
 function envPrefixOf(part) {
   const m = ENV_PREFIX.exec(String(part || '').trim());
-  return m ? `${m[0].trim()} ` : '';
+  if (!m) return '';
+  const kept = (m[0].match(ASSIGNMENT) || []).filter((a) => !a.startsWith('CCB_RAW='));
+  return kept.length ? `${kept.join(' ')} ` : '';
 }
 
 /**
@@ -214,12 +214,13 @@ function passthroughMatch(text, profiles) {
 
 /**
  * Plan the rewrite of `command`.
- * @returns {{bypass:true}|{rewritten:string|null, replaced:Array<{shellId:string, from:string, to:string}>, uncovered:string[]}}
+ * @returns {{rewritten:string|null, replaced:Array<{shellId:string, from:string, to:string}>, uncovered:string[]}}
  */
 function planRedirect(command, shells, projectRoot, { reportPath = '', ps = false } = {}) {
-  if (RAW_ESCAPE.test(String(command || ''))) return { bypass: true };
   const parts = splitTopLevel(command);
   const replaced = []; const uncovered = [];
+  // A CCB_RAW set anywhere in the command (`export CCB_RAW=1; …`) is emptied for the script.
+  const unsetRaw = !ps && /(^|[^\w])CCB_RAW(?!\w)/.test(String(command || '')) ? 'CCB_RAW= ' : '';
   if (!parts) return { rewritten: null, replaced, uncovered };
   const profiles = profilesFor(shells);
   if (!profiles.length) return { rewritten: null, replaced, uncovered };
@@ -232,7 +233,7 @@ function planRedirect(command, shells, projectRoot, { reportPath = '', ps = fals
     if (/(^|\s)(?:\d|&)?>>?\s*(?!&\d)(?!\/dev\/null)[^\s|&;]+/.test(text.split('|')[0]) || /\|\s*tee\b/.test(text)) continue;
     // PowerShell: only a plain command line is rewritten, and not one with a bash-style
     // `VAR=x` prefix (it is not PowerShell syntax; the command is not ours to guess).
-    if (ps && (!psPlain(text) || envPrefixOf(text))) continue;
+    if (ps && (!psPlain(text) || ENV_PREFIX.test(text))) continue;
     let sig = ''; try { sig = canonicalSig(text); } catch (err) { void err; continue; }
     if (!sig) continue;
     // 1. PASSTHROUGH (a script that declares `passthrough` forwards its argv to the command it
@@ -243,7 +244,7 @@ function planRedirect(command, shells, projectRoot, { reportPath = '', ps = fals
     const pass = passthroughMatch(text, profiles);
     if (pass) {
       const inv = invocationFor(pass.shell, projectRoot, { reportPath, ps });
-      const to = inv && `${envPrefixOf(text)}${pass.args ? `${inv} ${pass.args}` : inv}`;
+      const to = inv && `${unsetRaw}${envPrefixOf(text)}${pass.args ? `${inv} ${pass.args}` : inv}`;
       if (to) { replaced.push({ shellId: pass.shell.id, from: text, to }); p.text = to; continue; }
     }
     // 2. EXACT: same signature, and every flag of the command is one the alias already has —
@@ -259,7 +260,7 @@ function planRedirect(command, shells, projectRoot, { reportPath = '', ps = fals
         const extra = exact.shell.acceptsArgs === true ? argsAfter(text, exact.sig.split(' ').slice(0, exact.extraFrom)) : null;
         to = extra === null ? null : (extra ? `${to} ${extra}` : to);
       }
-      if (to) to = `${envPrefixOf(text)}${to}`;
+      if (to) to = `${unsetRaw}${envPrefixOf(text)}${to}`;
       if (to) { replaced.push({ shellId: exact.shell.id, from: text, to }); p.text = to; continue; }
     }
     const fam = sig.split(' ').slice(0, 2).join(' ');
@@ -279,7 +280,7 @@ const SHAPER = path.join(__dirname, '..', 'shape-output.js').replace(/\\/g, '/')
 function planShaping(command, projectRoot, deps = {}) {
   const { classifyCommand, tokenGuardActive } = require('../../engine/lib/curation-families.js');
   const cmd = String(command || '').trim();
-  if (!cmd || RAW_ESCAPE.test(cmd) || cmd.includes('shape-output.js')) return null;
+  if (!cmd || cmd.includes('shape-output.js')) return null;
   const parts = splitTopLevel(cmd);
   if (!parts || parts.length !== 1 || /&\s*$/.test(cmd)) return null;
   if (FILE_SINK.test(cmd.split('|')[0]) || /\|\s*tee\b/.test(cmd)) return null;
@@ -314,4 +315,4 @@ function unwrapShaped(command) {
   return m ? m[1] : null;
 }
 
-module.exports = { planRedirect, planShaping, unwrapShaped, splitTopLevel, profilesFor, invocationFor, flagsOf, argsAfter, passthroughMatch, RAW_ESCAPE };
+module.exports = { planRedirect, planShaping, unwrapShaped, splitTopLevel, profilesFor, invocationFor, flagsOf, argsAfter, passthroughMatch };

@@ -41,7 +41,10 @@ function main(argv) {
     console.error(`[curated-run] no runner for "${script || ''}" (only .mjs/.cjs/.js/.ps1)`);
     return 2;
   }
-  const r = spawnSync(cmd[0], cmd[1], { stdio: 'inherit', windowsHide: true, env: { ...process.env, ...env } });
+  // No raw escape: scripts curated earlier print their raw output when CCB_RAW is set.
+  const { CCB_RAW, ...inherited } = process.env;
+  void CCB_RAW;
+  const r = spawnSync(cmd[0], cmd[1], { stdio: 'inherit', windowsHide: true, env: { ...inherited, ...env } });
   if (r.error) {
     console.error(`[curated-run] could not run ${script}: ${r.error.message}`);
     return 127;

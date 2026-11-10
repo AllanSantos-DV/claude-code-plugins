@@ -565,7 +565,7 @@ const TESTS = [
       const cmd = out.updatedInput && out.updatedInput.command;
       if (!/^CCB_RAW_REPORT="[^"]+\/raw-report\/[^"]+\.jsonl" CCB_PROJECT_ROOT="[^"]+" powershell -NoProfile -ExecutionPolicy Bypass -File ".*\/curation\/.*\/scripts\/vitest\.ps1"$/.test(cmd || '')) return `rewritten to the absolute script in the curation home, got: ${cmd}`;
       if (Object.keys(out.updatedInput).join() !== 'command') return `updatedInput carries only command (Claude Code merges it), got: ${JSON.stringify(out.updatedInput)}`;
-      if (!/CCB_RAW=1/.test(out.additionalContext || '')) return 'the redirect must be announced with the raw escape hatch';
+      if (/CCB_RAW(?!_)|crua, rode/.test(out.additionalContext || '')) return `the redirect must offer no raw escape, got: ${out.additionalContext}`;
       return null;
     },
   },

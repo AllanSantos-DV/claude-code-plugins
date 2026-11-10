@@ -102,7 +102,7 @@ async function main() {
   if (!cut) return;
   if (fd !== null) { try { fs.closeSync(fd); } catch (err) { saveErr = err.message; } }
   const where = saveErr ? `(não foi possível salvar: ${saveErr})` : `${file}${fileBytes >= FILE_MAX_BYTES ? ` (primeiros ${FILE_MAX_BYTES / 1048576} MB)` : ''}`;
-  process.stdout.write(`${shownChars && !head[head.length - 1].endsWith('\n') ? '\n' : ''}[boss] saída cortada: ${shownLines} de ${rawLines} linhas, ${shownChars} de ${rawChars} caracteres. Completa em: ${where} — leia por trecho (Read com offset/limit) em vez de despejar tudo. CCB_RAW=1 na frente do comando desliga este corte.\n`);
+  process.stdout.write(`${shownChars && !head[head.length - 1].endsWith('\n') ? '\n' : ''}[boss] saída cortada: ${shownLines} de ${rawLines} linhas, ${shownChars} de ${rawChars} caracteres. Completa em: ${where} — leia por trecho (Read com offset/limit) em vez de despejar tudo.\n`);
   try { await metrics.record('curation.shaped', { family, rawChars, shownChars, rawLines }, { cwd: process.cwd() }); }
   catch (err) { console.error(`[shape-output] metrics: ${err.message}`); }
 }

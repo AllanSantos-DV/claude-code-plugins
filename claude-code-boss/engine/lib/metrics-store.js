@@ -362,7 +362,7 @@ function getMetricsSummary(rangeDays = 7) {
 // Events born together with usage tracking (3.0, Phase C) — any of them proves the usage
 // counters were live at that time. curation.flagged is deliberately absent (2.x).
 const USAGE_ERA_EVENTS = ['curation.used', 'curation.redirected', 'curation.piped', 'curation.uncovered',
-  'curation.skipped', 'curation.pending', 'curation.bypass', 'curation.shaped'];
+  'curation.skipped', 'curation.pending', 'curation.shaped'];
 
 function getCurationUsageIsolated(project, sinceTs = 0, { dataDir } = {}) {
   const Database = loadSqlite();

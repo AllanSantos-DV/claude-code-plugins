@@ -139,7 +139,7 @@ Objetivo: comando que despeja saída grande vira um script curado que devolve s�
   - Classificação (`curation-classifier.js`, função pura): limiar de saída bruta `maxOutputChars=1500` e `maxOutputLines=30` (`config/brain-config.json:70-75`). Não curado acima do limiar é `needs-curation`. Curado com sucesso acima do orçamento (padrão 3 linhas e 500 chars; se o script declara `outputLines`, esse valor, e `outputChars` padrão `outputLines*100`) é `curated-success-noisy`. Curado que falhou acima do limiar bruto é `curated-failure-noisy`.
   - Classe do comando (`engine/lib/curation-families.js`): `exploration` (grep, rg, find, ls, cat, head, tail, sed, awk, `git log/status/diff/show/blame/branch`, curl e outros), `inline` (`node -e`, `python -c`, heredoc) ou `task`. Só `task` é curável.
   - Recorrência: `oneoff.touch` conta toda ocorrência da assinatura (assinatura canônica ignora `cd`, `VAR=`, `echo`, `env`, `sudo`, `time`, flags e wrappers; `cd x && git --no-pager log -5` vira `git log`). A 1ª ocorrência ruidosa de task fica `pending`; a partir da 2ª dentro da janela de 90 dias (`seen.count >= 2`) vira pedido de curadoria.
-  - Suprimido por one-hit marcado com contagem abaixo do teto 3 (assinatura de 1 token tem teto isento). Variante de script existente vira entrada `extendShell`. Descartados: comando de subagente e `CCB_RAW=1`.
+  - Suprimido por one-hit marcado com contagem abaixo do teto 3 (assinatura de 1 token tem teto isento). Variante de script existente vira entrada `extendShell`. Descartado: comando de subagente.
   - Piped: se o agente filtra o mesmo script com o mesmo `| filtro` 2 vezes (`ASK_AT=2`), pede uma única vez para embutir o filtro no script.
 - Sai: grava entradas no turn-journal (`.runtime/curation-turn-<sid>--*.json`); a resposta ao hook é sempre `{}`.
 - Métricas: `curation.used`, `curation.skipped {class}`, `curation.pending {sig}`, `curation.flagged`.
@@ -162,9 +162,9 @@ Objetivo: comando que despeja saída grande vira um script curado que devolve s�
   5. `denyUnknown` (padrão false).
   6. Shaper de exploração: só em `bypassPermissions` e sem Token Guard; embrulha o comando com `shape-output.js`.
   - Padrão: abstém (`{}`), nunca `allow`.
-- O que era do LLM e agora é mecânico: a decisão de usar o script curado. Antes, a dica "prefira na próxima vez" era seguida em 19% das vezes e o deny-redirect em 47% (`scripts/lib/curation-redirect.js:6-9`). O redirect agora é automático e `CCB_RAW=1` na frente do comando é o escape do usuário.
+- O que era do LLM e agora é mecânico: a decisão de usar o script curado. Antes, a dica "prefira na próxima vez" era seguida em 19% das vezes e o deny-redirect em 47% (`scripts/lib/curation-redirect.js:6-9`). O redirect agora é automático e sem escape: um `CCB_RAW` no comando chega vazio ao script curado, que grava a saída completa em arquivo quando a corta.
 - O comando vira `CCB_RAW_REPORT="<id>.jsonl" CCB_PROJECT_ROOT="<root>" <interpretador> "<script absoluto>" [args]`.
-- Métricas: `curation.redirected`, `curation.uncovered`, `curation.bypass`, `curation.piped`, mais as das reescritas.
+- Métricas: `curation.redirected`, `curation.uncovered`, `curation.piped`, mais as das reescritas.
 
 ### 3.4 Economia exata: raw-report e curation-metrics
 - O script curado escreve `{rawChars, rawLines}` em `.runtime/raw-report/<id>.jsonl`. O curation-detect lê e apaga o arquivo e inclui `rawChars` em `curation.used`. A economia fica exata, e não estimada. Órfãos são varridos após 24 h.

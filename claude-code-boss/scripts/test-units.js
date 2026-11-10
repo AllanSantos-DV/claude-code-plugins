@@ -4563,7 +4563,7 @@ test('doctor: the load test runs on the daemon\'s Node and records its outcome; 
   assertEq(doctor.checkEmbedderGuard({}).status, 'ok');
 });
 
-test('C2 curation-redirect: exact task signature+flags rewritten (also inside compounds); variants, files, tee, heredoc and exploration are not; CCB_RAW=1 bypasses', () => {
+test('C2 curation-redirect: exact task signature+flags rewritten (also inside compounds); variants, files, tee, heredoc and exploration are not; a CCB_RAW prefix or export is no escape', () => {
   const { planRedirect } = require('./lib/curation-redirect.js');
   // A platform-native absolute root: 'C:/repo' is not absolute on Linux (CI), where
   // path.resolve prefixed the runner's cwd — the test, not the product, was Windows-only.
@@ -4588,8 +4588,30 @@ test('C2 curation-redirect: exact task signature+flags rewritten (also inside co
     assertEq(plan(raw).rewritten, null, `not rewritten: ${raw}`);
   }
   assertEq(plan('node scripts/test-units.js > /dev/null').rewritten, TU, '/dev/null is not a file sink');
-  assertEq(plan('CCB_RAW=1 node scripts/test-units.js'), { bypass: true });
+  assertEq(plan('CCB_RAW=1 node scripts/test-units.js').rewritten, `CCB_RAW= ${TU}`, 'CCB_RAW=1 prefix: still rewritten, the script gets CCB_RAW emptied');
+  assertEq(plan('FOO=2 CCB_RAW=1 node scripts/test-units.js').rewritten, `CCB_RAW= FOO=2 ${TU}`, 'the other assignments are kept');
+  assertEq(plan('export CCB_RAW=1; node scripts/test-units.js').rewritten, `export CCB_RAW=1 ; CCB_RAW= ${TU}`, 'an exported CCB_RAW does not reach the script either');
+  assertEq(plan('CCB_RAW_REPORT=x node scripts/test-units.js').rewritten, `CCB_RAW_REPORT=x ${TU}`, 'CCB_RAW_REPORT is another variable: untouched');
   assertEq(plan('echo "a && node scripts/test-units.js"').rewritten, null, 'text inside quotes is not a command');
+});
+
+test('curation: no model-facing message offers a raw escape (CCB_RAW=1, $env:CCB_RAW, "rode de novo com")', () => {
+  for (const f of ['curation-guard.js', 'powershell-guard.js', 'shape-output.js', 'curation-detect.js', 'curation-stop.js']) {
+    const src = fs.readFileSync(path.join(__dirname, f), 'utf8');
+    const hit = /CCB_RAW=1|\$env:CCB_RAW|CCB_RAW(?!_)[^\n]{0,40}(desliga|crua)|rode de novo com/.exec(src);
+    assert(!hit, `${f} offers a raw escape: ${hit && hit[0]}`);
+  }
+});
+
+test('curated-run: CCB_RAW in the environment never reaches the curated script', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-rawenv-'));
+  try {
+    const s = path.join(dir, 'probe.mjs');
+    fs.writeFileSync(s, "console.log(`raw=${process.env.CCB_RAW === undefined ? 'unset' : process.env.CCB_RAW} root=${process.env.CCB_PROJECT_ROOT}`);\n");
+    const r = require('child_process').spawnSync(process.execPath, [path.join(__dirname, 'curated-run.js'), `--root=${dir}`, s], { encoding: 'utf8', windowsHide: true, env: { ...process.env, CCB_RAW: '1' } });
+    assertEq(r.status, 0, r.stderr);
+    assertEq(r.stdout.trim(), `raw=unset root=${dir}`);
+  } finally { fs.rmSync(dir, { recursive: true, force: true }); }
 });
 
 test('C2 curation-redirect: an alias that adds arguments to the base alias is never redirected to an argless call (git stash list ran git stash)', () => {
@@ -4979,14 +5001,15 @@ test('C2b shape-output: passes small output untouched; cuts by lines or chars an
   assert(byChars.cut && byChars.shown.length <= 30 && byChars.shownLines < 50, JSON.stringify(byChars));
 });
 
-test('C2b planShaping: single exploration command without Token Guard is wrapped (pipefail + shaper); never with Token Guard, compounds, file sinks, tee, CCB_RAW, tasks', () => {
+test('C2b planShaping: single exploration command without Token Guard is wrapped (pipefail + shaper); never with Token Guard, compounds, file sinks, tee, tasks; a CCB_RAW prefix is no escape', () => {
   const { planShaping } = require('./lib/curation-redirect.js');
   const noTG = { tokenGuardActive: () => false }; const TG = { tokenGuardActive: () => true };
   const w = planShaping('git log --oneline -40', 'C:/r', noTG);
   assert(/^set -o pipefail; \{ git log --oneline -40; \} 2>&1 \| node ".*shape-output\.js" --family "git log"$/.test(w), w);
   assert(/--family "cat"$/.test(planShaping('cat big.json', 'C:/r', noTG)), 'family is the program outside git');
   assertEq(planShaping('git log -5', 'C:/r', TG), null, 'Token Guard installed → the boss does not shape');
-  for (const c of ['cd x && git log', 'git log > out.txt', 'ls | tee l.txt', 'CCB_RAW=1 cat a', 'npm test', 'sleep 9 &']) assertEq(planShaping(c, 'C:/r', noTG), null, c);
+  assert(/^set -o pipefail; \{ CCB_RAW=1 cat a; \} 2>&1 \| node ".*shape-output\.js" --family "cat"$/.test(planShaping('CCB_RAW=1 cat a', 'C:/r', noTG) || ''), 'CCB_RAW=1 does not switch the cut off');
+  for (const c of ['cd x && git log', 'git log > out.txt', 'ls | tee l.txt', 'npm test', 'sleep 9 &']) assertEq(planShaping(c, 'C:/r', noTG), null, c);
 });
 
 test('C1 curation-families: exploration / inline / task classes (compound = task if any segment is a task)', () => {
@@ -5197,7 +5220,7 @@ test('piped → refine: a sub-agent run counts but never spends the single ask (
   } finally { journal.clearEntries(sid); fs.rmSync(proj, { recursive: true, force: true }); }
 });
 
-test('CCB_RAW=1: a deliberate raw run is never a curation gap (no journal, no recurrence toward the one-off ceiling)', async () => {
+test('CCB_RAW=1 is no special case for curation-detect: the prefixed run counts like the plain command', async () => {
   const detect = require('./curation-detect.js');
   const journal = require('./lib/turn-journal.js');
   const proj = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-rawrun-'));
@@ -5206,12 +5229,10 @@ test('CCB_RAW=1: a deliberate raw run is never a curation gap (no journal, no re
   const noisy = Array.from({ length: 300 }, (_, i) => `line ${i}`).join('\n');
   const ev = (command) => ({ hook_event_name: 'PostToolUse', tool_name: 'Bash', tool_input: { command }, tool_response: { stdout: noisy, stderr: '' }, session_id: sid, cwd: proj });
   try {
-    for (let i = 0; i < 3; i++) await detect.run(ev('CCB_RAW=1 npm run rawcheck'));
-    assertEq(journal.readEntries(sid).length, 0, 'raw runs are never journaled');
+    await detect.run(ev('CCB_RAW=1 npm run rawcheck'));
+    assertEq(journal.readEntries(sid).length, 0, 'first occurrence: pending, like any noisy task');
     await detect.run(ev('npm run rawcheck'));
-    assertEq(journal.readEntries(sid).length, 0, 'the next normal run is still the FIRST occurrence (pending) — raw runs did not count');
-    await detect.run(ev('npm run rawcheck'));
-    assertEq(journal.readEntries(sid).length, 1, 'the 2nd normal run asks, as usual');
+    assertEq(journal.readEntries(sid).length, 1, 'the plain run is the 2nd occurrence of the same command: curation is asked');
   } finally { journal.clearEntries(sid); fs.rmSync(proj, { recursive: true, force: true }); }
 });
 
@@ -5406,7 +5427,7 @@ test('C4 curation-metrics: exact shaper savings, redirect savings only with a ba
     ev('curation.uncovered', { shells: ['tests'] }),
     ev('curation.skipped', { class: 'inline' }), ev('curation.skipped', { class: 'exploration' }),
     { event_name: 'curation.shaped', payload: JSON.stringify({ family: 'cat', rawChars: 5000, shownChars: 800 }) },
-    ev('curation.bypass', {}), ev('curation.piped', { shellId: 'tests' }), ev('error-guard.denied', {}),
+    ev('curation.piped', { shellId: 'tests' }), ev('error-guard.denied', {}),
   ], { shellIds: ['tests', 'build', 'lint'] });
   assertEq(s.redirects.total, 2, 'two redirects'); assertEq(s.redirects.ask, 1, 'one under ask');
   assertEq(s.runs.byScript.tests.avgChars, 2000, 'avg curated output'); assertEq(s.runs.byScript.tests.successRate, 0.5, 'success rate');
@@ -32806,7 +32827,7 @@ test('PowerShell curation: a raw command with a curated script is redirected, co
     assertEq(hso(a).permissionDecision, 'ask', 'default mode → ask, like Bash');
     assert(new RegExp(`^${CALL}$`).test(hso(a).updatedInput.command), hso(a).updatedInput.command);
     assertEq(hso(a).updatedInput.timeout, 5, 'other tool_input fields are kept');
-    assert(/\[curadoria\]/.test(hso(a).additionalContext) && /\$env:CCB_RAW=1;/.test(hso(a).additionalContext), 'the hint names the PowerShell raw escape, not the Bash one');
+    assert(/\[curadoria\]/.test(hso(a).additionalContext) && !/CCB_RAW(?!_)|crua, rode|desliga/.test(hso(a).additionalContext), 'the hint offers no raw escape');
     assertEq(hso(await pg.run(ev('npm test', { permission_mode: 'bypassPermissions' }), { edition: '7' })).permissionDecision, 'allow', 'bypassPermissions → allow');
     assertEq(hso(await pg.run(ev('npm test', { permission_mode: 'plan' }), { edition: '7' })).permissionDecision, 'ask', 'any other mode → ask');
 
@@ -32835,8 +32856,9 @@ test('PowerShell curation: a raw command with a curated script is redirected, co
     assertEq(hso(await pg.run(ev('npm test; Write-Output "$(npm test)"'), { edition: '7' })).updatedInput, undefined, 'subexpression → the splitter refuses the whole line');
     const sh = await pg.run(ev('npm test && npm run lint'), { edition: '7' });
     assert(new RegExp(`^${CALL} && npm run lint$`).test(hso(sh).updatedInput.command), 'only the matching part of a compound is rewritten');
-    // CCB_RAW=1 (PowerShell spelling) turns the redirect off
-    assertEq(await pg.run(ev('$env:CCB_RAW=1; npm test'), { edition: '7' }), {}, 'raw escape → abstain');
+    // $env:CCB_RAW=1 is no escape: the curated part is still rewritten (the launcher empties CCB_RAW)
+    const raw = await pg.run(ev('$env:CCB_RAW=1; npm test'), { edition: '7' });
+    assert(new RegExp(`^\\$env:CCB_RAW=1 ; ${CALL}$`).test(hso(raw).updatedInput.command), hso(raw).updatedInput.command);
 
     // 4. the Bash behavior of the cascade is kept: whitelist and the curated script itself abstain; denyUnknown denies
     hc.getCurationGuard = () => ({ ...origCur(), enabled: true, denyUnknown: true });

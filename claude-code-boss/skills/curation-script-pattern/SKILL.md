@@ -46,6 +46,7 @@ These rules apply regardless of script language:
 - No banners, no progress bars, no full stdout dump on success
 - Script's exit code must reflect underlying command's success/failure
 - Script must be **idempotent** and **fast** — no caching, no side effects beyond the wrapped command
+- **The full raw output goes to a file, never back to stdout**: when the summary drops lines (always on `FAIL`), write the whole raw output to a file under the OS temp dir (`<tmp>/ccb-raw/<name>-<timestamp>.log`) and print `full output: <path>` right before the last line, so it can be read in pieces (Read with offset/limit). No environment variable or flag makes the script print the raw output: the redirect empties `CCB_RAW` for every curated script, so a `CCB_RAW=1` switch would never fire.
 - **Report the raw size** (success AND failure): when `CCB_RAW_REPORT` is set (the redirect sets it), append one JSON line `{"rawChars": <chars of the full raw output>, "rawLines": <lines>}` to that file. It is how the dashboard shows the EXACT tokens the script saved (raw − shown); without it only an estimate is possible. It never goes to stdout.
 
 ## Templates by language
@@ -66,9 +67,19 @@ same script. The arguments must reach the command **exactly** — that is the wh
 // <name>.mjs — <description> (passthrough: `<program> <subcommand> ...args`; <program> is a real
 // executable such as git/node/python — for a Windows .cmd shim use the Bash template)
 import { execFileSync } from 'child_process';
-import { appendFileSync } from 'fs';
+import { appendFileSync, mkdirSync, writeFileSync } from 'fs';
+import { tmpdir } from 'os';
+import { join } from 'path';
 
 const root = process.env.CCB_PROJECT_ROOT || process.cwd();
+// The whole raw output, kept in a file whose path the summary prints (read it in pieces).
+const saveRaw = (raw) => {
+  const dir = join(tmpdir(), 'ccb-raw');
+  mkdirSync(dir, { recursive: true });
+  const file = join(dir, `<name>-${Date.now()}.log`);
+  writeFileSync(file, raw);
+  return file;
+};
 // Raw size for the dashboard's exact savings (never printed).
 // A metrics side channel: it must never change the script's exit code or summary.
 const report = (raw) => {
@@ -86,6 +97,7 @@ try {
   const failCount = lines.filter(l => /✗|✘|fail|error/i.test(l)).length;
   if (failCount > 0) {
     console.log(lines.filter(l => /✗|✘|fail|error/i.test(l)).join('\n'));
+    console.log(`full output: ${saveRaw(stdout)}`);
     console.log(`FAIL  <tool> (${ms}ms)`);
     process.exit(1);
   }
@@ -93,9 +105,11 @@ try {
 } catch (err) {
   const ms = Date.now() - start;
   const stderr = err.stderr?.toString() || '';
-  report((err.stdout?.toString() || '') + stderr);
+  const raw = (err.stdout?.toString() || '') + stderr;
+  report(raw);
   const relevant = stderr.split('\n').filter(l => /error|fail|Error|FAIL/i.test(l));
   console.log(relevant.length > 0 ? relevant.join('\n') : stderr.slice(0, 1000));
+  console.log(`full output: ${saveRaw(raw)}`);
   console.log(`FAIL  <tool> (${ms}ms)`);
   process.exit(1);
 }

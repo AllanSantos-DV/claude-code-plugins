@@ -126,7 +126,7 @@ function summarizeOutcomes(rows, { since = 0, maturitySince = since, backfillPer
   const learning = { captured: 0, imported: 0, admitted: 0, merged: 0, byScope: {}, injected: 0, recallEmpty: 0, cited: 0, origins: {}, citedByOrigin: {}, citedEntries: new Map() };
   const mechByKind = {}; const backByKind = {};
   let firstRedirect = null; // when the dominant rule event started being recorded
-  const curation = { redirected: 0, flagged: 0, used: 0, uncovered: 0, bypass: 0, scripts: new Map() };
+  const curation = { redirected: 0, flagged: 0, used: 0, uncovered: 0, scripts: new Map() };
   const proj = new Map(); // project -> { sessions: Map(sid -> {first, mech, back, lessons, injected, redirected, flagged}) }
   const projects = new Set(); const sessions = new Set();
   const loops = { denied: 0, sessions: new Set() }; // error-guard denials: a command re-run blind after it already failed
@@ -174,7 +174,6 @@ function summarizeOutcomes(rows, { since = 0, maturitySince = since, backfillPer
     else if (n === 'curation.flagged') { curation.flagged++; w.flagged++; c.flagged++; }
     else if (n === 'curation.used') curation.used++;
     else if (n === 'curation.uncovered') curation.uncovered++;
-    else if (n === 'curation.bypass') curation.bypass++;
   }
 
   const entries = [...learning.citedEntries.values()];
@@ -205,7 +204,7 @@ function summarizeOutcomes(rows, { since = 0, maturitySince = since, backfillPer
       reuse: { citedEntries: entries.length, inSeveralSessions: entries.filter((e) => e.sessions.size > 1).length, inSeveralProjects: entries.filter((e) => e.projects.size > 1).length },
     },
     curation: {
-      redirected: curation.redirected, flagged: curation.flagged, share: round(share(curation.redirected, curation.flagged)), used: curation.used, uncovered: curation.uncovered, bypass: curation.bypass,
+      redirected: curation.redirected, flagged: curation.flagged, share: round(share(curation.redirected, curation.flagged)), used: curation.used, uncovered: curation.uncovered,
       scripts: curation.scripts.size,
     },
     mechanical: { byKind: mechByKind, handedBackByKind: backByKind, mechanical: mechTotal, handedBack: backTotal, share: round(share(mechTotal, backTotal)) },

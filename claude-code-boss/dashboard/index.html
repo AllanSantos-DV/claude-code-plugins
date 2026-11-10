@@ -2869,7 +2869,7 @@ async function loadCurationPanel() {
   }
   const g = c.guards;
   html += `<p class="text-muted" style="font-size:.8rem;margin-top:.5rem">Not curated: ${c.skipped.exploration} exploration · ${c.skipped.inline} inline · ${c.pending} first occurrences (pending). `
-    + `Bypass (CCB_RAW=1): ${c.bypass}. Guards: ${g.errorGuardDenied} error-guard · ${g.graphGuardFired} graph-guard.</p>`;
+    + `Guards: ${g.errorGuardDenied} error-guard · ${g.graphGuardFired} graph-guard.</p>`;
   const sb = c.stopBlocks || {}; const se = c.shellEscape || {};
   html += `<p class="text-muted" style="font-size:.8rem">Stop blocks asking to curate: ${sb.blocked || 0} · resolved ${sb.released || 0} · gave up ${sb.relented || 0}. `
     + `Bash escape fix: ${se.rewritten || 0} rewritten · ${se.warned || 0} warned · ${se.denied || 0} denied.</p>`;

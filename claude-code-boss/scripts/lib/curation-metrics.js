@@ -13,7 +13,7 @@
 
 const CURATION_EVENTS = [
   'curation.used', 'curation.redirected', 'curation.uncovered', 'curation.skipped', 'curation.pending',
-  'curation.bypass', 'curation.shaped', 'curation.flagged', 'curation.piped',
+  'curation.shaped', 'curation.flagged', 'curation.piped',
   'error-guard.denied', 'graph-guard.fired',
   // Stop-time curation blocks, the Bash shell-escape fix and Stop detectors that threw.
   'curation.stop.blocked', 'curation.stop.released', 'curation.stop.relented',
@@ -39,7 +39,6 @@ function summarizeCuration(rows, { shellIds = [], limitUnitsPerPercent } = {}) {
     uncovered: { total: 0, byScript: {} },
     skipped: { exploration: 0, inline: 0 },
     pending: 0,
-    bypass: 0,
     shaped: { cuts: 0, rawChars: 0, shownChars: 0, savedChars: 0, byFamily: {} },
     redirectSavings: { estChars: 0, withBaseline: 0, withoutBaseline: 0, measured: 0 },
     // EXACT savings: runs whose script reported the raw size it saw (lib/raw-report.js).
@@ -100,7 +99,6 @@ function summarizeCuration(rows, { shellIds = [], limitUnitsPerPercent } = {}) {
         s.pending++;
         if (p.sig) { const b = baseline[p.sig] || (baseline[p.sig] = { chars: 0, n: 0 }); b.chars += num(p.chars); b.n++; }
         break;
-      case 'curation.bypass': s.bypass++; break;
       case 'curation.shaped': {
         s.shaped.cuts++;
         const raw = num(p.rawChars); const shown = num(p.shownChars);
