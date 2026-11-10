@@ -35232,12 +35232,17 @@ test('install-local 5c: a stopOld that throws propagates (fail-loud, no silent r
 
 test('install-local stopDaemon: /shutdown with the daemon\'s own token first; kill by pid only when it keeps answering, said in the log', async () => {
   const lib = await loadDevLib('stop-daemon.mjs'); if (!lib) return;
-  const world = ({ status = 200, quits = true } = {}) => {
-    const w = { up: true, posts: [], kills: [], logs: [], clock: 0 };
+  const world = ({ status = 200, quits = true, drainMs = 0 } = {}) => {
+    const w = { up: true, running: true, exitAt: Infinity, posts: [], kills: [], logs: [], clock: 0 };
     w.opts = {
       port: 38299, readToken: (dir) => `tok-${dir}`, health: async () => (w.up ? { pid: 7 } : null),
-      fetchImpl: async (url, o) => { w.posts.push({ url, auth: o.headers.authorization }); if (status === 200 && quits) w.up = false; return { status }; },
-      kill: (pid) => { w.kills.push(pid); w.up = false; }, sleep: async (ms) => { w.clock += ms; }, now: () => w.clock,
+      fetchImpl: async (url, o) => {
+        w.posts.push({ url, auth: o.headers.authorization });
+        if (status === 200 && quits) { w.up = false; w.exitAt = w.clock + drainMs; }
+        return { status };
+      },
+      alive: () => w.running && w.clock < w.exitAt,
+      kill: (pid) => { w.kills.push(pid); w.up = false; w.running = false; }, sleep: async (ms) => { w.clock += ms; }, now: () => w.clock,
       graceMs: 1000, log: (m) => w.logs.push(m),
     };
     return w;
@@ -35247,6 +35252,12 @@ test('install-local stopDaemon: /shutdown with the daemon\'s own token first; ki
   assertEq(g.posts[0].url, 'http://127.0.0.1:38299/shutdown');
   assertEq(g.posts[0].auth, 'Bearer tok-D', 'the token of the data dir the daemon reports');
   assertEq(g.kills.length, 0, 'no kill when the daemon stops by itself');
+  const d = world({ drainMs: 500 });
+  assertEq((await lib.stopDaemon({ pid: 7, dataDir: 'D' }, d.opts)).how, 'graceful', 'a daemon still draining after it stopped answering is waited for');
+  assert(d.clock >= 500 && d.kills.length === 0, 'returns only once the process exited, without killing it');
+  const l = world({ drainMs: 5000 });
+  assertEq((await lib.stopDaemon({ pid: 7, dataDir: 'D' }, l.opts)).how, 'killed');
+  assert(l.logs.some((m) => /stopped answering but still running after 1000 ms/.test(m)), String(l.logs));
   const r = world({ status: 401 });
   assertEq((await lib.stopDaemon({ pid: 7, dataDir: 'D' }, r.opts)).how, 'killed');
   assert(r.logs.some((m) => /HTTP 401/.test(m)), 'the refused shutdown is said, not hidden');
