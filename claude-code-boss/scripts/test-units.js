@@ -30752,6 +30752,24 @@ test('compaction-event.readNewApiCalls: one entry per API call since the last on
   assertEq(ce.readNewApiCalls(path.join(dir, 'missing.jsonl'), null), []);
 });
 
+test('compaction-event.readNewApiCalls: a long turn — the boundary MBs before the turn end is still seen (window widens to the last call seen)', () => {
+  const ce = require('./compaction-event.js');
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-cmp-long-'));
+  const call = (id, w) => ({ type: 'assistant', message: { id, model: 'm', usage: { input_tokens: 2, cache_read_input_tokens: 900, cache_creation_input_tokens: w } } });
+  const bulk = (kb) => ({ type: 'user', message: { content: 'x'.repeat(kb * 1024) } });
+  // Shape measured live (orchestrador 562fa86f): boundary 352–744 KB before the first call after it, 1–8 MB before the turn end.
+  const f = cmpTranscript(dir, [
+    call('before', 10), bulk(300),
+    { type: 'system', subtype: 'compact_boundary' }, bulk(700),
+    call('first-after', 112800), bulk(1500),
+    call('later', 40),
+  ]);
+  const info = {};
+  const calls = ce.readNewApiCalls(f, 'before', info);
+  assertEq(calls.map((c) => [c.id, c.afterCompaction]), [['first-after', true], ['later', false]], 'every call since the last one seen, the first after the cut flagged');
+  assertEq(info.gap, undefined, 'no gap: the last call seen was found by widening the window');
+});
+
 async function withCmpStore(fn) {
   const mods = ['../engine/lib/metrics-store.js', '../engine/lib/metrics.js', './compaction-event.js'];
   for (const m of mods) delete require.cache[require.resolve(m)];

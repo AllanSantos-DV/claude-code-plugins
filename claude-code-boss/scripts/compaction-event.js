@@ -35,6 +35,7 @@ const metrics = require('../engine/lib/metrics.js');
 
 const RECORDED = new Set(['gate', 'run', 'resume', 'settled', 'error', 'cold']);
 const TAIL_BYTES = 512 * 1024;
+const MAX_SCAN_BYTES = 32 * 1024 * 1024; // how far back a turn looks for the last call it saw
 const HELD_PREFIX = 'held-prompt-';
 const TTL_LOOKBACK = 500; // cache.turn rows read to judge a host's window
 
@@ -64,24 +65,49 @@ function compactionConfig() {
  *     observed (`sinceId`) records each exactly once, whenever it lands.
  * `afterCompaction` = the first real call after a compact_boundary: the price of rewriting
  * history, read from the transcript itself.
- * When `sinceId` fell out of the tail window, only the latest call is returned (never a flood) and
+ * The window starts at the last 512 KB and widens backwards (×4, up to 32 MB) until it holds `sinceId`: one long
+ * turn writes megabytes, and a compact_boundary early in it would otherwise fall outside the window, leaving the
+ * first call after the cut unflagged and the post-cut floor never measured.
+ * When `sinceId` is not found even then, only the latest call is returned (never a flood) and
  * `info.gap` says so: the calls between it and the window are not recorded (compactacao-router-13).
- * @param {{gap?:{skippedInWindow:number, transcriptBytes:number}}} [info] filled when the last call seen is out of the window
+ * @param {{gap?:{skippedInWindow:number, transcriptBytes:number, scannedBytes:number}}} [info] filled when the last call seen is out of the window
  * @returns {Array<{id:string, model:string|null, usage:object, afterCompaction:boolean}>}
  */
 function readNewApiCalls(transcriptPath, sinceId, info) {
   if (!transcriptPath || !fs.existsSync(transcriptPath)) return [];
-  const st = fs.statSync(transcriptPath);
-  const len = Math.min(st.size, TAIL_BYTES);
-  const fd = fs.openSync(transcriptPath, 'r');
-  let text;
+  const size = fs.statSync(transcriptPath).size;
+  const limit = Math.min(size, MAX_SCAN_BYTES);
+  let len = Math.min(size, TAIL_BYTES);
+  let parsed = parseApiCalls(readTail(transcriptPath, size, len));
+  while (sinceId && len < limit && !parsed.calls.some((c) => c.id === sinceId)) {
+    len = Math.min(limit, len * 4);
+    parsed = parseApiCalls(readTail(transcriptPath, size, len));
+  }
+  const { calls, boundaryPending, lastBoundaryCall } = parsed;
+  if (info) info.boundaryAfterLast = boundaryPending; // a cut came after the last call: its size is the pre-cut one
+  // First observation of a process: the calls since the last compact_boundary in the tail are
+  // this session's (a resumed one compacted before its first prompt); no boundary: the latest only.
+  if (!sinceId) { const afterB = calls.filter((c, k) => k >= lastBoundaryCall); return lastBoundaryCall >= 0 && afterB.length ? afterB : calls.slice(-1); }
+  const at = calls.findIndex((c) => c.id === sinceId);
+  if (at >= 0) return calls.slice(at + 1);
+  if (info && calls.length) info.gap = { skippedInWindow: calls.length - 1, transcriptBytes: size, scannedBytes: len };
+  return calls.slice(-1); // since fell out of the window: latest only
+}
+
+/** The last `len` bytes of a file of `size` bytes, as text. */
+function readTail(file, size, len) {
+  const fd = fs.openSync(file, 'r');
   try {
     const buf = Buffer.alloc(len);
-    fs.readSync(fd, buf, 0, len, st.size - len);
-    text = buf.toString('utf8');
+    fs.readSync(fd, buf, 0, len, size - len);
+    return buf.toString('utf8');
   } finally {
     fs.closeSync(fd);
   }
+}
+
+/** The main-thread API calls in a transcript window, and where the last compact_boundary sits among them. */
+function parseApiCalls(text) {
   const calls = [];
   const seen = new Set();
   let boundaryPending = false;
@@ -104,14 +130,7 @@ function readNewApiCalls(transcriptPath, sinceId, info) {
     calls.push({ id, model: row.message.model || null, usage: u, at: Number.isFinite(at) ? at : null, afterCompaction: boundaryPending });
     boundaryPending = false;
   }
-  if (info) info.boundaryAfterLast = boundaryPending; // a cut came after the last call: its size is the pre-cut one
-  // First observation of a process: the calls since the last compact_boundary in the tail are
-  // this session's (a resumed one compacted before its first prompt); no boundary: the latest only.
-  if (!sinceId) { const afterB = calls.filter((c, k) => k >= lastBoundaryCall); return lastBoundaryCall >= 0 && afterB.length ? afterB : calls.slice(-1); }
-  const at = calls.findIndex((c) => c.id === sinceId);
-  if (at >= 0) return calls.slice(at + 1);
-  if (info && calls.length) info.gap = { skippedInWindow: calls.length - 1, transcriptBytes: st.size };
-  return calls.slice(-1); // since fell out of the window: latest only
+  return { calls, boundaryPending, lastBoundaryCall };
 }
 
 /**
@@ -193,8 +212,8 @@ async function run(ev) {
   if (kind === 'turn') {
     const info = {};
     const calls = readNewApiCalls(ev.transcript_path, data.sinceMessageId || null, info);
-    // Calls lost between the last one seen and the tail window: counted, not silently dropped.
-    if (info.gap) await metrics.record('cache.turn.gap', { ...info.gap, tailBytes: TAIL_BYTES, sinceMessageId: data.sinceMessageId }, ctx);
+    // Calls lost between the last one seen and the widest window: counted, not silently dropped.
+    if (info.gap) await metrics.record('cache.turn.gap', { ...info.gap, sinceMessageId: data.sinceMessageId }, ctx);
     let observed = null;
     let afterCut = null;
     for (const c of calls) {
