@@ -33863,6 +33863,11 @@ test('compat-check: the Claude Code installed on THIS machine contains every nam
   assertEq(missing, [], `Claude Code ${version} dropped what the plugin depends on`);
 });
 
+test('compat-check.findBinary: looking up the npm global root prints no DEP0190 shell-args deprecation (doctor --cost showed it to the user)', () => {
+  const r = require('child_process').spawnSync(process.execPath, ['--throw-deprecation', '-e', `require(${JSON.stringify(path.join(__dirname, 'compat-check.js'))}).findBinary(null)`], { encoding: 'utf8', windowsHide: true, timeout: 60000 });
+  assert(r.status === 0 && !/DEP0190/.test(r.stderr), `exit ${r.status}: ${r.stderr.slice(0, 400)}`);
+});
+
 // ─── outcome-metrics: results that grow with use, from recorded events (known inputs → known numbers) ─────
 test('outcome-metrics: learning loop — recurrence, user-scope share, recall/citation, origin of recalled lessons, reuse across sessions and projects', () => {
   const { summarizeOutcomes } = require('./lib/outcome-metrics.js');

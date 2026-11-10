@@ -16,7 +16,7 @@
  */
 const fs = require('fs');
 const path = require('path');
-const { execFileSync } = require('child_process');
+const { execSync } = require('child_process');
 
 const ROOT = path.resolve(__dirname, '..');
 // The plugin's own CLAUDE_CODE_BOSS_* switches and regex fragments (trailing "_") are not engine names.
@@ -45,7 +45,7 @@ function findBinary(explicit) {
   if (explicit) return fs.existsSync(explicit) ? explicit : null; // an explicit path is never swapped for another binary
   const candidates = [process.env.CLAUDE_CODE_EXECPATH];
   try {
-    const g = execFileSync('npm', ['root', '-g'], { encoding: 'utf8', windowsHide: true, shell: process.platform === 'win32' }).trim();
+    const g = execSync('npm root -g', { encoding: 'utf8', windowsHide: true }).trim();
     for (const pkg of ['claude-code-win32-x64', 'claude-code-linux-x64', 'claude-code-darwin-arm64', 'claude-code-darwin-x64']) {
       candidates.push(path.join(g, '@anthropic-ai', 'claude-code', 'node_modules', '@anthropic-ai', pkg, process.platform === 'win32' ? 'claude.exe' : 'claude'));
     }
