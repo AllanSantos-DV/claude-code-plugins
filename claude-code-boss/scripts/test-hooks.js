@@ -407,7 +407,9 @@ const TESTS = [
       // exercising this dev machine's REAL daemon spawn/probe path — that path is
       // unbounded real wall-clock (spawn + wait up to ~9s), unrelated to what this
       // test is verifying (that the dispatcher merges/side-effects correctly).
-      const root = mkTempPluginRoot({});
+      // fixedCost off: a fresh data dir has no once-per-build marker, so doctor-first-run would
+      // audit this machine's real transcripts: seconds of the 10s spawn ceiling, unrelated to this test.
+      const root = mkTempPluginRoot({ fixedCost: { enabled: false } });
       fs.writeFileSync(path.join(root, 'config', 'brain-config.json'), JSON.stringify({ backend: { type: 'local' } }));
       // A project that already has curation (its home exists): only then is the whitelist written.
       // Created right before the run (other tests wipe ~/.claude/claude-code-boss between definition and run).

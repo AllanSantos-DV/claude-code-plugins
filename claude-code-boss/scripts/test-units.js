@@ -15700,10 +15700,10 @@ test('dashboard.fetchByokModelIds: só headers do BYOK; has_more → truncated; 
     assert(/passa do teto de 4 MB/.test(endless.error), endless.error);
 
     mode = 'drip';
-    // Inatividade 20× maior que o intervalo do pingo: na suíte cheia o event loop atrasa os pingos.
-    const drip = await Promise.race([dash.fetchByokModelIds(1000), new Promise(r => setTimeout(() => r('pendurou'), 5000))]);
+    // Prazo total muito abaixo do de inatividade: só um travamento de 10s do event loop deixaria a inatividade vencer.
+    const drip = await Promise.race([dash.fetchByokModelIds(10000, 600), new Promise(r => setTimeout(() => r('pendurou'), 5000))]);
     assert(drip !== 'pendurou', 'catálogo que pinga bytes não pode prender a busca');
-    assert(/não terminou em 2000ms/.test(drip.error), drip.error);
+    assert(/não terminou em 600ms/.test(drip.error), drip.error);
 
     mode = 'utf8';
     const u8 = await dash.fetchByokModelIds(5000);

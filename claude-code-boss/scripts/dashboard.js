@@ -2253,7 +2253,7 @@ const MAX_CATALOG_BYTES = 4 * 1024 * 1024;
 // no editor de regras. Usa SÓ os headers configurados no BYOK (nunca credencial
 // da assinatura) e não devolve nada além dos IDs. Falha → {ok:false,error}
 // visível; o editor continua aceitando digitação manual.
-function fetchByokModelIds(timeoutMs = 8000) {
+function fetchByokModelIds(timeoutMs = 8000, totalMs = timeoutMs * 2) {
   const { byok } = resolveRouterFlags();
   // Erro local (config gravada inválida / BYOK sem Base URL) ≠ falha do endpoint:
   // `status` diz ao handler que não é 502.
@@ -2319,8 +2319,7 @@ function fetchByokModelIds(timeoutMs = 8000) {
     });
     r.on('timeout', () => r.destroy(new Error(`timeout de ${timeoutMs}ms`)));
     // `timeout` só mede inatividade: um endpoint que pinga 1 byte por vez
-    // prenderia a busca. Prazo TOTAL (2× o de inatividade), do envio ao fim do corpo.
-    const totalMs = timeoutMs * 2;
+    // prenderia a busca. Prazo TOTAL (padrão: 2× o de inatividade), do envio ao fim do corpo.
     const deadline = setTimeout(() => {
       resolve({ ok: false, error: `catálogo de ${url.origin}${url.pathname} não terminou em ${totalMs}ms — digite o modelo manualmente` });
       r.destroy();
