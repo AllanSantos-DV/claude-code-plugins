@@ -19876,22 +19876,110 @@ test('context-bundle.smartSearch / mcpCallTool: handshake MCP, job pendente e po
   assert(/initialize: HTTP 500/.test(msg || ''), msg);
 });
 
-test('context-bundle CLI: a URL do Smart Tool vem do env ou do ~/.claude.json; sem tema, uso e codigo 2', async () => {
+test('context-bundle CLI: o endereco do Smart Tool vem do env ou do run file do servico (lido a cada chamada); servico parado falha alto; sem tema, uso e codigo 2', async () => {
   const cli = require('./context-bundle.js');
   const home = fcTmp('ctxcli');
+  const runFile = path.join(home, '.smart-tool', 'data', 'daemon.json');
   try {
     assertEq(cli.discoverSmartToolUrl({ CCB_SMART_TOOL_URL: 'http://e/mcp' }, home), 'http://e/mcp');
-    assertEq(cli.discoverSmartToolUrl({}, home), null, 'sem ~/.claude.json: null (o bundle diz que o Smart Tool nao esta configurado)');
-    fcWrite(path.join(home, '.claude.json'), { mcpServers: { 'smart-tool': { type: 'http', url: 'http://127.0.0.1:8765/mcp' } } });
-    assertEq(cli.discoverSmartToolUrl({}, home), 'http://127.0.0.1:8765/mcp');
-    fcWrite(path.join(home, '.claude.json'), '{ not json');
     let msg = null; try { cli.discoverSmartToolUrl({}, home); } catch (err) { msg = err.message; }
-    assert(/is unreadable/.test(msg || ''), 'arquivo ilegivel: erro, nao "sem Smart Tool"');
+    assert(/Smart Tool service not running \(no run file .*daemon\.json\)/.test(msg || ''), `sem run file: erro com o arquivo, nunca um endereco chutado (${msg})`);
+    fcWrite(runFile, { url: 'http://127.0.0.1:40111', pid: 1, port: 40111 });
+    assertEq(cli.discoverSmartToolUrl({}, home), 'http://127.0.0.1:40111/mcp');
+    fcWrite(runFile, { url: 'http://127.0.0.1:40112/', pid: 2, port: 40112 });
+    assertEq(cli.discoverSmartToolUrl({}, home), 'http://127.0.0.1:40112/mcp', 'servico reiniciado em outra porta: seguido na proxima chamada');
+    fcWrite(runFile, { pid: 3 });
+    msg = null; try { cli.discoverSmartToolUrl({}, home); } catch (err) { msg = err.message; }
+    assert(/has no service address/.test(msg || ''), msg);
+    fcWrite(runFile, '{ not json');
+    msg = null; try { cli.discoverSmartToolUrl({}, home); } catch (err) { msg = err.message; }
+    assert(/unreadable/.test(msg || ''), 'arquivo ilegivel: erro, nao "sem Smart Tool"');
     const origErr = process.stderr.write; let said = '';
     process.stderr.write = (s) => { said += s; return true; };
     let code; try { code = await cli.main([]); } finally { process.stderr.write = origErr; }
     assertEq(code, 2); assert(/usage: node scripts\/context-bundle\.js/.test(said), said);
+    const src = fs.readFileSync(path.join(SCRIPTS, 'context-bundle.js'), 'utf8') + fs.readFileSync(path.join(SCRIPTS, 'read-burst-hook.js'), 'utf8');
+    assert(!/127\.0\.0\.1:\d|localhost:\d|8765/.test(src), 'nenhum endereco/porta do Smart Tool no hook nem no CLI');
   } finally { fs.rmSync(home, { recursive: true, force: true }); }
+});
+
+test('context-bundle.registeredRoot: o projeto registrado mais fundo que contem a maioria dos arquivos lidos, limitado a pasta do projeto; empate vai ao mais fundo; erro que nao e "nao registrado" sai alto', async () => {
+  const cb = require('./lib/context-bundle.js');
+  const P = path.join(os.tmpdir(), 'ccb-rr-proj');
+  const registered = new Map([[path.join(P, 'claude-code-boss').toLowerCase(), path.join(P, 'Claude-Code-Boss')], [path.join(P, 'claude-code-boss', 'servers', 'model-router').toLowerCase(), path.join(P, 'claude-code-boss', 'servers', 'model-router')]]);
+  const asked = [];
+  const status = async (dir) => {
+    asked.push(path.relative(P, dir).replace(/\\/g, '/'));
+    const real = registered.get(dir.toLowerCase());
+    if (!real) throw new Error(`project_manage returned an error: No registered project at ${dir}; register it first (action=register).`);
+    return JSON.stringify({ project: { root: real, status: 'ready' } });
+  };
+  const r1 = await cb.registeredRoot({ projectDir: P, reads: ['claude-code-boss/scripts/a.js', 'claude-code-boss/scripts/lib/b.js', 'docs/x.md'], status });
+  assertEq([r1.sub, r1.root], ['Claude-Code-Boss', path.join(P, 'Claude-Code-Boss')], 'aninhado com 2 de 3 leituras vence a raiz; a grafia real vem do status');
+  assertEq(asked, ['claude-code-boss/scripts', 'claude-code-boss', 'claude-code-boss/scripts/lib', 'docs'], 'sobe pasta a pasta, cada pasta perguntada uma vez so');
+  const r2 = await cb.registeredRoot({ projectDir: P, reads: ['claude-code-boss/servers/model-router/index.js', 'claude-code-boss/scripts/a.js'], status });
+  assertEq(r2.sub, 'claude-code-boss/servers/model-router', 'empate: o mais fundo');
+  assertEq((await cb.registeredRoot({ projectDir: P, reads: [], status })).root, P, 'sem leituras: a pasta do projeto');
+  assertEq((await cb.registeredRoot({ projectDir: P, reads: ['README.md', 'docs/a.md'], status })).sub, '', 'nada aninhado registrado: a pasta do projeto');
+  let msg = null;
+  try { await cb.registeredRoot({ projectDir: P, reads: ['claude-code-boss/a.js'], status: async () => { throw new Error('http://127.0.0.1:1/mcp: connect ECONNREFUSED'); } }); } catch (err) { msg = err.message; }
+  assert(/ECONNREFUSED/.test(msg || ''), 'servico fora: erro, nunca "nao registrado"');
+  assertEq(cb.prefixHits({ code: [{ path: 'scripts\\a.js', start: 1 }], doc: [] }, 'claude-code-boss'), { code: [{ path: 'claude-code-boss/scripts/a.js', start: 1 }], doc: [] });
+});
+
+test('read-burst hook: num repositorio com projeto aninhado, o bundle busca no projeto registrado dos arquivos lidos (servico achado pelo run file), registra a raiz no diario, e com o servico parado avisa com a origem', async () => {
+  const rb = require('./lib/read-burst.js');
+  const hook = require('./read-burst-hook.js');
+  const root = fcTmp('rbnest');
+  const base = fcTmp('rbnestdata');
+  const nested = path.join(root, 'claude-code-boss');
+  fcWrite(path.join(nested, 'scripts', 'doctor.js'), Array.from({ length: 30 }, (_, i) => `// doctor first run step ${i}`).join('\n'));
+  fcWrite(path.join(nested, 'scripts', 'other.js'), 'x');
+  fcWrite(path.join(root, 'pages', 'index.html'), '<p>doctor first run</p>');
+  const searched = [];
+  const srv = http.createServer((req, res) => {
+    let raw = ''; req.on('data', (c) => { raw += c; });
+    req.on('end', () => {
+      const body = JSON.parse(raw);
+      const reply = (result) => { res.writeHead(200, { 'content-type': 'application/json', 'mcp-session-id': 'nest' }); res.end(JSON.stringify({ jsonrpc: '2.0', id: body.id, result })); };
+      if (body.method === 'initialize') return reply({ protocolVersion: '2025-03-26' });
+      if (body.method === 'notifications/initialized') { res.writeHead(202); return res.end(); }
+      const { name, arguments: a } = body.params;
+      const dir = String(a.project_root);
+      if (name === 'project_manage') {
+        if (dir.toLowerCase() === nested.toLowerCase()) return reply({ content: [{ type: 'text', text: JSON.stringify({ project: { root: nested } }) }] });
+        return reply({ isError: true, content: [{ type: 'text', text: `No registered project at ${dir}; register it first (action=register).` }] });
+      }
+      searched.push(dir);
+      const yaml = dir.toLowerCase() === nested.toLowerCase() ? 'code:\n  - path: scripts/doctor.js\n    lines: 1-10\n    score: 0.9\n' : 'doc:\n  - path: pages/index.html\n    lines: 1-1\n    score: 0.4\n';
+      return reply({ content: [{ type: 'text', text: yaml }] });
+    });
+  });
+  await new Promise((r) => srv.listen(0, '127.0.0.1', r));
+  const url = `http://127.0.0.1:${srv.address().port}/mcp`;
+  try {
+    const b = await hook.build({ theme: 'doctor first run', root, exclude: new Set(['claude-code-boss/scripts/other.js']), maxTokens: 6000, maxChars: 9600 }, { discover: () => url });
+    assertEq(searched, [nested], 'smart_search no projeto aninhado, nao na raiz');
+    assertEq(b.searchRoot, 'claude-code-boss');
+    assertEq(b.files, ['claude-code-boss/scripts/doctor.js'], 'caminhos relativos a pasta da sessao, lidos do disco');
+    const ev = (tool_name, tool_input) => ({ hook_event_name: 'PostToolUse', session_id: 'NEST', tool_name, tool_input });
+    const go = (e, discover) => rb.onTool(e, { root, base, build: (o) => hook.build(o, { discover }) });
+    await go(ev('Read', { file_path: path.join(nested, 'scripts', 'other.js') }), () => url);
+    await go(ev('Grep', { pattern: 'doctor first run' }), () => url);
+    const out = await go(ev('Glob', { pattern: '**/*.js' }), () => url);
+    assert(/\[code\] claude-code-boss\/scripts\/doctor\.js/.test(out.context), out.context.slice(0, 400));
+    const j = fs.readFileSync(rb.journalFile(base), 'utf8').trim().split('\n').map((l) => JSON.parse(l));
+    assertEq([j[0].event, j[0].searchRoot], ['delivered', 'claude-code-boss'], 'o diario diz em que projeto buscou');
+    await go(ev('Edit', {}), () => url);
+    const down = () => { throw new Error('Smart Tool service not running (no run file C:/x/.smart-tool/data/daemon.json)'); };
+    await go(ev('Grep', { pattern: 'another theme here' }), down);
+    await go(ev('Read', { file_path: path.join(root, 'a.js') }), down);
+    const third = await go(ev('Read', { file_path: path.join(root, 'b.js') }), down);
+    assert(third.notice.startsWith('[hook-origin=claude-code-boss] [claude-code-boss] read-burst:') && /Smart Tool service not running/.test(third.notice), third.notice);
+  } finally {
+    await new Promise((r) => srv.close(r));
+    fs.rmSync(root, { recursive: true, force: true }); fs.rmSync(base, { recursive: true, force: true });
+  }
 });
 
 test('read-burst: a run of read-only calls gets the bundle for the agent\'s first search once, without the files already read; a write ends the run and journals the hits', async () => {

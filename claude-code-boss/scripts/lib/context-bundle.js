@@ -86,6 +86,55 @@ async function smartSearch(theme, root, { url, pollMs = 700, timeoutMs = 240000,
 }
 
 /**
+ * The Smart Tool project to search for a run: the deepest registered project holding most of the files already read,
+ * bounded by the session's project dir — a repo with a nested project (a plugin folder inside a marketplace repo) gets
+ * the nested index, not the root one. A tie goes to the deeper project; no reads → the project dir.
+ * @param {{projectDir:string, reads:string[], status:(dir:string)=>Promise<string>}} o
+ *   reads: relative to projectDir, forward-slash; status: Smart Tool `project_manage action=status` for a folder
+ *   (it fails with "No registered project" for a folder that is not one — any other failure is thrown)
+ * @returns {Promise<{root:string, sub:string}>} sub: root relative to projectDir, forward-slash, '' for projectDir itself
+ */
+async function registeredRoot({ projectDir, reads = [], status }) {
+  const memo = new Map();
+  const lookup = (sub) => {
+    const k = sub.toLowerCase();
+    if (!memo.has(k)) {
+      memo.set(k, status(path.join(projectDir, sub)).then((text) => {
+        let real = null;
+        try { real = JSON.parse(text).project.root; } catch (err) { void err; /* not the JSON status: keep the folder as asked */ }
+        return path.relative(projectDir, real || path.join(projectDir, sub)).replace(/\\/g, '/');
+      }, (err) => { if (/No registered project/i.test(err.message)) return null; throw err; }));
+    }
+    return memo.get(k);
+  };
+  const votes = new Map();
+  for (const rel of reads) {
+    const parts = path.posix.dirname(String(rel)).split('/').filter((p) => p && p !== '.');
+    let found = '';
+    for (let n = parts.length; n > 0; n--) {
+      const hit = await lookup(parts.slice(0, n).join('/'));
+      if (hit !== null) { found = hit; break; }
+    }
+    votes.set(found, (votes.get(found) || 0) + 1);
+  }
+  let sub = '';
+  const depth = (s) => (s ? s.split('/').length : 0);
+  for (const [s, v] of votes) {
+    const best = votes.get(sub) || 0;
+    if (v > best || (v === best && depth(s) > depth(sub))) sub = s;
+  }
+  return { root: sub ? path.join(projectDir, sub) : projectDir, sub };
+}
+
+/** Hits of a search run in the nested project `sub`, as paths relative to the session's project dir. */
+function prefixHits(hits, sub) {
+  if (!sub) return hits;
+  const out = {};
+  for (const [kind, list] of Object.entries(hits || {})) out[kind] = (list || []).map((h) => ({ ...h, path: `${sub}/${String(h.path).replace(/\\/g, '/')}` }));
+  return out;
+}
+
+/**
  * `maxLines` lines of the hit's range (the start of it when longer) with a header, each cut at `maxLineChars`
  * (a minified line would eat the budget); null when the file is gone, `{stale}` when the range is past its end,
  * `{offTopic}` when `keywords` are given and the file mentions none of them.
@@ -204,4 +253,4 @@ async function buildBundle({ theme, root, deps = {}, limits = {}, exclude = new 
   return { theme, tokens: estTokens(text), files: [...new Set(kept.map((s) => s.path))], sections: kept, memory, notes, text };
 }
 
-module.exports = { buildBundle, smartSearch, parseSmartHits, readExcerpt, findMapSections, keywordsOf, mcpCallTool, DEFAULT_LIMITS };
+module.exports = { buildBundle, smartSearch, registeredRoot, prefixHits, parseSmartHits, readExcerpt, findMapSections, keywordsOf, mcpCallTool, DEFAULT_LIMITS };

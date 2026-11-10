@@ -7,23 +7,27 @@
  * Code, tests and docs ranked by Smart Tool, the Brain's recall for the theme, and the sections of the project's task
  * maps that mention it. The read-burst hook builds the same bundle on its own during a run of read-only calls.
  * Fail loud: a source that cannot answer is named under "notes" in the output.
- * Smart Tool URL: CCB_SMART_TOOL_URL, else the `smart-tool` http MCP server of ~/.claude.json.
+ * Smart Tool endpoint: CCB_SMART_TOOL_URL, else the address the running service writes in ~/.smart-tool/data/daemon.json.
  */
 'use strict';
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
 
+/**
+ * The Smart Tool MCP endpoint, read from the service's run file on every call (the service may move to another port
+ * between runs; no address is kept here). Throws, naming the file, when the service is not running.
+ * @returns {string}
+ */
 function discoverSmartToolUrl(env = process.env, home = os.homedir()) {
   if (env.CCB_SMART_TOOL_URL) return env.CCB_SMART_TOOL_URL;
-  const file = path.join(home, '.claude.json');
-  let cj;
-  try { cj = JSON.parse(fs.readFileSync(file, 'utf8')); } catch (err) {
-    if (err.code === 'ENOENT') return null;
-    throw new Error(`${file} is unreadable: ${err.message}`);
+  const file = path.join(home, '.smart-tool', 'data', 'daemon.json');
+  let run;
+  try { run = JSON.parse(fs.readFileSync(file, 'utf8')); } catch (err) {
+    throw new Error(err.code === 'ENOENT' ? `Smart Tool service not running (no run file ${file})` : `Smart Tool run file ${file} unreadable: ${err.message}`);
   }
-  const s = (cj.mcpServers || {})['smart-tool'];
-  return s && s.url ? s.url : null;
+  if (!run || typeof run.url !== 'string' || !/^https?:\/\//.test(run.url)) throw new Error(`Smart Tool run file ${file} has no service address`);
+  return `${run.url.replace(/\/+$/, '')}/mcp`;
 }
 
 async function main(argv) {

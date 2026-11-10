@@ -107,7 +107,7 @@ function deliver(ev, base, key, job) {
   }
   writeState(base, key, now);
   journal(base, { event: useful ? 'delivered' : 'empty', session: ev.session_id, agent: ev.agent_id || 'main', theme, calls: now.run.calls,
-    ms: job.ms, tokens: bundle ? bundle.tokens : 0, files: useful ? bundle.files : [], failure: failure ? mask(failure).slice(0, 300) : undefined });
+    ms: job.ms, tokens: bundle ? bundle.tokens : 0, files: useful ? bundle.files : [], searchRoot: bundle && typeof bundle.searchRoot === 'string' ? bundle.searchRoot || '.' : undefined, failure: failure ? mask(failure).slice(0, 300) : undefined });
 
   const notice = failure ? notices.notice({
     key: `read-burst:${ev.session_id}`, signature: mask(failure).slice(0, 80), base,
