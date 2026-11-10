@@ -270,6 +270,11 @@ function normalizeEntry(data) {
   return entry;
 }
 
+/**
+ * search_memory on the mcp-memory server. The server's order is kept as is: it puts the session's own
+ * project first and sorts each group by score, so re-sorting by `score` would push other projects' hits
+ * above the current project's.
+ */
 async function searchMcp(query, opts = {}) {
   const topK = opts.topK || 5;
   const minScore = opts.minScore || 0;

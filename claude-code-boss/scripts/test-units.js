@@ -1771,6 +1771,27 @@ test('brain-backend saveMcp: entry.projectId → metadata.project_id (scope=user
   }
 });
 
+test('brain-backend searchMcp: keeps the server order (own project first, then the rest by score), never re-sorts by score', async () => {
+  const results = [
+    { documentId: 'own', text: 'a', score: 0.84, projectId: 'projA' },
+    { documentId: 'other1', text: 'b', score: 0.95, projectId: null },
+    { documentId: 'other2', text: 'c', score: 0.70, projectId: 'projB' },
+  ];
+  const daemon = await startFakeDaemon({ toolResult: () => ({ content: [{ type: 'text', text: JSON.stringify({ results }) }] }) });
+  delete require.cache[require.resolve('../engine/brain-backend.js')];
+  const backend = require('../engine/brain-backend.js');
+  backend.__testHooks._injectConfig({ backend: { type: 'mcp-memory', mcpMemory: { transport: 'http', serverUrl: daemon.url } } });
+  try {
+    await backend.init({ project: 'projA' });
+    const got = await backend.search('release gate', { topK: 5 });
+    assertEq(got.map(r => r.id).join(','), 'own,other1,other2');
+    await backend.close();
+  } finally {
+    delete require.cache[require.resolve('../engine/brain-backend.js')];
+    await daemon.close();
+  }
+});
+
 test('brain-backend countMcp: lists only the current project (unfiltered list_documents outgrew the server JSON limit → "Invalid JSON generated")', async () => {
   const daemon = await startFakeDaemon({ toolResult: () => ({ content: [{ type: 'text', text: JSON.stringify({ count: 7 }) }] }) });
   delete require.cache[require.resolve('../engine/brain-backend.js')];
