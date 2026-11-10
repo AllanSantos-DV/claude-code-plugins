@@ -26789,7 +26789,7 @@ test('brain daemon supervisor: stale owner (root removed) → swapDaemon → sta
 
 /** Owner install A (root kept on disk, as an upgrade leaves it) serving a fake daemon at
  *  `ownerVersion`; ensureDaemon runs as install B at `ourVersion`. */
-async function runUpgradeCase(ownerVersion, ourVersion, { otherData = false } = {}) {
+async function runUpgradeCase(ownerVersion, ourVersion, { otherData = false, ready } = {}) {
   const { ensureDaemon } = await import(SUPERVISOR_URL);
   const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-upgrade-'));
   const tmpHome = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-upgrade-home-'));
@@ -26808,6 +26808,7 @@ async function runUpgradeCase(ownerVersion, ourVersion, { otherData = false } = 
   const res = await ensureDaemon({
     pluginRoot: newRoot, dataDir,
     env: { BRAIN_HTTP_PORT: String(p), HOME: tmpHome, USERPROFILE: tmpHome },
+    ...(ready ? { ready } : {}),
   });
   try { if (res.status === 'started' && res.pid) process.kill(res.pid, 'SIGTERM'); } catch { void 0; }
   fake.server.close();
@@ -28173,6 +28174,7 @@ test('mcp-link: a session Claude Code gave up on is reported (user + agent) once
     line('s-back', 'Max reconnection attempts (5) reached, giving up', '2026-10-05T12:00:35.200Z'),
     line('s-back', 'Reconnected (attempt 1)', '2026-10-05T12:10:00.000Z'),
     line('s-first', 'Connection failed after 141ms (ENDPOINT_NOT_FOUND): MCP endpoint not found', '2026-10-05T12:20:00.000Z'),
+    line('s-synth', 'Max reconnection attempts (5) reached, giving up', '2026-10-05T12:30:00.000Z'),
     'not json',
   ].join('\n'));
   try {
@@ -28196,16 +28198,20 @@ test('mcp-link: a session Claude Code gave up on is reported (user + agent) once
       const ccRoot = process.platform === 'win32' ? path.join(root, 'la', 'claude-cli-nodejs', 'Cache') : path.join(root, 'xdg', 'claude-cli-nodejs');
       fs.cpSync(path.join(root, cwdSlug(cwd)), path.join(ccRoot, cwdSlug(cwd)), { recursive: true });
       // Async child: the /health stub lives in THIS process, so a spawnSync would block it.
-      const run = (sid) => new Promise((resolve, reject) => {
+      const run = (sid, prompt = 'oi') => new Promise((resolve, reject) => {
         const child = require('child_process').execFile(process.execPath, [path.join(SCRIPTS, 'user-prompt-submit-dispatcher.js')], {
           encoding: 'utf8', timeout: 60000,
           env: { ...process.env, ...cache, HOME: home, USERPROFILE: home, BRAIN_HTTP_AUTOSTART: '0', BRAIN_HTTP_PORT: String(srv.address().port) },
         }, (err, stdout) => (err ? reject(err) : resolve(JSON.parse(stdout || '{}'))));
-        child.stdin.end(JSON.stringify({ hook_event_name: 'UserPromptSubmit', prompt: 'oi', session_id: sid, cwd }));
+        child.stdin.end(JSON.stringify({ hook_event_name: 'UserPromptSubmit', prompt, session_id: sid, cwd }));
       });
       const o = await run('s-gaveup');
       assert(/digite \/mcp/.test(o.systemMessage || ''), `user sees the reconnect step: ${JSON.stringify(o).slice(0, 400)}`);
       assert(/brain-server MCP connection is down/.test((o.hookSpecificOutput || {}).additionalContext || ''), 'agent is told too');
+      // A session working on its own only gets background-task results as prompts: told on the first one.
+      const synth = await run('s-synth', '<task-notification><task-id>b1</task-id><status>completed</status></task-notification>');
+      assert(/brain-server MCP connection is down/.test((synth.hookSpecificOutput || {}).additionalContext || ''), `a task-notification prompt carries the notice: ${JSON.stringify(synth).slice(0, 400)}`);
+      assert(!/connection is down/.test(((await run('s-synth', '<task-notification>b2</task-notification>')).hookSpecificOutput || {}).additionalContext || ''), 'once per session, not on every task result');
       assert(!/digite \/mcp/.test((await run('s-back')).systemMessage || ''), 'a reconnected session gets no notice');
     } finally { srv.close(); fs.rmSync(home, { recursive: true, force: true }); }
   } finally { fs.rmSync(root, { recursive: true, force: true }); }
@@ -28547,6 +28553,8 @@ test('brain daemon supervisor: a session still on an OLD install spawns the newe
       fs.mkdirSync(path.join(r, 'servers', 'brain-server'), { recursive: true });
       fs.writeFileSync(path.join(r, 'servers', 'brain-server', 'index.js'), '');
       fs.writeFileSync(path.join(r, 'package.json'), JSON.stringify({ version }));
+      fs.mkdirSync(path.join(r, 'node_modules'), { recursive: true });
+      fs.writeFileSync(path.join(r, 'servers', 'brain-server', 'package.json'), JSON.stringify({ dependencies: {} }));
       if (orphaned) fs.writeFileSync(path.join(r, '.orphaned_at'), String(Date.now()));
       return r;
     };
@@ -28558,6 +28566,86 @@ test('brain daemon supervisor: a session still on an OLD install spawns the newe
     fs.mkdirSync(dev, { recursive: true });
     assertEq(newestInstalledRoot(dev), dev, '--plugin-dir / checkout: untouched');
   } finally { fs.rmSync(base, { recursive: true, force: true }); }
+});
+
+test('install-ready: a root is ready only with no live setup mark, its node_modules and the brain-server deps resolving', () => {
+  const ready = require('./lib/install-ready.js');
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-ready-'));
+  try {
+    fs.mkdirSync(path.join(root, 'servers', 'brain-server'), { recursive: true });
+    fs.writeFileSync(path.join(root, 'servers', 'brain-server', 'package.json'), JSON.stringify({ dependencies: {} }));
+    assert(/no node_modules/.test(ready.installReady(root).detail), 'no node_modules → not ready');
+    fs.mkdirSync(path.join(root, 'node_modules'));
+    assert(ready.installReady(root).ok, 'deps resolve, no setup → ready');
+    ready.markSetup(root);
+    assertEq(ready.setupRunning(root).pid, process.pid, 'the mark names the running setup');
+    assert(/setup still running/.test(ready.installReady(root).detail), 'a live setup → not ready, even with the deps resolving');
+    assertEq(ready.setupRunning(root, { alive: () => false }), null, 'its process gone → the mark does not count');
+    assertEq(ready.setupRunning(root, { now: Date.now() + ready.MARK_STALE_MS + 1 }), null, 'older than the stale window (pid reuse) → does not count');
+    ready.clearSetup(root, process.pid + 1);
+    assert(fs.existsSync(ready.setupMarkPath(root)), 'another process does not clear this mark');
+    ready.clearSetup(root);
+    assertEq(fs.existsSync(ready.setupMarkPath(root)), false, 'the setup clears its own mark');
+    fs.writeFileSync(path.join(root, 'servers', 'brain-server', 'package.json'), JSON.stringify({ dependencies: { 'ccb-definitely-missing-pkg': '1.0.0' } }));
+    assert(/ccb-definitely-missing-pkg/.test(ready.installReady(root).detail), 'a dep missing → not ready, named');
+    const setupSrc = fs.readFileSync(path.join(SCRIPTS, 'plugin-setup.js'), 'utf8');
+    assert(/markSetup\(PLUGIN_ROOT\);\s*await setupSteps\(\);\s*\}\s*finally\s*\{\s*ready\.clearSetup\(PLUGIN_ROOT\)/.test(setupSrc), 'plugin-setup marks its root for the whole install and clears it after');
+  } finally { fs.rmSync(root, { recursive: true, force: true }); }
+});
+
+test('brain daemon supervisor: a newer install still in its setup (or without its deps) is never the one spawned', async () => {
+  const { newestInstalledRoot } = await import(SUPERVISOR_URL);
+  const ready = require('./lib/install-ready.js');
+  const base = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-halfnew-'));
+  try {
+    const plug = path.join(base, 'plugins', 'cache', 'mkt', 'claude-code-boss');
+    const mk = (dir, version, { deps = true } = {}) => {
+      const r = path.join(plug, dir);
+      fs.mkdirSync(path.join(r, 'servers', 'brain-server'), { recursive: true });
+      fs.writeFileSync(path.join(r, 'servers', 'brain-server', 'index.js'), '');
+      fs.writeFileSync(path.join(r, 'servers', 'brain-server', 'package.json'), JSON.stringify({ dependencies: {} }));
+      fs.writeFileSync(path.join(r, 'package.json'), JSON.stringify({ version }));
+      if (deps) fs.mkdirSync(path.join(r, 'node_modules'), { recursive: true });
+      return r;
+    };
+    const cur = mk('3.15.0', '3.15.0');
+    const installing = mk('3.15.2', '3.15.2');
+    ready.markSetup(installing);
+    assertEq(newestInstalledRoot(cur), cur, 'setup running in the newer version → keep the current one');
+    ready.clearSetup(installing);
+    assertEq(newestInstalledRoot(cur), installing, 'setup finished → the newer version');
+    const bare = mk('3.15.3', '3.15.3', { deps: false });
+    assertEq(newestInstalledRoot(cur), installing, 'a newer version with no node_modules is skipped, the newest ready one wins');
+    fs.mkdirSync(path.join(bare, 'node_modules'));
+    assertEq(newestInstalledRoot(cur), bare, 'once ready it is chosen');
+  } finally { fs.rmSync(base, { recursive: true, force: true }); }
+});
+
+test('brain daemon supervisor: an upgrade whose install is not ready keeps the running daemon (no swap, no shutdown)', async () => {
+  const notReady = () => ({ ok: false, detail: 'plugin setup still running in X (pid 1)' });
+  const { res, shutdowns } = await runUpgradeCase('2.29.0', '3.0.0', { ready: notReady });
+  assertEq(res.status, 'current', `a half-installed newer version must not replace a live daemon, got ${res.status}: ${res.error || ''}`);
+  assert(/not ready — plugin setup still running/.test(res.note || ''), `the reason is kept: ${res.note}`);
+  assertEq(shutdowns, 0, 'the running daemon is not asked to shut down');
+});
+
+test('brain-daemon-ensure.runSetupInBackground: a setup already running in this root → "installing", no second process', () => {
+  const { runSetupInBackground } = require('./brain-daemon-ensure.js');
+  const ready = require('./lib/install-ready.js');
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-setuprun-'));
+  try {
+    fs.mkdirSync(path.join(root, 'node_modules'), { recursive: true });
+    fs.mkdirSync(path.join(root, 'servers', 'brain-server'), { recursive: true });
+    fs.mkdirSync(path.join(root, 'scripts'), { recursive: true });
+    fs.writeFileSync(path.join(root, 'servers', 'brain-server', 'package.json'), JSON.stringify({ dependencies: {} }));
+    const spawned = path.join(root, 'setup-ran');
+    fs.writeFileSync(path.join(root, 'scripts', 'plugin-setup.js'), `require('fs').writeFileSync(${JSON.stringify(spawned)}, 'x');`);
+    assertEq(runSetupInBackground(root, root), false, 'ready → no setup');
+    ready.markSetup(root);
+    assertEq(runSetupInBackground(root, root), true, 'mid-install the deps may look resolved: still installing');
+    assertEq(fs.existsSync(spawned), false, 'and no second setup process was started');
+    ready.clearSetup(root);
+  } finally { fs.rmSync(root, { recursive: true, force: true }); }
 });
 
 test('brain daemon supervisor: spawn mutex — live lock blocks, release frees, stale lock stolen (H1)', async () => {

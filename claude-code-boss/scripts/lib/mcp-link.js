@@ -82,7 +82,8 @@ async function linkNotice({ sessionId, cwd, daemonHealthy, cacheRoot }) {
       + 'O serviço já voltou — digite /mcp, escolha brain-server e Reconnect (ou abra uma nova sessão).',
     agent: `[BRAIN] This session's brain-server MCP connection is down: Claude Code gave up reconnecting (${s.at || 'time unknown'}). `
       + 'The brain daemon is healthy again, but brain_* tools stay unavailable in THIS session until the user runs '
-      + '/mcp → brain-server → Reconnect, or opens a new session. Tell the user that in plain words; do not try to restart anything yourself.',
+      + '/mcp → brain-server → Reconnect, or opens a new session; until then this plugin\'s hooks fail with "not connected". '
+      + 'Tell whoever drives this session (the user, or the orchestrator that delegated the work) in plain words; do not try to restart anything yourself.',
   };
 }
 

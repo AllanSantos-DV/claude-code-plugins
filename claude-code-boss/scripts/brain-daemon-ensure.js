@@ -44,15 +44,15 @@ function pluginRoot() {
 
 /**
  * Roda plugin-setup.js em background (detached, não bloqueia o hook).
- * Retorna true se o spawn foi iniciado, false se o setup não era necessário
+ * Retorna true se um setup já roda nesta raiz ou se o spawn foi iniciado, false se o setup não era necessário
  * ou se o spawn falhou.
  */
 function runSetupInBackground(root, dataDir) {
-  const nodeModules = path.join(root, 'node_modules');
   const setupScript = path.join(root, 'scripts', 'plugin-setup.js');
-  // Root deps present is not enough: the brain-server's own deps can still be
-  // missing (brain-health reports it and promises this background re-install).
-  if (fs.existsSync(nodeModules) && require('./brain-health.js').brainServerDepsOk(root).ok) return false;
+  const ready = require('./lib/install-ready.js');
+  // A setup already installing here: still installing, and no second process to find the lock held.
+  if (ready.setupRunning(root)) return true;
+  if (ready.installReady(root).ok) return false;
   if (!fs.existsSync(setupScript)) return false;
   let log = 'ignore';
   try {

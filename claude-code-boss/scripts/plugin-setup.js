@@ -118,9 +118,12 @@ async function main() {
     process.stdout.write(`[plugin-setup] another setup is running (${lock.reason || 'lock held'}) — skipping\n`);
     return;
   }
+  const ready = require('./lib/install-ready.js');
   try {
+    ready.markSetup(PLUGIN_ROOT);
     await setupSteps();
   } finally {
+    ready.clearSetup(PLUGIN_ROOT);
     releaseFileLock(lockFile, lock.owner);
   }
 }

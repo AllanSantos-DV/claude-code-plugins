@@ -25,7 +25,9 @@ import { resolvePort, readToken, lockFile, canonicalDataDir } from './daemon-com
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const crashEvidence = createRequire(import.meta.url)('../../../scripts/lib/crash-evidence.js');
 const nodeSupport = createRequire(import.meta.url)('../../../scripts/lib/node-support.js');
+const installReady = createRequire(import.meta.url)('../../../scripts/lib/install-ready.js');
 const INDEX = path.join(__dirname, '..', 'index.js');
+const OWN_ROOT = path.resolve(__dirname, '..', '..', '..');
 
 /**
  * Probe a port for the brain daemon. Distinct outcomes — conflating these is
@@ -294,9 +296,11 @@ function rootIndex(pluginRoot) {
  * sessions opened before it keep running the OLD install (Claude Code keeps its path until
  * restart); when the daemon is momentarily down (a swap, a crash) their hook/headersHelper
  * respawned it from that old dir and old code served every session. Versions Claude Code
- * already orphaned (.orphaned_at) are skipped; equal versions keep the caller's own.
+ * already orphaned (.orphaned_at) are skipped, and so are versions whose setup has not
+ * finished (the daemon would die importing a half-installed node_modules); equal versions
+ * keep the caller's own.
  */
-function newestInstalledRoot(pluginRoot) {
+function newestInstalledRoot(pluginRoot, ready = installReady.installReady) {
   const root = path.resolve(String(pluginRoot || ''));
   const parent = path.dirname(root);
   if (path.basename(path.dirname(path.dirname(parent))) !== 'cache') return pluginRoot;
@@ -308,7 +312,10 @@ function newestInstalledRoot(pluginRoot) {
     const r = path.join(parent, d);
     if (r === root || fs.existsSync(path.join(r, '.orphaned_at')) || !ownerRootExists(r)) continue;
     const v = installVersion(r);
-    if (isNewerVersion(v, bestV)) { best = r; bestV = v; }
+    if (!isNewerVersion(v, bestV)) continue;
+    const state = ready(r);
+    if (!state.ok) { console.error(`[brain-supervisor] not starting the newer install ${r}: ${state.detail}`); continue; }
+    best = r; bestV = v;
   }
   return best;
 }
@@ -460,7 +467,7 @@ async function exileLegacyDaemon({ dataDir, port, env = process.env }) {
  * @returns {Promise<{status:string, pid?:number, port?:number, note?:string, error?:string}>}
  *   status ∈ disabled|current|started|error. Never rejects.
  */
-export async function ensureDaemon({ pluginRoot, dataDir, env = process.env, pickNode = () => nodeSupport.pickSupportedNode() } = {}) {
+export async function ensureDaemon({ pluginRoot, dataDir, env = process.env, pickNode = () => nodeSupport.pickSupportedNode(), ready = installReady.installReady } = {}) {
   env = (env && typeof env === 'object' && !Array.isArray(env)) ? env : process.env;
   const normalizedEnv = { ...process.env, ...normalizeEnv(env) };
   if (String(normalizedEnv.BRAIN_HTTP_AUTOSTART) === '0') return { status: 'disabled' };
@@ -495,6 +502,10 @@ export async function ensureDaemon({ pluginRoot, dataDir, env = process.env, pic
         }
         return { status: 'current', pid: h.pid, port, note: `sharing daemon owned by another install: ${h.pluginRoot}` };
       }
+      // Stopping a live daemon for an install still in its setup kills every session's link: its
+      // replacement dies importing the half-written node_modules.
+      const own = ready(OWN_ROOT);
+      if (!own.ok) return { status: 'current', pid: h.pid, port, note: `kept the running daemon (${h.pluginRoot}): this install is not ready — ${own.detail}` };
       await swapDaemon({ port, health: h, dataDir, env: normalizedEnv });
       // Verify the old daemon is gone before spawning; if it still owns
       // the port, spawning would get EADDRINUSE and the child would exit 0
@@ -532,7 +543,7 @@ export async function ensureDaemon({ pluginRoot, dataDir, env = process.env, pic
     try {
       // Before the spawn: it truncates the stderr log of the daemon that died.
       if (portWasFree) crash = recordDeadDaemon(dataDir, pluginRoot, port);
-      const spawnRoot = newestInstalledRoot(pluginRoot);
+      const spawnRoot = newestInstalledRoot(pluginRoot, ready);
       // A default Node outside the tested range (Node 25) runs the daemon on an installed 22/24 instead.
       let node;
       try { node = pickNode(); } catch (err) {

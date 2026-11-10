@@ -121,8 +121,13 @@ async function dispatch(event, opts = {}) {
   return texts.length ? texts.join(SEP) : null;
 }
 
+/**
+ * The once-per-session notice that Claude Code gave up on this session's brain-server link.
+ * Synthetic prompts (a background task's result) count too: a session working on its own may
+ * see no other prompt for hours while every plugin hook fails with "not connected".
+ */
 async function linkNoticeFor(event) {
-  if (!event.session_id || !event.cwd || require('./lib/prompt-kind.js').isSyntheticPrompt(event.prompt)) return null;
+  if (!event.session_id || !event.cwd) return null;
   const port = require('./lib/brain-port.js').brainPort();
   try {
     const link = await require('./lib/mcp-link.js').linkNotice({
