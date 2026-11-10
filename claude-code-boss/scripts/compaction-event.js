@@ -9,7 +9,8 @@
  * (token-gated like /mcp; the hook_* tools are unlisted, so a module cannot $.mcp.call
  * them), runs `run(ev)` here, with `ev.payload` = `{ kind, ... }`.
  *
- *   hello    → the compaction config + the cache TTL already observed for this host
+ *   hello    → the compaction config + the cache TTL already observed for this host; recorded as `compaction.session`
+ *              with the module version and the engine auto-compact point the session reported (engineAutoCompactPoint)
  *   turn     → reads the LAST response's real `usage` from the transcript (the module's
  *              turn usage has no TTL breakdown) and records `cache.turn`: host, auth
  *              kind, model, cache read/write and the contracted window (ephemeral_5m /
@@ -193,7 +194,7 @@ async function run(ev) {
   if (kind === 'hello') {
     // A record first opens this project's store, so the verdict reads its history.
     // moduleVersion null = a module from before the version was sent: an old one, by definition.
-    await metrics.record('compaction.session', { host: data.host, auth: data.auth, source: data.source || null, moduleVersion: data.moduleVersion || null, installedVersion: installedVersion() }, ctx);
+    await metrics.record('compaction.session', { host: data.host, auth: data.auth, source: data.source || null, moduleVersion: data.moduleVersion || null, installedVersion: installedVersion(), autocompact: data.autocompact || null }, ctx);
     return { config: compactionConfig(), ttl: ttlVerdictFor(hostKey, storedCacheTurns()), installedVersion: installedVersion() };
   }
 

@@ -364,6 +364,64 @@ export function fallbackWindow(s = {}) {
   return { window: 200000, source: 'fallback-default' };
 }
 
+/** What Claude Code keeps below its auto-compact window: the default point is window minus this (967K on 1M, 167K on 200K). */
+export const ENGINE_AUTOCOMPACT_BUFFER = 33000;
+export const PCT_OVERRIDE_VAR = 'CLAUDE_AUTOCOMPACT_PCT_OVERRIDE';
+export const AUTO_COMPACT_WINDOW_VAR = 'CLAUDE_CODE_AUTO_COMPACT_WINDOW';
+
+function parseTokens(v) {
+  const m = /^\s*(\d+(?:\.\d+)?)\s*([km])?\s*$/i.exec(String(v == null ? '' : v));
+  if (!m) return null;
+  return Math.round(Number(m[1]) * (!m[2] ? 1 : m[2].toLowerCase() === 'k' ? 1000 : 1000000));
+}
+
+/**
+ * Where the engine's own auto-compact fires and whether it sits under half of the model window, from the two variables
+ * that move it (code.claude.com/docs/en/env-vars): CLAUDE_CODE_AUTO_COMPACT_WINDOW (100000–1000000 tokens) sets the
+ * window, CLAUDE_AUTOCOMPACT_PCT_OVERRIDE (1–100) fires at that percent of it and can only lower the point. A percent
+ * under 50 is under half of any model window on its own (the window never exceeds the model's), so it is flagged even
+ * when the model window is unknown. `measuredTokens` is the engine's own figure (usage breakdown `autoCompactThreshold`),
+ * kept for the record only: a window chosen in the settings (`autoCompactWindow`, `/autocompact`) is the person's choice
+ * and never flags.
+ * @param {{modelWindow?: number, pctOverride?: (string|number|null), autoCompactWindow?: (string|number|null), measuredTokens?: number, enabled?: boolean}} s
+ * @returns {{pointTokens: (number|null), measuredTokens: (number|null), modelWindow: (number|null), window: (number|null), windowSetting: (number|null), percent: (number|null), low: boolean, variables: string[]}}
+ */
+export function engineAutoCompactPoint(s = {}) {
+  const modelWindow = Number(s.modelWindow) > 0 ? Number(s.modelWindow) : null;
+  const setting = parseTokens(s.autoCompactWindow);
+  const windowSetting = setting >= 100000 && setting <= 1000000 ? setting : null;
+  const window = windowSetting ? (modelWindow ? Math.min(windowSetting, modelWindow) : windowSetting) : modelWindow;
+  const pctRaw = String(s.pctOverride == null ? '' : s.pctOverride).trim();
+  const percent = pctRaw !== '' && Number(pctRaw) >= 1 && Number(pctRaw) <= 100 ? Number(pctRaw) : null;
+  const half = modelWindow ? modelWindow / 2 : null;
+  let pointTokens = window ? window - ENGINE_AUTOCOMPACT_BUFFER : null;
+  const variables = [];
+  if (percent != null) {
+    const byPercent = window ? Math.round(window * percent / 100) : null;
+    if (byPercent != null && byPercent < pointTokens) pointTokens = byPercent;
+    if (percent < 50 || (half && byPercent != null && byPercent < half)) variables.push(PCT_OVERRIDE_VAR);
+  }
+  if (windowSetting && half && window - ENGINE_AUTOCOMPACT_BUFFER < half) variables.push(AUTO_COMPACT_WINDOW_VAR);
+  const measuredTokens = Number(s.measuredTokens) > 0 ? Number(s.measuredTokens) : null;
+  const low = s.enabled !== false && variables.length > 0;
+  return { pointTokens, measuredTokens, modelWindow, window, windowSetting, percent, low, variables };
+}
+
+/**
+ * The visible line for a low auto-compact point (engineAutoCompactPoint), naming the variable and its value; null when it is not low.
+ * @param {ReturnType<typeof engineAutoCompactPoint>} r
+ * @returns {string|null}
+ */
+export function autoCompactWarning(r) {
+  if (!r || !r.low) return null;
+  const k = (n) => (n >= 1000000 ? `${Math.round(n / 100000) / 10}M` : `${Math.round(n / 1000)}k`);
+  const at = r.measuredTokens || r.pointTokens;
+  const where = at && r.modelWindow ? `at ~${k(at)} of a ${k(r.modelWindow)} window (${Math.round(at * 100 / r.modelWindow)}%)`
+    : r.percent != null ? `at ${r.percent}% of its auto-compact window` : 'under half of the model window';
+  const value = (v) => (v === PCT_OVERRIDE_VAR ? `${v}=${r.percent}` : `${v}=${r.windowSetting}`);
+  return `Claude Code auto-compacts ${where}, set by ${r.variables.map(value).join(' and ')}: each compaction there is a model-written summary of the session; remove it to compact near the window's limit`;
+}
+
 /** The configured percent, inside the slider's range (a hand-edited config included). */
 export function clampPercent(v, options = {}) {
   const o = { ...DEFAULTS, ...options };

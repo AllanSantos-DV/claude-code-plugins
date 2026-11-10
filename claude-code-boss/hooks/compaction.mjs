@@ -28,7 +28,7 @@
 // daemon (POST /hook/compaction-event → tool hook_compaction_event → scripts/compaction-event.js).
 
 import { daemon as sharedDaemon, isDaemonDegraded } from '../scripts/lib/module-daemon.mjs';
-import { planCompaction, buildBrief, decideTiming, decideTurnEnd, classifyResume, estimateTokens, thresholdFor, fallbackWindow, chooseCompaction, isCacheWarm, isMechanicalCut, resumedAnswerAt, decidePhaseRestart, lastTurnDelivered, phaseRestartNotice, describeFailure, compactResultError, DEFAULTS } from '../scripts/lib/compaction-core.mjs';
+import { planCompaction, buildBrief, decideTiming, decideTurnEnd, classifyResume, estimateTokens, thresholdFor, fallbackWindow, chooseCompaction, isCacheWarm, isMechanicalCut, resumedAnswerAt, decidePhaseRestart, lastTurnDelivered, phaseRestartNotice, describeFailure, compactResultError, engineAutoCompactPoint, autoCompactWarning, PCT_OVERRIDE_VAR, AUTO_COMPACT_WINDOW_VAR, DEFAULTS } from '../scripts/lib/compaction-core.mjs';
 
 // Kept equal to package.json by scripts/sync-version.js. The daemon compares it with the installed plugin: a session
 // started before an update keeps running this file, so the person is told to reopen it.
@@ -76,6 +76,7 @@ function newCtx() {
     model: null,             // the transcript's last call's model (window fallback when the engine reports none)
     tailTokens: undefined,   // the transcript's size reading, same use
     staleWarned: false,      // the "old Boss in this session" notice was given
+    autoCompactWarned: false, // the "engine auto-compacts under half of the window" notice was given
     resumeAnswer: null,      // { synthetic, real }: lastAnswerAt is aged on resume (resumedAnswerAt); the trail says the real one
     coldLoggedFor: null,     // the lastAnswerAt whose cache expiry is already recorded
     noTranscriptSaid: false, // the heartbeat's no-transcript notice was shown
@@ -272,9 +273,32 @@ async function watchCold($, ctx) {
   $.clock.after(dueIn + 1000, () => { if (token === ctx.coldTimer && answerAt === ctx.lastAnswerAt) void noteCold($, ctx, 'timer'); });
 }
 
+// The engine's own auto-compact point for this session (engineAutoCompactPoint), or the reason it could not be read.
+async function autoCompactReading($) {
+  try {
+    const [pctOverride, autoCompactWindow] = await Promise.all([$.env.get(PCT_OVERRIDE_VAR), $.env.get(AUTO_COMPACT_WINDOW_VAR)]);
+    const { context } = await $.session.usage({ breakdown: 'summary' });
+    const bd = context.breakdown || {};
+    return engineAutoCompactPoint({ modelWindow: context.window, pctOverride, autoCompactWindow, measuredTokens: bd.autoCompactThreshold, enabled: bd.isAutoCompactEnabled });
+  } catch (err) {
+    return { error: String(err && err.message ? err.message : err) };
+  }
+}
+
+function noteAutoCompact($, ctx, reading) {
+  if (reading.error) { $.ui.log(`compaction: auto-compact point not read: ${reading.error}`); return; }
+  const text = autoCompactWarning(reading);
+  if (!text || ctx.autoCompactWarned) return;
+  ctx.autoCompactWarned = true;
+  $.ui.toast(`Boss: ${text}`);
+  $.ui.log(`compaction: ${text}`);
+}
+
 async function hello($, ctx) {
   const id = await identity($, ctx);
-  const reply = await send($, ctx, 'hello', { ...id, source: ctx.start ? ctx.start.source : null, moduleVersion: MODULE_VERSION });
+  const autocompact = await autoCompactReading($);
+  noteAutoCompact($, ctx, autocompact); // before the daemon: said even when the daemon is down
+  const reply = await send($, ctx, 'hello', { ...id, source: ctx.start ? ctx.start.source : null, moduleVersion: MODULE_VERSION, autocompact });
   noteVersion($, ctx, reply);
   if (reply.config) {
     ctx.config = { ...DEFAULTS, ...reply.config };

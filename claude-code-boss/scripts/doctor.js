@@ -337,6 +337,56 @@ function checkSessionModules(ctx) {
   };
 }
 
+/**
+ * The engine auto-compact point from the variables this doctor sees (its process environment first, then the user
+ * settings env) and as each project's newest session reported it in its hello (ctx.autoCompact).
+ * @param {{settings?: object, env?: object, points?: function}} [o]
+ */
+function gatherAutoCompact({ settings = {}, env = process.env, points = () => require('./lib/compaction-report.js').autoCompactPoints() } = {}) {
+  const core = require('./lib/compaction-core.mjs');
+  const pick = (name) => {
+    if (env[name] != null && String(env[name]).trim() !== '') return { value: env[name], from: 'this process environment' };
+    const v = settings.env && settings.env[name];
+    return v != null && String(v).trim() !== '' ? { value: v, from: '~/.claude/settings.json env' } : null;
+  };
+  const pct = pick(core.PCT_OVERRIDE_VAR);
+  const win = pick(core.AUTO_COMPACT_WINDOW_VAR);
+  return {
+    configured: core.engineAutoCompactPoint({ pctOverride: pct && pct.value, autoCompactWindow: win && win.value }),
+    from: { [core.PCT_OVERRIDE_VAR]: pct && pct.from, [core.AUTO_COMPACT_WINDOW_VAR]: win && win.from },
+    sessions: points(),
+  };
+}
+
+/** Engine auto-compact firing under half of the model window, naming the variable (ctx.autoCompact, from gatherAutoCompact). */
+function checkAutoCompactPoint(ctx) {
+  const base = { id: 'autocompact-point', label: 'Engine auto-compact point vs model window', critical: false };
+  const a = ctx.autoCompact;
+  if (!a) return { ...base, status: 'ok', detail: 'not checked here', fix: '' };
+  if (a.error) return { ...base, status: 'warn', detail: `could not check: ${a.error}`, fix: '' };
+  const core = require('./lib/compaction-core.mjs');
+  const k = (n) => `${Math.round(n / 1000)}k`;
+  const issues = [];
+  const configured = core.autoCompactWarning(a.configured);
+  if (configured) issues.push(`${configured} (from ${a.configured.variables.map((v) => a.from[v]).join(', ')})`);
+  const fine = [];
+  for (const s of a.sessions) {
+    const who = `${s.project} (session ${String(s.sessionId).slice(0, 8)})`;
+    if (s.autocompact.error) { issues.push(`${who}: its point could not be read: ${s.autocompact.error}`); continue; }
+    const w = core.autoCompactWarning(s.autocompact);
+    const at = s.autocompact.measuredTokens || s.autocompact.pointTokens;
+    if (w) issues.push(`${who}: ${w}`);
+    else if (at && s.autocompact.modelWindow) fine.push(`${s.project}: ${k(at)} of ${k(s.autocompact.modelWindow)}`);
+  }
+  if (!issues.length) {
+    return { ...base, status: 'ok', detail: fine.length ? fine.join('; ') : `neither ${core.PCT_OVERRIDE_VAR} nor ${core.AUTO_COMPACT_WINDOW_VAR} lowers it here, and no session reported its point yet`, fix: '' };
+  }
+  return {
+    ...base, status: 'warn', detail: issues.join(' | '),
+    fix: 'Remove the named variable from the settings env or the launcher that sets it, then reopen the session.',
+  };
+}
+
 /** Does the installed Claude Code still contain every name the plugin depends on (ctx.claudeCompat, from scripts/compat-check.js)? A name can survive a behaviour change: this proves presence only. */
 function checkClaudeCompat(ctx) {
   const base = { id: 'claude-compat', label: 'Installed Claude Code vs what the plugin depends on', critical: false };
@@ -606,7 +656,7 @@ function checkSetup(ctx) {
   return out;
 }
 
-const CHECKS = [checkNode, checkDaemonNode, checkNativeDeps, checkEnv, checkDataDirs, checkModel, checkDaemon, checkNativeRuntime, checkEmbedderProbe, checkEmbedderGuard, checkCrashes, checkCostTuning, checkBossConfig, checkFixedCost, checkCompactionRate, checkCompactionFloor, checkClaudeCompat, checkSubagentContexts, checkSessionModules, checkSetup, checkHooksEvents];
+const CHECKS = [checkNode, checkDaemonNode, checkNativeDeps, checkEnv, checkDataDirs, checkModel, checkDaemon, checkNativeRuntime, checkEmbedderProbe, checkEmbedderGuard, checkCrashes, checkCostTuning, checkBossConfig, checkFixedCost, checkCompactionRate, checkCompactionFloor, checkClaudeCompat, checkSubagentContexts, checkSessionModules, checkAutoCompactPoint, checkSetup, checkHooksEvents];
 
 /** Run every pure check over a ctx snapshot (a check may return one result or a list). */
 function runChecks(ctx) {
@@ -779,8 +829,8 @@ async function gatherContext({ probe = false, audit = false, scanBudgetMs } = {}
   const fc = require('./lib/fixed-cost.js');
   const hooksCfg = require('./lib/hooks-config.js');
   const home = os.homedir();
+  let settings = {};
   try {
-    let settings = {};
     try { settings = JSON.parse(fs.readFileSync(path.join(home, '.claude', 'settings.json'), 'utf8')); } catch (e) { if (e.code !== 'ENOENT') throw e; }
     bossConfig = fc.auditBossConfig({ settings, compaction: hooksCfg.getCompaction(), costTuning: hooksCfg.getCostTuning(), pluginId: bossPluginId(settings) });
   } catch (e) { console.error(`[doctor] boss settings: ${e.message}`); }
@@ -824,6 +874,9 @@ async function gatherContext({ probe = false, audit = false, scanBudgetMs } = {}
     sessionModules = { installed, stale: require('./lib/compaction-report.js').staleModuleSessions({ installed, installedAt }) };
   } catch (e) { console.error(`[doctor] session modules: ${e.message}`); sessionModules = { error: e.message }; }
 
+  let autoCompact = null;
+  try { autoCompact = gatherAutoCompact({ settings }); } catch (e) { console.error(`[doctor] auto-compact point: ${e.message}`); autoCompact = { error: e.message }; }
+
   let setup = null;
   try { setup = await require('./lib/setup-map.js').gatherSetup({ home, cwd: process.env.CLAUDE_PROJECT_DIR || process.cwd() }); } catch (e) { console.error(`[doctor] setup map: ${e.message}`); }
 
@@ -857,6 +910,7 @@ async function gatherContext({ probe = false, audit = false, scanBudgetMs } = {}
     claudeCompat,
     subagents,
     sessionModules,
+    autoCompact,
     setup,
   };
 }
@@ -968,7 +1022,7 @@ if (require.main === module) {
 
 module.exports = {
   runChecks, summarize, applyFixes, FIXERS, checkCostTuning, checkBossConfig, checkFixedCost, checkSetup, bossPluginId, gatherContext, formatReport,
-  checkNode, checkDaemonNode, checkNativeDeps, checkEnv, checkDataDirs, checkModel, checkDaemon, checkNativeRuntime, checkEmbedderProbe, checkEmbedderGuard, checkCrashes, checkHooksEvents, checkCompactionFloor, gatherCompactionFloor,
+  checkNode, checkDaemonNode, checkNativeDeps, checkEnv, checkDataDirs, checkModel, checkDaemon, checkNativeRuntime, checkEmbedderProbe, checkEmbedderGuard, checkCrashes, checkHooksEvents, checkCompactionFloor, gatherCompactionFloor, checkAutoCompactPoint, gatherAutoCompact,
   findDataDirCandidates, probeEmbedder, gatherNative, gatherCrashes, MIN_MSVCP,
   STANDARD_EVENTS, MIN_NODE,
 };

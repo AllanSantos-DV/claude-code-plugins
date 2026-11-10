@@ -96,4 +96,27 @@ function staleModuleSessions({ installed, installedAt = null, hours = 24, projec
     .filter((s) => s.version !== installed && (installedAt == null || s.lastSeen >= installedAt));
 }
 
-module.exports = { staleModuleSessions, loadCompactionRows, formatReport, describeSuggestion, summarizeCompaction };
+/**
+ * Per project, the engine auto-compact point its newest session reported in its hello (engineAutoCompactPoint) in the
+ * last `hours`; sessions from a module that did not send it are skipped.
+ * @param {{hours?: number, project?: (string|null), store?: object}} o
+ * @returns {Array<{project: string, sessionId: (string|null), ts: number, autocompact: object}>}
+ */
+function autoCompactPoints({ hours = 168, project = null, store = require('../../engine/lib/metrics-store.js') } = {}) {
+  const sinceTs = Date.now() - hours * 3600_000;
+  const out = [];
+  for (const p of project ? [project] : store.listProjects()) {
+    store.close();
+    if (!store.init({ project: p })) continue;
+    let newest = null;
+    for (const r of store.getEventLog({ eventName: 'compaction.session', sinceTs })) {
+      const a = r.payload && r.payload.autocompact;
+      if (a && r.ts >= sinceTs && (!newest || r.ts > newest.ts)) newest = { project: p, sessionId: r.sessionId || null, ts: r.ts, autocompact: a };
+    }
+    if (newest) out.push(newest);
+  }
+  store.close();
+  return out;
+}
+
+module.exports = { staleModuleSessions, autoCompactPoints, loadCompactionRows, formatReport, describeSuggestion, summarizeCompaction };

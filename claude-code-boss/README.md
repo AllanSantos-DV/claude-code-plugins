@@ -278,6 +278,9 @@ Módulo de *function hook* do Claude Code (`hooks/compaction.mjs`, registrado pe
   Por sessão, o limiar sobe para `floorFactor` (padrão 2) vezes o tamanho medido na primeira chamada depois do
   último corte dela: uma sessão que volta de um corte em 114k ganha limiar 228k (passa do ponto do engine, e o resumo
   dele cuida), em vez de ser cortada a frio a cada pausa recuperando quase nada. Sessões leves continuam no %.
+  No início de cada sessão o módulo calcula onde o auto-compact do engine vai disparar; se `CLAUDE_AUTOCOMPACT_PCT_OVERRIDE`
+  ou `CLAUDE_CODE_AUTO_COMPACT_WINDOW` o põem abaixo da metade da janela do modelo, avisa nomeando a variável (o doctor
+  também, check `autocompact-point`).
   `0` mantém cada teto desligado (`thresholdMaxTokens` 0 volta ao % puro; `warmCeilingTokens` 0 volta a nunca cortar com cache quente);
   faixa 50 a 2000 mil. Um limiar além do ponto de auto-compact do engine é sinalizado (o engine compactaria antes). Ajuste no painel
   **Compaction & cache** (slider do %, campos *Cold limit* e *Warm ceiling* em mil tokens, cada um com dica) (gravado em `~/.claude/claude-code-boss/hooks/user-config.json`, sobrevive a

@@ -19569,11 +19569,11 @@ test('doctor.runChecks + summarize: criticalFail flagged, counts add up', () => 
     hooksEvents: ['Stop'],
   };
   const results = doctor.runChecks(ctx);
-  assertEq(results.length, 21);
+  assertEq(results.length, 22);
   const s = doctor.summarize(results);
   assert(s.criticalFail, 'old node → criticalFail');
   assertEq(s.ok, false);
-  assertEq(s.counts.ok + s.counts.warn + s.counts.fail, 21);
+  assertEq(s.counts.ok + s.counts.warn + s.counts.fail, 22);
 });
 
 test('doctor.runChecks: all-healthy ctx → ok summary', () => {
@@ -30941,7 +30941,7 @@ async function folderCutRun(ce, { gated }) {
 
 // The heartbeat alone, against a fake engine: only the notices it logs over `beats` ticks (withTranscript: classic SessionStart seen).
 // folderAnswer: what the daemon answers to the heartbeat's folder report ({status, text}), default a healthy reply.
-async function heartbeatNotices({ withTranscript, beats, folderAnswer }) {
+async function heartbeatNotices({ withTranscript, beats, folderAnswer, extraEnv = {}, breakdown = { rawMaxTokens: 1000000, autoCompactThreshold: 967000 } }) {
   const cmp = await import(require('url').pathToFileURL(path.join(ROOT, 'hooks', 'compaction.mjs')).href);
   const hooks = collectModuleHooks(cmp.register);
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-heartbeat-'));
@@ -30949,8 +30949,8 @@ async function heartbeatNotices({ withTranscript, beats, folderAnswer }) {
   const transcript = path.join(dir, 'session.jsonl');
   fs.writeFileSync(transcript, '');
   const config = { enabled: true, thresholdPercent: 30, minIntervalMs: 600000, folderTtl: true, warmCeilingTokens: 0, thresholdMaxTokens: 0 };
-  const out = { timers: [], logs: [], trail: [] };
-  const env = { CLAUDE_PLUGIN_DATA: dir, BRAIN_HTTP_PORT: '1' };
+  const out = { timers: [], logs: [], trail: [], toasts: [], hellos: [] };
+  const env = { CLAUDE_PLUGIN_DATA: dir, BRAIN_HTTP_PORT: '1', ...extraEnv };
   const $ = {
     env: { get: async (k) => env[k] },
     fs: { read: async (p) => fs.readFileSync(p, 'utf8') },
@@ -30961,17 +30961,18 @@ async function heartbeatNotices({ withTranscript, beats, folderAnswer }) {
       }
       const payload = JSON.parse(JSON.parse(init.body).payload);
       if (payload.kind === 'error') out.trail.push(payload);
+      if (payload.kind === 'hello') out.hellos.push(payload);
       if (folderAnswer && payload.kind === 'folder') { const a = folderAnswer(); return { status: a.status, ok: a.status === 200, text: a.text }; }
       const reply = payload.kind === 'hello' ? { config } : payload.kind === 'folder' || payload.kind === 'folder-end' ? { folderTtl: { ttl: '5m', live: 1, allAbove: true, action: 'none' } } : {};
       return { status: 200, ok: true, text: JSON.stringify(reply) };
     } },
     session: {
       id: async () => 'sid-heartbeat', cwd: async () => dir, root: async () => dir, authorize: async () => ({ kind: 'api-key' }),
-      usage: async () => ({ context: { tokens: 400000, window: 1000000, breakdown: { rawMaxTokens: 1000000, autoCompactThreshold: 967000 } } }),
+      usage: async () => ({ context: { tokens: 400000, window: 1000000, breakdown } }),
       messages: async () => [],
     },
     clock: { now: async () => 1_000_000_000, after: (ms, fn) => { out.timers.push({ ms, fn }); } },
-    ui: { log: (t) => out.logs.push(t), toast: () => {} },
+    ui: { log: (t) => out.logs.push(t), toast: (t) => out.toasts.push(t) },
     command: { run: async () => {} },
     prompt: { submit: async () => {} },
   };
@@ -30982,8 +30983,63 @@ async function heartbeatNotices({ withTranscript, beats, folderAnswer }) {
   await fire((t) => t.ms === 1);
   for (let i = 0; i < beats; i++) await fire((t) => t.ms === 120000);
   fs.rmSync(dir, { recursive: true, force: true });
-  return { shown: out.logs.filter((l) => /no transcript path/.test(l)), trail: out.trail.filter((e) => e.stage === 'heartbeat'), logs: out.logs };
+  return { shown: out.logs.filter((l) => /no transcript path/.test(l)), trail: out.trail.filter((e) => e.stage === 'heartbeat'), logs: out.logs, toasts: out.toasts, hellos: out.hellos };
 }
+
+test('compaction hook: at session start, CLAUDE_AUTOCOMPACT_PCT_OVERRIDE=15 on a 1M window is shown once (toast + log) naming the variable and recorded in the hello; without it nothing is shown', async () => {
+  const low = await heartbeatNotices({ withTranscript: false, beats: 0, extraEnv: { CLAUDE_AUTOCOMPACT_PCT_OVERRIDE: '15', CLAUDE_CODE_AUTO_COMPACT_WINDOW: '1000000' }, breakdown: { rawMaxTokens: 1000000, autoCompactThreshold: 150000 } });
+  assertEq(low.toasts.length, 1, `one toast, got ${JSON.stringify(low.toasts)}`);
+  assert(/~150k of a 1M window \(15%\), set by CLAUDE_AUTOCOMPACT_PCT_OVERRIDE=15/.test(low.toasts[0]), low.toasts[0]);
+  assert(low.logs.some((l) => /CLAUDE_AUTOCOMPACT_PCT_OVERRIDE=15/.test(l)), JSON.stringify(low.logs));
+  const a = low.hellos[0].autocompact;
+  assertEq([a.low, a.pointTokens, a.measuredTokens, a.modelWindow, a.variables], [true, 150000, 150000, 1000000, ['CLAUDE_AUTOCOMPACT_PCT_OVERRIDE']], JSON.stringify(a));
+  const plain = await heartbeatNotices({ withTranscript: false, beats: 0 });
+  assertEq(plain.toasts, [], 'no variable: no toast');
+  assertEq([plain.hellos[0].autocompact.low, plain.hellos[0].autocompact.pointTokens], [false, 967000], 'the point is still recorded');
+});
+
+test('compaction-core.engineAutoCompactPoint: the percent override fires at that share of the auto-compact window and only lowers it; under half of the model window it names the variable that put it there', () => {
+  const p = (s) => cmpCore.engineAutoCompactPoint(s);
+  const jarvis = p({ modelWindow: 1000000, pctOverride: '15', autoCompactWindow: '1000000' });
+  assertEq([jarvis.pointTokens, jarvis.low, jarvis.variables], [150000, true, ['CLAUDE_AUTOCOMPACT_PCT_OVERRIDE']], '15% of 1M: ~150k');
+  assertEq([p({ modelWindow: 1000000 }).pointTokens, p({ modelWindow: 1000000 }).low], [967000, false], 'default 1M point: window - 33k');
+  assertEq([p({ modelWindow: 200000 }).pointTokens, p({ modelWindow: 200000 }).low], [167000, false], 'default 200k point');
+  assertEq(p({ modelWindow: 200000, pctOverride: '95' }).pointTokens, 167000, 'a percent above the default share never raises the point');
+  assertEq(p({ modelWindow: 1000000, pctOverride: '60' }).low, false, '60% of 1M is over half');
+  const win = p({ modelWindow: 1000000, autoCompactWindow: '200k' });
+  assertEq([win.pointTokens, win.windowSetting, win.variables], [167000, 200000, ['CLAUDE_CODE_AUTO_COMPACT_WINDOW']], 'a 200k window on a 1M model, suffix accepted');
+  assertEq(p({ modelWindow: 1000000, autoCompactWindow: '50000' }).low, false, 'a window outside 100000..1000000 is ignored by the engine and here');
+  assertEq([p({ pctOverride: '15' }).low, p({ pctOverride: '15' }).variables], [true, ['CLAUDE_AUTOCOMPACT_PCT_OVERRIDE']], 'under 50% flags with no model window (the window never exceeds the model\'s)');
+  assertEq(p({ modelWindow: 1000000, measuredTokens: 167000 }).low, false, 'a low point from the settings window (person\'s choice) is recorded, never flagged');
+  assertEq(p({ modelWindow: 1000000, pctOverride: '15', enabled: false }).low, false, 'auto-compact off: nothing fires');
+  assertEq(cmpCore.autoCompactWarning(p({ modelWindow: 1000000 })), null);
+  assert(/at ~150k of a 1M window \(15%\), set by CLAUDE_AUTOCOMPACT_PCT_OVERRIDE=15/.test(cmpCore.autoCompactWarning(jarvis)), cmpCore.autoCompactWarning(jarvis));
+});
+
+test('compaction-report.autoCompactPoints + doctor.checkAutoCompactPoint: the settings env and each project\'s newest reported point are judged; a low one warns naming the variable and where it came from', () => {
+  const { autoCompactPoints } = require('./lib/compaction-report.js');
+  const doctor = require('./doctor.js');
+  const now = Date.now();
+  const low = cmpCore.engineAutoCompactPoint({ modelWindow: 1000000, pctOverride: '15', measuredTokens: 150000 });
+  const fine = cmpCore.engineAutoCompactPoint({ modelWindow: 1000000, measuredTokens: 967000 });
+  const byProject = {
+    jarvis: [{ sessionId: 'aaaaaaaa-1', ts: now - 9000, payload: { autocompact: fine } }, { sessionId: 'bbbbbbbb-2', ts: now - 1000, payload: { autocompact: low } }],
+    boss: [{ sessionId: 'cccccccc-3', ts: now - 1000, payload: { autocompact: fine } }, { sessionId: 'dddddddd-4', ts: now - 500, payload: {} }],
+  };
+  let cur = null;
+  const store = { listProjects: () => Object.keys(byProject), close() {}, init: ({ project }) => { cur = project; return true; }, getEventLog: () => byProject[cur] };
+  const points = autoCompactPoints({ store });
+  assertEq(points.map((x) => [x.project, x.sessionId]), [['jarvis', 'bbbbbbbb-2'], ['boss', 'cccccccc-3']], 'newest per project; a hello without the point is skipped');
+  const check = (o) => doctor.runChecks({ autoCompact: doctor.gatherAutoCompact({ env: {}, points: () => points, ...o }) }).find((r) => r.id === 'autocompact-point');
+  const fromSessions = check({});
+  assertEq(fromSessions.status, 'warn');
+  assert(/jarvis \(session bbbbbbbb\): .*CLAUDE_AUTOCOMPACT_PCT_OVERRIDE=15/.test(fromSessions.detail) && !/boss/.test(fromSessions.detail), fromSessions.detail);
+  const fromSettings = doctor.runChecks({ autoCompact: doctor.gatherAutoCompact({ settings: { env: { CLAUDE_AUTOCOMPACT_PCT_OVERRIDE: '15' } }, env: {}, points: () => [] }) }).find((r) => r.id === 'autocompact-point');
+  assert(fromSettings.status === 'warn' && /CLAUDE_AUTOCOMPACT_PCT_OVERRIDE=15:.*\(from ~\/\.claude\/settings\.json env\)/.test(fromSettings.detail), fromSettings.detail);
+  const clean = doctor.runChecks({ autoCompact: doctor.gatherAutoCompact({ env: {}, points: () => [points[1]] }) }).find((r) => r.id === 'autocompact-point');
+  assertEq([clean.status, clean.detail], ['ok', 'boss: 967k of 1000k']);
+  assertEq(doctor.runChecks({ autoCompact: { error: 'x' } }).find((r) => r.id === 'autocompact-point').status, 'warn', 'a read failure is shown');
+});
 
 test('compaction hook: a daemon that fail-opens the heartbeat\'s folder report (deadline missed, worker exited with code 1) shows the person nothing; any other failure is still said', async () => {
   const degradedMsg = (why) => `[claude-code-boss] hook hook_compaction_event degradado no daemon (fail-open): ${why}`;
