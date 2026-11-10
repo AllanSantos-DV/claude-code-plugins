@@ -29874,12 +29874,15 @@ test('plugin-updater.killStale: so casa modulos da PASTA DE CACHE do plugin, nao
     const hw = (await loadHookWorker())({ pluginRoot: ROOT, workerPath: wp, stallMs: 150 });
     try {
       assertEq(await hw.run('a', {}, { timeoutMs: 2000 }), 'ok:a', 'healthy job answered');
-      for (let i = 0; i < 3; i++) {
+      let hangs = 0;
+      const silenceFrom = Date.now();
+      while (hw.stats().recycled < 1 && hangs < 20) {
         let err = null; try { await hw.run('hang', {}, { timeoutMs: 60 }); } catch (e) { err = e; }
-        assert(err && /prazo/.test(err.message), `stuck job expires visibly (#${i + 1})`);
+        hangs++;
+        assert(err && /prazo/.test(err.message), `stuck job expires visibly (#${hangs}): ${err && err.message}`);
       }
-      for (const until = Date.now() + 10000; hw.stats().recycled < 1 && Date.now() < until;) await new Promise((r) => setTimeout(r, 25));
-      assertEq(hw.stats().recycled, 1, 'recycled once: 180 ms without a word from the worker, past stallMs');
+      assertEq(hw.stats().recycled, 1, 'recycled once the worker stayed silent past stallMs');
+      assert(hangs >= 2 && Date.now() - silenceFrom >= 150, `not recycled by the first deadline, only after stallMs of silence (${hangs} deadlines)`);
       // terminate() is asynchronous: a call that lands before the exit event is failed fast (by design); the replacement serves the next one.
       let b = null;
       for (const until = Date.now() + 10000; b === null && Date.now() < until;) {
