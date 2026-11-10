@@ -35180,6 +35180,36 @@ test('install-local 5c: a stopOld that throws propagates (fail-loud, no silent r
   assertEq(w.events.length, 0, 'ensure must not run after a failed stop');
 });
 
+test('install-local stopDaemon: /shutdown with the daemon\'s own token first; kill by pid only when it keeps answering, said in the log', async () => {
+  const lib = await loadDevLib('stop-daemon.mjs'); if (!lib) return;
+  const world = ({ status = 200, quits = true } = {}) => {
+    const w = { up: true, posts: [], kills: [], logs: [], clock: 0 };
+    w.opts = {
+      port: 38299, readToken: (dir) => `tok-${dir}`, health: async () => (w.up ? { pid: 7 } : null),
+      fetchImpl: async (url, o) => { w.posts.push({ url, auth: o.headers.authorization }); if (status === 200 && quits) w.up = false; return { status }; },
+      kill: (pid) => { w.kills.push(pid); w.up = false; }, sleep: async (ms) => { w.clock += ms; }, now: () => w.clock,
+      graceMs: 1000, log: (m) => w.logs.push(m),
+    };
+    return w;
+  };
+  const g = world();
+  assertEq((await lib.stopDaemon({ pid: 7, dataDir: 'D' }, g.opts)).how, 'graceful');
+  assertEq(g.posts[0].url, 'http://127.0.0.1:38299/shutdown');
+  assertEq(g.posts[0].auth, 'Bearer tok-D', 'the token of the data dir the daemon reports');
+  assertEq(g.kills.length, 0, 'no kill when the daemon stops by itself');
+  const r = world({ status: 401 });
+  assertEq((await lib.stopDaemon({ pid: 7, dataDir: 'D' }, r.opts)).how, 'killed');
+  assert(r.logs.some((m) => /HTTP 401/.test(m)), 'the refused shutdown is said, not hidden');
+  const s = world({ quits: false });
+  assertEq((await lib.stopDaemon({ pid: 7, dataDir: 'D' }, s.opts)).how, 'killed');
+  assert(s.logs.some((m) => /still answering after 1000 ms/.test(m)), String(s.logs));
+  const z = world({ quits: false });
+  z.opts.kill = () => {};
+  let err = null;
+  try { await lib.stopDaemon({ pid: 7, dataDir: 'D' }, z.opts); } catch (e) { err = e; }
+  assert(err && /still answers/.test(err.message), 'a daemon that survives both is an error, never a silent pass');
+});
+
 test('isolated-env: always DISABLE_CLAUDE_MDS=1 and never the real HOME/USERPROFILE/CLAUDE_CONFIG_DIR', async () => {
   const lib = await loadDevLib('isolated-env.mjs'); if (!lib) return;
   const s = { home: path.join(os.tmpdir(), 'sbx-home'), config: path.join(os.tmpdir(), 'sbx-cfg') };
