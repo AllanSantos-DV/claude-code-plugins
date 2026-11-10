@@ -32701,6 +32701,30 @@ test('curation-guard: shell-escape step rewrites (ask outside bypass, keeps othe
   }
 });
 
+test('curation-guard: the shell-escape rewrite explanation is said once per context, then a one-line note until compaction resets it', async () => {
+  const hc = require('./lib/hooks-config.js');
+  const orig = hc.getShellEscapeGuard;
+  delete require.cache[require.resolve('./curation-guard.js')];
+  const cg = require('./curation-guard.js');
+  const gi = require('./lib/glob-injected.js');
+  const cwd = process.env.CLAUDE_PLUGIN_DATA;
+  const sid = `se-notice-${process.pid}-${Date.now()}`;
+  const ctxOf = async () => (await cg.run({ tool_name: 'Bash', cwd, session_id: sid, permission_mode: 'bypassPermissions', tool_input: { command: "node - <<'EOF'\nx\nEOF" } })).hookSpecificOutput.additionalContext;
+  try {
+    hc.getShellEscapeGuard = () => ({ enabled: true, mode: 'rewrite', block: false, inlineMaxChars: 300, platforms: [process.platform] });
+    const first = await ctxOf();
+    const second = await ctxOf();
+    assert(/leia o erro dele/.test(first), `first rewrite explains: ${first}`);
+    assert(second === '[boss] heredoc movido para arquivo (Bash no Windows); o comando roda igual.', `repeat is one line: ${second}`);
+    assert(second.length * 4 < first.length, `repeat is far shorter (${second.length} vs ${first.length})`);
+    gi.reset(sid);
+    assert(/leia o erro dele/.test(await ctxOf()), 'after a compaction reset the explanation comes back');
+  } finally {
+    hc.getShellEscapeGuard = orig;
+    gi.reset(sid);
+  }
+});
+
 test('hooks-config: shellEscapeGuard defaults (rewrite, block OFF, win32 only)', () => {
   const c = require('./lib/hooks-config.js').getShellEscapeGuard();
   assert(c.enabled === true && c.mode === 'rewrite' && c.block === false && c.inlineMaxChars === 300 && c.platforms.join() === 'win32', JSON.stringify(c));

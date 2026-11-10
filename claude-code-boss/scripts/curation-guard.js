@@ -152,9 +152,13 @@ function escapeFix(event) {
       return { command: null, ctx: null, deny: decision('deny', { additionalContext: plan.warn, permissionDecisionReason: plan.warn }) };
     }
     if (plan.warn) metrics.fire('shell-escape.warned', {}, mctx);
-    const done = plan.command
-      ? `[boss] Bash no Windows: o conteúdo de ${[...new Set(plan.kinds)].join('/')} foi movido para arquivo e o comando reescrito (o Bash tool do Claude Code corrompe \\\\ e aspas nesse caminho — bug aberto). Ele roda igual ao que você escreveu: se este comando falhar, a causa NÃO é o heredoc/aspas — leia o erro dele. Para script longo, prefira Write + rodar o arquivo.`
-      : null;
+    const kinds = [...new Set(plan.kinds)].join('/');
+    // The full explanation stays in the context until the next compaction; repeating it on every rewrite only grows the context.
+    const firstInContext = plan.command
+      && require('./lib/glob-injected.js').takeFresh(event.session_id, [{ id: 'notice:shell-escape-rewrite' }]).length > 0;
+    const done = !plan.command ? null : firstInContext
+      ? `[boss] Bash no Windows: o conteúdo de ${kinds} foi movido para arquivo e o comando reescrito (o Bash tool do Claude Code corrompe \\\\ e aspas nesse caminho — bug aberto). Ele roda igual ao que você escreveu: se este comando falhar, a causa NÃO é o heredoc/aspas — leia o erro dele. Para script longo, prefira Write + rodar o arquivo.`
+      : `[boss] ${kinds} movido para arquivo (Bash no Windows); o comando roda igual.`;
     const ctx = [done, plan.warn, plan.note].filter(Boolean).join(' ') || null;
     return { command: plan.command, ctx, deny: null };
   } catch (err) {

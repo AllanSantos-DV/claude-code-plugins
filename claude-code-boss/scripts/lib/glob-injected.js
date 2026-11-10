@@ -1,7 +1,8 @@
 'use strict';
 /**
- * lib/glob-injected.js — which glob policies were already surfaced in a session, so each
- * one is injected once per session instead of on every matching edit. Per session_id under
+ * lib/glob-injected.js — which glob policies (and other once-per-context notices, such as the
+ * shell-escape rewrite explanation) were already surfaced in a session, so each one is injected
+ * once per session instead of on every match. Per session_id under
  * `<data>/.runtime/policy-glob-injected/`; a compaction or /clear wipes the context that
  * held them, so SessionStart with that source resets the record, and SessionEnd removes it.
  */
