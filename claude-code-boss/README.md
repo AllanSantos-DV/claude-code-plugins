@@ -275,6 +275,9 @@ Módulo de *function hook* do Claude Code (`hooks/compaction.mjs`, registrado pe
   prompt — o limite do modelo ou uma janela de compactação menor (`CLAUDE_CODE_AUTO_COMPACT_WINDOW`) —, então
   o mesmo ajuste serve a modelos de 200K e de 1M e acompanha o `/model` (30% de 200k = 60k; 30% de 1M = 300k). O corte a frio
   é o % puro; `thresholdMaxTokens` é um teto opcional, **desligado** (0) por padrão (o dono decidiu limiar só em %).
+  Por sessão, o limiar sobe para `floorFactor` (padrão 2) vezes o tamanho medido na primeira chamada depois do
+  último corte dela: uma sessão que volta de um corte em 114k ganha limiar 228k (passa do ponto do engine, e o resumo
+  dele cuida), em vez de ser cortada a frio a cada pausa recuperando quase nada. Sessões leves continuam no %.
   `0` mantém cada teto desligado (`thresholdMaxTokens` 0 volta ao % puro; `warmCeilingTokens` 0 volta a nunca cortar com cache quente);
   faixa 50 a 2000 mil. Um limiar além do ponto de auto-compact do engine é sinalizado (o engine compactaria antes). Ajuste no painel
   **Compaction & cache** (slider do %, campos *Cold limit* e *Warm ceiling* em mil tokens, cada um com dica) (gravado em `~/.claude/claude-code-boss/hooks/user-config.json`, sobrevive a

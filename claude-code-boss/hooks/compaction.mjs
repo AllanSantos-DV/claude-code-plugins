@@ -60,6 +60,7 @@ function newCtx() {
     resumeChecked: false,
     compactReason: null,     // why the next compaction runs (set by the gate)
     pendingSettle: null,     // a compaction whose effect the first API call after it measures
+    floorTokens: undefined,  // size on the first call after this session's last cut (raises its threshold)
     lastMessageId: null,     // newest API call already recorded as cache.turn
     turnEndTimer: 0,         // token of the pending turn-end re-check (a newer one supersedes)
     holding: false,          // this process holds a person's prompt for the cut (its copy on disk is live, not an orphan)
@@ -311,6 +312,7 @@ function settleFrom($, ctx, id, reply) {
   const after = reply && reply.afterCut ? reply.afterCut.tokens : null;
   if (!settle || after == null) return;
   ctx.pendingSettle = null;
+  ctx.floorTokens = after;
   emit($, ctx, 'settled', {
     reason: settle.reason, trigger: settle.trigger, prevented: settle.prevented === true, tokensBefore: settle.tokensBefore, tokensAfter: after,
     tokensCut: settle.tokensBefore != null ? settle.tokensBefore - after : null, measuredOn: 'first-call-after-cut',
@@ -378,7 +380,7 @@ async function currentWindow($, ctx) {
     }));
   }
   const engineAutoCompactAt = bd.isAutoCompactEnabled === false ? null : (Number(bd.autoCompactThreshold) > 0 ? Number(bd.autoCompactThreshold) : null);
-  const thr = thresholdFor({ window: windowTokens, engineAutoCompactAt }, ctx.config);
+  const thr = thresholdFor({ window: windowTokens, engineAutoCompactAt, floorTokens: ctx.floorTokens }, ctx.config);
   return { context, windowTokens, windowSource, engineAutoCompactAt, thr };
 }
 
@@ -405,7 +407,7 @@ async function turnEnd($, ctx, trigger = 'turn-end') {
       emit($, ctx, 'gate', {
         action: d.action, reason: d.reason, dueInMs: d.dueInMs, tokens: tokens ?? null, idleMs: now - ctx.lastAnswerAt, ttlMs, ttlSource,
         thresholdPercent: thr.percent, thresholdTokens: thr.thresholdTokens, windowTokens: windowTokens ?? null, windowSource,
-        engineAutoCompactAt, thresholdAboveEngine: thr.aboveEngine,
+        engineAutoCompactAt, thresholdAboveEngine: thr.aboveEngine, thresholdFloorTokens: thr.floorRaised ? thr.floorTokens : null,
       });
       $.clock.after(d.dueInMs + 1000, () => { if (token === ctx.turnEndTimer) void turnEnd($, ctx); });
       return;
@@ -415,7 +417,7 @@ async function turnEnd($, ctx, trigger = 'turn-end') {
     emit($, ctx, 'gate', {
       action: d.action, reason: d.reason, dueInMs: null, tokens: tokens ?? null, idleMs: ctx.lastAnswerAt == null ? null : now - ctx.lastAnswerAt, ttlMs, ttlSource,
       thresholdPercent: thr.percent, thresholdTokens: thr.thresholdTokens, windowTokens: windowTokens ?? null, windowSource,
-      engineAutoCompactAt, thresholdAboveEngine: thr.aboveEngine,
+      engineAutoCompactAt, thresholdAboveEngine: thr.aboveEngine, thresholdFloorTokens: thr.floorRaised ? thr.floorTokens : null,
     });
     ctx.pendingSettle = { reason: d.reason, trigger, tokensBefore: tokens ?? null };
     ctx.compactReason = d.reason;
@@ -525,7 +527,7 @@ async function gate($, ctx, e, next) {
   emit($, ctx, 'gate', {
     action: d.action, reason: d.reason, dueInMs: d.dueInMs ?? null, tokens: tokens ?? null, tokensSource, ageSource, idleMs, ttlMs, ttlSource,
     thresholdPercent: thr.percent, thresholdTokens: thr.thresholdTokens, windowTokens: windowTokens ?? null, windowSource,
-    engineAutoCompactAt, thresholdAboveEngine: thr.aboveEngine,
+    engineAutoCompactAt, thresholdAboveEngine: thr.aboveEngine, thresholdFloorTokens: thr.floorRaised ? thr.floorTokens : null,
   });
 
   if (d.action !== 'compact') return phaseRestart($, ctx, e, next, { tokens, now, ttlMs });

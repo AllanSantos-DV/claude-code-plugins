@@ -3,6 +3,7 @@
 ## [Unreleased]
 
 ### Added
+- **O limiar de compactação acompanha o piso de cada sessão** (`scripts/lib/compaction-core.mjs` `thresholdFor`, `hooks/compaction.mjs`, `compaction.floorFactor`): o limiar de uma sessão passa a ser no mínimo 2× o tamanho medido na primeira chamada depois do último corte dela (do Boss ou do auto-compact do engine). A sessão do orchestrador volta de cada corte em ~114k (mediana de 7 dias), acima dos 60k de 30% de 200k: o Boss a cortava a frio a cada pausa recuperando quase nada e reescrevendo o prefixo. Com o piso, o limiar dela vai a ~228k, passa do ponto do engine, e o resumo com cache quente do engine cuida. Sessões leves continuam no %. O evento `gate` registra `thresholdFloorTokens` quando o piso decidiu; `floorFactor` 0 desliga (faixa 0–10).
 - **O doctor avisa quando uma pasta nunca desce abaixo do limiar de compactação** (`scripts/doctor.js` check `compaction-floor`, `scripts/lib/compaction-metrics.js`): com `--cost`, compara por pasta a mediana do contexto que sobra depois de cada corte (a primeira chamada depois dele) com o limiar. Quando o piso alcança o limiar, avisa que o TTL fica em 5m e que cada pausa fria dispara um brief, e lista os 3 maiores arquivos de instrução da pasta. Só leitura: o limiar não muda.
 
 ### Fixed

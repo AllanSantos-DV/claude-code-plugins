@@ -415,6 +415,7 @@ function getCompaction() {
     // Absolute ceiling of the cold threshold and the warm ceiling (0 = off), in tokens: see compaction-core DEFAULTS.
     thresholdMaxTokens: clampTokenCap(c.thresholdMaxTokens, core.DEFAULTS.thresholdMaxTokens),
     warmCeilingTokens: clampTokenCap(c.warmCeilingTokens, core.DEFAULTS.warmCeilingTokens),
+    floorFactor: Number.isFinite(Number(c.floorFactor)) && c.floorFactor !== null && c.floorFactor !== '' ? Math.min(10, Math.max(0, Number(c.floorFactor))) : core.DEFAULTS.floorFactor,
     minIntervalMs: clampInterval(c.minIntervalMinutes ?? 10) * 60000,
     minIntervalRange: MIN_INTERVAL_RANGE,
     preserveRecentMessages: Number.isInteger(c.preserveRecentMessages) && c.preserveRecentMessages >= 0 ? c.preserveRecentMessages : 6,

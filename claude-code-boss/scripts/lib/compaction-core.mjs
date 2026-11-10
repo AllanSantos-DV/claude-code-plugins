@@ -39,6 +39,10 @@ export const DEFAULTS = Object.freeze({
   thresholdMaxTokens: 0,
   warmCeilingTokens: 0,
   minIntervalMs: 10 * 60000,   // never two compactions closer than this
+  // Per session, the threshold is at least this many times the size measured on the first call after its last cut:
+  // a session that comes back from a cut at 114k (a coordinator with a heavy instruction set) gains almost nothing
+  // from a cut at 60k, it only rewrites the prefix. 2 = a cut has to at least halve the context.
+  floorFactor: 2,
   preserveRecentMessages: 6,   // newest messages never touched (the first is always kept)
   truncateHeadChars: 300,      // what survives of a pruned result, before the note
   bigResultChars: 4000,        // an old result larger than this is truncated even if current
@@ -318,12 +322,13 @@ export function isMechanicalCut(s) {
  * The threshold in tokens for the window the engine applies NOW. `window` is the
  * compaction window (`rawMaxTokens` of usage({breakdown}) — the model's limit or a smaller
  * one set by CLAUDE_CODE_AUTO_COMPACT_WINDOW/settings), falling back to the model window.
- * A percent of the window, capped at `thresholdMaxTokens` (see DEFAULTS); no token floor.
+ * A percent of the window, capped at `thresholdMaxTokens` (see DEFAULTS), raised per session to `floorFactor` times
+ * `floorTokens`, the size this session measured on the first call after its last cut (`floorRaised`).
  * `aboveEngine`: the threshold sits at or past the engine's own auto-compact point — the
  * engine will compact first and the gate will rarely act.
- * @param {{window?: number, engineAutoCompactAt?: number}} w
+ * @param {{window?: number, engineAutoCompactAt?: number, floorTokens?: number}} w
  * @param {Partial<typeof DEFAULTS>} [options]
- * @returns {{thresholdTokens: number|null, percent: number, aboveEngine: boolean}}
+ * @returns {{thresholdTokens: number|null, percent: number, aboveEngine: boolean, floorRaised?: boolean, floorTokens?: number}}
  */
 export function thresholdFor(w, options = {}) {
   const o = { ...DEFAULTS, ...options };
@@ -333,9 +338,17 @@ export function thresholdFor(w, options = {}) {
   const byPercent = Math.round(window * pct / 100);
   const cap = Number(o.thresholdMaxTokens);
   const capped = cap > 0 && byPercent > cap;
-  const thresholdTokens = capped ? Math.round(cap) : byPercent;
+  const byConfig = capped ? Math.round(cap) : byPercent;
+  const floor = Number(w && w.floorTokens);
+  const factor = Number(o.floorFactor);
+  const byFloor = floor > 0 && factor > 0 ? Math.round(floor * factor) : 0;
+  const floorRaised = byFloor > byConfig;
+  const thresholdTokens = floorRaised ? byFloor : byConfig;
   const engine = Number(w && w.engineAutoCompactAt);
-  return { thresholdTokens, percent: pct, aboveEngine: engine > 0 && thresholdTokens >= engine, ...(capped ? { capped: true } : {}) };
+  return {
+    thresholdTokens, percent: pct, aboveEngine: engine > 0 && thresholdTokens >= engine,
+    ...(capped && !floorRaised ? { capped: true } : {}), ...(floorRaised ? { floorRaised: true, floorTokens: floor } : {}),
+  };
 }
 
 /**

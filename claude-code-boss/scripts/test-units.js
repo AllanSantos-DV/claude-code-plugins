@@ -21607,6 +21607,19 @@ test('hooks-config: o valor do painel (mil tokens x 1000) faz ida e volta e 0 de
   });
 });
 
+test('hooks-config: compaction.floorFactor defaults to 2, 0 turns the per-session floor off, out-of-range is clamped to 0..10', () => {
+  withTempHome(() => {
+    const hc = require('./lib/hooks-config.js');
+    const read = (v) => {
+      fs.mkdirSync(path.dirname(hc.userConfigPath()), { recursive: true });
+      fs.writeFileSync(hc.userConfigPath(), JSON.stringify(v === undefined ? {} : { compaction: { floorFactor: v } }));
+      hc._resetCache();
+      return hc.getCompaction().floorFactor;
+    };
+    assertEq([read(undefined), read(0), read(3), read(50), read(-1), read('x'), read(null)], [2, 0, 3, 10, 0, 2, 2]);
+  });
+});
+
 test('dashboard/index.html applyRouter(): timeout BYOK inválido (não-finito ou negativo) ABORTA o save com aviso visível, não ignora em silêncio', () => {
   const src = fs.readFileSync(path.join(ROOT, 'dashboard', 'index.html'), 'utf-8');
   const fn = src.match(/async function applyRouter\(\)[\s\S]*?\n\}/);
@@ -30218,6 +30231,17 @@ test('compaction-core.thresholdFor: a % of the window the engine applies (200K a
   assertEq(cmpCore.clampPercent('x'), 30, 'garbage → the default');
 });
 
+test('compaction-core.thresholdFor: the floor measured after the session\'s last cut raises its threshold to floorFactor x floor, never lowers it', () => {
+  const w = { window: 200000, engineAutoCompactAt: 167000 };
+  assertEq(cmpCore.thresholdFor({ ...w, floorTokens: 20000 }), { thresholdTokens: 60000, percent: 30, aboveEngine: false }, 'a light session (2 x 20k = 40k) keeps the percent');
+  assertEq(cmpCore.thresholdFor({ ...w, floorTokens: 40000 }), { thresholdTokens: 80000, percent: 30, aboveEngine: false, floorRaised: true, floorTokens: 40000 }, '2 x 40k = 80k beats 60k');
+  assertEq(cmpCore.thresholdFor({ ...w, floorTokens: 113900 }), { thresholdTokens: 227800, percent: 30, aboveEngine: true, floorRaised: true, floorTokens: 113900 }, 'a coordinator coming back at 114k: past the engine point, the engine summary handles it');
+  assertEq(cmpCore.thresholdFor({ ...w, floorTokens: 40000 }, { floorFactor: 3 }).thresholdTokens, 120000, 'the factor is configurable');
+  assertEq(cmpCore.thresholdFor({ ...w, floorTokens: 40000 }, { floorFactor: 0 }).thresholdTokens, 60000, 'factor 0 turns it off');
+  assertEq(cmpCore.thresholdFor({ window: 1000000, engineAutoCompactAt: 967000, floorTokens: 113900 }, { thresholdMaxTokens: 150000 }), { thresholdTokens: 227800, percent: 30, aboveEngine: false, floorRaised: true, floorTokens: 113900 }, 'the floor also beats an explicit cap: a cut under 2 x floor recovers too little');
+  assertEq(cmpCore.thresholdFor({ ...w, floorTokens: 'x' }).thresholdTokens, 60000, 'garbage floor ignored');
+});
+
 test('compaction-core.decideTurnEnd: past the warm ceiling a WARM cache is cut at the end of the turn (a session that never idles); below it, off (0), or in the cooldown it still waits', () => {
   const NOW = 100_000_000;
   const T = { thresholdTokens: 150000, warmCeilingTokens: 200000, minIntervalMs: 600000 };
@@ -31006,7 +31030,7 @@ test('compaction hook: a turn-end re-check armed by the 1h window is re-armed by
 
 // Real case (orchestrador, 2026-11-09): the engine's auto summary cut 169,780 → 20,137 mid-turn; the first call after it
 // had 121,052 and the turn went on to 166,526. compaction.settled said tokensAfter 166,526 (609 cut): the turn's last call.
-async function settledAfterCutRun(ce, { lateCall }) {
+async function settledAfterCutRun(ce, { lateCall, after, floorFactor }) {
   const cmp = await import(require('url').pathToFileURL(path.join(ROOT, 'hooks', 'compaction.mjs')).href);
   const hooks = collectModuleHooks(cmp.register);
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-settled-'));
@@ -31014,8 +31038,8 @@ async function settledAfterCutRun(ce, { lateCall }) {
   const transcript = path.join(dir, 'session.jsonl');
   const call = (id, tokens) => JSON.stringify({ type: 'assistant', message: { id, model: 'm1', usage: { input_tokens: 2, output_tokens: 100, cache_read_input_tokens: tokens - 2, cache_creation_input_tokens: 0 } } }) + '\n';
   fs.writeFileSync(transcript, call('msg-1', 167135));
-  const config = { enabled: true, thresholdPercent: 30, minIntervalMs: 600000, folderTtl: true, warmCeilingTokens: 0, thresholdMaxTokens: 0 };
-  const out = { timers: [], logs: [], settled: [] };
+  const config = { enabled: true, thresholdPercent: 30, minIntervalMs: 600000, folderTtl: true, warmCeilingTokens: 0, thresholdMaxTokens: 0, ...(floorFactor != null ? { floorFactor } : {}) };
+  const out = { timers: [], logs: [], settled: [], folders: [] };
   let usageTokens = 167135;
   const env = { CLAUDE_PLUGIN_DATA: dir, BRAIN_HTTP_PORT: '1' };
   const $ = {
@@ -31027,7 +31051,7 @@ async function settledAfterCutRun(ce, { lateCall }) {
       const payload = JSON.parse(body.payload);
       let reply = {};
       if (payload.kind === 'hello') reply = { config };
-      else if (payload.kind === 'folder' || payload.kind === 'folder-end') reply = { folderTtl: { ttl: '1h', live: 1, allAbove: false, action: 'none' } };
+      else if (payload.kind === 'folder' || payload.kind === 'folder-end') { out.folders.push(payload); reply = { folderTtl: { ttl: '1h', live: 1, allAbove: false, action: 'none' } }; }
       else if (payload.kind === 'settled') out.settled.push(payload);
       else if (payload.kind === 'turn') reply = { ...(await ce.run({ ...body, payload })), config };
       return { status: 200, ok: true, text: JSON.stringify(reply) };
@@ -31061,6 +31085,11 @@ async function settledAfterCutRun(ce, { lateCall }) {
       fs.appendFileSync(transcript, call('msg-2', 121052));
       await fire((t) => t.ms === 120000);
     }
+    if (after) {
+      fs.appendFileSync(transcript, call('msg-4', after));
+      out.folders.length = 0;
+      await fire((t) => t.ms === 120000);
+    }
     return out;
   } finally {
     fs.rmSync(dir, { recursive: true, force: true });
@@ -31085,6 +31114,17 @@ test('compaction hook: a first call after the cut that lands after turn.complete
   });
 });
 
+
+test('compaction hook: a session whose cut came back at 121k gets a threshold of twice that, so 150k is not past it (60k by percent would be)', async () => {
+  await withCmpStore(async (ce) => {
+    const r = await settledAfterCutRun(ce, { lateCall: false, after: 150000 });
+    assertEq(r.settled.length, 1, r.logs.join(' | '));
+    assert(r.folders.length > 0, 'the heartbeat reported the folder');
+    assertEq(r.folders[r.folders.length - 1].above, false, 'threshold 2 x 121052 = 242104: 150k is below it, the folder is not held at 5m for it');
+    const off = await settledAfterCutRun(ce, { lateCall: false, after: 150000, floorFactor: 0 });
+    assertEq(off.folders[off.folders.length - 1].above, true, 'floorFactor 0 turns the measured floor off: 150k is past 30% of 200k');
+  });
+});
 
 // ── A session reopened after hours idle, far past the threshold (owner report, 3.10.1: 788k tokens, idle > 3h, the
 // prompt went out and the whole context was re-written cold, no cut). The module run for real against a fake engine;
