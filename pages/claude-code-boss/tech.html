@@ -3,22 +3,22 @@
 <head>
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
-<title>claude-code-boss v3.15.2 — detalhes técnicos</title>
-<meta name="description" content="Detalhes técnicos do claude-code-boss v3.15.2: daemon HTTP, hooks, Brain KB, Model Router Anthropic/OpenAI, MCP Memory, graph tools e dashboard." />
+<title>claude-code-boss v3.16.0 — detalhes técnicos</title>
+<meta name="description" content="Detalhes técnicos do claude-code-boss v3.16.0: daemon HTTP, hooks, Brain KB, Model Router Anthropic/OpenAI, MCP Memory, graph tools e dashboard." />
 <link rel="canonical" href="https://allansantos-dv.github.io/claude-code-plugins/claude-code-boss/tech.html">
 <meta property="og:type" content="website">
 <meta property="og:site_name" content="allansantos-plugins">
 <meta property="og:locale" content="pt_BR">
-<meta property="og:title" content="claude-code-boss v3.15.2 — detalhes técnicos">
-<meta property="og:description" content="Detalhes técnicos do claude-code-boss v3.15.2: daemon HTTP, hooks, Brain KB, Model Router Anthropic/OpenAI, MCP Memory, graph tools e dashboard.">
+<meta property="og:title" content="claude-code-boss v3.16.0 — detalhes técnicos">
+<meta property="og:description" content="Detalhes técnicos do claude-code-boss v3.16.0: daemon HTTP, hooks, Brain KB, Model Router Anthropic/OpenAI, MCP Memory, graph tools e dashboard.">
 <meta property="og:url" content="https://allansantos-dv.github.io/claude-code-plugins/claude-code-boss/tech.html">
 <meta property="og:image" content="https://allansantos-dv.github.io/claude-code-plugins/claude-code-boss/og-card.jpg">
 <meta property="og:image:width" content="1200">
 <meta property="og:image:height" content="630">
 <meta property="og:image:alt" content="claude-code-boss: Menos repetição. Mais memória.">
 <meta name="twitter:card" content="summary_large_image">
-<meta name="twitter:title" content="claude-code-boss v3.15.2 — detalhes técnicos">
-<meta name="twitter:description" content="Detalhes técnicos do claude-code-boss v3.15.2: daemon HTTP, hooks, Brain KB, Model Router Anthropic/OpenAI, MCP Memory, graph tools e dashboard.">
+<meta name="twitter:title" content="claude-code-boss v3.16.0 — detalhes técnicos">
+<meta name="twitter:description" content="Detalhes técnicos do claude-code-boss v3.16.0: daemon HTTP, hooks, Brain KB, Model Router Anthropic/OpenAI, MCP Memory, graph tools e dashboard.">
 <meta name="twitter:image" content="https://allansantos-dv.github.io/claude-code-plugins/claude-code-boss/og-card.jpg">
 <script data-ccb-theme-script>
 /* Shared theme; executed before styles and first paint. */
@@ -274,21 +274,21 @@ html{scroll-behavior:auto}
   <nav class="nav-links">
     <a href="index.html">← Apresentação</a>
     <a href="https://github.com/AllanSantos-DV/claude-code-plugins/blob/main/claude-code-boss/README.md">README</a>
-    <a href="#top" class="ver">v3.15.2</a>
+    <a href="#top" class="ver">v3.16.0</a>
   </nav>
 <div class="ccb-theme" role="group" aria-label="Tema"><button type="button" data-ccb-theme="dark" aria-pressed="true">Dark</button><button type="button" data-ccb-theme="light" aria-pressed="false">Light</button></div>
 </header>
 
 <main class="wrap" id="top">
   <div class="page-head">
-    <p class="kick">documentação técnica · v3.15.2</p>
+    <p class="kick">documentação técnica · v3.16.0</p>
     <h1>Arquitetura e funcionamento interno</h1>
     <p class="intro">Para quem quer saber <b>como funciona por baixo</b>: daemon HTTP único, pipeline de hooks, Brain KB em 3 camadas, Model Router Anthropic/OpenAI, backend MCP Memory, exploração de repositório por grafo e dashboard. Fontes: <a href="https://github.com/AllanSantos-DV/claude-code-plugins/blob/main/claude-code-boss/README.md">README</a> e <a href="https://github.com/AllanSantos-DV/claude-code-plugins/blob/main/claude-code-boss/CHANGELOG.md">CHANGELOG</a>.</p>
     <div class="toc">
       <a href="#daemon">Daemon HTTP único</a>
       <a href="#hooks">Hooks pipeline</a>
       <a href="#scope-rules">Regras por escopo</a>
-      <a href="#compaction">Compactação nativa</a>
+      <a href="#compaction">Compactação controlada</a>
       <a href="#brain">Brain KB</a>
       <a href="#config">Config &amp; perfis</a>
       <a href="#router">Model Router</a>
@@ -336,11 +336,12 @@ html{scroll-behavior:auto}
           <tr><td>SessionStart (via dispatcher)</td><td><b>brain-health.js</b></td><td>Liveness probe: se o MCP estiver caído, advisory acionável; <b>novo:</b> avisa quando um hook do daemon fica <b>sem folga</b> (p95 ≥ metade do prazo com 10+ chamadas, ou prazo estourado), no máximo 1×/hook/6 h; senão, silencioso</td></tr>
           <tr><td>SessionStart</td><td><b>model-router-ensure.js</b></td><td>Garante o daemon do model-router e publica <code>ANTHROPIC_BASE_URL</code>/shim — spawn próprio, fora do dispatcher</td></tr>
           <tr><td>SubagentStart</td><td><b>mcp_tool → hook_policy_inject</b></td><td>Injeta políticas standing no contexto próprio do subagente, no daemon, sem spawn por subagente</td></tr>
-          <tr><td><b>PreToolUse (Bash)</b></td><td><b>mcp_tool → hook_curation_guard</b></td><td>Reescreve via <code>updatedInput</code> cada parte de tarefa cuja assinatura + flags casam com um alias curado (<code>allow</code> em <code>bypassPermissions</code>, <code>ask</code> nos demais modos; <code>CCB_RAW=1</code> para a saída crua). Pipe sobre script curado é permitido e medido. Sem Token Guard e em <code>bypassPermissions</code>, exploração isolada e sem pipe próprio (nunca <code>tail -f</code>/<code>less</code>) é limitada em streaming pelo <code>shape-output.js</code>. Fora das reescritas o guard <b>se abstém</b> (<code>{}</code>), nunca responde <code>allow</code>: o fluxo de permissões do usuário decide</td></tr>
+          <tr><td><b>PreToolUse (Bash)</b></td><td><b>mcp_tool → hook_curation_guard</b></td><td>Reescreve via <code>updatedInput</code> cada parte de tarefa cuja assinatura + flags casam com um alias curado (<code>allow</code> em <code>bypassPermissions</code>, <code>ask</code> nos demais modos; sem escape para a saída crua: o script curado grava a saída completa em arquivo e imprime o caminho). Pipe sobre script curado é permitido e medido. Sem Token Guard e em <code>bypassPermissions</code>, exploração isolada e sem pipe próprio (nunca <code>tail -f</code>/<code>less</code>) é limitada em streaming pelo <code>shape-output.js</code>. Fora das reescritas o guard <b>se abstém</b> (<code>{}</code>), nunca responde <code>allow</code>: o fluxo de permissões do usuário decide</td></tr>
           <tr><td>PreToolUse (Bash)</td><td><b>mcp_tool → hook_error_guard</b></td><td>Nega o comando que já falhou ≥N vezes nesta sessão, no mesmo diretório, sem edição desde a última falha; um sucesso ou uma edição desbloqueia. Em paralelo ao curation-guard; <code>deny</code> vence</td></tr>
           <tr><td>PreToolUse (Edit)</td><td><b>mcp_tool → hook_policy_enforce_shadow</b></td><td>Shadow-mode: detecta violação de política de código ativa (sem bloquear ainda)</td></tr>
           <tr><td>PreToolUse (Grep|Glob)</td><td><b>mcp_tool → hook_graph_guard</b></td><td>Busca ampla com Session Graph READY → deny-once: <code>graph_search</code>/<code>graph_symbols</code> primeiro; retry idêntico passa. Fora disso, abstenção (<code>{}</code>)</td></tr>
           <tr><td><b>PostToolUse (Bash)</b></td><td><b>mcp_tool → hook_posttoolusebash_dispatcher</b></td><td>Roda <code>curation-detect</code> (1ª ocorrência fica pendente; curadoria só quando o comando de tarefa se repete; uma <b>variante</b> de script existente pede para <b>estender</b> esse script (EXTEND) em vez de criar outro; execução <code>CCB_RAW=1</code> nunca é cobrada; o mesmo script filtrado do mesmo jeito 2× gera <b>um</b> pedido para embutir o filtro) + <code>decision-detect</code> (side-effect only, sempre <code>{}</code>)</td></tr>
+          <tr><td>PostToolUse (Read|Grep|Glob|LS|busca do Smart Tool + edição, Bash, PowerShell)</td><td><b>mcp_tool → hook_read_burst</b> (<code>read-burst-hook.js</code>)</td><td>Depois de 3 chamadas só de leitura seguidas, monta uma vez o pacote de contexto (código, testes e docs do Smart Tool + seções do mapa de tarefas) para a primeira busca do agente na rajada, sem os arquivos já lidos, e entrega como <code>additionalContext</code> (até 6000 tokens e abaixo de 10.000 caracteres, o limite do Claude Code para o contexto de um hook). O pacote é montado em segundo plano no daemon, porque a busca leva de 8 a 14 s; o projeto do Smart Tool é o registrado mais fundo que contém a maioria dos arquivos lidos</td></tr>
           <tr><td>PostToolUse (Edit|Write|NotebookEdit)</td><td><b>mcp_tool → hook_file_edit_detect</b></td><td>Journala arquivos editados no turno (alimenta verify-nudge e self-review)</td></tr>
           <tr><td>PostToolUse (Edit|Write|MultiEdit|NotebookEdit)</td><td><b>mcp_tool → hook_policy_glob_inject</b></td><td>Advisory de política glob quando o arquivo editado casa um padrão ativo</td></tr>
           <tr><td><b>UserPromptExpansion</b></td><td><b>dashboard-command.js</b> <code>command</code> <code>novo</code></td><td><b><code>/dashboard</code> sem LLM</b> (matcher <code>dashboard</code>): garante o dashboard no ar (sonda HTTP da porta publicada), abre o navegador e <b>bloqueia</b> a expansão mostrando a URL; o prompt nunca chega ao modelo. Falha também bloqueia, com a causa</td></tr>
@@ -380,21 +381,32 @@ html{scroll-behavior:auto}
   </section>
 
   <section id="compaction">
-    <h2>Compactação: nativa do Claude Code <span class="tag">sem limiar do Boss</span></h2>
-    <p class="lead">O Boss não define limiares de compactação, não inicia cortes a frio ou a quente e não intercepta a compactação automática nem o comando manual <code>/compact</code>. As sessões seguem os padrões e as configurações do próprio Claude Code.</p>
+    <h2>Compactação controlada <span class="tag">módulo de function hook</span></h2>
+    <p class="lead">Módulo <code>hooks/compaction.mjs</code>, registrado pela entrada única <code>hooks/index.mjs</code> (exige Claude Code 2.1.274+). As decisões puras ficam em <code>scripts/lib/compaction-core.mjs</code>. A compactação a frio do Boss compacta na hora em que regravar o cache já seria pago de qualquer jeito.</p>
 
     <div class="panel">
-      <h3>O que isso significa na prática</h3>
+      <h3>Como decide</h3>
       <ul class="tight">
-        <li><b>Configuração sempre desligada:</b> <code>getCompaction</code> devolve sempre desligado. Overrides antigos em <code>compaction</code> ou <code>costTuning.autoCompactWindow</code> não reativam nada, e chaves antigas no user-config são ignoradas.</li>
-        <li><b>Nenhuma janela gravada:</b> o Boss não define <code>CLAUDE_CODE_AUTO_COMPACT_WINDOW</code>, <code>CLAUDE_AUTOCOMPACT_PCT_OVERRIDE</code> nem uma nova <code>autoCompactWindow</code>. Na próxima abertura, valores escritos pelo cost-tuning anterior são restaurados pelo registro de propriedade; configurações próprias do usuário ou do orquestrador são preservadas. O roteador de modelos não grava nem remove a chave <code>autoCompactWindow</code> do <code>settings.json</code> em nenhum caminho (tuning de contexto desligado ou roteador desligado): um valor do usuário fica, mesmo que seja igual ao que versões antigas gravavam.</li>
-        <li><b>Cost-tuning:</b> continua cuidando de <code>ENABLE_TOOL_SEARCH=true</code> e, somente em sessões cobradas por API, de <code>CLAUDE_CODE_PROMPT_CACHE_TTL=1h</code>. Esses ajustes não mudam o limiar de compactação.</li>
-        <li><b>Sessões abertas antes da atualização:</b> recebem <code>enabled: false</code> na próxima consulta ao daemon. Abra uma sessão nova para carregar o módulo atual, que não registra hooks de compactação.</li>
-        <li><b>Painel:</b> sem controles de limiar. O painel <b>Compaction &amp; cache</b> é o histórico do que foi registrado (a compactação é do Claude Code) e mantém as medições antigas; elas não são prova de compactação pelo Boss na versão atual.</li>
+        <li><b>Gatilhos:</b> no <code>prompt.submit</code> de uma pessoa com a sessão ociosa, se o contexto passou do limiar e o cache do provedor já expirou, o prompt é segurado, o <code>/compact</code> roda e o mesmo texto é reenviado. Com o cache válido, espera. Sessões autônomas (mensagem de outra sessão, notificação de tarefa) compactam no fim do turno, só com o cache frio; com o cache quente, agendam nova checagem para quando ele vencer.</li>
+        <li><b>Limiar:</b> um percentual da janela que o engine aplica naquele prompt (<code>thresholdPercent</code>, padrão 30, faixa 10–80). Os tetos absolutos (<code>thresholdMaxTokens</code>, <code>warmCeilingTokens</code>) vêm desligados. Por sessão, o limiar sobe para <code>floorFactor</code> (padrão 2) vezes o tamanho medido na primeira chamada depois do último corte dela; sessões leves continuam no percentual.</li>
+        <li><b>Cache por pasta:</b> enquanto todas as sessões abertas na mesma pasta passaram do percentual, o Boss grava <code>CLAUDE_CODE_PROMPT_CACHE_TTL=5m</code> no <code>settings.local.json</code> da pasta, o cache esfria em 5 min e o corte vem. O valor anterior volta depois do corte, quando uma sessão fica abaixo, ao fechar ou quando uma sessão some por 5 min. Um valor do usuário no arquivo nunca é sobrescrito.</li>
+        <li><b>Corte a frio sem modelo:</b> o histórico vira um &quot;brief&quot; (pedidos na íntegra, uma linha por ferramenta, as últimas mensagens na íntegra), sem chamada de resumo. O <code>/compact</code> manual segue com o resumo do modelo, e uma poda que corte 85% ou mais tem prioridade.</li>
+        <li><b>Aviso do auto-compact do engine:</b> no início da sessão o módulo calcula onde o auto-compact do engine dispara (<code>min(janela efetiva · pct / 100, janela efetiva − 13k)</code> com percentual). Se uma variável o põe abaixo da metade da janela, avisa nomeando a variável; o check <code>autocompact-point</code> do doctor confere o mesmo.</li>
+        <li><b>Não age</b> em sessão headless, no perfil <code>free</code> nem com <code>compaction.enabled: false</code>.</li>
       </ul>
     </div>
 
-    <div class="callout"><b>Histórico:</b> a medição que embasava os antigos limites está preservada, marcada como retirada, em <a href="https://github.com/AllanSantos-DV/claude-code-plugins/blob/main/claude-code-boss/docs/COMPACTION-MEASUREMENT.md">COMPACTION-MEASUREMENT.md</a>.</div>
+    <div class="panel">
+      <h3>Medição e custo fixo</h3>
+      <ul class="tight">
+        <li><b>Tamanho depois do corte:</b> é o da primeira chamada após o corte (<code>compaction.settled</code>); a janela de leitura do transcript cresce para trás até conter a última chamada já registrada.</li>
+        <li><b>Observabilidade:</b> eventos <code>compaction.gate</code>, <code>compaction.run</code>, <code>compaction.cold</code>, <code>compaction.settled</code> e <code>cache.turn</code> no metrics store; painel <b>Compaction &amp; cache</b>, <code>GET /api/metrics/compaction</code> e <code>compaction-report.js</code>.</li>
+        <li><b>Doctor <code>--cost</code>:</b> divide o contexto de cada requisição por fonte (instruções, hooks, listagens, skills, ferramentas, MCP, mensagens, raciocínio) nas sessões dos últimos 30 dias, aponta sessões que gastam 2× o normal, mede a listagem de agentes e avisa quando uma pasta nunca desce abaixo do limiar (<code>compaction-floor</code>). Só leitura.</li>
+        <li><b>Cost-tuning:</b> grava <code>ENABLE_TOOL_SEARCH=true</code> e, só em API, gateway ou nuvem, <code>CLAUDE_CODE_PROMPT_CACHE_TTL=1h</code>. Um <code>autoCompactWindow</code> de 200000 deixado pelo roteador antigo é removido uma vez; o Boss não grava essa chave.</li>
+      </ul>
+    </div>
+
+    <div class="callout"><b>Medição:</b> o método e os limites estão em <a href="https://github.com/AllanSantos-DV/claude-code-plugins/blob/main/claude-code-boss/docs/COMPACTION-MEASUREMENT.md">COMPACTION-MEASUREMENT.md</a>; a economia do replay é um limite superior.</div>
   </section>
 
   <section id="brain">
@@ -604,7 +616,7 @@ html{scroll-behavior:auto}
       <a href="changelog.html">Changelog</a>
       <a href="https://github.com/AllanSantos-DV/claude-code-plugins">GitHub</a>
     </div>
-    <div class="legal">MIT · Allan Santos · claude-code-boss v3.15.2</div>
+    <div class="legal">MIT · Allan Santos · claude-code-boss v3.16.0</div>
   </div>
 </footer>
 
