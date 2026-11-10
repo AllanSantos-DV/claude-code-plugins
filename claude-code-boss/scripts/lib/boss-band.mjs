@@ -63,7 +63,7 @@ export function bossMarkdown({ costUsd, summary, error } = {}) {
       `- Custo desta sessão: ${cost}`,
       `- Daemon do Brain sem resposta: ${shortErr(error || 'nenhuma leitura ainda')}`,
       '',
-      'O resumo vem do daemon do Brain (porta 38217). `/claude-code-boss:brain-status` diagnostica.',
+      'O resumo vem do daemon do Brain. `/claude-code-boss:brain-status` diagnostica.',
     ].join('\n');
   }
   const tg = summary.tokenGuard || {};

@@ -1693,9 +1693,10 @@ async function getCurationSummary(req, res, url) {
     const sp = require('./lib/shells-prune.js');
     const prune = root ? sp.pruneCandidates({ root, days: range, project: sp.metricsProjectFor(root, listMetricsProjects()) }) : null;
     // C4c: per-hook latency lives in the brain daemon's memory (/health), not in the store.
-    const brainPort = require('./lib/brain-port.js').brainPort();
-    const health = await routerHttpGetJson(brainPort, '/health');
-    const hookLatency = health && health.hookLatency ? health.hookLatency : { unavailable: `brain daemon not reachable on port ${brainPort}` };
+    const brainPort = require('./lib/brain-port.js').brainPort(DATA_DIR);
+    const health = brainPort === null ? null : await routerHttpGetJson(brainPort, '/health');
+    const hookLatency = health && health.hookLatency ? health.hookLatency
+      : { unavailable: brainPort === null ? `brain daemon not running (no brain-http.lock.json in ${DATA_DIR})` : `brain daemon not reachable on port ${brainPort}` };
     // Plan-limit unit per 1%, recalibrated from the plan's own rate_limit blocks (day-cached). A failed scan
     // is shown, not hidden: the committed default is used and the reason travels with the numbers.
     let limitCalibration;

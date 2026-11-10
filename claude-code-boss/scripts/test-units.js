@@ -10043,16 +10043,33 @@ test('scoped-rules-client: ECONNREFUSED is retried a bounded number of times, re
   } finally { rig.clear(); client._resetDown(); }
 });
 
-test('brain-port: the clients read BRAIN_HTTP_PORT with the daemon rule (1..65535, else 38217), never a bare Number() || 38217', () => {
+test('brain-port: the clients read the port from the running daemon\'s run file on every call, and no client carries a port of its own', async () => {
   const { brainPort } = require('./lib/brain-port.js');
-  assertEq([brainPort({}), brainPort({ BRAIN_HTTP_PORT: '40001' }), brainPort({ BRAIN_HTTP_PORT: '70000' }), brainPort({ BRAIN_HTTP_PORT: '-5' }), brainPort({ BRAIN_HTTP_PORT: 'x' })],
-    [38217, 40001, 38217, 38217, 38217], 'same answers as daemon-common resolvePort');
-  for (const f of ['user-prompt-submit-dispatcher.js', 'dashboard-backup.js', 'dashboard.js', 'brain-health.js']) {
-    const src = fs.readFileSync(path.join(SCRIPTS, f), 'utf8');
-    assert(!/Number\(process\.env\.BRAIN_HTTP_PORT\)\s*\|\|\s*38217/.test(src), `${f} parses the port without the range check`);
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-brain-port-'));
+  const lock = (o) => fs.writeFileSync(path.join(dir, 'brain-http.lock.json'), typeof o === 'string' ? o : JSON.stringify(o));
+  const errs = []; const origErr = console.error; console.error = (m) => errs.push(String(m));
+  try {
+    assertEq(brainPort(dir), null, 'no run file → no daemon to talk to (never a guessed port)');
+    assertEq(errs, [], 'a missing run file is the normal "not running" state, not an error');
+    lock({ pid: 1, port: 40001 }); assertEq(brainPort(dir), 40001, 'the port the daemon wrote');
+    lock({ pid: 1, port: 40002 }); assertEq(brainPort(dir), 40002, 'read again on every call (a restarted daemon on another port is followed)');
+    for (const bad of [{ port: 70000 }, { port: -5 }, { port: 'x' }, {}]) { lock(bad); assertEq(brainPort(dir), null, `invalid ${JSON.stringify(bad)}`); }
+    lock('{not json');
+    assertEq(brainPort(dir), null);
+    assert(errs.some((m) => /brain daemon run file unreadable/.test(m)), `a corrupt run file is said out loud: ${errs}`);
+  } finally { console.error = origErr; fs.rmSync(dir, { recursive: true, force: true }); }
+  const url = require('url');
+  const { runFilePort } = await import(url.pathToFileURL(path.join(SCRIPTS, 'lib', 'module-daemon.mjs')).href);
+  const $ = (files) => ({ fs: { read: async (p) => { if (!(p in files)) throw new Error(`ENOENT ${p}`); return files[p]; } } });
+  assertEq(await runFilePort($({ 'D:/d/brain-http.lock.json': '{"port":40003}' }), 'D:/d'), 40003, 'module-daemon reads the same run file');
+  for (const [files, re] of [[{}, /run file D:\/d\/brain-http\.lock\.json unreadable .* the daemon is not running/], [{ 'D:/d/brain-http.lock.json': '{"port":0}' }, /has no valid port/]]) {
+    let err = null; try { await runFilePort($(files), 'D:/d'); } catch (e) { err = e; }
+    assert(err && re.test(err.message), `fails loud: ${err && err.message}`);
   }
-  const mod = fs.readFileSync(path.join(SCRIPTS, 'lib', 'module-daemon.mjs'), 'utf8');
-  assert(!/Number\(await \$\.env\.get\('BRAIN_HTTP_PORT'\)\)\s*\|\|\s*38217/.test(mod) && /e > 0 && e <= 65535/.test(mod), 'module-daemon.mjs applies the same range rule');
+  for (const f of ['lib/brain-port.js', 'lib/module-daemon.mjs', 'lib/boss-band.mjs', 'user-prompt-submit-dispatcher.js', 'dashboard-backup.js', 'brain-health.js']) {
+    const src = fs.readFileSync(path.join(SCRIPTS, f), 'utf8');
+    assert(!/38217/.test(src) && !/BRAIN_HTTP_PORT/.test(src), `${f} carries a brain port or reads BRAIN_HTTP_PORT itself`);
+  }
 });
 
 test('graph client: an ingest whose connection was reset is not sent again (the daemon may have stored it); a reset read is retried', async () => {
@@ -10820,6 +10837,31 @@ test('Q24 run(): sessão com gateway próprio → o roteador NÃO se liga por ci
     const src = fs.readFileSync(path.join(SCRIPTS, 'model-router-ensure.js'), 'utf8');
     assert(/explicitUpstream \? null : sessionGateway/.test(src) && /explicitUpstream \? null : readGatewayDefer/.test(src),
       'upstream configurado no roteador = escolha explícita de pôr o proxy na frente do gateway (não adia)');
+  } finally {
+    if (prevEnv === undefined) delete process.env.ANTHROPIC_BASE_URL; else process.env.ANTHROPIC_BASE_URL = prevEnv;
+    for (const [f, c] of keep) {
+      if (c == null) { try { fs.unlinkSync(f); } catch (err) { void err; } } else fs.writeFileSync(f, c);
+    }
+  }
+});
+
+test('model-router-ensure: a router config without a valid port starts nothing and says so with its origin — the hook carries no port of its own', async () => {
+  const routerEnsure = require('./model-router-ensure.js');
+  const deferFile = path.join(process.env.CLAUDE_PLUGIN_DATA, 'model-router', 'gateway-defer.json');
+  const userCfg = require('./lib/router-config-path.js').routerUserConfigPath();
+  const keep = [deferFile, userCfg].map((f) => [f, fs.existsSync(f) ? fs.readFileSync(f, 'utf8') : null]);
+  const prevEnv = process.env.ANTHROPIC_BASE_URL;
+  try {
+    fs.mkdirSync(path.dirname(userCfg), { recursive: true });
+    try { fs.unlinkSync(deferFile); } catch (err) { void err; }
+    delete process.env.ANTHROPIC_BASE_URL;
+    for (const [i, port] of ['x', 0, 70000].entries()) {
+      fs.writeFileSync(userCfg, JSON.stringify({ fallback: { enabled: true }, port }));
+      const out = await routerEnsure.run({ hook_event_name: 'UserPromptSubmit', session_id: `noport-${i}-${Date.now()}` });
+      assert(/^\[hook-origin=claude-code-boss\] \[model-router\] Não iniciado: o config do roteador não tem porta válida/.test(out || ''), `port=${JSON.stringify(port)}: ${out}`);
+    }
+    const src = fs.readFileSync(path.join(SCRIPTS, 'model-router-ensure.js'), 'utf8');
+    assert(!/\|\|\s*13456/.test(src), 'no `|| 13456` fallback in the hook');
   } finally {
     if (prevEnv === undefined) delete process.env.ANTHROPIC_BASE_URL; else process.env.ANTHROPIC_BASE_URL = prevEnv;
     for (const [f, c] of keep) {
@@ -27513,16 +27555,16 @@ test('slow-hook alert: once per hook per 6 h per daemon pid; the BRAIN-HEALTH ch
     // BRAIN-HEALTH integration against a fake /health on a random port
     const srv = require('http').createServer((req, res) => { res.writeHead(200, { 'content-type': 'application/json' }); res.end(JSON.stringify(srv.body)); });
     await new Promise((r) => srv.listen(0, '127.0.0.1', r));
-    const saved = process.env.BRAIN_HTTP_PORT;
-    process.env.BRAIN_HTTP_PORT = String(srv.address().port);
     try {
       const bh = require('./brain-health.js');
+      srv.body = health(33);
+      assertEq(await bh._slowHookAlert(ROOT, dir), null, 'no daemon run file in the data dir → nothing to judge');
+      fs.writeFileSync(path.join(dir, 'brain-http.lock.json'), JSON.stringify({ pid: 33, port: srv.address().port }));
       srv.body = { ...health(33), pluginRoot: path.join(os.tmpdir(), 'another-install') };
       assertEq(await bh._slowHookAlert(ROOT, dir), null, "another install's daemon is not judged");
       srv.body = health(33);
-      assert(/sem folga/.test(await bh._slowHookAlert(ROOT, dir) || ''), 'the daemon serving this install is');
+      assert(/sem folga/.test(await bh._slowHookAlert(ROOT, dir) || ''), 'the daemon serving this install is (port read from its run file)');
     } finally {
-      if (saved === undefined) delete process.env.BRAIN_HTTP_PORT; else process.env.BRAIN_HTTP_PORT = saved;
       await new Promise((r) => srv.close(r));
     }
   } finally { fs.rmSync(dir, { recursive: true, force: true }); }
@@ -28556,6 +28598,7 @@ test('mcp-link: a session Claude Code gave up on is reported (user + agent) once
     const srv = http.createServer((req, res) => { res.writeHead(req.url === '/health' ? 200 : 404); res.end('{"ok":true}'); });
     await new Promise((r) => srv.listen(0, '127.0.0.1', r));
     const home = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-mcplink-home-'));
+    fs.writeFileSync(path.join(home, 'brain-http.lock.json'), JSON.stringify({ port: srv.address().port }));
     try {
       const cache = process.platform === 'win32' ? { LOCALAPPDATA: path.join(root, 'la') } : { XDG_CACHE_HOME: path.join(root, 'xdg') };
       const ccRoot = process.platform === 'win32' ? path.join(root, 'la', 'claude-cli-nodejs', 'Cache') : path.join(root, 'xdg', 'claude-cli-nodejs');
@@ -28564,7 +28607,7 @@ test('mcp-link: a session Claude Code gave up on is reported (user + agent) once
       const run = (sid, prompt = 'oi') => new Promise((resolve, reject) => {
         const child = require('child_process').execFile(process.execPath, [path.join(SCRIPTS, 'user-prompt-submit-dispatcher.js')], {
           encoding: 'utf8', timeout: 60000,
-          env: { ...process.env, ...cache, HOME: home, USERPROFILE: home, BRAIN_HTTP_AUTOSTART: '0', BRAIN_HTTP_PORT: String(srv.address().port) },
+          env: { ...process.env, ...cache, HOME: home, USERPROFILE: home, CLAUDE_PLUGIN_DATA: home, BRAIN_HTTP_AUTOSTART: '0' },
         }, (err, stdout) => (err ? reject(err) : resolve(JSON.parse(stdout || '{}'))));
         child.stdin.end(JSON.stringify({ hook_event_name: 'UserPromptSubmit', prompt, session_id: sid, cwd }));
       });
@@ -30950,9 +30993,10 @@ async function phaseGateRun({ config, tokens, messages, coldMs = 0, prompts = 1 
   const hooks = collectModuleHooks(cmp.register);
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-phase-gate-'));
   fs.writeFileSync(path.join(dir, 'brain-http.token'), 'tok');
+  fs.writeFileSync(path.join(dir, 'brain-http.lock.json'), JSON.stringify({ port: 1 }));
   const calls = { messages: 0, toasts: [], events: [], logs: [], downstream: [] };
   let now = 1_000_000_000;
-  const env = { CLAUDE_PLUGIN_DATA: dir, BRAIN_HTTP_PORT: '1' };
+  const env = { CLAUDE_PLUGIN_DATA: dir };
   const $ = {
     env: { get: async (k) => env[k] },
     fs: { read: async (p) => fs.readFileSync(p, 'utf8') },
@@ -31435,13 +31479,14 @@ async function folderCutRun(ce, { gated }) {
   const hooks = collectModuleHooks(cmp.register);
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-folder-cut-'));
   fs.writeFileSync(path.join(dir, 'brain-http.token'), 'tok');
+  fs.writeFileSync(path.join(dir, 'brain-http.lock.json'), JSON.stringify({ port: 1 }));
   const transcript = path.join(dir, 'session.jsonl');
   const row = (id, usage) => JSON.stringify({ type: 'assistant', message: { id, model: 'm1', usage } }) + '\n';
   fs.writeFileSync(transcript, row('msg-1', PRE_SWITCH_CALL));
   const config = { enabled: true, thresholdPercent: 30, minIntervalMs: 600000, folderTtl: true, warmCeilingTokens: 0, thresholdMaxTokens: 0 };
   const out = { compacts: 0, timers: [], logs: [] };
   let now = 1_000_000_000;
-  const env = { CLAUDE_PLUGIN_DATA: dir, BRAIN_HTTP_PORT: '1' };
+  const env = { CLAUDE_PLUGIN_DATA: dir };
   const $ = {
     env: { get: async (k) => env[k] },
     fs: { read: async (p) => fs.readFileSync(p, 'utf8') },
@@ -31510,11 +31555,12 @@ async function heartbeatNotices({ withTranscript, beats, folderAnswer, extraEnv 
   const hooks = collectModuleHooks(cmp.register);
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-heartbeat-'));
   fs.writeFileSync(path.join(dir, 'brain-http.token'), 'tok');
+  fs.writeFileSync(path.join(dir, 'brain-http.lock.json'), JSON.stringify({ port: 1 }));
   const transcript = path.join(dir, 'session.jsonl');
   fs.writeFileSync(transcript, '');
   const config = { enabled: true, thresholdPercent: 30, minIntervalMs: 600000, folderTtl: true, warmCeilingTokens: 0, thresholdMaxTokens: 0 };
   const out = { timers: [], logs: [], trail: [], toasts: [], hellos: [] };
-  const env = { CLAUDE_PLUGIN_DATA: dir, BRAIN_HTTP_PORT: '1', ...extraEnv };
+  const env = { CLAUDE_PLUGIN_DATA: dir, ...extraEnv };
   const $ = {
     env: { get: async (k) => env[k] },
     fs: { read: async (p) => fs.readFileSync(p, 'utf8') },
@@ -31659,13 +31705,14 @@ async function settledAfterCutRun(ce, { lateCall, after, floorFactor }) {
   const hooks = collectModuleHooks(cmp.register);
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-settled-'));
   fs.writeFileSync(path.join(dir, 'brain-http.token'), 'tok');
+  fs.writeFileSync(path.join(dir, 'brain-http.lock.json'), JSON.stringify({ port: 1 }));
   const transcript = path.join(dir, 'session.jsonl');
   const call = (id, tokens) => JSON.stringify({ type: 'assistant', message: { id, model: 'm1', usage: { input_tokens: 2, output_tokens: 100, cache_read_input_tokens: tokens - 2, cache_creation_input_tokens: 0 } } }) + '\n';
   fs.writeFileSync(transcript, call('msg-1', 167135));
   const config = { enabled: true, thresholdPercent: 30, minIntervalMs: 600000, folderTtl: true, warmCeilingTokens: 0, thresholdMaxTokens: 0, ...(floorFactor != null ? { floorFactor } : {}) };
   const out = { timers: [], logs: [], settled: [], folders: [] };
   let usageTokens = 167135;
-  const env = { CLAUDE_PLUGIN_DATA: dir, BRAIN_HTTP_PORT: '1' };
+  const env = { CLAUDE_PLUGIN_DATA: dir };
   const $ = {
     env: { get: async (k) => env[k] },
     fs: { read: async (p) => fs.readFileSync(p, 'utf8') },
@@ -31760,6 +31807,7 @@ async function reopenedRun(ce, o) {
   const hooks = collectModuleHooks(cmp.register);
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-reopen-'));
   fs.writeFileSync(path.join(dir, 'brain-http.token'), 'tok');
+  fs.writeFileSync(path.join(dir, 'brain-http.lock.json'), JSON.stringify({ port: 1 }));
   const now = Date.now();
   const sid = 'sid-reopen-0123';
   const cfgDir = path.join(dir, 'claude-config');
@@ -31771,7 +31819,7 @@ async function reopenedRun(ce, o) {
   }
   const config = { enabled: true, thresholdPercent: 30, minIntervalMs: 600000, folderTtl: true, warmCeilingTokens: 0, thresholdMaxTokens: 0 };
   const out = { logs: [], gates: [], timers: [], compacts: 0, toasts: [], hello: null, folders: [] };
-  const env = { CLAUDE_PLUGIN_DATA: dir, BRAIN_HTTP_PORT: '1', CLAUDE_CONFIG_DIR: cfgDir };
+  const env = { CLAUDE_PLUGIN_DATA: dir, CLAUDE_CONFIG_DIR: cfgDir };
   const prevCfgDir = process.env.CLAUDE_CONFIG_DIR;
   process.env.CLAUDE_CONFIG_DIR = cfgDir;
   const bigHistory = o.historyChars ? [{ role: 'user', text: 'x'.repeat(o.historyChars) }] : [];
@@ -31924,6 +31972,7 @@ async function heldPromptRun(ce, { failHeld = false, dieBeforeResend = false } =
   const cmp = await import(require('url').pathToFileURL(path.join(ROOT, 'hooks', 'compaction.mjs')).href);
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-held-'));
   fs.writeFileSync(path.join(dir, 'brain-http.token'), 'tok');
+  fs.writeFileSync(path.join(dir, 'brain-http.lock.json'), JSON.stringify({ port: 1 }));
   const now0 = Date.now();
   let now = now0;
   const transcript = path.join(dir, 'session.jsonl');
@@ -31934,7 +31983,7 @@ async function heldPromptRun(ce, { failHeld = false, dieBeforeResend = false } =
   const mk = () => {
     const out = { timers: [], compacts: 0, submitted: [], logs: [], toasts: [] };
     const $ = {
-      env: { get: async (k) => ({ CLAUDE_PLUGIN_DATA: dir, BRAIN_HTTP_PORT: '1' })[k] },
+      env: { get: async (k) => ({ CLAUDE_PLUGIN_DATA: dir })[k] },
       fs: { read: async (p) => fs.readFileSync(p, 'utf8') },
       http: { fetch: async (url, init) => {
         if (url.split('?')[0].endsWith('/health')) return { status: 200, ok: true, text: JSON.stringify({ dataDir: dir }) };
@@ -32025,6 +32074,7 @@ test('compaction hook: a person\'s prompt WITH attachments over a cold cache goe
     const hooks = collectModuleHooks(cmp.register);
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-attach-'));
     fs.writeFileSync(path.join(dir, 'brain-http.token'), 'tok');
+    fs.writeFileSync(path.join(dir, 'brain-http.lock.json'), JSON.stringify({ port: 1 }));
     let now = Date.now();
     const transcript = path.join(dir, 'session.jsonl');
     const call = (id, at) => JSON.stringify({ type: 'assistant', timestamp: new Date(at).toISOString(), message: { id, model: 'claude-opus-5-5[1m]', usage: REOPEN_CALL } }) + '\n';
@@ -32032,7 +32082,7 @@ test('compaction hook: a person\'s prompt WITH attachments over a cold cache goe
     const config = { enabled: true, thresholdPercent: 30, minIntervalMs: 600000, folderTtl: true, warmCeilingTokens: 0, thresholdMaxTokens: 0 };
     const out = { timers: [], compacts: 0, toasts: [], logs: [] };
     const $ = {
-      env: { get: async (k) => ({ CLAUDE_PLUGIN_DATA: dir, BRAIN_HTTP_PORT: '1' })[k] },
+      env: { get: async (k) => ({ CLAUDE_PLUGIN_DATA: dir })[k] },
       fs: { read: async (p) => fs.readFileSync(p, 'utf8') },
       http: { fetch: async (url, init) => {
         if (url.split('?')[0].endsWith('/health')) return { status: 200, ok: true, text: JSON.stringify({ dataDir: dir }) };
@@ -32085,6 +32135,7 @@ test('compaction hook: a session that never idles is cut at the end of a turn pa
       const hooks = collectModuleHooks(cmp.register);
       const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-warmceil-'));
       fs.writeFileSync(path.join(dir, 'brain-http.token'), 'tok');
+      fs.writeFileSync(path.join(dir, 'brain-http.lock.json'), JSON.stringify({ port: 1 }));
       const now = Date.now();
       const transcript = path.join(dir, 'session.jsonl');
       const call = (id, at) => JSON.stringify({ type: 'assistant', timestamp: new Date(at).toISOString(), message: { id, model: 'claude-opus-5-5[1m]', usage: REOPEN_CALL } }) + '\n';
@@ -32092,7 +32143,7 @@ test('compaction hook: a session that never idles is cut at the end of a turn pa
       const config = { enabled: true, thresholdPercent: 30, minIntervalMs: 600000, folderTtl: true, warmCeilingTokens, thresholdMaxTokens: 150000 };
       const out = { timers: [], compacts: 0, toasts: [], logs: [], gates: [] };
       const $ = {
-        env: { get: async (k) => ({ CLAUDE_PLUGIN_DATA: dir, BRAIN_HTTP_PORT: '1' })[k] },
+        env: { get: async (k) => ({ CLAUDE_PLUGIN_DATA: dir })[k] },
         fs: { read: async (p) => fs.readFileSync(p, 'utf8') },
         http: { fetch: async (url, init) => {
           if (url.split('?')[0].endsWith('/health')) return { status: 200, ok: true, text: JSON.stringify({ dataDir: dir }) };
@@ -32187,10 +32238,11 @@ async function engineCompactRun({ messages, trigger = 'auto', coldMs = 2 * 36000
   cmp.register((event, fn) => { reg[event] = { fn }; return { catch(c) { reg[event].catch = c; return this; } }; });
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-engine-compact-'));
   fs.writeFileSync(path.join(dir, 'brain-http.token'), 'tok');
+  fs.writeFileSync(path.join(dir, 'brain-http.lock.json'), JSON.stringify({ port: 1 }));
   const out = { summaries: 0, events: [], logs: [], toasts: [], refused: null, result: null };
   let now = 1_000_000_000;
   const timers = [];
-  const env = { CLAUDE_PLUGIN_DATA: dir, BRAIN_HTTP_PORT: '1' };
+  const env = { CLAUDE_PLUGIN_DATA: dir };
   const $ = {
     env: { get: async (k) => env[k] },
     fs: { read: async (p) => fs.readFileSync(p, 'utf8') },
@@ -32260,8 +32312,9 @@ test('compaction hook: a cut the engine refuses anyway is recorded as the engine
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-engine-refuse-'));
   try {
     fs.writeFileSync(path.join(dir, 'brain-http.token'), 'tok');
+    fs.writeFileSync(path.join(dir, 'brain-http.lock.json'), JSON.stringify({ port: 1 }));
     const events = []; const logs = [];
-    const $ = { env: { get: async (k) => ({ CLAUDE_PLUGIN_DATA: dir, BRAIN_HTTP_PORT: '1' })[k] }, fs: { read: async (p) => fs.readFileSync(p, 'utf8') },
+    const $ = { env: { get: async (k) => ({ CLAUDE_PLUGIN_DATA: dir })[k] }, fs: { read: async (p) => fs.readFileSync(p, 'utf8') },
       http: { fetch: async (url, init) => {
         if (url.split('?')[0].endsWith('/health')) return { status: 200, ok: true, text: JSON.stringify({ dataDir: dir }) };
         const payload = JSON.parse(JSON.parse(init.body).payload); events.push(payload);
@@ -32316,9 +32369,10 @@ async function cmpColdHarness({ tokens = 300000 } = {}) {
   cmp.register((event, fn) => { reg[event] = { fn }; return { catch(c) { reg[event].catch = c; return this; } }; });
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-cold-'));
   fs.writeFileSync(path.join(dir, 'brain-http.token'), 'tok');
+  fs.writeFileSync(path.join(dir, 'brain-http.lock.json'), JSON.stringify({ port: 1 }));
   const h = { reg, dir, now: 1_000_000_000, timers: [], events: [], logs: [] };
   h.$ = {
-    env: { get: async (k) => ({ CLAUDE_PLUGIN_DATA: dir, BRAIN_HTTP_PORT: '1' })[k] },
+    env: { get: async (k) => ({ CLAUDE_PLUGIN_DATA: dir })[k] },
     fs: { read: async (p) => fs.readFileSync(p, 'utf8') },
     http: { fetch: async (url, init) => {
       if (url.split('?')[0].endsWith('/health')) return { status: 200, ok: true, text: JSON.stringify({ dataDir: dir }) };
@@ -32491,6 +32545,7 @@ test('compaction hook, open session idle > 1h after a PERSON\'s turn: the cold c
     const hooks = collectModuleHooks(cmp.register);
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-open-idle-'));
     fs.writeFileSync(path.join(dir, 'brain-http.token'), 'tok');
+    fs.writeFileSync(path.join(dir, 'brain-http.lock.json'), JSON.stringify({ port: 1 }));
     let now = Date.now();
     const transcript = path.join(dir, 'session.jsonl');
     const call = (id, at) => JSON.stringify({ type: 'assistant', timestamp: new Date(at).toISOString(), message: { id, model: 'claude-opus-5-5[1m]', usage: REOPEN_CALL } }) + '\n';
@@ -32498,7 +32553,7 @@ test('compaction hook, open session idle > 1h after a PERSON\'s turn: the cold c
     const config = { enabled: true, thresholdPercent: 30, minIntervalMs: 600000, folderTtl: true, warmCeilingTokens: 0, thresholdMaxTokens: 0 };
     const out = { timers: [], compacts: 0, gates: [], logs: [] };
     const $ = {
-      env: { get: async (k) => ({ CLAUDE_PLUGIN_DATA: dir, BRAIN_HTTP_PORT: '1' })[k] },
+      env: { get: async (k) => ({ CLAUDE_PLUGIN_DATA: dir })[k] },
       fs: { read: async (p) => fs.readFileSync(p, 'utf8') },
       http: { fetch: async (url, init) => {
         if (url.split('?')[0].endsWith('/health')) return { status: 200, ok: true, text: JSON.stringify({ dataDir: dir }) };
@@ -32905,13 +32960,14 @@ test('boss.mjs: REAL daemon end to end — /boss and the band show the session c
   const { startHttpDaemon } = await import(require('url').pathToFileURL(path.join(ROOT, 'servers', 'brain-server', 'lib', 'http-daemon.js')).href);
   const savedTok = process.env.BRAIN_HTTP_TOKEN; delete process.env.BRAIN_HTTP_TOKEN;
   const d = await startHttpDaemon({ pluginRoot: ROOT, dataDir: dir, port: 0 });
+  fs.writeFileSync(path.join(dir, 'brain-http.lock.json'), JSON.stringify({ port: d.httpServer.address().port }));
   try {
     const boss = await import(require('url').pathToFileURL(path.join(ROOT, 'hooks', 'boss.mjs')).href);
     assert(boss.POLL_MS >= 5000, 'aggregated polling of at least 5 s');
     const hooks = collectModuleHooks(boss.register);
     const start = findHook(hooks, 'session.start', { isInteractive: true });
     assert(start, 'session.start for interactive sessions');
-    const { $, calls } = fakeBoss$({ sessionId: 'sid-boss-mod', env: { CLAUDE_PLUGIN_DATA: dir, BRAIN_HTTP_PORT: String(d.httpServer.address().port) } });
+    const { $, calls } = fakeBoss$({ sessionId: 'sid-boss-mod', env: { CLAUDE_PLUGIN_DATA: dir } });
     await start.fn($, { isInteractive: true }, async (e) => e);
     assertEq(calls.commands.map((c) => c.name), ['boss']);
     const run = await findHook(hooks, 'command.run', { command: 'boss' }).fn($, { command: 'boss' }, async () => ({}));
@@ -32948,7 +33004,8 @@ test('boss.mjs: Desktop (SDK session, isInteractive false) gets /boss, and the b
   const summary = JSON.stringify({ tokenGuard: { days: 30, savedTokens: 10, sessionTokens: 0 }, brain: { connected: true } });
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-boss-desk-'));
   fs.writeFileSync(path.join(dir, 'brain-http.token'), 'tok');
-  const desk = fakeBoss$({ sessionId: 'sid-desk', env: { CLAUDE_PLUGIN_DATA: dir, BRAIN_HTTP_PORT: '1' }, fetchImpl: async (url) => {
+  fs.writeFileSync(path.join(dir, 'brain-http.lock.json'), JSON.stringify({ port: 1 }));
+  const desk = fakeBoss$({ sessionId: 'sid-desk', env: { CLAUDE_PLUGIN_DATA: dir }, fetchImpl: async (url) => {
     if (url.split('?')[0].endsWith('/health')) return { status: 200, ok: true, text: JSON.stringify({ dataDir: dir }) };
     assert(url.includes('session=sid-desk'), url);
     return { status: 200, ok: true, text: summary };
@@ -32979,7 +33036,8 @@ test('boss.mjs: daemon down → the band says so (logged once, not per poll); a 
   const boss = await import(require('url').pathToFileURL(path.join(ROOT, 'hooks', 'boss.mjs')).href);
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-boss-down-'));
   fs.writeFileSync(path.join(dir, 'brain-http.token'), 'tok');
-  const env = { CLAUDE_PLUGIN_DATA: dir, BRAIN_HTTP_PORT: '1' };
+  fs.writeFileSync(path.join(dir, 'brain-http.lock.json'), JSON.stringify({ port: 1 }));
+  const env = { CLAUDE_PLUGIN_DATA: dir };
   const down = fakeBoss$({ env, fetchImpl: async () => { throw new Error('connect ECONNREFUSED 127.0.0.1:1'); } });
   const ctx = {};
   await boss.refresh(down.$, ctx);
@@ -33009,6 +33067,7 @@ test('boss.mjs: a daemon that fail-opens the summary (503: deadline missed / wor
   const boss = await import(require('url').pathToFileURL(path.join(ROOT, 'hooks', 'boss.mjs')).href);
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-boss-degraded-'));
   fs.writeFileSync(path.join(dir, 'brain-http.token'), 'tok');
+  fs.writeFileSync(path.join(dir, 'brain-http.lock.json'), JSON.stringify({ port: 1 }));
   const good = JSON.stringify({ tokenGuard: { days: 30, savedTokens: 10, sessionTokens: 0 }, brain: { connected: true } });
   const degraded = (why) => `[claude-code-boss] hook hook_boss_summary degradado no daemon (fail-open): ${why}`;
   const replies = [
@@ -33017,7 +33076,7 @@ test('boss.mjs: a daemon that fail-opens the summary (503: deadline missed / wor
     { status: 503, text: degraded('hook-worker exited (code 1)') },
   ];
   let i = 0;
-  const b = fakeBoss$({ env: { CLAUDE_PLUGIN_DATA: dir, BRAIN_HTTP_PORT: '1' }, fetchImpl: async (url) => {
+  const b = fakeBoss$({ env: { CLAUDE_PLUGIN_DATA: dir }, fetchImpl: async (url) => {
     if (url.split('?')[0].endsWith('/health')) {
       const nonce = new URL(url).searchParams.get('nonce');
       return { status: 200, ok: true, text: JSON.stringify({ dataDir: dir, proof: require('crypto').createHmac('sha256', 'tok').update(nonce).digest('hex') }) };
@@ -33038,8 +33097,9 @@ test('boss.mjs: each read asks for the CURRENT session id — after /clear the b
   const boss = await import(require('url').pathToFileURL(path.join(ROOT, 'hooks', 'boss.mjs')).href);
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-boss-clear-'));
   fs.writeFileSync(path.join(dir, 'brain-http.token'), 'tok');
+  fs.writeFileSync(path.join(dir, 'brain-http.lock.json'), JSON.stringify({ port: 1 }));
   const asked = [];
-  const b = fakeBoss$({ sessionId: 'sid-before-clear', env: { CLAUDE_PLUGIN_DATA: dir, BRAIN_HTTP_PORT: '1' }, fetchImpl: async (url) => {
+  const b = fakeBoss$({ sessionId: 'sid-before-clear', env: { CLAUDE_PLUGIN_DATA: dir }, fetchImpl: async (url) => {
     if (url.split('?')[0].endsWith('/health')) return { status: 200, ok: true, text: JSON.stringify({ dataDir: dir }) };
     asked.push(new URL(url).searchParams.get('session'));
     return { status: 200, ok: true, text: JSON.stringify({ tokenGuard: { days: 30, savedTokens: 10, sessionTokens: 0 }, brain: { connected: true } }) };
@@ -34701,8 +34761,8 @@ test('module-daemon: /health HMAC challenge — the real daemon proves the token
     assertEq((await (await fetch(`${base}/health?nonce=${nonce}`)).json()).proof, nodeCrypto.createHmac('sha256', token).update(nonce).digest('hex'), 'daemon proof = HMAC(token, nonce)');
     assertEq((await (await fetch(`${base}/health?nonce=not-hex!`)).json()).proof, undefined, 'a malformed nonce gets no proof');
     const mk$ = (port, logs) => ({
-      env: { get: async (n) => ({ CLAUDE_PLUGIN_DATA: dataDir.replace(/\\/g, '/'), BRAIN_HTTP_PORT: String(port) })[n] },
-      fs: { read: async (p) => fs.readFileSync(p, 'utf8') },
+      env: { get: async (n) => ({ CLAUDE_PLUGIN_DATA: dataDir.replace(/\\/g, '/') })[n] },
+      fs: { read: async (p) => (p.endsWith('/brain-http.lock.json') ? JSON.stringify({ port }) : fs.readFileSync(p, 'utf8')) },
       http: { fetch: async (u) => { const r = await fetch(u); return { ok: r.ok, status: r.status, text: await r.text() }; } },
       ui: { log: (m) => logs.push(m) },
     });

@@ -571,7 +571,7 @@ function writeSettings(obj) {
  */
 function routerPorts() {
   const st = readState();
-  return [...new Set([readConfig().port || 13456, st && st.port].filter((p) => Number.isInteger(p)))];
+  return [...new Set([readConfig().port, st && st.port].filter((p) => Number.isInteger(p)))];
 }
 
 /**
@@ -934,7 +934,13 @@ async function run(hookInput) {
   log(`Modo do proxy: ${mode}${mode === 'fallback-only' ? ' (passthrough cache-safe + fallback de limite)' : ''}${mode === 'sticky-tier' ? ' (sticky cache-safe: tier fixo por sessao + fallback de limite)' : ''}.`);
 
   // ── 1. Garante servidor rodando na PORTA FIXA ────────────────────────────
-  const FIXED_PORT = config.port || 13456;
+  const FIXED_PORT = config.port;
+  if (!Number.isInteger(FIXED_PORT) || FIXED_PORT <= 0 || FIXED_PORT > 65535) {
+    log(`Config do roteador sem porta válida (port=${JSON.stringify(FIXED_PORT)}) — roteador não iniciado.`);
+    return shouldAnnounce(sessionId, false)
+      ? `[hook-origin=claude-code-boss] [model-router] Não iniciado: o config do roteador não tem porta válida (port=${JSON.stringify(FIXED_PORT)}). Defina "port" no /dashboard (Router) ou no router-config.json.`
+      : null;
+  }
   log(`Verificando model-router na porta fixa ${FIXED_PORT}...`);
 
   let justStarted = false;

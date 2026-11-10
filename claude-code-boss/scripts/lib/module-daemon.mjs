@@ -107,6 +107,23 @@ export async function localDataDir($, label) {
 }
 
 /**
+ * The port the running brain daemon wrote in its run file (same source as lib/brain-port.js;
+ * a function-hook module has no require). Read on every handshake: no module carries a port.
+ * @param {object} $  the module's ops
+ * @param {string} local  the boss data dir
+ * @returns {Promise<number>}
+ */
+export async function runFilePort($, local) {
+  const file = `${local}/brain-http.lock.json`;
+  let lock;
+  try { lock = JSON.parse(await $.fs.read(file)); }
+  catch (err) { throw new Error(`brain daemon run file ${file} unreadable (${msg(err)}) — the daemon is not running`); }
+  const p = Number(lock && lock.port);
+  if (!Number.isInteger(p) || p <= 0 || p > 65535) throw new Error(`brain daemon run file ${file} has no valid port (${lock && lock.port})`);
+  return p;
+}
+
+/**
  * The daemon's address and local token. The hook_* tools are unlisted (never the model's), and a
  * module's $.mcp.call only reaches listed tools — so a module calls the daemon's /hook/* routes,
  * behind the same token gate as /mcp. The token is read only from the LOCAL data dir, and used
@@ -119,13 +136,11 @@ export async function localDataDir($, label) {
  */
 export async function daemon($, holder, refresh = false, label = 'boss') {
   if (holder.daemon && !refresh) return holder.daemon;
-  // Same rule as lib/brain-port.js; a function-hook module has no require.
-  const e = Number(await $.env.get('BRAIN_HTTP_PORT'));
-  const port = e > 0 && e <= 65535 ? e : 38217;
-  const base = `http://127.0.0.1:${port}`;
   const local = await localDataDir($, label);
   if (!local) throw new Error('boss data dir unknown (no CLAUDE_PLUGIN_DATA, no published pointer) — not reading the token');
   if (!isLocalAbsolute(local)) throw new Error(`boss data dir is not a local absolute path (${local}) — refused`);
+  const port = await runFilePort($, local);
+  const base = `http://127.0.0.1:${port}`;
   // The token is read from the LOCAL dir first, but nothing is sent with it until the process on the port proves it knows it.
   const token = (await $.fs.read(`${local}/brain-http.token`)).trim();
   const nonce = makeNonce();

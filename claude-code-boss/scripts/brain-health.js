@@ -301,8 +301,10 @@ function recallDegradedStatus() {
 async function slowHookAlert(root, data) {
   try {
     const alert = require('./lib/hook-latency-alert.js');
-    const health = await alert.fetchHealth(require('./lib/brain-port.js').brainPort());
-    if (!health) return null; // daemon down: the live probe / ensure already speak to that
+    const port = require('./lib/brain-port.js').brainPort(data);
+    // No run file or daemon down: the live probe / ensure already speak to that.
+    const health = port === null ? null : await alert.fetchHealth(port);
+    if (!health) return null;
     // Only the daemon serving THIS install: another install's daemon (G15) is not ours to
     // judge — and a test runner (repo root) never reads the machine's real daemon.
     const same = (a, b) => path.resolve(String(a || '')).toLowerCase() === path.resolve(String(b || '')).toLowerCase();

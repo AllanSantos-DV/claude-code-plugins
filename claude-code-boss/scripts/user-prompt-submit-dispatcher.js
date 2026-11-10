@@ -133,7 +133,7 @@ async function linkNoticeFor(event) {
     const link = await require('./lib/mcp-link.js').linkNotice({
       sessionId: event.session_id,
       cwd: event.cwd,
-      daemonHealthy: async () => (await require('./lib/http-health.js').probeHealth(`http://127.0.0.1:${port}`, { timeoutMs: 1500 })).status === 200,
+      daemonHealthy: async () => port !== null && (await require('./lib/http-health.js').probeHealth(`http://127.0.0.1:${port}`, { timeoutMs: 1500 })).status === 200,
     });
     // The same give-up is announced once per session (to the owner and to the agent), not on every prompt.
     const once = require('./lib/notice-once.js');
