@@ -33467,6 +33467,15 @@ test('crash-evidence.enrich: matches its own fault event by pid (decimal or hex)
   assert(/Windows query failed: denied/.test(failed.note), 'query failure is recorded, not hidden');
 });
 
+test('crash-evidence.adviceFor: "run again in a minute" only while the collector has not written; a finished query gives its final advice', () => {
+  const pending = crashEv.adviceFor({ id: 'a' });
+  assert(/again in a minute/.test(pending), pending);
+  const noEvent = crashEv.adviceFor({ id: 'b', windows: { fault: null, cpu: null, note: 'no Application Error event for node.exe pid 22076 since 2026-11-07' } });
+  assert(!/again in a minute/.test(noEvent) && /exit 134/.test(noEvent) && /stderr tail/.test(noEvent), noEvent);
+  const failed = crashEv.adviceFor({ id: 'c', windows: { fault: null, cpu: null, note: 'Windows query failed: denied' } });
+  assert(!/again in a minute/.test(failed) && /query failed \(Windows query failed: denied\)/.test(failed), failed);
+});
+
 test('crash-evidence.forgetStoppedDaemon: drops only the killed pid\'s lock', () => {
   const lock = { pid: deadPid(), port: 38217, startedAt: Date.now() - 60000 };
   const dir = crashDir(lock);

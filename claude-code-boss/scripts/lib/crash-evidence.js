@@ -317,6 +317,8 @@ function adviceFor(rec) {
   // so a fault inside node.exe is a fail-fast in its C++ (often an addon misusing N-API).
   if (mod === 'node.exe') return 'a fail-fast inside node.exe (not a V8 out-of-memory, which exits 134 without a Windows fault event): read the Node report and the stderr tail in the record';
   if (mod) return `the fault is in ${f.module} (${f.modulePath || 'path unknown'}): check what installed that DLL`;
+  if (rec.windows && /^Windows query failed/.test(rec.windows.note || '')) return `the Windows fault query failed (${rec.windows.note}): the stderr tail in the record is the only evidence`;
+  if (rec.windows) return 'Windows recorded no fault for it: a Node abort (out of memory, exit 134) leaves none, so read the stderr tail in the record; with an empty tail it was killed from outside';
   return 'no Windows fault event yet — the collector may still be running; run `node scripts/doctor.js` again in a minute';
 }
 
