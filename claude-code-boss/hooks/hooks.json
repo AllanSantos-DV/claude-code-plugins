@@ -309,6 +309,26 @@
             "timeout": 5
           }
         ]
+      },
+      {
+        "matcher": "Read|Grep|Glob|LS|mcp__smart-tool__smart_search|mcp__smart-tool__smart_search_result|mcp__smart-tool__smart_scout|Edit|Write|MultiEdit|NotebookEdit|Bash|PowerShell",
+        "hooks": [
+          {
+            "type": "mcp_tool",
+            "server": "plugin:claude-code-boss:brain-server",
+            "tool": "hook_read_burst",
+            "input": {
+              "hook_event_name": "${hook_event_name}",
+              "session_id": "${session_id}",
+              "cwd": "${cwd}",
+              "tool_name": "${tool_name}",
+              "tool_input": "${tool_input}",
+              "agent_id": "${agent_id}",
+              "project_dir": "${CLAUDE_PROJECT_DIR}"
+            },
+            "timeout": 20
+          }
+        ]
       }
     ],
     "UserPromptExpansion": [

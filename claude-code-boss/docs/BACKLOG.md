@@ -714,6 +714,10 @@ Relatórios: `docs/research/checkup/` (local). Tudo abaixo marcado [x] tem teste
 - **Limites**: acerto = arquivos lidos que o pacote trouxe (proxy: ler um arquivo não prova que era necessário, nem o contrário); o repositório mudou desde as sessões (arquivos que sumiram foram excluídos do acerto);
   a extrapolação aplica a fatia da amostra a todas as rajadas, inclusive as sem busca própria (otimista); só um projeto; a economia do pacote que entra na janela e é relida nos turnos seguintes não foi modelada.
 - [x] **Registrado para o Allan decidir:** usar de verdade numa sessão (ligar como orientação no prompt do agente ou como ferramenta MCP) e comparar com as mesmas métricas; sem isso o número acima é replay, não ganho medido.
+- [x] **Implementado na develop (t-429e28, delegado pelo orquestrador em 2026-11-10), sem release** — hook `hook_read_burst` (`scripts/read-burst-hook.js`, `scripts/lib/read-burst.js`):
+  na 3ª chamada só de leitura seguida, o pacote é montado uma vez para a primeira busca do próprio agente na rajada (o tema que mediu 0,67), sem os arquivos já lidos, e entra como `additionalContext`.
+  Edit/Write/Bash/PowerShell fecham a rajada; 5 entregas por sessão e subagente, uma por tema; desligado no perfil `free`; `readBurst` na config.
+  A métrica real que o replay não tinha: `.runtime/read-burst.jsonl` grava cada entrega e, ao fechar a rajada, `readAfter` e `hits` (arquivos lidos depois que o pacote já trazia).
 
 ## Doctor: aviso, desfazer no dashboard e desativação por evidência (PEDIDO 413, 2026-10-15) — pronto na develop, aguardando a validação do Allan
 
@@ -1446,7 +1450,7 @@ com outra janela/validade de cache (calibrado: o cenário atual dá 522 contra 5
   (~US$850 em 8 dias). Com a janela em 300k uma sessão longa passa a custar por chamada como uma nova; um aviso
   "sessão nova por tarefa" só se os relatórios depois da Fase 1 ainda mostrarem contexto alto.
 - [x] **Adiado — Fase 3, futuro e fora do boss: rajadas de investigação** — US$1–4/dia por projeto no consolidado; a
-  ferramenta que entrega o contexto pronto é do smart-tool/projeto, não do boss.
+  ferramenta que entrega o contexto pronto é do smart-tool/projeto, não do boss. *Revisto em 2026-11-10*: o orquestrador delegou ao boss (t-429e28); implementado como hook `hook_read_burst`, ver "Contexto pronto nas rajadas de leitura".
 
 - [x] **Teardown redundante de `ccb-shape-exit` — encontrado e corrigido em 2026-10-11**: o teste do código de saída removia sua pasta imediatamente com `rmSync` sem retry; EPERM no Windows mascarava a assertion original. O mesmo corpo anterior à correção de Temp reproduziu EPERM sem carregar test-temp. Agora a fixture fica sob o teardown proprietário já existente (por teste e, por fim, após o processo filho sair), preservando falhas reais e erros de limpeza. Validação: caso dirigido com Git Bash no PATH e lifecycle 6/6, sem pastas CCB retidas. Gate diagnóstico anterior: 135 hooks verdes; 1465 units verdes / 2 falhas, portanto não foi integralmente verde. A outra falha (catálogo BYOK, conexão de 300 ms no caso drip) passou isoladamente sem alterar seu timeout intencional; é sensível à carga. Achado de ambiente, fora deste reparo: `bash` do System32 resolve WSL; Node Linux não aceita o caminho C:/.../shape-output.js do teste. Gate de shell Windows deve usar Git Bash no PATH. Nenhum código de produção foi alterado.
 
@@ -2950,7 +2954,7 @@ Lacunas conhecidas do gate de project id (2.29.1):
   comportamento visível (o primeiro prompt de uma retomada grande passa por corte) — reverter = reverter o commit.
 - [x] **Fechado sem ação em 2026-10-15 (funcionalidade nova que muda o uso: vira pedido ao Allan, não defeito) — Item 2 do relatório — ferramenta que entrega o contexto pronto nas rajadas de leitura** (44 rajadas, 401 turnos só lendo, ~US$ 15,87 de teto).
   Dono: o boss, mas é funcionalidade nova que muda o uso → vira pergunta com pacote ao Allan (reuso: `smart-tool`, `brain_retrieve_context`, `task-map`),
-  não implementada.
+  não implementada. *Revisto em 2026-11-10*: implementada na develop como hook `hook_read_burst` (t-429e28), ver "Contexto pronto nas rajadas de leitura".
 - [x] **Registrado para os outros donos em 2026-10-15 — Fora do boss (outros donos)**: item 1 (modelo por tipo de tarefa — harness), item 4 (regra do Smart Tool na instrução — smart-tool/harness; a
   mensagem do hook já nomeia a ferramenta de troca), e troca de modelo na mesma sessão (opus→sonnet) gera miss de cache (explica parte do caso de 470k).
 - [x] **Resolvido sozinho em 2026-10-15 (some quando a sessão reinicia; a 3.9.0 devolve o valor gravado pelo boss) — Sessões abertas antes da instalação ainda carregam `CLAUDE_CODE_AUTO_COMPACT_WINDOW=153000` no env do processo** — por isso houve compactações

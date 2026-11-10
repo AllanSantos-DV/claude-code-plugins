@@ -1,12 +1,12 @@
 #!/usr/bin/env node
 /**
- * context-bundle.js — PROTOTYPE (opt-in CLI): the relevant excerpts for a theme in ONE call.
+ * context-bundle.js — the relevant excerpts for a theme in ONE call (CLI).
  *
  *   node scripts/context-bundle.js "<theme>" [--root <dir>] [--max-tokens N] [--json]
  *
- * The agent (or you) runs it instead of a burst of Read/Grep/Glob turns: code, tests and docs ranked by Smart Tool,
- * the Brain's recall for the theme, and the sections of the project's task maps that mention it. Nothing runs on its
- * own: no hook calls this. Fail loud: a source that cannot answer is named under "notes" in the output.
+ * Code, tests and docs ranked by Smart Tool, the Brain's recall for the theme, and the sections of the project's task
+ * maps that mention it. The read-burst hook builds the same bundle on its own during a run of read-only calls.
+ * Fail loud: a source that cannot answer is named under "notes" in the output.
  * Smart Tool URL: CCB_SMART_TOOL_URL, else the `smart-tool` http MCP server of ~/.claude.json.
  */
 'use strict';

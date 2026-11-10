@@ -88,6 +88,7 @@ const PROFILE_PRESETS = {
     fileFormatGuard:  { enabled: false },
     policyInject:     { enabled: false },
     scopeRules:       { enabled: false },
+    readBurst:        { enabled: false },
     activeResearch:   { enabled: false },
     decisionPromote:  { enabled: false },
     curationStop:     { enabled: false },
@@ -263,6 +264,19 @@ function getScopeRules() {
   return {
     enabled: sr.enabled !== false,
     maxChars: Number.isInteger(sr.maxChars) && sr.maxChars > 0 ? sr.maxChars : 2000,
+  };
+}
+
+const posInt = (v, dflt) => (Number.isInteger(v) && v > 0 ? v : dflt);
+
+/** Ready context for a run of read-only calls (lib/read-burst.js); `free` turns it off. */
+function getReadBurst() {
+  const rb = _resolved().readBurst || {};
+  return {
+    enabled: rb.enabled !== false,
+    minCalls: posInt(rb.minCalls, 3),
+    maxTokens: posInt(rb.maxTokens, 6000),
+    maxPerSession: posInt(rb.maxPerSession, 5),
   };
 }
 
@@ -683,6 +697,7 @@ module.exports = {
   getSessionPractices,
   getPolicyInject,
   getScopeRules,
+  getReadBurst,
   getSpecFunnel,
   getCaptureTriggerEvidence,
   getCuration,

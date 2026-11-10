@@ -19831,6 +19831,97 @@ test('context-bundle CLI: a URL do Smart Tool vem do env ou do ~/.claude.json; s
   } finally { fs.rmSync(home, { recursive: true, force: true }); }
 });
 
+test('read-burst: a run of read-only calls gets the bundle for the agent\'s first search once, without the files already read; a write ends the run and journals the hits', async () => {
+  const rb = require('./lib/read-burst.js');
+  const cb = require('./lib/context-bundle.js');
+  const root = fcTmp('rbroot');
+  const base = fcTmp('rbdata');
+  try {
+    const lines = (n) => Array.from({ length: n }, (_, i) => `line ${i + 1} doctor first run`).join('\n');
+    fcWrite(path.join(root, 'claude-code-boss/scripts/doctor.js'), lines(800));
+    fcWrite(path.join(root, 'claude-code-boss/scripts/test-units.js'), lines(10));
+    fcWrite(path.join(root, 'docs/note.md'), lines(4));
+    const builds = [];
+    const build = async (o) => { builds.push(o); return cb.buildBundle({ ...o, limits: { maxTokens: o.maxTokens }, deps: { smartSearch: async () => cb.parseSmartHits(SMART_YAML), memory: async () => null, maps: () => [] } }); };
+    const ev = (tool_name, tool_input, extra = {}) => ({ hook_event_name: 'PostToolUse', session_id: 'S1', tool_name, tool_input, ...extra });
+    const go = (e) => rb.onTool(e, { root, base, build });
+    assertEq((await go(ev('Read', { file_path: path.join(root, 'docs/note.md') }))).context, '', '1st call: nothing');
+    assertEq((await go(ev('Grep', { pattern: 'doctor\\b.*first|run' }))).context, '', '2nd call: still below the threshold');
+    const third = await go(ev('Glob', { pattern: '**/*.js' }));
+    assertEq(builds.length, 1, 'built once, at the 3rd read-only call');
+    assertEq(builds[0].theme, 'doctor first run', 'theme = the agent\'s own first search, regex stripped (Glob is not a theme)');
+    assertEq([...builds[0].exclude], ['docs/note.md'], 'files already read are passed as exclude');
+    assert(/Read burst: 3 read-only calls since your search "doctor first run"/.test(third.context), third.context.slice(0, 300));
+    assert(/\[code\] claude-code-boss\/scripts\/doctor\.js/.test(third.context) && !/\[doc\] docs\/note\.md/.test(third.context), 'bundle in the context, minus the file already read');
+    assertEq(third.notice, '', 'no failure, nothing on the owner\'s screen');
+    assertEq((await go(ev('Read', { file_path: path.join(root, 'claude-code-boss/scripts/doctor.js') }))).context, '', 'same run: never twice');
+    await go(ev('Read', { file_path: path.join(root, 'README.md') }));
+    await go(ev('Bash', { command: 'npm test' }));
+    const j = fs.readFileSync(rb.journalFile(base), 'utf8').trim().split('\n').map((l) => JSON.parse(l));
+    assertEq(j.map((x) => x.event), ['delivered', 'closed']);
+    assertEq([j[1].readAfter, j[1].hits, j[1].bundleFiles], [2, 1, 2], 'files read after the delivery and how many the bundle had');
+    for (const t of [ev('Grep', { pattern: 'first run doctor' }), ev('Read', { file_path: path.join(root, 'a.js') }), ev('Read', { file_path: path.join(root, 'b.js') })]) await go(t);
+    assertEq(builds.length, 1, 'same theme again in the session: not rebuilt');
+    await go(ev('Edit', {}));
+    for (const t of [ev('Read', { file_path: path.join(root, 'a.js') }), ev('Read', { file_path: path.join(root, 'b.js') }), ev('Read', { file_path: path.join(root, 'c.js') })]) await go(t);
+    assertEq(builds.length, 1, 'a run with no search has no theme: nothing built');
+    const sub = (t, i) => ev(t, i, { agent_id: 'a1' });
+    await go(ev('Edit', {}));
+    for (const t of [sub('mcp__smart-tool__smart_search', { query_identifiers: 'context sources split' }), sub('Grep', { pattern: 'a later search' })]) await go(t);
+    assertEq((await go(ev('Read', { file_path: path.join(root, 'y.js') }))).context, '', 'the main session\'s calls do not add to the sub-agent\'s run');
+    assert(/since your search "context sources split"/.test((await go(sub('Read', { file_path: path.join(root, 'z.js') }))).context), 'the sub-agent\'s run is its own, themed by its FIRST search, not a later one');
+  } finally { fs.rmSync(root, { recursive: true, force: true }); fs.rmSync(base, { recursive: true, force: true }); }
+});
+
+test('read-burst: code search down still delivers the task-map sections and warns once per session and error signature; concurrent calls at the threshold build once; the hook follows its config', async () => {
+  const rb = require('./lib/read-burst.js');
+  const cb = require('./lib/context-bundle.js');
+  const root = fcTmp('rbroot2');
+  const base = fcTmp('rbdata2');
+  try {
+    fcWrite(path.join(root, 'docs/maps/doctor.md'), '# Task: doctor first run\n\n## Decisions\nthe doctor first run notice lists what it switched off\n');
+    fcWrite(path.join(root, 'docs/maps/burst.md'), '# Task: burst theme\n\nburst theme other words here\n');
+    const build = async (o) => cb.buildBundle({ ...o, deps: { smartSearch: async () => { throw new Error('connect ECONNREFUSED 127.0.0.1:8765 token abcdefghijklmnopqrstuvwxyz0123456789'); }, memory: async () => null } });
+    const ev = (tool_name, tool_input) => ({ hook_event_name: 'PostToolUse', session_id: 'S2', tool_name, tool_input });
+    const go = (e) => rb.onTool(e, { root, base, build });
+    let out;
+    for (const t of [ev('Grep', { pattern: 'doctor first run' }), ev('Read', {}), ev('Read', {})]) out = await go(t);
+    assert(/\[map\] docs\/maps\/doctor\.md/.test(out.context), `maps still delivered: ${out.context.slice(0, 200)}`);
+    assert(/came without code search — code\/docs unavailable — connect ECONNREFUSED/.test(out.notice) && /<masked>/.test(out.notice) && !/abcdefghijklmnop/.test(out.notice), out.notice);
+    await go(ev('Bash', {}));
+    for (const t of [ev('Grep', { pattern: 'burst theme' }), ev('Read', {}), ev('Read', {})]) out = await go(t);
+    assert(/\[map\] docs\/maps\/burst\.md/.test(out.context), 'delivered again for the new theme');
+    assertEq(out.notice, '', 'same failure signature in the same session: shown once');
+    let release;
+    const gate = new Promise((r) => { release = r; });
+    let n = 0;
+    const slow = async (o) => { n++; await gate; return build(o); };
+    const S3 = (tool_name, tool_input) => ({ hook_event_name: 'PostToolUse', session_id: 'S3', tool_name, tool_input });
+    await rb.onTool(S3('Grep', { pattern: 'doctor first run' }), { root, base, build: slow });
+    await rb.onTool(S3('Read', {}), { root, base, build: slow });
+    const p = [rb.onTool(S3('Read', {}), { root, base, build: slow }), rb.onTool(S3('Glob', {}), { root, base, build: slow })];
+    await new Promise((r) => setImmediate(r));
+    release();
+    await Promise.all(p);
+    assertEq(n, 1, 'two calls at the threshold at once: one build');
+    assertEq(rb.themeOf('Glob', { pattern: 'src/**' }), null);
+    assertEq(rb.themeOf('mcp__smart-tool__smart_scout', { question: 'how is a hook registered?', terms: 'hooks.json' }), 'how is a hook registered hooks json');
+    assertEq(rb.themeOf('Grep', { pattern: '\\s+' }), null, 'a pattern with no words is not a theme');
+    const hook = require('./read-burst-hook.js');
+    const hc = require('./lib/hooks-config.js');
+    const orig = hc.getReadBurst;
+    try {
+      hc.getReadBurst = () => ({ enabled: false, minCalls: 1, maxTokens: 6000, maxPerSession: 5 });
+      let built = 0;
+      assertEq(await hook.run({ hook_event_name: 'PostToolUse', session_id: 'S4', tool_name: 'Grep', tool_input: { pattern: 'doctor first run' }, cwd: root }, { base, build: async () => { built++; return { files: [] }; } }), { context: '', notice: '' }, 'disabled (free profile): nothing');
+      hc.getReadBurst = () => ({ enabled: true, minCalls: 1, maxTokens: 6000, maxPerSession: 5 });
+      await hook.run({ hook_event_name: 'PostToolUse', session_id: 'S4', tool_name: 'Grep', tool_input: { pattern: 'doctor first run' }, cwd: root }, { base, build: async () => { built++; return { files: [], notes: [], tokens: 0, text: '' }; } });
+      assertEq(built, 1, 'minCalls from the config');
+    } finally { hc.getReadBurst = orig; }
+    assertEq(hc.resolveProfileConfig({ profile: 'free' }).readBurst.enabled, false, 'free turns it off');
+  } finally { fs.rmSync(root, { recursive: true, force: true }); fs.rmSync(base, { recursive: true, force: true }); }
+});
+
 test('doctor: nenhum evento do NOSSO hooks.json cai como DESCONHECIDO', () => {
   // Guard anti-regressao: o plugin nunca mais pode alarmar contra si mesmo. O
   // veredito pode ser `warn` (temos eventos runtime-dependentes), mas NENHUM

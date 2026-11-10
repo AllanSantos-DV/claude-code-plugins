@@ -1,7 +1,8 @@
 'use strict';
 /**
- * context-bundle.js — PROTOTYPE (opt-in): given a theme, the relevant excerpts of a project in ONE call, so the agent
- * does not spend a burst of read-only turns (Read, Grep, Glob, search…) finding them one by one.
+ * context-bundle.js — given a theme, the relevant excerpts of a project in ONE call, so the agent does not spend a
+ * burst of read-only turns (Read, Grep, Glob, search…) finding them one by one. Built by the read-burst hook
+ * (lib/read-burst.js) and by the `scripts/context-bundle.js` CLI.
  *
  * It reuses what already exists instead of searching on its own:
  *   - Smart Tool (the user's MCP server over HTTP) for code, tests and docs — `smart_search` is called through the MCP
@@ -137,10 +138,11 @@ async function brainMemory(theme, root) {
 }
 
 /**
- * @param {{theme:string, root:string, deps?:{smartSearch?:Function, memory?:Function, maps?:Function}, limits?:object}} o
+ * @param {{theme:string, root:string, deps?:{smartSearch?:Function, memory?:Function, maps?:Function}, limits?:object, exclude?:Set<string>}} o
+ *   exclude: repo-relative, forward-slash, lower-case paths the reader already has (left out of the bundle)
  * @returns {Promise<{theme:string, tokens:number, files:string[], sections:object[], memory:object|null, notes:string[], text:string}>}
  */
-async function buildBundle({ theme, root, deps = {}, limits = {} }) {
+async function buildBundle({ theme, root, deps = {}, limits = {}, exclude = new Set() }) {
   if (typeof theme !== 'string' || theme.trim().length < 3) throw new Error('context-bundle: a theme of at least 3 characters is required');
   if (!root) throw new Error('context-bundle: root is required');
   const lim = { ...DEFAULT_LIMITS, ...limits };
@@ -154,7 +156,7 @@ async function buildBundle({ theme, root, deps = {}, limits = {} }) {
   for (const kind of ['code', 'test', 'doc']) {
     for (const h of hits[kind] || []) {
       const key = `${h.path}:${h.start}`;
-      if (seen.has(key)) continue;
+      if (seen.has(key) || exclude.has(h.path.replace(/\\/g, '/').toLowerCase())) continue;
       seen.add(key);
       const ex = readExcerpt(root, h, lim.maxLinesPerHit);
       if (!ex) { notes.push(`${h.path} is in the index but not on disk (stale index)`); continue; }

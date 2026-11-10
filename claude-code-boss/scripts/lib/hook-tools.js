@@ -114,6 +114,16 @@ const HOOKS = {
       });
     },
   },
+  hook_read_burst: {
+    script: 'read-burst-hook.js',
+    call: async (m, ev) => {
+      const { context, notice } = await m.run(ev);
+      return json({
+        ...(notice ? { systemMessage: notice } : {}),
+        ...(context ? { hookSpecificOutput: { hookEventName: 'PostToolUse', additionalContext: context } } : {}),
+      });
+    },
+  },
   hook_policy_glob_inject: { script: 'policy-glob-inject.js', call: async (m, ev) => json(await m.evaluate(ev)) },
   // context-bearing (G6): standing policies into every subagent's context. Was one
   // `node` spawn per subagent — the fan-out case. Echoes the event name like the CLI.
