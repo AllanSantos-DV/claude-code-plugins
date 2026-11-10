@@ -29003,12 +29003,22 @@ test('cooldown-stamp: absent → off; stamped → on until ms elapses; settleWit
 });
 
 test('settleWithin: synchronous work that starves the loop does not make a detector with pending I/O time out', async () => {
+  const net = require('net');
   const { settleWithin } = require('../engine/lib/settle-within.js');
-  const reads = async () => { for (let i = 0; i < 3; i++) await fs.promises.readFile(__filename.replace(/test-units\.js$/, 'doctor.js'), 'utf8').then((s) => s.length); return 'done'; };
-  const guarded = settleWithin(reads(), 1000);
-  const end = Date.now() + 2300;
-  while (Date.now() < end) { /* the starving neighbour */ }
-  assertEq((await guarded).status, 'ok');
+  const server = net.createServer();
+  await new Promise((r) => server.listen(0, '127.0.0.1', r));
+  const accepted = new Promise((r) => server.once('connection', r));
+  const client = net.connect(server.address().port, '127.0.0.1');
+  const [peer] = await Promise.all([accepted, new Promise((r) => client.once('connect', r))]);
+  try {
+    // Loopback data sits in the kernel buffer during the starvation: no thread pool or disk time in the margin.
+    const arrives = new Promise((r) => peer.once('data', (d) => r(String(d))));
+    client.write('done');
+    const guarded = settleWithin(arrives, 1000);
+    const end = Date.now() + 2300;
+    while (Date.now() < end) { /* the starving neighbour */ }
+    assertEq(await guarded, { status: 'ok', value: 'done' });
+  } finally { client.destroy(); peer.destroy(); server.close(); }
   const never = settleWithin(new Promise(() => {}), 300);
   const end2 = Date.now() + 1300;
   while (Date.now() < end2) { /* starve again */ }
