@@ -1,6 +1,6 @@
 # Changelog
 
-## [Unreleased]
+## [3.16.0] - 2026-11-10
 
 ### Removed
 - **O redirect de curadoria não tem mais escape `CCB_RAW=1`** (`scripts/lib/curation-redirect.js`, `scripts/curated-run.js`, `scripts/curation-guard.js`, `scripts/shape-output.js`, `scripts/curation-detect.js`): a parte de tarefa com script curado é reescrita mesmo com `CCB_RAW=1` na frente, com `export CCB_RAW=1` antes ou com `$env:CCB_RAW=1;` no PowerShell. O script curado recebe `CCB_RAW` vazio (no Bash, `CCB_RAW=` na invocação; no PowerShell, o launcher tira a variável do ambiente), então um script antigo que imprime a saída crua com essa variável não dispara. As mensagens do redirect e do corte de exploração não oferecem mais escape, o `curation-detect` conta a execução prefixada como o comando normal e a métrica `curation.bypass` sai do dashboard e dos resumos. Quem precisa da saída inteira lê o arquivo que o script curado grava (`full output: <caminho>`, padrão novo na skill `curation-script-pattern`). `CCB_RAW_REPORT` (tamanho da saída crua para as métricas) continua.
