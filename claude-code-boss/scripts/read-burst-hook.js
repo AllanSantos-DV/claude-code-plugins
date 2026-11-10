@@ -7,16 +7,16 @@ const readBurst = require('./lib/read-burst.js');
 const hooksConfig = require('./lib/hooks-config.js');
 const { hookEnv } = require('./lib/hook-context.js');
 
-const SMART_TOOL_CALL_MS = 8000;
-const SMART_TOOL_TOTAL_MS = 12000;
+const SMART_TOOL_CALL_MS = 30000;
+const SMART_TOOL_TOTAL_MS = 45000;
 
 /** The bundle without the Brain's recall: the prompt hook already injects it on every prompt. */
-async function build({ theme, root, exclude, maxTokens }) {
+async function build({ theme, root, exclude, maxTokens, maxChars }) {
   const cb = require('./lib/context-bundle.js');
   const url = require('./context-bundle.js').discoverSmartToolUrl();
   const call = (u, name, args) => cb.mcpCallTool(u, name, args, { timeoutMs: SMART_TOOL_CALL_MS });
   return cb.buildBundle({
-    theme, root, exclude, limits: { maxTokens },
+    theme, root, exclude, limits: { maxTokens, maxChars },
     deps: { smartSearch: (t, r) => cb.smartSearch(t, r, { url, call, timeoutMs: SMART_TOOL_TOTAL_MS, limits: { ...cb.DEFAULT_LIMITS, maxTokens } }), memory: async () => null },
   });
 }

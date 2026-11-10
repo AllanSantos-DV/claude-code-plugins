@@ -9,6 +9,10 @@
  * 0 for the user's prompt) — and handed back as additionalContext. Files already read in the run
  * are left out. Never blocks; a failure is shown once per (session, error signature).
  *
+ * A real Smart Tool search takes 8–14 s, so the build runs in the background of the daemon (the
+ * module stays loaded there): the hook waits at most `waitMs` for it, and when it is not ready the
+ * bundle goes out with the next read-only call of the same run. A run that ends first drops it.
+ *
  * State per session and sub-agent under `<data>/.runtime/read-burst/`; every delivery and the
  * outcome of each delivered run (files read afterwards, how many were in the bundle) are appended
  * to `<data>/.runtime/read-burst.jsonl`, the same hit metric the replay used.
@@ -22,7 +26,12 @@ const notices = require('./notice-once.js');
 const ORIGIN = `[hook-origin=${require('./hook-owner.js').BOSS_ORIGIN}]`;
 const READ_TOOL = /^(Read|Grep|Glob|LS)$|^mcp__smart-tool__smart_(search|search_result|scout)$/;
 const RESET_TOOL = /^(Edit|Write|MultiEdit|NotebookEdit|Bash|PowerShell)$/;
-const BUILD_STALE_MS = 60000;
+/** Claude Code caps a hook's additionalContext at 10,000 characters; past it the model only gets a file path. */
+const CONTEXT_CAP = 10000;
+const HEADER_RESERVE = 400;
+
+/** Builds still running, by state file: `{theme, done, bundle, failure, ms}`. */
+const inflight = new Map();
 
 const safeId = (s) => require('../../engine/lib/session-id.js').sanitizeSessionId(s);
 const stateFile = (base, key) => path.join(base || dataDir(), '.runtime', 'read-burst', `${safeId(key)}.json`);
@@ -52,7 +61,7 @@ function relKey(root, file) {
   return rel.replace(/\\/g, '/').toLowerCase();
 }
 
-const fresh = () => ({ calls: 0, theme: null, reads: [], building: 0, delivered: null });
+const fresh = () => ({ calls: 0, theme: null, reads: [], delivered: null });
 
 function readState(base, key) {
   try { return { run: fresh(), themes: [], deliveries: 0, ...JSON.parse(fs.readFileSync(stateFile(base, key), 'utf8')) }; } catch (err) {
@@ -83,19 +92,56 @@ function closeRun(base, ev, st) {
   st.run = fresh();
 }
 
+/** A finished build: record it, and the context (or the once-per-signature notice) for this call. */
+function deliver(ev, base, key, job) {
+  const { theme, bundle } = job;
+  let failure = job.failure;
+  const down = (bundle && bundle.notes || []).find((n) => /^code\/docs unavailable/.test(n));
+  if (!failure && down) failure = down;
+
+  const now = readState(base, key);
+  const useful = bundle && bundle.files && bundle.files.length > 0;
+  if (useful) {
+    now.deliveries++;
+    now.run.delivered = { theme, files: bundle.files.map((f) => f.toLowerCase()), readsBefore: now.run.reads.length };
+  }
+  writeState(base, key, now);
+  journal(base, { event: useful ? 'delivered' : 'empty', session: ev.session_id, agent: ev.agent_id || 'main', theme, calls: now.run.calls,
+    ms: job.ms, tokens: bundle ? bundle.tokens : 0, files: useful ? bundle.files : [], failure: failure ? mask(failure).slice(0, 300) : undefined });
+
+  const notice = failure ? notices.notice({
+    key: `read-burst:${ev.session_id}`, signature: mask(failure).slice(0, 80), base,
+    text: `${ORIGIN} [claude-code-boss] read-burst: the ready context for "${theme.slice(0, 60)}" came without code search — ${mask(failure).slice(0, 200)}`,
+  }) || '' : '';
+  if (!useful) return { context: '', notice };
+  const context = [
+    `${ORIGIN} [claude-code-boss] Read burst: ${now.run.calls} read-only calls since your search "${theme.slice(0, 80)}".`,
+    `Below, gathered in one pass for that search (~${bundle.tokens} tokens; files you already read are left out). Check it before opening more files.`,
+    '',
+    bundle.text,
+  ].join('\n');
+  return { context, notice };
+}
+
 /**
  * @param {object} ev PostToolUse event
- * @param {{root:string, minCalls?:number, maxTokens?:number, maxPerSession?:number, base?:string,
- *          build:(o:{theme:string, root:string, exclude:Set<string>, maxTokens:number}) => Promise<{text:string, tokens:number, files:string[], notes:string[]}>}} o
+ * @param {{root:string, minCalls?:number, maxTokens?:number, maxPerSession?:number, base?:string, waitMs?:number,
+ *          build:(o:{theme:string, root:string, exclude:Set<string>, maxTokens:number, maxChars:number}) => Promise<{text:string, tokens:number, files:string[], notes:string[]}>}} o
  * @returns {Promise<{context:string, notice:string}>}
  */
-async function onTool(ev, { root, minCalls = 3, maxTokens = 6000, maxPerSession = 5, base, build }) {
+async function onTool(ev, { root, minCalls = 3, maxTokens = 6000, maxPerSession = 5, base, build, waitMs = 1500 }) {
   const none = { context: '', notice: '' };
   const tool = ev.tool_name || '';
   if (!ev.session_id || !(READ_TOOL.test(tool) || RESET_TOOL.test(tool))) return none;
   const key = `${ev.session_id}-${ev.agent_id || 'main'}`;
+  const slot = stateFile(base, key);
   const st = readState(base, key);
   if (RESET_TOOL.test(tool)) {
+    const pending = inflight.get(slot);
+    if (pending) {
+      inflight.delete(slot);
+      journal(base, { event: 'abandoned', session: ev.session_id, agent: ev.agent_id || 'main', theme: pending.theme, calls: st.run.calls });
+    }
     if (st.run.calls || st.run.delivered) { closeRun(base, ev, st); writeState(base, key, st); }
     return none;
   }
@@ -106,45 +152,32 @@ async function onTool(ev, { root, minCalls = 3, maxTokens = 6000, maxPerSession 
     if (f && !run.reads.includes(f)) run.reads.push(f);
   }
   if (!run.theme) run.theme = themeOf(tool, ev.tool_input);
-  const building = run.building && Date.now() - run.building < BUILD_STALE_MS;
-  const due = run.theme && !run.delivered && !building && run.calls >= minCalls && st.deliveries < maxPerSession
+  const pending = inflight.get(slot);
+  if (pending) {
+    writeState(base, key, st);
+    if (!pending.done) return none;
+    inflight.delete(slot);
+    return deliver(ev, base, key, pending);
+  }
+  const due = run.theme && !run.delivered && run.calls >= minCalls && st.deliveries < maxPerSession
     && !st.themes.includes(themeKey(run.theme)) && root;
   if (!due) { writeState(base, key, st); return none; }
-  run.building = Date.now();
+  st.themes = [...st.themes, themeKey(run.theme)].slice(-50);
   writeState(base, key, st);
 
-  const theme = run.theme;
+  const job = { theme: run.theme, done: false, bundle: null, failure: null, ms: 0 };
   const t0 = Date.now();
-  let bundle = null;
-  let failure = null;
-  try { bundle = await build({ theme, root, exclude: new Set(run.reads), maxTokens }); } catch (err) { failure = err && err.message ? err.message : String(err); }
-  const down = (bundle && bundle.notes || []).find((n) => /^code\/docs unavailable/.test(n));
-  if (!failure && down) failure = down;
-
-  const now = readState(base, key);
-  now.run.building = 0;
-  now.themes = [...now.themes, themeKey(theme)].slice(-50);
-  const useful = bundle && bundle.files && bundle.files.length > 0;
-  if (useful) {
-    now.deliveries++;
-    now.run.delivered = { theme, files: bundle.files.map((f) => f.toLowerCase()), readsBefore: now.run.reads.length };
-  }
-  writeState(base, key, now);
-  journal(base, { event: useful ? 'delivered' : 'empty', session: ev.session_id, agent: ev.agent_id || 'main', theme, calls: run.calls,
-    ms: Date.now() - t0, tokens: bundle ? bundle.tokens : 0, files: useful ? bundle.files : [], failure: failure ? mask(failure).slice(0, 300) : undefined });
-
-  const notice = failure ? notices.notice({
-    key: `read-burst:${ev.session_id}`, signature: mask(failure).slice(0, 80), base,
-    text: `${ORIGIN} [claude-code-boss] read-burst: the ready context for "${theme.slice(0, 60)}" came without code search — ${mask(failure).slice(0, 200)}`,
-  }) || '' : '';
-  if (!useful) return { context: '', notice };
-  const context = [
-    `${ORIGIN} [claude-code-boss] Read burst: ${run.calls} read-only calls since your search "${theme.slice(0, 80)}".`,
-    `Below, gathered in one pass for that search (~${bundle.tokens} tokens; files you already read are left out). Check it before opening more files.`,
-    '',
-    bundle.text,
-  ].join('\n');
-  return { context, notice };
+  inflight.set(slot, job);
+  const settled = Promise.resolve()
+    .then(() => build({ theme: job.theme, root, exclude: new Set(run.reads), maxTokens, maxChars: CONTEXT_CAP - HEADER_RESERVE }))
+    .then((b) => { job.bundle = b; }, (err) => { job.failure = err && err.message ? err.message : String(err); })
+    .then(() => { job.ms = Date.now() - t0; job.done = true; });
+  let timer;
+  await Promise.race([settled, new Promise((r) => { timer = setTimeout(r, waitMs); })]);
+  clearTimeout(timer);
+  if (!job.done || inflight.get(slot) !== job) return none;
+  inflight.delete(slot);
+  return deliver(ev, base, key, job);
 }
 
-module.exports = { onTool, themeOf, themeKey, relKey, stateFile, journalFile, READ_TOOL, RESET_TOOL };
+module.exports = { onTool, themeOf, themeKey, relKey, stateFile, journalFile, READ_TOOL, RESET_TOOL, CONTEXT_CAP };

@@ -17,7 +17,7 @@ const fs = require('fs');
 const path = require('path');
 const { parseRpcBody, estTokens } = require('./fixed-cost.js');
 
-const DEFAULT_LIMITS = { codeHits: 6, testHits: 2, docHits: 3, maxLinesPerHit: 40, maxTokens: 6000, mapFiles: 2, mapLines: 30 };
+const DEFAULT_LIMITS = { codeHits: 6, testHits: 2, docHits: 3, maxLinesPerHit: 40, maxLineChars: 300, maxTokens: 6000, maxChars: Infinity, mapFiles: 2, mapLines: 30 };
 
 /** One MCP tool call over streamable HTTP (initialize → initialized → tools/call). Returns the first text content. */
 async function mcpCallTool(url, name, args, { timeoutMs = 60000, fetchImpl = globalThis.fetch } = {}) {
@@ -85,20 +85,29 @@ async function smartSearch(theme, root, { url, pollMs = 700, timeoutMs = 240000,
   return parseSmartHits(typeof doc.result === 'string' ? doc.result : JSON.stringify(doc.result || ''));
 }
 
-/** `maxLines` lines of the hit's range (the start of it when longer) with a header; null when the file is gone, `{stale}` when the range is past its end. */
-function readExcerpt(root, hit, maxLines) {
+/**
+ * `maxLines` lines of the hit's range (the start of it when longer) with a header, each cut at `maxLineChars`
+ * (a minified line would eat the budget); null when the file is gone, `{stale}` when the range is past its end,
+ * `{offTopic}` when `keywords` are given and the file mentions none of them.
+ */
+function readExcerpt(root, hit, maxLines, { keywords = [], maxLineChars = Infinity } = {}) {
   const file = path.resolve(root, hit.path);
   let raw;
   try { raw = fs.readFileSync(file, 'utf8'); } catch (err) {
     if (err.code === 'ENOENT') return null;
     throw err;
   }
+  if (keywords.length) {
+    const lower = raw.toLowerCase();
+    if (!keywords.some((k) => lower.includes(k))) return { offTopic: true };
+  }
+  const cut = (l) => (l.length > maxLineChars ? `${l.slice(0, maxLineChars)} …` : l);
   const lines = raw.split(/\r?\n/);
   const start = Math.max(1, hit.start || 1);
   if (start > lines.length) return { stale: `${hit.path}:${start}-${hit.end} is past the end of the file (${lines.length} lines): stale index` };
   const end = Math.min(lines.length, hit.end || start + maxLines - 1);
   const take = Math.min(end, start + maxLines - 1);
-  const body = lines.slice(start - 1, take).map((l, i) => `${start + i}: ${l}`).join('\n');
+  const body = lines.slice(start - 1, take).map((l, i) => `${start + i}: ${cut(l)}`).join('\n');
   return { header: `${hit.path}:${start}-${take}${take < end ? ` (range runs to ${end})` : ''}`, text: body };
 }
 
@@ -140,6 +149,8 @@ async function brainMemory(theme, root) {
 /**
  * @param {{theme:string, root:string, deps?:{smartSearch?:Function, memory?:Function, maps?:Function}, limits?:object, exclude?:Set<string>}} o
  *   exclude: repo-relative, forward-slash, lower-case paths the reader already has (left out of the bundle)
+ *   limits.maxTokens keeps at least one section; limits.maxChars is a hard cap (where the text is delivered, e.g. a
+ *   hook's 10,000 characters) and may leave none. Search hits whose file never mentions the theme are left out.
  * @returns {Promise<{theme:string, tokens:number, files:string[], sections:object[], memory:object|null, notes:string[], text:string}>}
  */
 async function buildBundle({ theme, root, deps = {}, limits = {}, exclude = new Set() }) {
@@ -153,17 +164,21 @@ async function buildBundle({ theme, root, deps = {}, limits = {}, exclude = new 
     hits = await (deps.smartSearch || ((t, r) => smartSearch(t, r, { url: deps.smartToolUrl, limits: lim })))(theme, root);
   } catch (err) { notes.push(`code/docs unavailable — ${err.message}`); }
   const seen = new Set();
+  const keywords = keywordsOf(theme);
+  const offTopic = new Set();
   for (const kind of ['code', 'test', 'doc']) {
     for (const h of hits[kind] || []) {
       const key = `${h.path}:${h.start}`;
       if (seen.has(key) || exclude.has(h.path.replace(/\\/g, '/').toLowerCase())) continue;
       seen.add(key);
-      const ex = readExcerpt(root, h, lim.maxLinesPerHit);
+      const ex = readExcerpt(root, h, lim.maxLinesPerHit, { keywords, maxLineChars: lim.maxLineChars });
       if (!ex) { notes.push(`${h.path} is in the index but not on disk (stale index)`); continue; }
       if (ex.stale) { notes.push(ex.stale); continue; }
+      if (ex.offTopic) { offTopic.add(h.path); continue; }
       sections.push({ kind, path: h.path.replace(/\\/g, '/'), score: h.score, header: ex.header, text: ex.text });
     }
   }
+  if (offTopic.size) notes.push(`${offTopic.size} file(s) ranked by the search never mention the theme, left out`);
   try {
     for (const m of (deps.maps || findMapSections)(root, theme, lim)) sections.push({ kind: 'map', path: m.path, header: m.header, text: m.text });
   } catch (err) { notes.push(`task maps unavailable — ${err.message}`); }
@@ -180,9 +195,10 @@ async function buildBundle({ theme, root, deps = {}, limits = {}, exclude = new 
   ].join('\n');
   let kept = sections.slice();
   let text = render(kept);
-  while (estTokens(text) > lim.maxTokens && kept.length > 1) {
+  const over = () => (estTokens(text) > lim.maxTokens && kept.length > 1) || (text.length > lim.maxChars && kept.length > 0);
+  while (over()) {
     const dropped = kept.pop();
-    notes.push(`dropped ${dropped.header} to fit ${lim.maxTokens} tokens`);
+    notes.push(`dropped ${dropped.header} to fit ${lim.maxTokens} tokens${Number.isFinite(lim.maxChars) ? ` / ${lim.maxChars} characters` : ''}`);
     text = render(kept);
   }
   return { theme, tokens: estTokens(text), files: [...new Set(kept.map((s) => s.path))], sections: kept, memory, notes, text };

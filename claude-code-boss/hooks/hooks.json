@@ -326,7 +326,7 @@
               "agent_id": "${agent_id}",
               "project_dir": "${CLAUDE_PROJECT_DIR}"
             },
-            "timeout": 20
+            "timeout": 5
           }
         ]
       }

@@ -19842,7 +19842,7 @@ test('read-burst: a run of read-only calls gets the bundle for the agent\'s firs
     fcWrite(path.join(root, 'claude-code-boss/scripts/test-units.js'), lines(10));
     fcWrite(path.join(root, 'docs/note.md'), lines(4));
     const builds = [];
-    const build = async (o) => { builds.push(o); return cb.buildBundle({ ...o, limits: { maxTokens: o.maxTokens }, deps: { smartSearch: async () => cb.parseSmartHits(SMART_YAML), memory: async () => null, maps: () => [] } }); };
+    const build = async (o) => { builds.push(o); return cb.buildBundle({ ...o, limits: { maxTokens: o.maxTokens, maxChars: o.maxChars }, deps: { smartSearch: async () => cb.parseSmartHits(SMART_YAML), memory: async () => null, maps: () => [] } }); };
     const ev = (tool_name, tool_input, extra = {}) => ({ hook_event_name: 'PostToolUse', session_id: 'S1', tool_name, tool_input, ...extra });
     const go = (e) => rb.onTool(e, { root, base, build });
     assertEq((await go(ev('Read', { file_path: path.join(root, 'docs/note.md') }))).context, '', '1st call: nothing');
@@ -19867,9 +19867,9 @@ test('read-burst: a run of read-only calls gets the bundle for the agent\'s firs
     assertEq(builds.length, 1, 'a run with no search has no theme: nothing built');
     const sub = (t, i) => ev(t, i, { agent_id: 'a1' });
     await go(ev('Edit', {}));
-    for (const t of [sub('mcp__smart-tool__smart_search', { query_identifiers: 'context sources split' }), sub('Grep', { pattern: 'a later search' })]) await go(t);
+    for (const t of [sub('mcp__smart-tool__smart_search', { query_identifiers: 'run doctor' }), sub('Grep', { pattern: 'a later search' })]) await go(t);
     assertEq((await go(ev('Read', { file_path: path.join(root, 'y.js') }))).context, '', 'the main session\'s calls do not add to the sub-agent\'s run');
-    assert(/since your search "context sources split"/.test((await go(sub('Read', { file_path: path.join(root, 'z.js') }))).context), 'the sub-agent\'s run is its own, themed by its FIRST search, not a later one');
+    assert(/since your search "run doctor"/.test((await go(sub('Read', { file_path: path.join(root, 'z.js') }))).context), 'the sub-agent\'s run is its own, themed by its FIRST search, not a later one');
   } finally { fs.rmSync(root, { recursive: true, force: true }); fs.rmSync(base, { recursive: true, force: true }); }
 });
 
@@ -19919,6 +19919,64 @@ test('read-burst: code search down still delivers the task-map sections and warn
       assertEq(built, 1, 'minCalls from the config');
     } finally { hc.getReadBurst = orig; }
     assertEq(hc.resolveProfileConfig({ profile: 'free' }).readBurst.enabled, false, 'free turns it off');
+  } finally { fs.rmSync(root, { recursive: true, force: true }); fs.rmSync(base, { recursive: true, force: true }); }
+});
+
+test('read-burst: search hits that never mention the theme are left out, long lines are cut, and the context stays under the 10,000-character hook cap', async () => {
+  const rb = require('./lib/read-burst.js');
+  const cb = require('./lib/context-bundle.js');
+  const root = fcTmp('rbroot3');
+  const base = fcTmp('rbdata3');
+  try {
+    fcWrite(path.join(root, 'pages/index.html'), `<style>${'a{color:red}'.repeat(600)}</style>\n`);
+    fcWrite(path.join(root, 'scripts/notice.js'), `function composeNotice() {}\nconst css = '${'x'.repeat(2000)}';\n`);
+    const docs = Array.from({ length: 12 }, (_, i) => `docs/d${i}.md`);
+    for (const d of docs) fcWrite(path.join(root, d), Array.from({ length: 40 }, () => `composeNotice ${'y'.repeat(150)}`).join('\n'));
+    const yaml = (paths) => ['code:', ...paths.flatMap((p) => [`  - path: ${p}`, '    lines: 1-40', '    score: 0.3'])].join('\n');
+    const bundle = (paths) => async (o) => cb.buildBundle({ ...o, limits: { maxTokens: o.maxTokens, maxChars: o.maxChars }, deps: { smartSearch: async () => cb.parseSmartHits(yaml(paths)), memory: async () => null, maps: () => [] } });
+    const ev = (s, tool_name, tool_input) => ({ hook_event_name: 'PostToolUse', session_id: s, tool_name, tool_input });
+    let out;
+    for (const t of [ev('S5', 'Grep', { pattern: 'composeNotice' }), ev('S5', 'Glob', {}), ev('S5', 'Glob', {})]) out = await rb.onTool(t, { root, base, maxTokens: 100000, build: bundle(['pages/index.html', 'scripts/notice.js', ...docs]) });
+    assert(out.context.length > 0 && out.context.length <= rb.CONTEXT_CAP, `delivered within the cap: ${out.context.length}`);
+    assert(!/pages\/index\.html:/.test(out.context) && /1 file\(s\) ranked by the search never mention the theme/.test(out.context), 'the page that never says composeNotice is left out, and it is said');
+    assert(/2: const css = 'x{287} …/.test(out.context) && !/x{288}/.test(out.context), 'a long line is cut at 300 characters');
+    assert(/dropped docs\/d\d+\.md:1-40 to fit 100000 tokens \/ 9600 characters/.test(out.context), 'the tail dropped for the character cap, and said');
+    for (const t of [ev('S6', 'Grep', { pattern: 'composeNotice' }), ev('S6', 'Glob', {}), ev('S6', 'Glob', {})]) out = await rb.onTool(t, { root, base, build: bundle(['pages/index.html']) });
+    assertEq(out.context, '', 'every hit off the theme: nothing delivered');
+    const j = fs.readFileSync(rb.journalFile(base), 'utf8').trim().split('\n').map((l) => JSON.parse(l));
+    assertEq(j.map((x) => [x.session, x.event]), [['S5', 'delivered'], ['S6', 'empty']]);
+  } finally { fs.rmSync(root, { recursive: true, force: true }); fs.rmSync(base, { recursive: true, force: true }); }
+});
+
+test('read-burst: a build slower than the wait goes out with the next read-only call of the run; a run that ends first drops it and the theme is not rebuilt', async () => {
+  const rb = require('./lib/read-burst.js');
+  const root = fcTmp('rbroot4');
+  const base = fcTmp('rbdata4');
+  try {
+    let release;
+    let n = 0;
+    const build = async (o) => { n++; await new Promise((r) => { release = r; }); return { text: `[code] scripts/x.js\n${o.theme}`, tokens: 9, files: ['scripts/x.js'], notes: [] }; };
+    const ev = (s, tool_name, tool_input) => ({ hook_event_name: 'PostToolUse', session_id: s, tool_name, tool_input });
+    const go = (e) => rb.onTool(e, { root, base, build, waitMs: 20 });
+    const settle = () => new Promise((r) => setImmediate(r));
+    let out;
+    for (const t of [ev('S7', 'Grep', { pattern: 'slow theme' }), ev('S7', 'Glob', {}), ev('S7', 'Glob', {})]) out = await go(t);
+    assertEq(out.context, '', 'not ready within the wait: the hook returns at once');
+    assertEq((await go(ev('S7', 'Glob', {}))).context, '', 'still building: nothing yet');
+    release();
+    await settle();
+    out = await go(ev('S7', 'Read', { file_path: path.join(root, 'scripts/x.js') }));
+    assert(/Read burst: 5 read-only calls since your search "slow theme"/.test(out.context) && /\[code\] scripts\/x\.js/.test(out.context), out.context.slice(0, 200));
+    assertEq(n, 1, 'one build for the run');
+    for (const t of [ev('S8', 'Grep', { pattern: 'dropped theme' }), ev('S8', 'Glob', {}), ev('S8', 'Glob', {})]) await go(t);
+    await go(ev('S8', 'Edit', {}));
+    release();
+    await settle();
+    assertEq((await go(ev('S8', 'Read', {}))).context, '', 'the run ended before the build finished: never delivered into the next run');
+    for (const t of [ev('S8', 'Grep', { pattern: 'dropped theme' }), ev('S8', 'Glob', {})]) await go(t);
+    assertEq(n, 2, 'the dropped theme is not rebuilt in the session');
+    const j = fs.readFileSync(rb.journalFile(base), 'utf8').trim().split('\n').map((l) => JSON.parse(l));
+    assertEq(j.map((x) => [x.session, x.event]), [['S7', 'delivered'], ['S8', 'abandoned']]);
   } finally { fs.rmSync(root, { recursive: true, force: true }); fs.rmSync(base, { recursive: true, force: true }); }
 });
 
