@@ -25,7 +25,7 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 // is stuck, not slow.
 const STALL_MS = 60_000;
 
-export function createHookWorker({ pluginRoot, callTimeoutMs = 60000, stallMs = STALL_MS, workerPath, onBackgroundDone, resourceLimits = WORKER_RESOURCE_LIMITS } = {}) {
+export function createHookWorker({ pluginRoot, callTimeoutMs = 60000, stallMs = STALL_MS, workerPath, onBackgroundDone, resourceLimits = WORKER_RESOURCE_LIMITS, now = Date.now } = {}) {
   if (!pluginRoot) throw new Error('createHookWorker: pluginRoot is required');
   let worker = null;
   let nextId = 1;
@@ -57,7 +57,7 @@ export function createHookWorker({ pluginRoot, callTimeoutMs = 60000, stallMs = 
     const w = new Worker(workerPath || path.join(__dirname, 'hook-worker.js'), { workerData: { pluginRoot }, resourceLimits });
     spawned++;
     w.on('message', (msg) => {
-      lastProgressAt = Date.now();
+      lastProgressAt = now();
       if (msg.started !== undefined) { runningName = msg.name || ''; return; }
       runningName = '';
       if (msg.bgDone !== undefined) {
@@ -115,7 +115,7 @@ export function createHookWorker({ pluginRoot, callTimeoutMs = 60000, stallMs = 
         if (!pending.delete(id)) return;
         if (pending.size === 0) w.unref();
         reject(new Error(`prazo de ${timeoutMs}ms estourado no hook-worker (${name})`));
-        const silentMs = Date.now() - lastProgressAt;
+        const silentMs = now() - lastProgressAt;
         if (silentMs >= stallMs && worker === w) {
           recycled++;
           console.error(`[hook-worker] no progress for ${silentMs}ms (running: ${runningName || 'unknown'}) — recycling the stuck worker`);
@@ -123,7 +123,7 @@ export function createHookWorker({ pluginRoot, callTimeoutMs = 60000, stallMs = 
         }
       }, timeoutMs);
       timer.unref();
-      if (idle()) lastProgressAt = Date.now(); // idle until now: the silence starts here
+      if (idle()) lastProgressAt = now(); // idle until now: the silence starts here
       outstanding.add(id);
       pending.set(id, { resolve, reject, timer });
       w.ref();
@@ -140,7 +140,7 @@ export function createHookWorker({ pluginRoot, callTimeoutMs = 60000, stallMs = 
     if (closed) { console.error(`[hook-worker] shut down; dropped ${name}`); return; }
     try {
       const id = nextId++;
-      if (idle()) lastProgressAt = Date.now();
+      if (idle()) lastProgressAt = now();
       bgPending.set(id, { name, args, attempt, queuedAt: Date.now() });
       ensure().postMessage({ id, name, args, background: true });
     } catch (err) {

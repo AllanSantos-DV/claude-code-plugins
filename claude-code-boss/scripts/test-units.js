@@ -6930,10 +6930,38 @@ test('project-id defaultGit: memoized per (cwd,args); an expired entry is served
   const deadline = Date.now() + 10000;
   while (pid._gitRefreshing.has(key) && Date.now() < deadline) await new Promise((r) => setTimeout(r, 20));
   assert(!pid._gitRefreshing.has(key), 'the background refresh finishes');
-  assertEq(pid._defaultGit(['rev-parse', '--show-toplevel'], ROOT), first, 'the refresh replaced the stale answer with the real one');
-  assert(Date.now() - pid._gitCache.get(key).ts < pid.GIT_TTL_MS, 'the refreshed entry is fresh again');
+  const refreshed = pid._defaultGit(['rev-parse', '--show-toplevel'], ROOT);
+  assert(refreshed === first || refreshed === 'MEMO-SENTINEL', `the refresh gives the real answer, or keeps the old one when git was killed at its timeout: ${refreshed}`);
   assertEq(pid._defaultGit(['rev-parse', '--show-toplevel'], ''), null, 'no cwd → null, nothing cached');
   pid._gitCache.clear();
+});
+
+test('project-id defaultGit: a refresh killed at its timeout (loaded machine) keeps the previous answer; a git that answered "not a repo" replaces it', () => {
+  const pid = require(path.join(ROOT, 'engine', 'lib', 'project-id.js'));
+  const cp = require('child_process');
+  const realExec = cp.execFile;
+  const realErr = console.error;
+  const logged = [];
+  pid._gitCache.clear();
+  const key = `C:\\repo\0rev-parse\0--show-toplevel`;
+  const expired = () => pid._gitCache.set(key, { value: 'C:/repo', ts: Date.now() - pid.GIT_TTL_MS - 1 });
+  let reply;
+  cp.execFile = (cmd, args, opts, cb) => { cb(...reply); return { unref() {} }; };
+  console.error = (m) => logged.push(String(m));
+  try {
+    expired();
+    reply = [Object.assign(new Error('Command failed'), { killed: true, signal: 'SIGTERM' }), ''];
+    assertEq(pid._defaultGit(['rev-parse', '--show-toplevel'], 'C:\\repo'), 'C:/repo');
+    assertEq(pid._gitCache.get(key).value, 'C:/repo', 'a killed refresh is no answer: the previous one stays');
+    assert(!pid._gitRefreshing.has(key) && logged.some((m) => /refresh did not finish \(SIGTERM\)/.test(m)), 'logged, and the next read may retry');
+    reply = [null, 'C:/moved\n'];
+    pid._defaultGit(['rev-parse', '--show-toplevel'], 'C:\\repo');
+    assertEq(pid._gitCache.get(key).value, 'C:/moved', 'the retry stores the new answer');
+    expired();
+    reply = [Object.assign(new Error('not a git repository'), { code: 128 }), ''];
+    pid._defaultGit(['rev-parse', '--show-toplevel'], 'C:\\repo');
+    assertEq(pid._gitCache.get(key).value, null, 'git answered (exit 128): that answer replaces the old one');
+  } finally { cp.execFile = realExec; console.error = realErr; pid._gitCache.clear(); }
 });
 
 test('project-id legacy marker: READ-ONLY back-compat + migration nudge (never auto-writes .memory)', () => {
@@ -30431,18 +30459,21 @@ test('plugin-updater.killStale: so casa modulos da PASTA DE CACHE do plugin, nao
     const wp = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-stuck-')), 'stuck-worker.cjs');
     fs.writeFileSync(wp, "const { parentPort } = require('worker_threads');\n"
       + "parentPort.on('message', (m) => { if (m.name === 'hang') return; parentPort.postMessage({ id: m.id, ok: true, text: 'ok:' + m.name }); });\n");
-    const hw = (await loadHookWorker())({ pluginRoot: ROOT, workerPath: wp, stallMs: 150 });
+    // The silence is measured on this clock, moved by the test: a loaded machine's late timers cannot change the count.
+    let clock = 0;
+    const hw = (await loadHookWorker())({ pluginRoot: ROOT, workerPath: wp, stallMs: 150, now: () => clock });
     try {
       assertEq(await hw.run('a', {}, { timeoutMs: 2000 }), 'ok:a', 'healthy job answered');
       let hangs = 0;
-      const silenceFrom = Date.now();
       while (hw.stats().recycled < 1 && hangs < 20) {
-        let err = null; try { await hw.run('hang', {}, { timeoutMs: 60 }); } catch (e) { err = e; }
+        const call = hw.run('hang', {}, { timeoutMs: 20 });
+        clock += 60;
+        let err = null; try { await call; } catch (e) { err = e; }
         hangs++;
         assert(err && /prazo/.test(err.message), `stuck job expires visibly (#${hangs}): ${err && err.message}`);
       }
       assertEq(hw.stats().recycled, 1, 'recycled once the worker stayed silent past stallMs');
-      assert(hangs >= 2 && Date.now() - silenceFrom >= 150, `not recycled by the first deadline, only after stallMs of silence (${hangs} deadlines)`);
+      assertEq(hangs, 3, 'silent 60 and 120 ms keep the worker; at 180 ms (past stallMs 150) it is recycled');
       // terminate() is asynchronous: a call that lands before the exit event is failed fast (by design); the replacement serves the next one.
       let b = null;
       for (const until = Date.now() + 10000; b === null && Date.now() < until;) {
@@ -30477,13 +30508,22 @@ test('plugin-updater.killStale: so casa modulos da PASTA DE CACHE do plugin, nao
     const wp = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-busy-')), 'busy-worker.cjs');
     fs.writeFileSync(wp, "const { parentPort } = require('worker_threads');\n"
       + "parentPort.on('message', (m) => { if (m.name === 'hang') return; parentPort.postMessage({ id: m.id, ok: true, text: 'ok' }); });\n");
-    const hw = (await loadHookWorker())({ pluginRoot: ROOT, workerPath: wp, stallMs: 100 });
+    let clock = 0;
+    const hw = (await loadHookWorker())({ pluginRoot: ROOT, workerPath: wp, stallMs: 100, now: () => clock });
     try {
       for (let i = 0; i < 4; i++) {
-        try { await hw.run('hang', {}, { timeoutMs: 40 }); } catch (e) { void e; }
+        const call = hw.run('hang', {}, { timeoutMs: 20 });
+        clock += 40;
+        try { await call; } catch (e) { void e; }
         if (i % 2 === 1) await hw.run('ok', {}, { timeoutMs: 2000 }); // progress restarts the silence
       }
       assertEq(hw.stats().recycled, 0, 'progress between deadlines → never recycled');
+      for (let i = 0; i < 2; i++) {
+        const call = hw.run('hang', {}, { timeoutMs: 20 });
+        clock += 60;
+        try { await call; } catch (e) { void e; }
+      }
+      assertEq(hw.stats().recycled, 1, 'the same worker with no progress for 120 ms (past stallMs 100) is recycled');
     } finally { await hw.shutdown(); }
   });
 

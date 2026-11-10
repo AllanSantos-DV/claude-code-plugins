@@ -29,7 +29,8 @@
  * `catch {}`; here every tolerant catch acknowledges the error (`void err;`) to
  * satisfy the boss lint rule `local/no-silent-return-catch`.
  */
-const { execFile, execFileSync } = require('child_process');
+const childProcess = require('child_process');
+const { execFileSync } = childProcess;
 const fsDefault = require('fs');
 const path = require('path');
 const { loadProjectConfig, declaredProjectId, projectConfigPath } = require('./project-config.js');
@@ -160,8 +161,13 @@ function refreshGitAsync(key, args, cwd) {
   if (_gitRefreshing.has(key)) return;
   _gitRefreshing.add(key);
   try {
-    const child = execFile('git', args, { ...GIT_OPTS, cwd, windowsHide: true }, (err, stdout) => {
+    const child = childProcess.execFile('git', args, { ...GIT_OPTS, cwd, windowsHide: true }, (err, stdout) => {
       _gitRefreshing.delete(key);
+      // Killed at its timeout (a loaded machine) is no answer: keep the previous one and let the next read retry.
+      if (err && (err.killed || err.signal)) {
+        console.error(`[project-id] git ${args.join(' ')} refresh did not finish (${err.signal || 'killed'}) — keeping the previous answer`);
+        return;
+      }
       // A failed refresh is still an answer (not a repo / no remote / git gone), as in runGitOnce.
       storeGit(key, err ? null : gitOut(stdout));
     });
