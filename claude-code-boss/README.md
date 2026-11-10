@@ -108,8 +108,7 @@ export CLAUDE_PLUGIN_ROOT="/caminho/para/claude-code-boss"
 ```text
 claude-code-boss/
 ├── .claude-plugin/
-│   └── plugin.json            # Manifesto do plugin (versão canônica)
-├── .mcp.json                  # Servidor MCP: brain-server
+│   └── plugin.json            # Manifesto (versão canônica) e servidor MCP brain-server (mcpServers)
 ├── config/
 │   ├── brain-config.json      # Provider de embedding, backend (local|mcp-memory), thresholds
 │   └── hooks-config.json      # Configuração dos hooks (memoryRotate, curationGuard, etc.)
@@ -486,19 +485,19 @@ na config (a memória continua desligada sem id).
 O brain-server (`servers/brain-server/`) tem **um único modo**: um daemon HTTP de
 longa duração (StreamableHTTP, *stateful*) numa **porta fixa** (`38217`),
 compartilhado por toda sessão do Claude Code e qualquer outro consumidor na
-máquina — **um modelo, um SQLite**. O `.mcp.json` aponta direto pra URL
+máquina — **um modelo, um SQLite**. O `mcpServers` do `plugin.json` aponta direto pra URL
 (`"type":"http"`, sem `command`) — **Claude Code não spawna processo nenhum por
 sessão**; cada sessão é um cliente HTTP fino do daemon único.
 
 O daemon em si é garantido (encontrado-ou-iniciado) pelo `headersHelper` do
-`.mcp.json` (`scripts/mcp-headers.js`), que o Claude Code roda ANTES de cada conexão
+`plugin.json` (`scripts/mcp-headers.js`), que o Claude Code roda ANTES de cada conexão
 — a 1ª conexão já encontra o daemon de pé (antes, subido só pelo hook, ele chegava
 depois da 1ª tentativa e os hooks `mcp_tool` do 1º turno eram pulados durante o
 backoff do cliente) — e pelo hook `SessionStart`/`UserPromptSubmit`
 (`scripts/brain-daemon-ensure.js`). Ambos efêmeros (rodam, garantem, saem).
 
 - **Porta é FIXA** (`38217`, não derivada por data-dir), pra bater com a `url`
-  estática do `.mcp.json`. Override com `--port` ou `BRAIN_HTTP_PORT`.
+  estática do `plugin.json`. Override com `--port` ou `BRAIN_HTTP_PORT`.
 - `project` é **obrigatório** por chamada (não há CWD de sessão pra inferir — o
   daemon serve todos os projetos da máquina); sem `project`, rejeita
   (`PROJECT_REQUIRED`) em vez de cair em `'default'`.

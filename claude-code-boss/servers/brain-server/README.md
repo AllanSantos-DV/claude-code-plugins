@@ -68,7 +68,7 @@ Architecture — **client-pure, no Java embedded** (logic in `scripts/lib/graph/
 
 Default `root` = the daemon's per-request `project`/`cwd` argument (there is no
 session CWD to infer from — see below).
-Zero `.mcp.json` change — the tools ride this same brain-server registration. Fully
+Zero `plugin.json` change — the tools ride this same brain-server registration. Fully
 unit-tested against a mocked `fetch`/registry (no live daemon needed) in
 `scripts/test-units.js`.
 
@@ -82,7 +82,7 @@ consumer on the machine (one model load, one SQLite):
 node index.js [--port <N>] [--plugin-data <DATA_DIR>]
 ```
 
-`.mcp.json` declares `brain-server` as a plain `"type":"http"` URL —
+`plugin.json` declares `brain-server` as a plain `"type":"http"` URL —
 **no `command`, so Claude Code spawns nothing per session.** Every session is a
 thin HTTP client of the one daemon:
 
@@ -101,7 +101,7 @@ exits), so it does not itself violate the daemon-único principle it exists to
 serve.
 
 - **Port is FIXED** (`38217` — override with `--port` or `BRAIN_HTTP_PORT`), not
-  derived per data-dir, so `.mcp.json`'s static `url` can point at it directly.
+  derived per data-dir, so `plugin.json`'s static `url` can point at it directly.
 - **`project` is required per request** — there is no CWD to infer from (the
   daemon serves every project on the machine). A request without `project` is
   rejected (`PROJECT_REQUIRED`) rather than silently falling back to `'default'`;
@@ -112,7 +112,7 @@ serve.
 
 | Endpoint | Method | Auth | Purpose |
 | --- | --- | --- | --- |
-| `/mcp` | POST / GET / DELETE | origin guard + token | StreamableHTTP MCP channel (session via `mcp-session-id`). Claude Code gets the token from the `.mcp.json` `headersHelper`. |
+| `/mcp` | POST / GET / DELETE | origin guard + token | StreamableHTTP MCP channel (session via `mcp-session-id`). Claude Code gets the token from the `plugin.json` `headersHelper`. |
 | `/health` | GET | open | `{ pluginRoot, pid, ... }` — liveness + version checks. |
 | `/shutdown` | POST | origin guard + token | Graceful drain + close (destructive). |
 
@@ -126,7 +126,7 @@ file equal to the pinned value).
 - **`/mcp` — origin guard + token**: `Authorization: Bearer <token>` (or
   `X-Brain-Token`) is required; a non-localhost `Origin` (incl. `null` and
   host-suffix lookalikes) is rejected with 403 (DNS-rebinding defense). Claude
-  Code gets the token from the `.mcp.json` `headersHelper`
+  Code gets the token from the `plugin.json` `headersHelper`
   (`scripts/mcp-headers.js`), run before every connection — which also starts the
   daemon first, so the client's first connection attempt finds it listening.
 - **`/shutdown` — origin guard + token** (destructive).
@@ -178,7 +178,7 @@ find the running daemon.
 | --- | --- | --- |
 | `CLAUDE_PLUGIN_ROOT` | `../..` of `index.js` | Plugin root — where KB logic + the model live. |
 | `CLAUDE_PLUGIN_DATA` / `--plugin-data <DIR>` | `~/.claude/plugins/data/claude-code-boss` | KB data dir (SQLite + models) — one **global** dir per machine, not per-project. |
-| `BRAIN_HTTP_PORT` | `38217` | Pin the daemon port (must match `.mcp.json`'s `url`). |
+| `BRAIN_HTTP_PORT` | `38217` | Pin the daemon port (must match `plugin.json`'s `url`). |
 | `BRAIN_HTTP_TOKEN` | read/created at `<DATA_DIR>/brain-http.token` | Fix the `/shutdown` auth token (containerized/remote-configured clients). |
 | `BRAIN_HTTP_AUTOSTART` | `1` | `0` disables the ensure-hook's daemon auto-start. |
 | `--port <N>` | — | Pin the daemon's listening port. |

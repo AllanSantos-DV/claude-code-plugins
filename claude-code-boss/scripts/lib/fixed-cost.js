@@ -69,6 +69,29 @@ function installedPluginRoots(home, errors) {
 }
 
 /**
+ * A plugin's MCP servers as Claude Code loads them: the root `.mcp.json` first, then `mcpServers` of
+ * `.claude-plugin/plugin.json` (inline map, path to a .json file, or an array of either); a later name wins.
+ * @returns {Object<string, object>}
+ */
+function pluginMcpServers(root, errors) {
+  const out = {};
+  const take = (j) => {
+    for (const [n, c] of Object.entries((j && (j.mcpServers || j)) || {})) {
+      if (c && typeof c === 'object' && (c.url || c.command)) out[n] = c;
+    }
+  };
+  const from = (decl) => {
+    if (Array.isArray(decl)) decl.forEach(from);
+    else if (typeof decl === 'string') take(_readJsonOrNull(path.resolve(root, decl), errors));
+    else if (decl && typeof decl === 'object') take(decl);
+  };
+  take(_readJsonOrNull(path.join(root, '.mcp.json'), errors));
+  const manifest = _readJsonOrNull(path.join(root, '.claude-plugin', 'plugin.json'), errors);
+  if (manifest) from(manifest.mcpServers);
+  return out;
+}
+
+/**
  * Every MCP server Claude Code would connect to for `cwd`: user (~/.claude.json), the project's own
  * (~/.claude.json projects[cwd] and <cwd>/.mcp.json) and the ones bundled by enabled plugins.
  * `prefix` is how its tools are named in transcripts (`mcp__<prefix>__<tool>`).
@@ -91,9 +114,8 @@ function listMcpServers({ home = os.homedir(), cwd = process.cwd() } = {}) {
   const enabled = settings.enabledPlugins || {};
   for (const p of installedPluginRoots(home, errors)) {
     if (enabled[p.id] === false) continue;
-    const pj = _readJsonOrNull(path.join(p.installPath, '.mcp.json'), errors);
-    for (const [n, c] of Object.entries((pj && (pj.mcpServers || pj)) || {})) {
-      if (c && typeof c === 'object' && (c.url || c.command)) add(`plugin:${p.name}:${n}`, 'plugin', c, `plugin_${sanitize(p.name)}_${sanitize(n)}`, p.installPath);
+    for (const [n, c] of Object.entries(pluginMcpServers(p.installPath, errors))) {
+      add(`plugin:${p.name}:${n}`, 'plugin', c, `plugin_${sanitize(p.name)}_${sanitize(n)}`, p.installPath);
     }
   }
   return { servers, errors };

@@ -3,7 +3,7 @@
  * mcp-headers-launcher.cjs — version-proof entry of the brain-server `headersHelper`.
  *
  * A copy of this file lives in the plugin data dir (`${CLAUDE_PLUGIN_DATA}`, kept across
- * updates), written by `scripts/lib/mcp-launcher.js`. `.mcp.json` runs it instead of a script
+ * updates), written by `scripts/lib/mcp-launcher.js`. `plugin.json` runs it instead of a script
  * under `${CLAUDE_PLUGIN_ROOT}`: a session keeps the plugin dir it started with, and an update
  * or a prune removes that dir while the session lives. The helper then died before printing
  * the token, the client connected without it, fell into OAuth registration (HTTP 404) and gave

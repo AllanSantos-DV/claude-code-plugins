@@ -141,7 +141,7 @@ export async function startHttpDaemon({ pluginRoot, dataDir, port, host = '127.0
   // — see createKbLockPool()'s doc comment in mcp-server.js.
   const kbLock = createKbLockPool(kbWorker.poolSize);
   // Shared local token (dashboard pattern): /shutdown and /mcp require it. Claude Code
-  // gets it for /mcp from the .mcp.json `headersHelper` (scripts/mcp-headers.js), which
+  // gets it for /mcp from the plugin.json `headersHelper` (scripts/mcp-headers.js), which
   // reads this same file. /health stays open so any version's supervisor can probe
   // stale-vs-current.
   const token = ensureToken(dataDir);

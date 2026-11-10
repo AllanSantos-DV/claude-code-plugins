@@ -3,7 +3,7 @@
  * Brain Research MCP Server v2 — HTTP daemon entrypoint.
  *
  * ONE mode: the long-lived HTTP daemon (StreamableHTTP, stateful — see
- * lib/http-daemon.js). .mcp.json points straight at it ("type":"http",
+ * lib/http-daemon.js). plugin.json points straight at it ("type":"http",
  * "url":"http://127.0.0.1:<FIXED_PORT>/mcp") — NO "command", so Claude Code
  * spawns nothing per session; every session is a thin HTTP client of the ONE
  * daemon (ADR-001 "daemon único"). The daemon itself is ensured/kept current
@@ -30,7 +30,7 @@ process.env.CCB_MCP_RESTART_MODE = process.env.CCB_MCP_RESTART_MODE || 'backgrou
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
 // Resolve plugin env vars robustly: ignore unexpanded "${...}" literals (some
-// install contexts don't expand .mcp.json env), derive sane defaults, and
+// install contexts don't expand plugin.json env), derive sane defaults, and
 // normalize process.env so downstream requires (brain-store etc.) inherit them.
 function valid(v) { return v && !v.includes('${') ? v : null; }
 function resolveEnv(name, fallback) {

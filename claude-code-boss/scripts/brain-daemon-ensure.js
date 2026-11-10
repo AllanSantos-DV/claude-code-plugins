@@ -2,7 +2,7 @@
 /**
  * brain-daemon-ensure.js — SessionStart / UserPromptSubmit hook.
  *
- * .mcp.json declares `brain-server` as a direct "type":"http" URL (no
+ * plugin.json declares `brain-server` as a direct "type":"http" URL (no
  * `command`, no per-session process — ADR-001 "daemon único"). Algo
  * ainda precisa garantir que o daemon único está escutando na porta
  * fixa ANTES do cliente MCP do Claude Code tentar conectar no início

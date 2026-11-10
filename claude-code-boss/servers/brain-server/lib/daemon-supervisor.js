@@ -4,7 +4,7 @@
  *
  * Called from the SessionStart/UserPromptSubmit hook (scripts/brain-daemon-ensure.js,
  * one ensure per session, not per spawn — there's no per-session process to spawn
- * anymore, .mcp.json points straight at the daemon's fixed-port URL). It:
+ * anymore, plugin.json points straight at the daemon's fixed-port URL). It:
  *   - finds the daemon via the fixed port + /health;
  *   - CURRENT (same pluginRoot) → no-op;
  *   - STALE (different pluginRoot = older code after an upgrade) → graceful
@@ -597,7 +597,7 @@ export async function ensureDaemon({ pluginRoot, dataDir, env = process.env, pic
         status: 'error',
         error: `spawned daemon (pid ${pid}) on port ${port} never became healthy — cause: ${cause}. ` +
           `If this is EACCES on Windows the port may be reserved: check \`netsh int ipv4 show excludedportrange protocol=tcp\` ` +
-          `and set BRAIN_HTTP_PORT to a free port outside those ranges in the environment Claude Code runs with (the plugin's .mcp.json url follows it).`,
+          `and set BRAIN_HTTP_PORT to a free port outside those ranges in the environment Claude Code runs with (the plugin's plugin.json url follows it).`,
         pid,
         port,
       });

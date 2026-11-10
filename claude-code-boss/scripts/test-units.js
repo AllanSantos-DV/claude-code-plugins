@@ -841,17 +841,17 @@ test('brain daemon path normalization: same dir, different spelling → SAME por
   assert(threw, 'tokenFile("undefined") must throw, not build a phantom token path');
 });
 
-test('brain daemon DEFAULT_PORT: outside the Windows-reserved 58048-58247 range + matches .mcp.json', async () => {
+test('brain daemon DEFAULT_PORT: outside the Windows-reserved 58048-58247 range + matches the plugin.json mcpServers url', async () => {
   const fileUrl = require('url').pathToFileURL(path.join(ROOT, 'servers', 'brain-server', 'lib', 'daemon-common.js')).href;
   const { DEFAULT_PORT, resolvePort } = await import(fileUrl);
   // 58217 (the old default) sat inside an excludedportrange → listen EACCES, no daemon.
   assert(DEFAULT_PORT < 49152, `DEFAULT_PORT ${DEFAULT_PORT} must stay below the dynamic range Windows reserves from`);
-  const mcp = JSON.parse(fs.readFileSync(path.join(ROOT, '.mcp.json'), 'utf8'));
+  const mcp = JSON.parse(fs.readFileSync(path.join(ROOT, '.claude-plugin', 'plugin.json'), 'utf8'));
   // Claude Code expands ${VAR:-default} in an http server's url (docs: MCP › env var
   // expansion), so the client follows BRAIN_HTTP_PORT exactly like the daemon does
-  // and falls back to DEFAULT_PORT — no hand edit of .mcp.json that updates erase.
+  // and falls back to DEFAULT_PORT — no hand edit of the manifest that updates erase.
   assertEq(mcp.mcpServers['brain-server'].url, `http://127.0.0.1:\${BRAIN_HTTP_PORT:-${DEFAULT_PORT}}/mcp`,
-    '.mcp.json url must follow BRAIN_HTTP_PORT with DEFAULT_PORT as the fallback');
+    'plugin.json brain-server url must follow BRAIN_HTTP_PORT with DEFAULT_PORT as the fallback');
   assertEq(resolvePort(path.resolve('ccb-x'), { BRAIN_HTTP_PORT: '41234' }), 41234, 'BRAIN_HTTP_PORT override still wins');
 });
 
@@ -17436,7 +17436,7 @@ test('http-daemon: hook_* tools are NOT in tools/list (model never sees them) bu
   const { startHttpDaemon } = await import(require('url').pathToFileURL(path.join(ROOT, 'servers', 'brain-server', 'lib', 'http-daemon.js')).href);
   const d = await startHttpDaemon({ pluginRoot: ROOT, dataDir: dir, port: 0 });
   const url = `http://127.0.0.1:${d.httpServer.address().port}/mcp`;
-  // The token Claude Code sends through the .mcp.json headersHelper (scripts/mcp-headers.js).
+  // The token Claude Code sends through the plugin.json headersHelper (scripts/mcp-headers.js).
   const H = { 'Content-Type': 'application/json', Accept: 'application/json, text/event-stream', Authorization: `Bearer ${fs.readFileSync(path.join(dir, 'brain-http.token'), 'utf8').trim()}` };
   const post = async (body, sid) => {
     const r = await fetch(url, { method: 'POST', headers: sid ? { ...H, 'mcp-session-id': sid } : H, body: JSON.stringify(body) });
@@ -18092,7 +18092,7 @@ test('mcp-launcher: installLauncher copies the launcher into the data dir, is id
   } finally { fs.rmSync(path.dirname(dir), { recursive: true, force: true }); }
 });
 
-test('daemon token: a pinned BRAIN_HTTP_TOKEN is synced to the token file (the headersHelper never sees that var); .mcp.json wires the helper', async () => {
+test('daemon token: a pinned BRAIN_HTTP_TOKEN is synced to the token file (the headersHelper never sees that var); plugin.json wires the helper', async () => {
   const { ensureToken, tokenFile } = await import(require('url').pathToFileURL(path.join(ROOT, 'servers', 'brain-server', 'lib', 'daemon-common.js')).href);
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-pintok-'));
   const savedTok = process.env.BRAIN_HTTP_TOKEN;
@@ -18101,7 +18101,7 @@ test('daemon token: a pinned BRAIN_HTTP_TOKEN is synced to the token file (the h
     process.env.BRAIN_HTTP_TOKEN = 'pinned-xyz';
     assertEq(ensureToken(dir), 'pinned-xyz');
     assertEq(fs.readFileSync(tokenFile(dir), 'utf8').trim(), 'pinned-xyz', 'file follows the pinned token');
-    const mcp = JSON.parse(fs.readFileSync(path.join(ROOT, '.mcp.json'), 'utf8')).mcpServers['brain-server'];
+    const mcp = JSON.parse(fs.readFileSync(path.join(ROOT, '.claude-plugin', 'plugin.json'), 'utf8')).mcpServers['brain-server'];
     assert(/scripts\/mcp-headers\.js/.test(mcp.headersHelper) && /\$\{CLAUDE_PLUGIN_DATA\}/.test(mcp.headersHelper), `headersHelper wired: ${mcp.headersHelper}`);
     assert(mcp.headersHelper.startsWith('node "${CLAUDE_PLUGIN_DATA}/mcp-headers-launcher.cjs"'), `headersHelper must run the version-proof launcher from the data dir first, never a path under the plugin dir: ${mcp.headersHelper}`);
     assert(mcp.headersHelper.indexOf('mcp-headers-launcher.cjs') < mcp.headersHelper.indexOf('${CLAUDE_PLUGIN_ROOT}'), 'the plugin-dir helper is only the fallback after ||');
@@ -18863,6 +18863,27 @@ test('fixed-cost.listMcpServers: usuario, local, .mcp.json do projeto e servidor
   fcWrite(path.join(home, '.claude', 'settings.json'), { enabledPlugins: { 'boss@mk': false } });
   assertEq(fixedCost.listMcpServers({ home, cwd }).servers.some((s) => s.scope === 'plugin'), false, 'plugin desligado nao carrega servidor');
   fs.rmSync(home, { recursive: true, force: true });
+});
+
+test('fixed-cost.listMcpServers: servidor de plugin declarado no plugin.json (inline, arquivo e lista); o nome posterior vence o .mcp.json', () => {
+  const home = fcTmp('list-manifest');
+  const pl = path.join(home, 'cache', 'boss', '2.0');
+  fcWrite(path.join(pl, '.claude-plugin', 'plugin.json'), { name: 'boss', mcpServers: { 'brain-server': { type: 'http', url: 'http://inline/mcp' } } });
+  fcWrite(path.join(home, '.claude', 'plugins', 'installed_plugins.json'), { plugins: { 'boss@mk': [{ installPath: pl, version: '2.0' }] } });
+  const list = () => Object.fromEntries(fixedCost.listMcpServers({ home, cwd: path.join(home, 'proj') }).servers.filter((s) => s.scope === 'plugin').map((s) => [s.name, s.config.url || s.config.command]));
+  assertEq(list(), { 'plugin:boss:brain-server': 'http://inline/mcp' }, 'inline no plugin.json, sem .mcp.json');
+  fcWrite(path.join(pl, '.mcp.json'), { mcpServers: { 'brain-server': { type: 'http', url: 'http://old/mcp' }, extra: { command: 'node' } } });
+  fcWrite(path.join(pl, 'more.json'), { mcpServers: { side: { type: 'http', url: 'http://side/mcp' } } });
+  fcWrite(path.join(pl, '.claude-plugin', 'plugin.json'), { name: 'boss', mcpServers: ['./more.json', { 'brain-server': { type: 'http', url: 'http://inline/mcp' } }] });
+  assertEq(list(), { 'plugin:boss:brain-server': 'http://inline/mcp', 'plugin:boss:extra': 'node', 'plugin:boss:side': 'http://side/mcp' }, 'lista: arquivo + inline, o inline substitui o do .mcp.json');
+  fs.rmSync(home, { recursive: true, force: true });
+});
+
+test('plugin: brain-server declarado inline no plugin.json e sem .mcp.json na raiz (sessao aberta na pasta do plugin nao vira servidor de projeto)', () => {
+  assert(!fs.existsSync(path.join(ROOT, '.mcp.json')), 'a raiz do plugin nao pode ter .mcp.json: aberta como projeto, vira servidor sem CLAUDE_PLUGIN_DATA e suprime o do plugin');
+  const s = JSON.parse(fs.readFileSync(path.join(ROOT, '.claude-plugin', 'plugin.json'), 'utf8')).mcpServers['brain-server'];
+  assertEq(s.type, 'http');
+  assert(/^http:\/\/127\.0\.0\.1:\$\{BRAIN_HTTP_PORT:-\d+\}\/mcp$/.test(s.url), `url: ${s.url}`);
 });
 
 test('fixed-cost.probeHttpTools: servidor MCP HTTP real (SSE + paginacao + sessao) mede as definicoes; 401 vira needsAuth', async () => {

@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * mcp-headers.js — `headersHelper` of the brain-server entry in .mcp.json.
+ * mcp-headers.js — `headersHelper` of the brain-server entry in plugin.json.
  *
  * Claude Code runs it before EVERY connection to the brain daemon (session start and
  * reconnect, up to 10 s) and sends the JSON it prints as request headers. Two jobs:

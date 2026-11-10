@@ -41,8 +41,7 @@ claude-code-plugins/
 ├── .claude-plugin/
 │   └── marketplace.json       # Catálogo do marketplace (allansantos-plugins)
 ├── claude-code-boss/          # Plugin: Brain KB + curadoria + aprendizado
-│   ├── .claude-plugin/        # plugin.json
-│   ├── .mcp.json              # MCP: brain-server
+│   ├── .claude-plugin/        # plugin.json (manifesto + MCP brain-server)
 │   ├── config/                # brain-config.json, hooks-config.json
 │   ├── dashboard/             # SPA (Home / Brain / Hooks / Logs)
 │   ├── hooks/                 # hooks.json (5 eventos)

@@ -44,7 +44,7 @@ function identityKey(dataDir) {
 
 /**
  * FIXED port for the brain-http daemon (same pattern as model-router's
- * FIXED_PORT: a single, well-known port a static .mcp.json entry can point
+ * FIXED_PORT: a single, well-known port a static plugin.json entry can point
  * "type":"http" at directly, with zero per-session process spawn). DATA_DIR
  * itself is already ONE global path per machine (not per-project — see
  * index.js's default), so the daemon is genuinely a machine-wide singleton;
@@ -63,7 +63,7 @@ function identityKey(dataDir) {
 // 38217, not the original 58217: 58217 sits inside a range Windows reserves
 // (Hyper-V/WinNAT `excludedportrange`, e.g. 58048-58247) → listen EACCES and no
 // daemon at all. Keep it below 49152 (the dynamic range those reservations come
-// from). .mcp.json carries the same port statically.
+// from). plugin.json carries the same port statically.
 // JS-heap ceiling of every daemon worker (kb, hook, embed). Past it Node terminates only that worker, and its
 // client fails the in-flight calls and spawns a replacement; without it a runaway worker grows to the process
 // heap limit and aborts the daemon that serves every session. Native memory (SQLite, ONNX) and ArrayBuffers
@@ -104,7 +104,7 @@ export const MCP_PATH = '/mcp';
 // local process could otherwise call /mcp (read/poison the KB) or /shutdown.
 //
 // Trust model: /mcp (and /hook/*) take the origin guard AND the local token —
-// Claude Code sends the token through the .mcp.json headersHelper
+// Claude Code sends the token through the plugin.json headersHelper
 // (scripts/mcp-headers.js), so another OS user's process can no longer read or
 // poison the KB through loopback (http-daemon.js requestAllowed). What remains is
 // whoever answers the fixed port first — the accepted risk in docs/SECURITY.md.
@@ -131,7 +131,7 @@ export function readToken(dataDir, env = process.env) {
 export function ensureToken(dataDir) {
   const existing = readToken(dataDir);
   if (existing) {
-    // BRAIN_HTTP_TOKEN pins it, but the .mcp.json headersHelper never sees that var
+    // BRAIN_HTTP_TOKEN pins it, but the plugin.json headersHelper never sees that var
     // (Claude Code strips credential-named vars from it) and reads the FILE — keep the
     // file equal to the effective token so the helper and the daemon agree.
     const pinned = String(process.env.BRAIN_HTTP_TOKEN || '').trim();

@@ -1,7 +1,7 @@
 'use strict';
 /**
  * lib/mcp-launcher.js — keeps the version-proof `headersHelper` launcher in the plugin data dir.
- * The copy is what `.mcp.json` runs first (see scripts/mcp-headers-launcher.cjs for why).
+ * The copy is what `plugin.json` runs first (see scripts/mcp-headers-launcher.cjs for why).
  */
 const fs = require('fs');
 const path = require('path');
@@ -12,7 +12,7 @@ const SOURCE = path.join(__dirname, '..', LAUNCHER_NAME);
 
 /**
  * Copy the launcher into `dataDir` when it is missing or differs. Never throws: the
- * `.mcp.json` fallback still reaches the versioned helper.
+ * `plugin.json` fallback still reaches the versioned helper.
  * @param {string} dataDir
  * @returns {{installed:boolean, file:string}}
  */
