@@ -777,9 +777,10 @@ function bossPluginId(settings) {
 }
 
 /**
- * `probe` runs the embedder load test; `audit` measures the fixed cost (reads 30 days of transcripts: seconds, so opt-in).
+ * `probe` runs the embedder load test; `audit` measures the fixed cost (reads 30 days of transcripts: seconds, so opt-in);
+ * `contextSources` splits each recent session's context by source (parses transcripts within its own time budget: `--cost` only).
  */
-async function gatherContext({ probe = false, audit = false, scanBudgetMs } = {}) {
+async function gatherContext({ probe = false, audit = false, contextSources: wantSources = false, scanBudgetMs } = {}) {
   // One time budget for the three history reads, split by how much each one tells the doctor.
   const share = (f) => (scanBudgetMs === undefined ? undefined : Math.round(scanBudgetMs * f));
   const root = process.env.CLAUDE_PLUGIN_ROOT || '';
@@ -840,6 +841,12 @@ async function gatherContext({ probe = false, audit = false, scanBudgetMs } = {}
       const cfg = hooksCfg.getFixedCost();
       fixedCost = await fc.runAudit({ home, cwd: process.env.CLAUDE_PROJECT_DIR || process.cwd(), days: cfg.days, keep: cfg.keep, scanBudgetMs: share(0.5) });
     } catch (e) { console.error(`[doctor] fixed cost: ${e.message}`); fixedCost = { error: e.message }; }
+  }
+
+  let contextSources = null;
+  if (wantSources) {
+    try { contextSources = await require('./lib/context-sources.js').analyzeContext({ home, days: 30 }); }
+    catch (e) { console.error(`[doctor] context by source: ${e.message}`); contextSources = { error: e.message }; }
   }
 
   let compaction = null; let compactionFloor = null;
@@ -905,6 +912,7 @@ async function gatherContext({ probe = false, audit = false, scanBudgetMs } = {}
     costTuning,
     bossConfig,
     fixedCost,
+    contextSources,
     compaction,
     compactionFloor,
     claudeCompat,
@@ -1001,7 +1009,7 @@ if (require.main === module) {
     }
     const wantFix = process.argv.includes('--fix');
     const wantCost = process.argv.includes('--cost');
-    const ctx = await gatherContext({ probe: !process.argv.includes('--no-probe'), audit: wantFix || wantCost });
+    const ctx = await gatherContext({ probe: !process.argv.includes('--no-probe'), audit: wantFix || wantCost, contextSources: wantCost });
     let results = runChecks(ctx);
     let fixes = null;
     if (wantFix) {
@@ -1011,10 +1019,13 @@ if (require.main === module) {
       results = runChecks(await gatherContext({ probe: false, audit: true }));
     }
     if (asJson) {
-      process.stdout.write(JSON.stringify({ results, summary: summarize(results), fixes, fixedCost: ctx.fixedCost || null }, null, 2));
+      process.stdout.write(JSON.stringify({ results, summary: summarize(results), fixes, fixedCost: ctx.fixedCost || null, contextSources: ctx.contextSources || null }, null, 2));
     } else {
       process.stdout.write(formatReport(results) + '\n');
       if (wantCost && ctx.fixedCost && !ctx.fixedCost.error) process.stdout.write('\n' + require('./lib/fixed-cost.js').formatAudit(ctx.fixedCost) + '\n');
+      if (wantCost && ctx.contextSources) {
+        process.stdout.write('\n' + (ctx.contextSources.error ? `Context by source: could not analyze — ${ctx.contextSources.error}` : require('./lib/context-sources.js').formatContext(ctx.contextSources)) + '\n');
+      }
     }
     process.exit(summarize(results).ok ? 0 : 1);
   })().catch(err => { console.error(`[doctor] ${err.message}`); process.exit(1); });

@@ -669,7 +669,10 @@ vir de variáveis de ambiente; a precedência é
 - **`node scripts/doctor.js --cost`** — custo fixo por mensagem: servidores MCP e backends de gateway (chamadas
   nos últimos `fixedCost.days` dias, autenticação, tokens das definições medidos por `tools/list` nos servidores
   HTTP; stdio não é iniciado), skills, plugins e arquivos de instrução, contra o uso real nos transcripts. Mostra o
-  que sobra em tokens e US$ por mensagem e por sessão (estimativa).
+  que sobra em tokens e US$ por mensagem e por sessão (estimativa). Também mostra o contexto por fonte (instruções,
+  hooks, listagens, skills, resultados de ferramentas, mensagens, conversa, raciocínio do modelo) nas sessões dos
+  últimos 30 dias, a sua sessão mediana e as sessões em que uma fonte gasta 2× o seu normal, com a fonte e o que
+  cortar. Só leitura.
 - **`node scripts/doctor.js --fix`** — aplica as correções reversíveis: servidor MCP sem uso ou nunca autenticado
   removido (só escopo user/local, e só com histórico de pelo menos metade da janela), skill nunca usada só com o
   nome (`skillOverrides`), plugin sem uso desligado (o boss nunca), configurações do boss (`env` de custo, plugin

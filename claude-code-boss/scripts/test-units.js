@@ -18671,6 +18671,92 @@ test('fixed-cost.scanUsage: com orcamento de tempo esgotado para de ler, marca p
   fs.rmSync(home, { recursive: true, force: true });
 });
 
+test('context-sources: per-session and per-source split from fixture transcripts, compared with the user median; the off-norm session names the source and what to cut; read-only', async () => {
+  const cs = require('./lib/context-sources.js');
+  const home = fcTmp('ctx-src');
+  const now = Date.parse('2026-11-10T12:00:00Z');
+  const SYS = 20000;
+  const sessionRows = (id, { bash = 400, turns = 6, compactAt = -1, incoming = false, grow = 0, mcpChars = 0, cwd = path.join(home, 'work', 'alpha') } = {}) => {
+    let t = now - 3 * 86400000; let est = 0; let n = 0;
+    const rows = [];
+    const at = () => new Date(t += 60000).toISOString();
+    const put = (o, chars) => { rows.push(fcLine({ cwd, timestamp: at(), ...o })); est += chars / 4; };
+    put({ type: 'attachment', attachment: { type: 'instructions', files: [{ path: path.join(home, '.claude', 'CLAUDE.md'), content: 'g'.repeat(4000) }, { path: path.join(cwd, 'AGENTS.md'), content: 'a'.repeat(2000) }] } }, 6000);
+    put({ type: 'attachment', attachment: { type: 'skill_listing', content: 's'.repeat(2000) } }, 2000);
+    put({ type: 'attachment', attachment: { type: 'prompt_snapshot', systemPrompt: 'p'.repeat(90000) } }, 0);
+    for (let i = 0; i < turns; i++) {
+      if (i === compactAt) { rows.push(fcLine({ cwd, timestamp: at(), type: 'system', subtype: 'compact_boundary' })); est = 0; }
+      if (incoming) put({ type: 'user', isMeta: true, message: { content: 'Another Claude session sent a message:\n' + 'q'.repeat(161) } }, 200);
+      else put({ type: 'user', message: { content: 'q'.repeat(200) } }, 200);
+      put({ type: 'attachment', attachment: { type: 'hook_additional_context', hookEvent: 'UserPromptSubmit', content: ['[ACME rules] ' + 'h'.repeat(387)] } }, 400);
+      const ctx = Math.round(est + SYS + grow * i);
+      const uses = [{ type: 'tool_use', id: `${id}-t${i}`, name: 'Bash', input: { command: 'x'.repeat(36) } }];
+      if (mcpChars && i === 0) uses.push({ type: 'tool_use', id: `${id}-mcp`, name: 'mcp__acme__search', input: {} });
+      put({ type: 'assistant', message: { id: `${id}-m${n++}`, model: 'claude-sonnet-4', usage: { input_tokens: 10, cache_read_input_tokens: ctx - 510, cache_creation_input_tokens: 500 }, content: uses } }, 0);
+      est += uses.reduce((a, u) => a + JSON.stringify(u.input).length, 0) / 4;
+      put({ type: 'user', message: { content: [{ type: 'tool_result', tool_use_id: `${id}-t${i}`, content: 'o'.repeat(bash) }] } }, bash);
+      if (mcpChars && i === 0) put({ type: 'user', message: { content: [{ type: 'tool_result', tool_use_id: `${id}-mcp`, content: 'm'.repeat(mcpChars) }] } }, mcpChars);
+      rows.push(fcLine({ cwd, timestamp: at(), isSidechain: true, type: 'user', message: { content: [{ type: 'tool_result', tool_use_id: 'side', content: 'z'.repeat(500000) }] } }));
+    }
+    return rows.join('');
+  };
+  const proj = (d, id, text) => { const f = path.join(home, '.claude', 'projects', d, `${id}.jsonl`); fcWrite(f, text); fs.utimesSync(f, new Date(now - 86400000), new Date(now - 86400000)); return f; };
+  const files = [];
+  for (const id of ['aaaa1111', 'bbbb2222', 'cccc3333', 'dddd4444', 'eeee5555']) files.push(proj('p-alpha', id, sessionRows(id)));
+  files.push(proj('p-beta', 'ffff6666', sessionRows('ffff6666', { bash: 60000, cwd: path.join(home, 'work', 'beta') })));
+  files.push(proj('p-beta', 'tiny0000', sessionRows('tiny0000', { turns: 2 })));
+  files.push(proj('p-delta', 'iiii9999', sessionRows('iiii9999', { incoming: true, grow: 15000, cwd: path.join(home, 'work', 'delta') })));
+  files.push(proj('p-delta', 'jjjj0000', sessionRows('jjjj0000', { turns: 3, mcpChars: 20000, cwd: path.join(home, 'work', 'delta') })));
+  const before = files.map((f) => fs.statSync(f).size + ':' + fs.statSync(f).mtimeMs);
+
+  const scan = await cs.scanSessions({ home, days: 30, now });
+  assertEq([scan.found, scan.read, scan.partial, scan.sessions.length], [9, 9, false, 8], 'sessions with fewer than 3 requests are read but not compared');
+  const norm = scan.sessions.find((s) => s.id === 'aaaa1111');
+  assertEq([norm.requests, norm.turns, norm.project], [6, 6, 'alpha']);
+  assert(!norm.sources.thinking || norm.sources.thinking.held / norm.requests < 5, 'a remainder that does not grow is all system prompt');
+  assert(norm.sources['instructions:CLAUDE.md (global)'] && norm.sources['instructions:AGENTS.md (alpha)'], Object.keys(norm.sources).join(','));
+  assert(norm.sources['hook:UserPromptSubmit:ACME'], 'a hook block is named by its leading tag');
+  assert(!Object.keys(norm.sources).some((k) => k === 'session'), 'prompt_snapshot is not context');
+  assert(Math.abs(norm.sources.system.held / norm.requests - SYS) < 50, `what the blocks do not explain is the system prompt: ${norm.sources.system.held / norm.requests}`);
+  assert(norm.sources['tool:Bash'].held / norm.requests < 1000, 'the 500k sidechain result never counts');
+  const costSum = Object.values(norm.sources).reduce((a, e) => a + e.cost, 0);
+  assert(Math.abs(costSum - norm.cost) < 1e-6 * norm.cost, 'the per-source costs add up to the measured session cost');
+
+  const sum = cs.summarizeSessions(scan);
+  assertEq(sum.enough, true);
+  assertEq(sum.offNorm.map((s) => s.id).sort(), ['ffff6666', 'iiii9999'], 'the huge Bash results and the growing thinking are off the norm; the cheap session whose MCP result no other session has is not');
+  const auto = scan.sessions.find((s) => s.id === 'iiii9999');
+  assertEq(auto.turns, 6, 'messages from other sessions are turns');
+  assert(auto.sources.messages && auto.sources.messages.added === 6 * 200 / 4, 'an incoming message is a message, not conversation');
+  assert(Math.abs(auto.sources.thinking.held / auto.requests - 37500) < 100 && Math.abs(auto.sources.system.held / auto.requests - SYS) < 50, `growth past the first request is thinking: ${auto.sources.thinking.held / auto.requests}`);
+  const autoOff = sum.offNorm.find((s) => s.id === 'iiii9999');
+  assertEq(autoOff.sources[0].key, 'thinking');
+  assert(/reasoning effort/.test(autoOff.sources[0].advice) && autoOff.costRatio < 20, `${autoOff.sources[0].advice} ${autoOff.costRatio}`);
+  assert(scan.sessions.find((s) => s.id === 'jjjj0000').sources['tool:mcp:acme'], 'the MCP result is counted for its server');
+  const off = sum.offNorm.find((s) => s.id === 'ffff6666');
+  assertEq(off.sources[0].key, 'tool:Bash');
+  assert(/head\/tail/.test(off.sources[0].advice), off.sources[0].advice);
+  assert(off.costRatio >= 2, `cost per turn vs the median: ${off.costRatio}`);
+  assertEq(sum.bySource[0].key, 'system', 'the biggest share in these fixtures is the system prompt');
+  const text = cs.formatContext(sum);
+  assert(/Read-only: nothing is changed/.test(text) && /Sessions off your norm/.test(text) && /! ffff6666 \d{4}-\d\d-\d\d beta/.test(text) && /tool results · Bash: ~\d+k tok per request \(your median/.test(text), text);
+
+  const comp = await cs.readSession(proj('p-gamma', 'gggg7777', sessionRows('gggg7777', { compactAt: 3 })), { home, cutoff: 0, deadline: Infinity });
+  const pre = await cs.readSession(proj('p-gamma', 'hhhh8888', sessionRows('hhhh8888')), { home, cutoff: 0, deadline: Infinity });
+  assert(comp.sources['instructions:CLAUDE.md (global)'].held < pre.sources['instructions:CLAUDE.md (global)'].held * 0.6, 'a compaction boundary empties what the session carries');
+
+  const cut = await cs.scanSessions({ home, days: 30, now, budgetMs: -1 });
+  assertEq([cut.partial, cut.read], [true, 0], 'a spent budget stops the read and says so');
+  assert(/0 of 11 sessions read \(newest first; the time budget ran out\)/.test(cs.formatContext(cs.summarizeSessions(cut))), cs.formatContext(cs.summarizeSessions(cut)));
+  const few = cs.summarizeSessions({ ...scan, sessions: scan.sessions.slice(0, 3) });
+  assertEq([few.enough, few.offNorm.length], [false, 0], 'under 5 sessions nothing is called off the norm');
+
+  assertEq([cs.readWeight('claude-opus-5-5'), cs.readWeight('vertex_ai.anthropic.claude-sonnet-5-5'), cs.readWeight('claude-fable-5-1'), cs.readWeight('claude-haiku-4-5')], [0.05, 0.05, 0.025, 0.1]);
+  assertEq([cs.hookTag('[BOSS regras do dono]\nx'), cs.hookTag('Machine rules for every session'), cs.hookTag('')], ['BOSS', 'Machine rules for', '(empty)']);
+  assertEq(files.map((f) => fs.statSync(f).size + ':' + fs.statSync(f).mtimeMs), before, 'transcripts untouched');
+  fs.rmSync(home, { recursive: true, force: true });
+});
+
 test('fixed-cost.listMcpServers: usuario, local, .mcp.json do projeto e servidor de plugin, com o prefixo das ferramentas', () => {
   const home = fcTmp('list');
   const cwd = path.join(home, 'proj');
