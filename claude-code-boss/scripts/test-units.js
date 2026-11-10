@@ -9676,6 +9676,20 @@ test('plugin-updater.performUpdate: a FAILED install never deletes the working v
   assertEq(fs.readdirSync(base).filter((n) => n === '1.0.0' || n === '0.9.0').sort(), ['0.9.0', '1.0.0']);
 });
 
+test('plugin-updater.performUpdate: npm install never passes an args array together with a shell (Node DEP0190), and the command line is unchanged', async () => {
+  const base = path.join(os.homedir(), '.claude', 'plugins', 'cache', 'allansantos-plugins', 'claude-code-boss');
+  fs.rmSync(base, { recursive: true, force: true });
+  fs.mkdirSync(path.join(base, '1.0.0'), { recursive: true }); fs.writeFileSync(path.join(base, '1.0.0', 'package.json'), '{}');
+  const calls = [];
+  const io = _updIo({ spawnSync: async (c, a, o) => { calls.push({ c, a, o }); return { status: 1, stderr: 'npm ERR! stop here' }; } });
+  try { await pu.performUpdate(_updRoot(), { io }); } catch (e) { void e; }
+  assertEq(calls.length, 1, 'one npm install');
+  const { c, a, o } = calls[0];
+  assert(Array.isArray(a) && !(o.shell && a.length), `shell ${o.shell} with args ${JSON.stringify(a)}`);
+  assertEq([c, ...a].join(' '), 'npm install --omit=dev --no-audit --no-fund');
+  assertEq([!!o.shell, o.windowsHide], [process.platform === 'win32', true], 'a shell only where npm is a .cmd; hidden');
+});
+
 test('plugin-updater.performUpdate: after a successful install the previous versions are removed; the running dashboard root stays', async () => {
   const base = path.join(os.homedir(), '.claude', 'plugins', 'cache', 'allansantos-plugins', 'claude-code-boss');
   fs.rmSync(base, { recursive: true, force: true });

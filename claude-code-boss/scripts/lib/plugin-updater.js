@@ -513,11 +513,15 @@ async function performUpdate(root, opts = {}) {
     fs.cpSync(extractDir, destDir, { recursive: true });
 
     if (!opts.skipInstall) {
-      const r = await _run('npm', ['install', '--omit=dev', '--no-audit', '--no-fund'], {
+      const npmArgs = ['install', '--omit=dev', '--no-audit', '--no-fund'];
+      // npm is a .cmd on Windows, which only starts through a shell, and a shell given an args array is
+      // Node's DEP0190 warning: there the fixed command line goes as one string.
+      const win = process.platform === 'win32';
+      const r = await _run(win ? `npm ${npmArgs.join(' ')}` : 'npm', win ? [] : npmArgs, {
         cwd: destDir,
         encoding: 'utf8',
         timeout: 5 * 60 * 1000,
-        shell: process.platform === 'win32',
+        shell: win,
         windowsHide: true,
       });
       if (r.status !== 0) {
