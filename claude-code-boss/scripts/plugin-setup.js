@@ -3,8 +3,9 @@
  * plugin-setup.js — runs after npm install (postinstall) and after plugin updates.
  *
  * Three jobs:
- *  1. Ensure root dependencies are present (installs them when node_modules is
- *     missing, e.g. the plugin was copied into the Claude Code cache without them).
+ *  1. Ensure root dependencies are present (installs them when they do not resolve,
+ *     e.g. the plugin was copied into the Claude Code cache without them, or the
+ *     last setup died mid-install).
  *  2. Ensure the brain-server (MCP) dependencies are present. It is a SEPARATE
  *     package (servers/brain-server/package.json) that the root install does NOT
  *     cover — without it the Brain MCP is DOWN on a fresh install.
@@ -38,13 +39,18 @@ function setupRoot() {
 const PLUGIN_ROOT = setupRoot();
 const { nodeSupport, supportAdvice } = require('./lib/node-support.js');
 
+/**
+ * Runs one setup command.
+ * @returns {{ok: boolean, interrupted: boolean}} interrupted when it was killed (timeout or
+ *   signal): what it was writing may be half done, unlike an npm that exits with errors.
+ */
 function run(cmd, opts = {}) {
   try {
     execSync(cmd, { stdio: 'inherit', cwd: PLUGIN_ROOT, timeout: 120000, ...opts, windowsHide: true });
-    return true;
+    return { ok: true, interrupted: false };
   } catch (err) {
     console.error(`[PLUGIN-SETUP] command failed: ${cmd} → ${err.message}`);
-    return false;
+    return { ok: false, interrupted: err.code === 'ETIMEDOUT' || Boolean(err.signal) };
   }
 }
 
@@ -76,33 +82,10 @@ function warmEmbedder() {
     `"${process.execPath}" "${path.join(PLUGIN_ROOT, 'scripts', 'brain-warm.js')}"`,
     { timeout: 600000 }
   );
-  if (!warmed) {
+  if (!warmed.ok) {
     process.stderr.write(
       '[plugin-setup] Embedding model warm FAILED. The Brain runs in keyword mode ' +
       'for now; the model is fetched on first capture. To retry: npm run setup:brain\n'
-    );
-  }
-}
-
-/**
- * Install the brain-server (MCP) dependencies. It is a separate package
- * (servers/brain-server/package.json, ESM) that the root `npm install` does NOT
- * cover. Without it the Brain MCP (brain_search / brain_store / capture_lesson)
- * fails to start — `@modelcontextprotocol/sdk` is unresolved.
- */
-function installBrainServer() {
-  const bsDir = path.join(PLUGIN_ROOT, 'servers', 'brain-server');
-  if (!fs.existsSync(path.join(bsDir, 'package.json'))) return;
-  if (fs.existsSync(path.join(bsDir, 'node_modules'))) {
-    process.stdout.write('[plugin-setup] brain-server (MCP) deps present\n');
-    return;
-  }
-  process.stdout.write('[plugin-setup] Installing brain-server (MCP) deps...\n');
-  const ok = run('npm install --omit=dev --no-audit --no-fund', { cwd: bsDir });
-  if (!ok) {
-    process.stderr.write(
-      '[plugin-setup] brain-server install FAILED — the Brain MCP (brain_search/' +
-      'brain_store/capture_lesson) will be DOWN. Retry: cd servers/brain-server && npm install\n'
     );
   }
 }
@@ -119,26 +102,51 @@ async function main() {
     return;
   }
   const ready = require('./lib/install-ready.js');
+  // Read before this run overwrites the mark: a mark already there means the last setup died mid-install.
+  const repair = Boolean(ready.setupInterrupted(PLUGIN_ROOT));
+  let finished = false;
   try {
     ready.markSetup(PLUGIN_ROOT);
-    await setupSteps();
+    finished = await setupSteps({ repair });
   } finally {
-    ready.clearSetup(PLUGIN_ROOT);
+    if (finished) ready.clearSetup(PLUGIN_ROOT);
     releaseFileLock(lockFile, lock.owner);
   }
 }
 
-async function setupSteps() {
-  const nodeModules = path.join(PLUGIN_ROOT, 'node_modules');
-  if (fs.existsSync(nodeModules)) {
-    process.stdout.write('[plugin-setup] Dependencies present\n');
+/**
+ * Installs what is missing. A folder that exists is not enough: the deps must resolve,
+ * and after an interrupted setup (`repair`) both installs run again over the half-written tree.
+ * @param {object} [o]
+ * @param {string} [o.root] plugin root
+ * @param {boolean} [o.repair] the previous setup did not finish
+ * @param {boolean} [o.inRootInstall] running as the root package's own postinstall (its install just finished)
+ * @param {Function} [o.exec] runs a command, returns {ok, interrupted}
+ * @param {Function} [o.warm] warms the embedder
+ * @param {Function} [o.out] progress writer
+ * @returns {Promise<boolean>} false when an install was killed midway (the mark stays, so the next setup repairs)
+ */
+async function setupSteps({
+  root = PLUGIN_ROOT,
+  repair = false,
+  inRootInstall = process.env.npm_lifecycle_event === 'postinstall',
+  exec = run,
+  warm = warmEmbedder,
+  out = (s) => process.stdout.write(s),
+} = {}) {
+  const ready = require('./lib/install-ready.js');
+  let finished = true;
+  const rootDeps = ready.packageDepsOk(root, 'plugin');
+  if (inRootInstall || (!repair && fs.existsSync(path.join(root, 'node_modules')) && rootDeps.ok)) {
+    out('[plugin-setup] Dependencies present\n');
   } else {
-    process.stdout.write('[plugin-setup] Installing dependencies...\n');
+    out(`[plugin-setup] Installing dependencies (${repair ? 'previous setup did not finish' : rootDeps.detail})...\n`);
     // An optional prebuilt binary (e.g. onnxruntime for the embedder) may fail to
     // fetch on some platforms — that is expected and non-fatal. The plugin still
     // runs on node:sqlite + JSON fallback, so we never fail the whole setup on it.
-    const ok = run('npm install --prefer-offline --no-audit --no-fund');
-    if (!ok) {
+    const r = exec('npm install --prefer-offline --no-audit --no-fund', { cwd: root });
+    if (r.interrupted) finished = false;
+    else if (!r.ok) {
       process.stderr.write(
         '[plugin-setup] npm install reported errors (likely an optional prebuilt ' +
         'dependency). The plugin still works via node:sqlite + JSON fallback.\n'
@@ -146,14 +154,32 @@ async function setupSteps() {
     }
   }
 
-  installBrainServer();
-  warmEmbedder();
+  // The brain-server (MCP) is a separate ESM package the root install does not cover;
+  // without its deps brain_search / brain_store / capture_lesson are down.
+  const bsDir = path.join(root, 'servers', 'brain-server');
+  if (fs.existsSync(path.join(bsDir, 'package.json'))) {
+    if (!repair && ready.brainServerDepsOk(root).ok) {
+      out('[plugin-setup] brain-server (MCP) deps present\n');
+    } else {
+      out('[plugin-setup] Installing brain-server (MCP) deps...\n');
+      const r = exec('npm install --omit=dev --no-audit --no-fund', { cwd: bsDir });
+      if (r.interrupted) finished = false;
+      if (!r.ok) {
+        process.stderr.write(
+          '[plugin-setup] brain-server install FAILED — the Brain MCP (brain_search/' +
+          'brain_store/capture_lesson) will be DOWN. Retry: cd servers/brain-server && npm install\n'
+        );
+      }
+    }
+  }
 
-  process.stdout.write('[plugin-setup] Done\n');
+  warm();
+  out(finished ? '[plugin-setup] Done\n' : '[plugin-setup] Interrupted: the next setup reinstalls\n');
+  return finished;
 }
 
 if (require.main === module) {
   main();
 }
 
-module.exports = { setupRoot, warnNodeVersion };
+module.exports = { setupRoot, warnNodeVersion, setupSteps };

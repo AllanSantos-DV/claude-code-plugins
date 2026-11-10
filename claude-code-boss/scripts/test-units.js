@@ -29083,7 +29083,55 @@ test('install-ready: a root is ready only with no live setup mark, its node_modu
     fs.writeFileSync(path.join(root, 'servers', 'brain-server', 'package.json'), JSON.stringify({ dependencies: { 'ccb-definitely-missing-pkg': '1.0.0' } }));
     assert(/ccb-definitely-missing-pkg/.test(ready.installReady(root).detail), 'a dep missing → not ready, named');
     const setupSrc = fs.readFileSync(path.join(SCRIPTS, 'plugin-setup.js'), 'utf8');
-    assert(/markSetup\(PLUGIN_ROOT\);\s*await setupSteps\(\);\s*\}\s*finally\s*\{\s*ready\.clearSetup\(PLUGIN_ROOT\)/.test(setupSrc), 'plugin-setup marks its root for the whole install and clears it after');
+    assert(/setupInterrupted\(PLUGIN_ROOT\)[\s\S]*markSetup\(PLUGIN_ROOT\);\s*finished = await setupSteps\(\{ repair \}\);\s*\}\s*finally\s*\{\s*if \(finished\) ready\.clearSetup\(PLUGIN_ROOT\)/.test(setupSrc), 'plugin-setup reads a leftover mark first, marks its root for the whole install and clears it only when finished');
+  } finally { fs.rmSync(root, { recursive: true, force: true }); }
+});
+
+test('install-ready: a mark left by a setup that died mid-install keeps the root not ready (interrupted, not running)', () => {
+  const ready = require('./lib/install-ready.js');
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-interrupted-'));
+  try {
+    fs.mkdirSync(path.join(root, 'servers', 'brain-server'), { recursive: true });
+    fs.writeFileSync(path.join(root, 'servers', 'brain-server', 'package.json'), JSON.stringify({ dependencies: {} }));
+    fs.mkdirSync(path.join(root, 'node_modules'));
+    assertEq(ready.setupInterrupted(root), null, 'no mark → nothing interrupted');
+    ready.markSetup(root);
+    assertEq(ready.setupInterrupted(root), null, 'a live setup is running, not interrupted');
+    const dead = { alive: () => false };
+    assertEq(ready.setupInterrupted(root, dead).pid, process.pid, 'its process gone → interrupted');
+    assert(/did not finish/.test(ready.installReady(root, dead).detail), 'interrupted → not ready even with node_modules and the deps resolving');
+    ready.clearSetup(root);
+    assert(ready.installReady(root, dead).ok, 'a setup that finished cleared its mark → ready');
+  } finally { fs.rmSync(root, { recursive: true, force: true }); }
+});
+
+test('plugin-setup setupSteps: a node_modules folder whose deps do not resolve, or an interrupted setup, reinstalls; a killed npm leaves the setup unfinished', async () => {
+  const { setupSteps } = require('./plugin-setup.js');
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-setupsteps-'));
+  try {
+    const bsDir = path.join(root, 'servers', 'brain-server');
+    fs.mkdirSync(bsDir, { recursive: true });
+    fs.mkdirSync(path.join(root, 'node_modules'));
+    fs.writeFileSync(path.join(bsDir, 'package.json'), JSON.stringify({ dependencies: {} }));
+    const steps = async (pkgDeps, opts = {}) => {
+      fs.writeFileSync(path.join(root, 'package.json'), JSON.stringify({ dependencies: pkgDeps }));
+      const calls = [];
+      const finished = await setupSteps({ root, inRootInstall: false, warm: () => {}, out: () => {}, exec: (cmd, o) => { calls.push(`${o.cwd === root ? 'root' : 'bs'}: ${cmd}`); return opts.result || { ok: true, interrupted: false }; }, ...opts.steps });
+      return { calls, finished };
+    };
+    let r = await steps({});
+    assertEq(r.calls.length, 0, 'everything resolves → no install');
+    assertEq(r.finished, true, 'finished');
+    r = await steps({ 'ccb-definitely-missing-pkg': '1.0.0' });
+    assertEq(r.calls, ['root: npm install --prefer-offline --no-audit --no-fund'], 'node_modules exists but a dep is missing → root reinstall');
+    r = await steps({}, { steps: { repair: true } });
+    assertEq(r.calls.length, 2, `interrupted last time → root and brain-server reinstall: ${r.calls.join(' | ')}`);
+    r = await steps({}, { steps: { repair: true, inRootInstall: true } });
+    assertEq(r.calls, ['bs: npm install --omit=dev --no-audit --no-fund'], 'as the root postinstall, the root install just ran: no nested root install');
+    r = await steps({}, { steps: { repair: true }, result: { ok: false, interrupted: true } });
+    assertEq(r.finished, false, 'an npm killed midway → not finished (the mark stays for the next setup)');
+    r = await steps({}, { steps: { repair: true }, result: { ok: false, interrupted: false } });
+    assertEq(r.finished, true, 'npm exiting with errors (optional prebuilt) still finishes, as before');
   } finally { fs.rmSync(root, { recursive: true, force: true }); }
 });
 
