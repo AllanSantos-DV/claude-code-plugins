@@ -28,7 +28,7 @@
 // daemon (POST /hook/compaction-event → tool hook_compaction_event → scripts/compaction-event.js).
 
 import { daemon as sharedDaemon, isDaemonDegraded } from '../scripts/lib/module-daemon.mjs';
-import { planCompaction, buildBrief, decideTiming, decideTurnEnd, classifyResume, estimateTokens, thresholdFor, fallbackWindow, chooseCompaction, isCacheWarm, isMechanicalCut, resumedAnswerAt, decidePhaseRestart, lastTurnDelivered, phaseRestartNotice, describeFailure, compactResultError, engineAutoCompactPoint, autoCompactWarning, PCT_OVERRIDE_VAR, AUTO_COMPACT_WINDOW_VAR, DEFAULTS } from '../scripts/lib/compaction-core.mjs';
+import { planCompaction, buildBrief, decideTiming, decideTurnEnd, classifyResume, estimateTokens, thresholdFor, fallbackWindow, chooseCompaction, isCacheWarm, isMechanicalCut, resumedAnswerAt, decidePhaseRestart, lastTurnDelivered, phaseRestartNotice, describeFailure, compactResultError, engineAutoCompactPoint, autoCompactWarning, DEFAULTS } from '../scripts/lib/compaction-core.mjs';
 
 // Kept equal to package.json by scripts/sync-version.js. The daemon compares it with the installed plugin: a session
 // started before an update keeps running this file, so the person is told to reopen it.
@@ -276,7 +276,8 @@ async function watchCold($, ctx) {
 // The engine's own auto-compact point for this session (engineAutoCompactPoint), or the reason it could not be read.
 async function autoCompactReading($) {
   try {
-    const [pctOverride, autoCompactWindow] = await Promise.all([$.env.get(PCT_OVERRIDE_VAR), $.env.get(AUTO_COMPACT_WINDOW_VAR)]);
+    // Literal names: the engine refuses to load a module whose $.env.get argument is not a string literal.
+    const [pctOverride, autoCompactWindow] = await Promise.all([$.env.get('CLAUDE_AUTOCOMPACT_PCT_OVERRIDE'), $.env.get('CLAUDE_CODE_AUTO_COMPACT_WINDOW')]);
     const { context } = await $.session.usage({ breakdown: 'summary' });
     const bd = context.breakdown || {};
     return engineAutoCompactPoint({ modelWindow: context.window, pctOverride, autoCompactWindow, measuredTokens: bd.autoCompactThreshold, enabled: bd.isAutoCompactEnabled });

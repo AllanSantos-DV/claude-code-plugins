@@ -32381,6 +32381,16 @@ test('hooks module: hooks.json names ONE entry (the engine refuses a second) and
   assertEq(unmatched.length, new Set(unmatched).size, `an event twice without a matcher: ${unmatched}`);
 });
 
+test('hooks module: every $.env.get/$.env.set names a string literal (the engine refuses to load the module otherwise)', () => {
+  const nonLiteral = (src) => [...src.matchAll(/\$\.env\.(?:get|set)\(\s*(?!['"])([^,)]*)/g)].map((m) => m[0]);
+  assertEq(nonLiteral('await $.env.get(PCT_OVERRIDE_VAR)').length, 1, 'a variable argument is caught');
+  assertEq(nonLiteral("await $.env.get('ANTHROPIC_BASE_URL'); $.env.set(\"X\", 1)").length, 0, 'literals pass');
+  const files = [...fs.readdirSync(path.join(ROOT, 'hooks')).filter((f) => f.endsWith('.mjs')).map((f) => path.join('hooks', f)),
+    path.join('scripts', 'lib', 'compaction-core.mjs'), path.join('scripts', 'lib', 'module-daemon.mjs')];
+  const bad = files.flatMap((f) => nonLiteral(fs.readFileSync(path.join(ROOT, f), 'utf8')).map((c) => `${f}: ${c}`));
+  assertEq(bad, [], `non-literal env names: ${bad.join('; ')}`);
+});
+
 test('boss.mjs: REAL daemon end to end — /boss and the band show the session cost, its Token Guard savings and the Brain; polls >= 5 s from the first draw', async () => {
   seedBossMetrics('sid-boss-mod');
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-boss-mod-'));
