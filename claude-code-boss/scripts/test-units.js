@@ -31049,12 +31049,12 @@ async function heartbeatNotices({ withTranscript, beats, folderAnswer, extraEnv 
 }
 
 test('compaction hook: at session start, CLAUDE_AUTOCOMPACT_PCT_OVERRIDE=15 on a 1M window is shown once (toast + log) naming the variable and recorded in the hello; without it nothing is shown', async () => {
-  const low = await heartbeatNotices({ withTranscript: false, beats: 0, extraEnv: { CLAUDE_AUTOCOMPACT_PCT_OVERRIDE: '15', CLAUDE_CODE_AUTO_COMPACT_WINDOW: '1000000' }, breakdown: { rawMaxTokens: 1000000, autoCompactThreshold: 150000 } });
+  const low = await heartbeatNotices({ withTranscript: false, beats: 0, extraEnv: { CLAUDE_AUTOCOMPACT_PCT_OVERRIDE: '15', CLAUDE_CODE_AUTO_COMPACT_WINDOW: '1000000' }, breakdown: { rawMaxTokens: 1000000, autoCompactThreshold: 967000 } });
   assertEq(low.toasts.length, 1, `one toast, got ${JSON.stringify(low.toasts)}`);
-  assert(/~150k of a 1M window \(15%\), set by CLAUDE_AUTOCOMPACT_PCT_OVERRIDE=15/.test(low.toasts[0]), low.toasts[0]);
+  assert(/~147k of a 1M window \(15%\), set by CLAUDE_AUTOCOMPACT_PCT_OVERRIDE=15/.test(low.toasts[0]), low.toasts[0]);
   assert(low.logs.some((l) => /CLAUDE_AUTOCOMPACT_PCT_OVERRIDE=15/.test(l)), JSON.stringify(low.logs));
   const a = low.hellos[0].autocompact;
-  assertEq([a.low, a.pointTokens, a.measuredTokens, a.modelWindow, a.variables], [true, 150000, 150000, 1000000, ['CLAUDE_AUTOCOMPACT_PCT_OVERRIDE']], JSON.stringify(a));
+  assertEq([a.low, a.pointTokens, a.measuredTokens, a.modelWindow, a.variables], [true, 147000, 967000, 1000000, ['CLAUDE_AUTOCOMPACT_PCT_OVERRIDE']], JSON.stringify(a));
   const plain = await heartbeatNotices({ withTranscript: false, beats: 0 });
   assertEq(plain.toasts, [], 'no variable: no toast');
   assertEq([plain.hellos[0].autocompact.low, plain.hellos[0].autocompact.pointTokens], [false, 967000], 'the point is still recorded');
@@ -31063,7 +31063,11 @@ test('compaction hook: at session start, CLAUDE_AUTOCOMPACT_PCT_OVERRIDE=15 on a
 test('compaction-core.engineAutoCompactPoint: the percent override fires at that share of the auto-compact window and only lowers it; under half of the model window it names the variable that put it there', () => {
   const p = (s) => cmpCore.engineAutoCompactPoint(s);
   const jarvis = p({ modelWindow: 1000000, pctOverride: '15', autoCompactWindow: '1000000' });
-  assertEq([jarvis.pointTokens, jarvis.low, jarvis.variables], [150000, true, ['CLAUDE_AUTOCOMPACT_PCT_OVERRIDE']], '15% of 1M: ~150k');
+  assertEq([jarvis.pointTokens, jarvis.low, jarvis.variables], [147000, true, ['CLAUDE_AUTOCOMPACT_PCT_OVERRIDE']], '15% of the 980k effective window of a 1M model: 147k, as the engine computes it');
+  const measured = p({ modelWindow: 1000000, pctOverride: '15', measuredTokens: 967000 });
+  assertEq([measured.pointTokens, measured.measuredTokens], [147000, 967000], 'the engine breakdown leaves the percent out (967k): the point is the percent of the effective window it implies, never the 967k');
+  assertEq(p({ modelWindow: 1000000, pctOverride: '15', measuredTokens: 167000 }).pointTokens, 27000, 'a settings window seen only by the engine (200k) is the base of the percent');
+  assert(!/967k/.test(cmpCore.autoCompactWarning(measured)), cmpCore.autoCompactWarning(measured));
   assertEq([p({ modelWindow: 1000000 }).pointTokens, p({ modelWindow: 1000000 }).low], [967000, false], 'default 1M point: window - 33k');
   assertEq([p({ modelWindow: 200000 }).pointTokens, p({ modelWindow: 200000 }).low], [167000, false], 'default 200k point');
   assertEq(p({ modelWindow: 200000, pctOverride: '95' }).pointTokens, 167000, 'a percent above the default share never raises the point');
@@ -31075,14 +31079,14 @@ test('compaction-core.engineAutoCompactPoint: the percent override fires at that
   assertEq(p({ modelWindow: 1000000, measuredTokens: 167000 }).low, false, 'a low point from the settings window (person\'s choice) is recorded, never flagged');
   assertEq(p({ modelWindow: 1000000, pctOverride: '15', enabled: false }).low, false, 'auto-compact off: nothing fires');
   assertEq(cmpCore.autoCompactWarning(p({ modelWindow: 1000000 })), null);
-  assert(/at ~150k of a 1M window \(15%\), set by CLAUDE_AUTOCOMPACT_PCT_OVERRIDE=15/.test(cmpCore.autoCompactWarning(jarvis)), cmpCore.autoCompactWarning(jarvis));
+  assert(/at ~147k of a 1M window \(15%\), set by CLAUDE_AUTOCOMPACT_PCT_OVERRIDE=15/.test(cmpCore.autoCompactWarning(jarvis)), cmpCore.autoCompactWarning(jarvis));
 });
 
 test('compaction-report.autoCompactPoints + doctor.checkAutoCompactPoint: the settings env and each project\'s newest reported point are judged; a low one warns naming the variable and where it came from', () => {
   const { autoCompactPoints } = require('./lib/compaction-report.js');
   const doctor = require('./doctor.js');
   const now = Date.now();
-  const low = cmpCore.engineAutoCompactPoint({ modelWindow: 1000000, pctOverride: '15', measuredTokens: 150000 });
+  const low = cmpCore.engineAutoCompactPoint({ modelWindow: 1000000, pctOverride: '15', measuredTokens: 967000 });
   const fine = cmpCore.engineAutoCompactPoint({ modelWindow: 1000000, measuredTokens: 967000 });
   const byProject = {
     jarvis: [{ sessionId: 'aaaaaaaa-1', ts: now - 9000, payload: { autocompact: fine } }, { sessionId: 'bbbbbbbb-2', ts: now - 1000, payload: { autocompact: low } }],
@@ -31095,7 +31099,7 @@ test('compaction-report.autoCompactPoints + doctor.checkAutoCompactPoint: the se
   const check = (o) => doctor.runChecks({ autoCompact: doctor.gatherAutoCompact({ env: {}, points: () => points, ...o }) }).find((r) => r.id === 'autocompact-point');
   const fromSessions = check({});
   assertEq(fromSessions.status, 'warn');
-  assert(/jarvis \(session bbbbbbbb\): .*CLAUDE_AUTOCOMPACT_PCT_OVERRIDE=15/.test(fromSessions.detail) && !/boss/.test(fromSessions.detail), fromSessions.detail);
+  assert(/jarvis \(session bbbbbbbb\): .*~147k of a 1M window \(15%\), set by CLAUDE_AUTOCOMPACT_PCT_OVERRIDE=15/.test(fromSessions.detail) && !/boss/.test(fromSessions.detail), fromSessions.detail);
   const fromSettings = doctor.runChecks({ autoCompact: doctor.gatherAutoCompact({ settings: { env: { CLAUDE_AUTOCOMPACT_PCT_OVERRIDE: '15' } }, env: {}, points: () => [] }) }).find((r) => r.id === 'autocompact-point');
   assert(fromSettings.status === 'warn' && /CLAUDE_AUTOCOMPACT_PCT_OVERRIDE=15:.*\(from ~\/\.claude\/settings\.json env\)/.test(fromSettings.detail), fromSettings.detail);
   const clean = doctor.runChecks({ autoCompact: doctor.gatherAutoCompact({ env: {}, points: () => [points[1]] }) }).find((r) => r.id === 'autocompact-point');

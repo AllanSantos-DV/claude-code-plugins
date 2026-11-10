@@ -374,7 +374,7 @@ function checkAutoCompactPoint(ctx) {
     const who = `${s.project} (session ${String(s.sessionId).slice(0, 8)})`;
     if (s.autocompact.error) { issues.push(`${who}: its point could not be read: ${s.autocompact.error}`); continue; }
     const w = core.autoCompactWarning(s.autocompact);
-    const at = s.autocompact.measuredTokens || s.autocompact.pointTokens;
+    const at = s.autocompact.pointTokens;
     if (w) issues.push(`${who}: ${w}`);
     else if (at && s.autocompact.modelWindow) fine.push(`${s.project}: ${k(at)} of ${k(s.autocompact.modelWindow)}`);
   }

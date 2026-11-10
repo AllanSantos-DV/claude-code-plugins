@@ -366,6 +366,9 @@ export function fallbackWindow(s = {}) {
 
 /** What Claude Code keeps below its auto-compact window: the default point is window minus this (967K on 1M, 167K on 200K). */
 export const ENGINE_AUTOCOMPACT_BUFFER = 33000;
+/** The engine's output reserve (window minus this is its effective window) and its margin below that effective window. */
+const ENGINE_OUTPUT_RESERVE = 20000;
+const ENGINE_THRESHOLD_MARGIN = ENGINE_AUTOCOMPACT_BUFFER - ENGINE_OUTPUT_RESERVE;
 export const PCT_OVERRIDE_VAR = 'CLAUDE_AUTOCOMPACT_PCT_OVERRIDE';
 export const AUTO_COMPACT_WINDOW_VAR = 'CLAUDE_CODE_AUTO_COMPACT_WINDOW';
 
@@ -380,9 +383,11 @@ function parseTokens(v) {
  * that move it (code.claude.com/docs/en/env-vars): CLAUDE_CODE_AUTO_COMPACT_WINDOW (100000–1000000 tokens) sets the
  * window, CLAUDE_AUTOCOMPACT_PCT_OVERRIDE (1–100) fires at that percent of it and can only lower the point. A percent
  * under 50 is under half of any model window on its own (the window never exceeds the model's), so it is flagged even
- * when the model window is unknown. `measuredTokens` is the engine's own figure (usage breakdown `autoCompactThreshold`),
- * kept for the record only: a window chosen in the settings (`autoCompactWindow`, `/autocompact`) is the person's choice
- * and never flags.
+ * when the model window is unknown. `measuredTokens` is the engine's own figure (usage breakdown `autoCompactThreshold`):
+ * its effective window minus the margin, the settings window included but never the percent (Claude Code 2.1.319 builds it
+ * without the override), so with a percent the point is that percent of the effective window it implies, as the engine
+ * computes it (`min(floor(effective · pct / 100), effective − margin)`). A window chosen in the settings
+ * (`autoCompactWindow`, `/autocompact`) is the person's choice and never flags.
  * @param {{modelWindow?: number, pctOverride?: (string|number|null), autoCompactWindow?: (string|number|null), measuredTokens?: number, enabled?: boolean}} s
  * @returns {{pointTokens: (number|null), measuredTokens: (number|null), modelWindow: (number|null), window: (number|null), windowSetting: (number|null), percent: (number|null), low: boolean, variables: string[]}}
  */
@@ -394,15 +399,16 @@ export function engineAutoCompactPoint(s = {}) {
   const pctRaw = String(s.pctOverride == null ? '' : s.pctOverride).trim();
   const percent = pctRaw !== '' && Number(pctRaw) >= 1 && Number(pctRaw) <= 100 ? Number(pctRaw) : null;
   const half = modelWindow ? modelWindow / 2 : null;
-  let pointTokens = window ? window - ENGINE_AUTOCOMPACT_BUFFER : null;
+  const measuredTokens = Number(s.measuredTokens) > 0 ? Number(s.measuredTokens) : null;
+  const effective = measuredTokens ? measuredTokens + ENGINE_THRESHOLD_MARGIN : window ? window - ENGINE_OUTPUT_RESERVE : null;
+  let pointTokens = effective ? effective - ENGINE_THRESHOLD_MARGIN : null;
   const variables = [];
   if (percent != null) {
-    const byPercent = window ? Math.round(window * percent / 100) : null;
+    const byPercent = effective ? Math.floor(effective * percent / 100) : null;
     if (byPercent != null && byPercent < pointTokens) pointTokens = byPercent;
     if (percent < 50 || (half && byPercent != null && byPercent < half)) variables.push(PCT_OVERRIDE_VAR);
   }
   if (windowSetting && half && window - ENGINE_AUTOCOMPACT_BUFFER < half) variables.push(AUTO_COMPACT_WINDOW_VAR);
-  const measuredTokens = Number(s.measuredTokens) > 0 ? Number(s.measuredTokens) : null;
   const low = s.enabled !== false && variables.length > 0;
   return { pointTokens, measuredTokens, modelWindow, window, windowSetting, percent, low, variables };
 }
@@ -415,7 +421,7 @@ export function engineAutoCompactPoint(s = {}) {
 export function autoCompactWarning(r) {
   if (!r || !r.low) return null;
   const k = (n) => (n >= 1000000 ? `${Math.round(n / 100000) / 10}M` : `${Math.round(n / 1000)}k`);
-  const at = r.measuredTokens || r.pointTokens;
+  const at = r.pointTokens;
   const where = at && r.modelWindow ? `at ~${k(at)} of a ${k(r.modelWindow)} window (${Math.round(at * 100 / r.modelWindow)}%)`
     : r.percent != null ? `at ${r.percent}% of its auto-compact window` : 'under half of the model window';
   const value = (v) => (v === PCT_OVERRIDE_VAR ? `${v}=${r.percent}` : `${v}=${r.windowSetting}`);
