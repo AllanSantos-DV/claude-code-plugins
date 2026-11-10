@@ -69,26 +69,26 @@ which.
 - Backlog items being worked are marked in progress, then marked resolved only
   after the test/validation that proves the fix has run.
 
-## Installed Boss on the owner's machine (Allan, 2026-10-29 — standing rule)
+## Installed Boss on the owner's machine (owner, 2026-10-29 — standing rule)
 
 Until the owner validates a change, the Boss installed on this machine — the one his real Claude Code sessions load — **is the `develop` build** (`node .claude/scripts/install-local.mjs`, silent, registration backup kept). Validation happens **in that real environment**, never in an isolated sandbox or a separate test build: the sandbox (`.claude/scripts/isolated-smoke.mjs`) is extra evidence only. Exercise the installed build with a hidden, driven session (`.claude/scripts/hidden-session.mjs`, closed afterwards), confirming the loaded plugin path and version (`/health` of the daemon, `installed_plugins.json`) and reading the real transcript and trail.
 
 ## Release flow
 
-**Owner validation gate (Allan, 2026-10-14, amended 2026-10-15, amended again
-2026-10-22 — standing rule, overrides anything below):** Allan's validation is
+**Owner validation gate (owner, 2026-10-14, amended 2026-10-15, amended again
+2026-10-22 — standing rule, overrides anything below):** the owner's validation is
 required **only for NEW functionality that changes how the product behaves**
 (something he never asked for or never tested). In that case: no release of
 claude-code-boss — merge into `main`, `git tag`, GitHub Release, any
 publication — without his validation, given after he has seen the change
 running on his own machine. The orchestrator prepares the whole test
-environment (install, setup, steps); Allan runs no command and no setup.
-Publish only on Allan's release order: from him directly **or** relayed by the
+environment (install, setup, steps); the owner runs no command and no setup.
+Publish only on the owner's release order: from him directly **or** relayed by the
 Jarvis orchestrator with his literal words recorded in its ledger and the
-delegation carrying `validacaoAllan`.
+delegation carrying the owner-validation field.
 
-**Bug fixes, and functionality Allan already asked for and tested himself, are
-NOT subject to his validation (Allan, 2026-10-22: "quem testa é você").** The
+**Bug fixes, and functionality the owner already asked for and tested himself, are
+NOT subject to his validation (owner, 2026-10-22: "quem testa é você").** The
 orchestrator tests and publishes them, with the delegation carrying
 `tipoRelease: correcao` plus the test evidence (`evidenciaTeste`); the session
 runs the suites, installs and verifies, and releases by the normal process. An
@@ -199,7 +199,7 @@ no model quota** — by `.github/scripts/pages-guard.mjs`, which hashes each
 plugin's sources (`plugin.json` + `README.md` + `CHANGELOG.md`, EOL-normalized so
 Windows and CI agree) against `pages/<plugin>/.source-hash`.
 
-**Three layers (Allan, 2026-10-15 — standing rule).** The plugin page is used to
+**Three layers (owner, 2026-10-15 — standing rule).** The plugin page is used to
 present the product to people, who do not want to scroll through versions. So
 every plugin page has three separate layers:
 

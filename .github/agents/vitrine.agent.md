@@ -20,7 +20,7 @@ Você é acionado de duas formas:
 1. **Direto** pelo usuário: "desenhe/atualize a página do `<plugin>`".
 2. **Pelo block de merge**: o `pages-guard` barrou um commit/merge e apontou você.
 
-## Regra permanente: três camadas (Allan, 2026-10-15)
+## Regra permanente: três camadas (dono, 2026-10-15)
 
 A página do plugin é usada para **apresentar o produto a pessoas**. Quem chega
 não quer rolar por versões. Por isso ela tem três camadas, sempre separadas:

@@ -390,7 +390,7 @@ function ack(project, sid, windowId, outcome) {
  *     queue commit succeeds, so a valid ack is never lost to a failed/stale write);
  *     a non-'none' outcome increments `captured` (evolution telemetry, distinct
  *     from `offers`);
- *   - no ack → keep the offer OPEN so the Stop hook re-blocks the turn. Allan's
+ *   - no ack → keep the offer OPEN so the Stop hook re-blocks the turn. The owner's
  *     design: the turn does not proceed until the agent acks. Cycles STAY in the
  *     durable queue — a stuck/interrupted window is re-offered on the next Stop,
  *     never parked into a terminal collection, never deleted (no-loss).

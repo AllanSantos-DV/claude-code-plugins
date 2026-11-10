@@ -65,7 +65,7 @@ Fluxo: captura, recall, citação, consolidação, e (manual) skill ou policy. C
 - Entra: UserPromptSubmit com `prompt`, `cwd` e `session_id`.
 - Pré-filtros: prompt sintético (`<task-notification>`) é ignorado; cwd sem id de projeto estrito não recebe recall; menos de 3 palavras-chave (comprimento >= 4) resulta em `short`.
 - Backend local (padrão shipped): `fastTopK=1`, `minScoreFast=0.50` sobre cosseno bruto. Busca em duas passadas com `topK+4=5`: `projectK=3` no banco do projeto e `userK=2` no banco `__user__` (só se o `brain.db` dele existe). Une por id, ordena por score, deduplica por título e injeta no máximo 1 entrada. Ancestrais não entram no ramo local.
-- Backend `mcp-memory` (`retrieveRemote`): dois braços em paralelo (compose e braço de projeto sobre `[foco, ...ancestrais, '__user__']`), piso 0.65, query cortada em 300 chars, timeout 8000 ms, orçamento de 6000 chars, disjuntor por braço (janela 10, 5 falhas, pula 4 chamadas) e circuito global de 15 s. Não foi verificado qual backend a máquina do Allan usa.
+- Backend `mcp-memory` (`retrieveRemote`): dois braços em paralelo (compose e braço de projeto sobre `[foco, ...ancestrais, '__user__']`), piso 0.65, query cortada em 300 chars, timeout 8000 ms, orçamento de 6000 chars, disjuntor por braço (janela 10, 5 falhas, pula 4 chamadas) e circuito global de 15 s. Não foi verificado qual backend a máquina do dono usa.
 - Escopos: o recall mistura projeto e `__user__`. É por aqui que uma lição de escopo user aparece em outro projeto.
 - Mecânico: toda a busca e a injeção. Antes disso o LLM precisaria lembrar de consultar a memória.
 - Persiste um `retrieval-journal` (`returnedIds`, `injectedIds`, `injectedChars`). Neste build também `injectedOrigins` e `originById` (seção 6).

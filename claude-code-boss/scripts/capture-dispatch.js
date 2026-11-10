@@ -165,7 +165,7 @@ function run(event, deps) {
 
   // 3. An offer still open after reconcile = NOT yet acked → re-block the turn until
   //    the agent acks (capture_lesson/capture_ack). This holds EVEN on the
-  //    continuation (stop_hook_active): Allan's design is that the turn does not
+  //    continuation (stop_hook_active): the owner's design is that the turn does not
   //    proceed until the agent calls one of the two tools. No ack ⇒ keep asking.
   //    SAFETY VALVE (mirrors curation-stop's relent): if acking is IMPOSSIBLE — the
   //    brain-server/MCP is down so capture_lesson/capture_ack literally can't be

@@ -47,7 +47,7 @@ function dataDir() {
  * arrive as absolute (file-edit-detect.js journals tool_input.file_path as-is),
  * so without this the directory-segment loop below walks the WHOLE absolute
  * path — on every real invocation that's the OS/user/project-container chain
- * (e.g. "Users", "allan", "Desktop", "Projetos", "<repo-name>"), which are
+ * (e.g. "Users", "<user>", "Desktop", "Projetos", "<repo-name>"), which are
  * never in GENERIC_DIR and become query noise on every turn, not just in a
  * deeply-nested test fixture. Diluted keywords lower the keyword-index match
  * score (a fraction of matched/total keywords) below the shared relevance

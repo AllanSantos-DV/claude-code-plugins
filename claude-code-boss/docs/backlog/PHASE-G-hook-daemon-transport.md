@@ -26,7 +26,7 @@
 > repo). Rodada 2 achou que o teste original de S1/S4 não cobria 3 casos
 > reais — os 3 spikes extras (S1b + S4-ii/iii) rodaram contra uma sessão
 > `claude -p` real (bloqueio de auth de sessão aninhada resolvido via
-> mecanismo do Allan Launcher — ver §Resolução do bloqueio S1b/S4). Resultado:
+> mecanismo do launcher pessoal do dono — ver §Resolução do bloqueio S1b/S4). Resultado:
 > `pretooluse-bash-dispatcher.js` **libera** pra migração fracionada (S1b
 > confirmou paridade); `stop-dispatcher.js` **mantém consolidado** — achado
 > real (não suposição) de que hooks-irmãos de `Stop` não mesclam motivo, ver
@@ -252,7 +252,7 @@ removendo a API key herdada pra forçar o `apiKeyHelper`, o processo travava
 indefinidamente.
 
 **Causa raiz e fix**: faltava replicar o mecanismo real de auth deste
-ambiente — o "Allan Launcher" (`~/.allan-launcher/AllanCore.psm1`,
+ambiente — o "launcher pessoal" (`<launcher pessoal>/core.psm1`,
 `Start-ClaudeSession` com `authKey='apikey'`) usa `claude --settings
 <override>` com `{"apiKeyHelper": "", "env": {"ANTHROPIC_API_KEY":
 "<chave>"}}` — o `apiKeyHelper` precisa ser **explicitamente zerado**, não só
@@ -262,7 +262,7 @@ passaram a autenticar normalmente.
 
 **Resultados reais** (comandos rodados, não estimados):
 ```
-cd C:\Users\asantos145\Desktop\Allan\.ccb-hook-siblings-test
+cd %USERPROFILE%\Desktop\<pasta>\.ccb-hook-siblings-test
 cp .claude/configs/settings-s1b.json .claude/settings.json   # ou s4ii-deny / s4ii-empty / s4iii-stop
 env -u ANTHROPIC_API_KEY claude --settings .claude/settings.json -p "..." --dangerously-skip-permissions --output-format json
 ```

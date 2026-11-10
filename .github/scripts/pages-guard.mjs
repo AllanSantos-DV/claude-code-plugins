@@ -76,7 +76,7 @@ function sourceHash(pluginDir) {
 }
 
 /**
- * Layer rule (Allan, 2026-10-15): the presentation page (`index.html`) is for
+ * Layer rule (owner, 2026-10-15): the presentation page (`index.html`) is for
  * people meeting the product — value proposition and features only. Version
  * history lives on its own page (`changelog.html` or the GitHub CHANGELOG.md),
  * linked discreetly; architecture lives on the technical page (`tech.html`).
