@@ -33,7 +33,7 @@
     "engine/lib/powershell-compat.js": "087c373327f335295c10d4b3fb15273c1c6621a21b210d964597bf4e81af814b",
     "engine/lib/process-lock.js": "8b916552f45676481d56224d363a0867379b0db73275a2b2946d084616625f0e",
     "engine/lib/project-config.js": "179c22dac04137c271ce79475f90cae09df297f36c33a0fc0fcdca0bda816c48",
-    "engine/lib/project-id.js": "82333077d6282a1f4b9f485a1780bcd4432b18710978ab8adad2c8f414477e23",
+    "engine/lib/project-id.js": "8844cedc3136eb90f7a07c8e8976bca0b42b9646b5a91306eabeb78ff09f265c",
     "engine/lib/recall-health.js": "89ac8b0af6baf0f6fa8a90a397d91670f787391a270c1cae91b8ed14abc938da",
     "engine/lib/redact.js": "1b8d0c9405b8c3a7c5f4b3b6c5c51c6336925c24abe9959e1313a8648a3ac557",
     "engine/lib/retrieve-core.js": "612f0d80e7c0a18f77610e7b25eec2a59be2450ddaec7922da3daa5d2deff9b9",
@@ -44,7 +44,7 @@
     "engine/lib/shell-escape.js": "992e6ca8e1d3b7236b8b8236cf956ee80e800f0c0532c0d1f5209be49b66b795",
     "engine/lib/sqlite-compat.js": "122746c15131a2e800451ed6d6903216f462ac59163ab65e66b8687e8ce7baaf",
     "engine/lib/text-utils.js": "68dd660d8c8c6b6930e3de9304d2d56bb2fdc6773029aa3d46b8b0eb605ad08a",
-    "engine/mcp-client.js": "b9deb4105d8ab717c5d0dedff0c04fe2c9b1400aea2da5c4bf687d1f56cdc50e",
+    "engine/mcp-client.js": "06b76721243910e70c9527a0143b7465f05446ddfc7dea3b02b66b6cab395815",
     "scripts/lib/mcp-bootstrap/launcher.js": "c7060022f13347b30648ed2fac16898d86f0850be70bbd4e7054e63ab2366ba7",
     "scripts/lib/mcp-bootstrap/registry.js": "62077187fdac17229d34745cd7c8f5c501e148724331d3873b28bc3a74391fa0"
   }
