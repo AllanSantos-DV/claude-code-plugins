@@ -160,6 +160,11 @@ async function main() {
   // up on stays without brain tools until /mcp → Reconnect — say so to user and agent.
   const link = await linkNoticeFor(event);
   if (link) text = text ? `${text}${SEP}${link.agent}` : link.agent;
+  // The first-run doctor of a new build, finished in the background since SessionStart: once, to the agent.
+  try {
+    const doctor = require('./doctor-first-run.js').takeNotice();
+    if (doctor) text = text ? `${text}${SEP}${doctor}` : doctor;
+  } catch (err) { console.error(`[claude-code-boss:user-prompt-submit-dispatcher] doctor first-run notice: ${err.message}`); }
   const out = {};
   // Once, after SessionStart turned plugin auto-update on: say so and how to turn it off.
   let autoUpdate = null;

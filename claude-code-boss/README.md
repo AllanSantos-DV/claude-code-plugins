@@ -168,7 +168,7 @@ prazo interno de `timeout − 1 s`.
 | SessionStart (via dispatcher) | `project-snapshot.js` | Snapshot do estado do repo (branch/PRs/CI) via `git`/`gh`, cacheado 5min |
 | SessionStart (via dispatcher) | `curation-session.js` | Poda one-hits antigos e injeta panorama de scripts curados; dispara higiene semanal do KB (fire-and-forget) |
 | SessionStart (via dispatcher) | `doctor-advisory.js` | Roda `doctor.js` com cooldown; advisory de 1 linha só se algo crítico falhar (Node/PATH, data-dir fragmentado, daemon, token) |
-| SessionStart (via dispatcher) | `doctor-first-run.js` | 1ª sessão de cada build (versão + pasta de instalação, uma vez): doctor completo + auditoria de custo fixo; aplica só as correções de custo fixo e de configuração do boss (com `fixedCost.autoFix`) e mostra o que achou, o que mudou e como desfazer (`doctor.js --undo`) |
+| SessionStart (via dispatcher) | `doctor-first-run.js` | 1ª sessão de cada build (versão + pasta de instalação, uma vez): doctor completo + auditoria de custo fixo; aplica só as correções de custo fixo e de configuração do boss (com `fixedCost.autoFix`) e mostra o que achou, o que mudou e como desfazer (`doctor.js --undo`). A auditoria lê até 30 dias de transcripts, então roda num processo oculto separado: o SessionStart só a inicia e o aviso chega uma vez, no prompt seguinte (UserPromptSubmit) |
 | SessionStart (via dispatcher) | `review-checklist-advisory.js` | Se existir `.claude/brain-review-checklist.md` (lições recorrentes de código), lembra o `/code-review` nativo de consultá-lo |
 | SessionStart (via dispatcher) | `value-digest.js` | 1×/dia por projeto: uma linha com o que a curadoria economizou nos últimos 7 dias (moldador + redirects), redirects, execuções, custo cru e o maior gargalo; silencioso sem atividade |
 | SessionStart (via dispatcher) | `tuning-advisory.js` | Recomendação determinística de tuning (perfil/curadoria) com cooldown de 6h |
@@ -680,7 +680,7 @@ vir de variáveis de ambiente; a precedência é
 - **`node scripts/doctor.js --undo`** — desfaz as correções, em ordem inversa, a partir do diário gravado antes de
   cada mudança (`~/.claude/claude-code-boss/fixed-cost-undo.json`); o que falhar fica no diário.
 - **1ª sessão depois de atualizar** — o `doctor-first-run.js` roda tudo isso uma vez por build e aplica só as
-  correções de custo fixo e de configuração do boss. Config `fixedCost` em `hooks-config.json`: `enabled`,
+  correções de custo fixo e de configuração do boss, em segundo plano (a sessão não espera; o resultado vem no prompt seguinte). Config `fixedCost` em `hooks-config.json`: `enabled`,
   `autoFix` (padrão `true`), `days` (30, faixa 7–180), `keep`.
 - **`node scripts/brain-consolidate.js [--project <k>] [--apply]`** — funde
   lições quase-duplicadas (similaridade 0.7–0.9, mesmo tipo) num único

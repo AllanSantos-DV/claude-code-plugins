@@ -7,6 +7,10 @@
  * on `wx` and only the winner runs. The marker is written BEFORE the work, so a crash never repeats the audit on
  * every session start; the failure is reported in the notice instead.
  *
+ * The audit reads up to 30 days of transcripts and took 17–52 s measured, so it never runs inside SessionStart: the
+ * hook claims the marker and starts a hidden detached process (`--audit <key>`), which writes the notice to
+ * `.runtime/doctor-first-run-<key>.notice`. The next prompt takes it once (`takeNotice`, UserPromptSubmit).
+ *
  * Fixes applied here are only the fixed-cost ones (unused/unauthenticated MCP servers, never-used skills → name only,
  * unused plugins, the boss's own settings) and only when `fixedCost.autoFix` is on (default). Each is journaled and
  * undone with `node scripts/doctor.js --undo`. The daemon lock is left to brain-daemon-ensure.
@@ -79,10 +83,9 @@ function composeNotice({ key, results, fixes, audit, turnedOff = [], lang = user
   return L.join('\n');
 }
 
-async function run(_event, { dir, key = buildKey(), doctor = require('./doctor.js'), cfg, journal = () => require('./lib/fixed-cost.js').listJournal() } = {}) {
+/** The whole first-run doctor: checks, the automatic cost fixes, and the notice text. */
+async function audit({ key = buildKey(), doctor = require('./doctor.js'), cfg, journal = () => require('./lib/fixed-cost.js').listJournal() } = {}) {
   const c = cfg || require('./lib/hooks-config.js').getFixedCost();
-  if (!c.enabled) return null;
-  if (!claim(markerPath(key, dir))) return null;
   const startedAt = Date.now();
   const ctx = await doctor.gatherContext({ probe: false, audit: true, scanBudgetMs: SCAN_BUDGET_MS });
   const results = doctor.runChecks(ctx);
@@ -95,10 +98,87 @@ async function run(_event, { dir, key = buildKey(), doctor = require('./doctor.j
   return composeNotice({ key, results, fixes, audit: ctx.fixedCost, turnedOff });
 }
 
+function runtimeDir(dir) {
+  return path.join(dir || require('../engine/lib/data-dir.js').dataDir(), '.runtime');
+}
+
+function noticePath(key, dir) {
+  return path.join(runtimeDir(dir), `doctor-first-run-${key}.notice`);
+}
+
+/** Writes the notice whole (temp + rename), so a prompt never takes half of it. */
+function writeNotice(key, text, dir) {
+  const file = noticePath(key, dir);
+  fs.mkdirSync(path.dirname(file), { recursive: true });
+  fs.writeFileSync(`${file}.tmp`, text);
+  fs.renameSync(`${file}.tmp`, file);
+}
+
+/** Starts the audit in a hidden detached process; its output goes to `.runtime/doctor-first-run.log`. */
+function detachAudit(key, { dir, cwd } = {}) {
+  const logFile = path.join(runtimeDir(dir), 'doctor-first-run.log');
+  fs.mkdirSync(path.dirname(logFile), { recursive: true });
+  const log = fs.openSync(logFile, 'a');
+  try {
+    const child = require('child_process').spawn(process.execPath, [__filename, '--audit', key], {
+      cwd: cwd || process.cwd(), detached: true, windowsHide: true, stdio: ['ignore', log, log],
+    });
+    child.unref();
+  } finally { fs.closeSync(log); }
+}
+
+/**
+ * SessionStart: claims this build's first run and starts the audit off the hook's path. Returns null (nothing to
+ * say yet); the result reaches the next prompt.
+ */
+async function run(event, { dir, key = buildKey(), cfg, detach = detachAudit } = {}) {
+  const c = cfg || require('./lib/hooks-config.js').getFixedCost();
+  if (!c.enabled) return null;
+  if (!claim(markerPath(key, dir))) return null;
+  detach(key, { dir, cwd: event && event.cwd });
+  return null;
+}
+
+/** The background side: runs the audit and leaves the notice, or the failure, for the next prompt. */
+async function auditToNotice(key, { dir, ...opts } = {}) {
+  let text;
+  try { text = await audit({ key, ...opts }); } catch (err) {
+    console.error(`[doctor-first-run] audit failed: ${err && err.stack ? err.stack : err}`);
+    text = `[DOCTOR] First run of build ${key} could not finish: ${err && err.message ? err.message : err}. Run \`node "${path.join(process.env.CLAUDE_PLUGIN_ROOT || path.resolve(__dirname, '..'), 'scripts', 'doctor.js')}" --cost\` from the project folder to see the report.`;
+  }
+  writeNotice(key, text, dir);
+  return text;
+}
+
+/**
+ * UserPromptSubmit: the first-run notices that are ready, each delivered once. A rename claims each file, so two
+ * prompts at the same moment never both show it.
+ * @returns {string|null}
+ */
+function takeNotice({ dir } = {}) {
+  const rt = runtimeDir(dir);
+  let names;
+  try { names = fs.readdirSync(rt); } catch (err) { if (err.code === 'ENOENT') return null; throw err; }
+  const texts = [];
+  for (const name of names.filter((n) => /^doctor-first-run-.+\.notice$/.test(n))) {
+    const taken = path.join(rt, `${name}.taken-${process.pid}`);
+    try { fs.renameSync(path.join(rt, name), taken); } catch (err) {
+      if (err.code === 'ENOENT') continue;
+      throw err;
+    }
+    texts.push(fs.readFileSync(taken, 'utf8'));
+    fs.rmSync(taken, { force: true });
+  }
+  return texts.length ? texts.join('\n\n') : null;
+}
+
 function main() { return runTextCli(run, 'DOCTOR-FIRST-RUN', 'SessionStart'); }
 
 if (require.main === module) {
-  main();
+  const i = process.argv.indexOf('--audit');
+  // Explicit exit: a handle the doctor leaves open must not keep a hidden process alive after the notice is written.
+  if (i >= 0) auditToNotice(process.argv[i + 1]).then(() => process.exit(0), (err) => { console.error(`[doctor-first-run] ${err && err.stack ? err.stack : err}`); process.exit(1); });
+  else main();
 }
 
-module.exports = { run, buildKey, markerPath, claim, composeNotice, AUTO_FIXERS };
+module.exports = { run, audit, auditToNotice, takeNotice, noticePath, buildKey, markerPath, claim, composeNotice, AUTO_FIXERS };

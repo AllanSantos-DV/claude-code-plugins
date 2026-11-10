@@ -19373,19 +19373,54 @@ test('doctor-first-run: so a primeira sessao do build roda, aplica so correcoes 
     applyFixes: (rs, ctx, fixers) => rs.filter((r) => r.autofix && fixers[r.autofix]).map((r) => ({ id: r.id, ok: true, message: fixers[r.autofix](ctx) })),
   };
   const cfg = { enabled: true, autoFix: true, days: 30, keep: [] };
-  const text = await firstRun.run({}, { dir, key: 'k1', doctor: fakeDoctor, cfg });
+  const detached = [];
+  const detach = (key, o) => detached.push(`${key}:${o.cwd}`);
+  assertEq(await firstRun.run({ cwd: 'P' }, { dir, key: 'k1', cfg, detach }), null, 'SessionStart says nothing yet');
+  assertEq(detached, ['k1:P'], 'the audit is started off the hook path, in the session folder');
+  const text = await firstRun.audit({ key: 'k1', doctor: fakeDoctor, cfg });
   assert(/First run of build k1/.test(text), text);
   assert(/Applied \(fixed-cost\): 1 skill now lists by name only/.test(text), text);
   assert(/doctor.js --undo/.test(text) && /Restart Claude Code/.test(text), 'diz como desfazer e reiniciar');
   assert(/Warning — Daemon: lock → run --fix/.test(text) && /Warning — Hook events: x → What to do: nothing/.test(text), 'o que nao foi corrigido aparece com o que fazer');
   assertEq(applied, ['fixed-cost'], 'o lock do daemon nao e tocado pelo primeiro run');
-  assertEq(await firstRun.run({}, { dir, key: 'k1', doctor: fakeDoctor, cfg }), null, 'segunda sessao do mesmo build: silencio');
-  const t2 = await firstRun.run({}, { dir, key: 'k2', doctor: fakeDoctor, cfg: { ...cfg, autoFix: false } });
+  assertEq(await firstRun.run({}, { dir, key: 'k1', cfg, detach }), null, 'segunda sessao do mesmo build: silencio');
+  assertEq(detached.length, 1, 'and no second audit');
+  const t2 = await firstRun.audit({ key: 'k2', doctor: fakeDoctor, cfg: { ...cfg, autoFix: false } });
   assert(/First run of build k2/.test(t2) && !/Applied/.test(t2), 'build novo roda de novo; autoFix desligado so avisa');
   assertEq(applied.length, 1);
-  assertEq(await firstRun.run({}, { dir, key: 'k3', doctor: fakeDoctor, cfg: { ...cfg, enabled: false } }), null, 'desligado na config');
+  assertEq(await firstRun.run({}, { dir, key: 'k3', cfg: { ...cfg, enabled: false }, detach }), null, 'desligado na config');
+  assertEq(detached.length, 1, 'desligado: nada iniciado');
   assertEq(firstRun.claim(firstRun.markerPath('k9', dir)), true);
   assertEq(firstRun.claim(firstRun.markerPath('k9', dir)), false, 'o segundo que chega ao mesmo tempo perde a corrida');
+  fs.rmSync(dir, { recursive: true, force: true });
+});
+
+test('doctor-first-run: SessionStart only claims and starts the audit (fast with a slow doctor); the notice reaches one prompt only, a failed audit included', async () => {
+  const firstRun = require('./doctor-first-run.js');
+  const dir = fcTmp('bg');
+  const cfg = { enabled: true, autoFix: false, days: 30, keep: [] };
+  const started = [];
+  const t0 = Date.now();
+  assertEq(await firstRun.run({ cwd: 'P' }, { dir, key: 'kb', cfg, detach: (key) => started.push(key) }), null);
+  assert(Date.now() - t0 < 1000, `SessionStart stays under its ceiling: ${Date.now() - t0}ms`);
+  assertEq(started, ['kb'], 'the audit was handed to the background');
+  assertEq(firstRun.takeNotice({ dir }), null, 'audit still running → nothing to show');
+  const slowDoctor = {
+    gatherContext: () => new Promise((r) => setTimeout(() => r({ fixedCost: { error: 'none' } }), 50)),
+    runChecks: () => [], FIXERS: {}, applyFixes: () => [],
+  };
+  await firstRun.auditToNotice('kb', { dir, doctor: slowDoctor, cfg });
+  assert(fs.existsSync(firstRun.noticePath('kb', dir)), 'the background audit leaves the notice');
+  const shown = firstRun.takeNotice({ dir });
+  assert(/First run of build kb: full check done/.test(shown), String(shown));
+  assertEq(firstRun.takeNotice({ dir }), null, 'shown once: the next prompt gets nothing');
+  const broken = { gatherContext: async () => { throw new Error('disk gone'); } };
+  const errs = [];
+  const realErr = console.error;
+  console.error = (m) => errs.push(String(m));
+  try { await firstRun.auditToNotice('kc', { dir, doctor: broken, cfg }); } finally { console.error = realErr; }
+  assert(errs.some((m) => /audit failed/.test(m)), 'the failure is logged');
+  assert(/First run of build kc could not finish: disk gone/.test(firstRun.takeNotice({ dir })), 'and told to the next prompt, never silent');
   fs.rmSync(dir, { recursive: true, force: true });
 });
 
@@ -19545,15 +19580,15 @@ test('doctor-first-run: o aviso diz QUAIS itens foram desativados, POR QUE (sem 
     { id: 'a-2', at, kind: 'env-set', target: 'ENABLE_TOOL_SEARCH', why: 'Tool Search off' },
   ];
   const cfg = { enabled: true, autoFix: true, days: 30, keep: [] };
-  const text = await firstRun.run({}, { dir, key: 'off1', doctor: fakeDoctor, cfg, journal: () => entries(new Date(Date.now() + 1000).toISOString()) });
+  const text = await firstRun.audit({ key: 'off1', doctor: fakeDoctor, cfg, journal: () => entries(new Date(Date.now() + 1000).toISOString()) });
   assert(/ATTENTION — 2 item\(s\) were switched off automatically/.test(text), text);
   assert(/plugin disabled: pdf@mkt — installed but not used in the last 30 days/.test(text), 'plugin e o motivo (sem uso)');
   assert(/MCP server removed: figma — asks for authentication .* never authenticated/.test(text), 'servidor e o motivo (sem autenticacao)');
   assert(!/ENABLE_TOOL_SEARCH/.test(text.split('Applied')[0]), 'ajuste do proprio boss nao e listado como item desviado');
   assert(/Switched off by the doctor/.test(text) && /press Undo/.test(text) && /doctor.js --undo/.test(text), 'diz onde desfazer um a um e tudo');
-  const old = await firstRun.run({}, { dir, key: 'off2', doctor: fakeDoctor, cfg, journal: () => entries('2020-01-01T00:00:00.000Z') });
+  const old = await firstRun.audit({ key: 'off2', doctor: fakeDoctor, cfg, journal: () => entries('2020-01-01T00:00:00.000Z') });
   assert(!/ATTENTION/.test(old), 'entradas de builds anteriores nao entram no aviso desta rodada');
-  const noFix = await firstRun.run({}, { dir, key: 'off3', doctor: fakeDoctor, cfg: { ...cfg, autoFix: false }, journal: () => entries(new Date(Date.now() + 1000).toISOString()) });
+  const noFix = await firstRun.audit({ key: 'off3', doctor: fakeDoctor, cfg: { ...cfg, autoFix: false }, journal: () => entries(new Date(Date.now() + 1000).toISOString()) });
   assert(!/ATTENTION/.test(noFix), 'autoFix desligado: nada foi desativado, nada a avisar');
   fs.rmSync(dir, { recursive: true, force: true });
 });
@@ -19795,7 +19830,7 @@ test('hooks-config.saveFixedCost + dashboard /api/doctor/config: o usuario liga/
     let applied = 0;
     const fakeDoctor = { gatherContext: async () => ({ fixedCost: null }), runChecks: () => [{ id: 'fixed-cost', label: 'F', status: 'warn', detail: 'd', fix: 'f', autofix: 'fixed-cost' }], FIXERS: { 'fixed-cost': () => { applied++; return 'x'; } }, applyFixes: () => { applied++; return []; } };
     hc.saveFixedCost({ autoFix: false });
-    const text = await firstRun.run({}, { dir, key: 'cfg1', doctor: fakeDoctor, journal: () => [{ id: 'z', at: new Date(Date.now() + 5000).toISOString(), kind: 'plugin-disable', target: 'p@m', why: 'w' }] });
+    const text = await firstRun.audit({ key: 'cfg1', doctor: fakeDoctor, journal: () => [{ id: 'z', at: new Date(Date.now() + 5000).toISOString(), kind: 'plugin-disable', target: 'p@m', why: 'w' }] });
     assertEq(applied, 0, 'autoFix desligado: o doctor nao aplica nada');
     assert(!/ATTENTION/.test(text), text);
     fs.rmSync(dir, { recursive: true, force: true });
@@ -20677,7 +20712,7 @@ test('session-start-dispatcher.DETECTORS: 17 detectors, correct order + shape (m
   assert(d.DETECTORS.every(x => typeof x.mod.run === 'function'), 'every detector exposes run()');
   assert(!names.includes('model-router-ensure'), 'model-router-ensure must stay OUT (process.exit() in its main flow)');
   assertEq(d.DETECTORS.find(x => x.name === 'brain-daemon-ensure').timeoutMs, 120000);
-  assertEq(d.DETECTORS.find(x => x.name === 'doctor-first-run').timeoutMs, 60000, 'o audit de custo le ~30 dias de transcripts: precisa de folga');
+  assertEq(d.DETECTORS.find(x => x.name === 'doctor-first-run').timeoutMs, 5000, 'the cost audit runs in a detached process: SessionStart only claims it');
   const hooks = JSON.parse(fs.readFileSync(path.join(ROOT, 'hooks', 'hooks.json'), 'utf8'));
   const sessionCommands = hooks.hooks.SessionStart.flatMap(group => group.hooks || []).map(h => (h.args || []).join(' '));
   assertEq(sessionCommands.filter(cmd => /mcp-memory-auto-update/.test(cmd)).length, 0,
