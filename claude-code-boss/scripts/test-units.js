@@ -11255,6 +11255,38 @@ test('release-guard: importar o modulo NAO executa o CLI (senao mata o processo 
   assertEq(typeof rg.GRACE_MS, 'number', 'janela de acomodacao exportada');
 });
 
+// ─── plugin-validate: o validador do próprio Claude Code no CI ───
+const PV_PATH = path.resolve(ROOT, '..', '.github', 'scripts', 'plugin-validate.mjs');
+const loadPluginValidate = () => import(require('url').pathToFileURL(PV_PATH).href);
+
+test('plugin-validate.classify: only the reserved plugin name is tolerated; any other error, or no result, fails', async () => {
+  const pv = await loadPluginValidate();
+  const reserved = { path: 'name', message: 'Plugin name "claude-code-boss" is reserved: it passes as one of Anthropic\'s own.', code: null };
+  const inList = { ...reserved, path: 'plugins[0].name' };
+  const r1 = pv.classify({ success: false, manifest: { file: 'plugin.json', errors: [reserved] }, contents: [{ file: 'hooks/hooks.json', errors: [] }] });
+  assertEq(r1.ok, true, 'the rename waits on the owner: that error alone must not break CI');
+  assertEq(r1.tolerated.length, 1);
+  assertEq(pv.classify({ success: false, manifest: { file: 'marketplace.json', errors: [inList] } }).ok, true, 'same rule inside marketplace.json');
+  const hookErr = { path: 'hooks.Stop[0]', message: 'unknown hook type', code: 'x' };
+  const r2 = pv.classify({ success: false, manifest: { file: 'plugin.json', errors: [reserved] }, contents: [{ file: 'hooks/hooks.json', errors: [hookErr] }] });
+  assertEq(r2.ok, false, 'a hooks.json error fails even next to the tolerated one');
+  assertEq(r2.failures.length, 1);
+  assertEq(pv.classify({ success: false, manifest: { errors: [{ path: 'description', message: 'is reserved word' }] } }).ok, false, '"is reserved" off a name field still fails');
+  assertEq(pv.classify(null).ok, false, 'no JSON (CLI missing or broken) is a failure, never a pass');
+  assertEq(pv.classify({ success: false, manifest: { errors: [] } }).ok, false, 'failure without a named error still fails');
+  assertEq(pv.classify({ success: true, manifest: { errors: [] }, contents: [] }).ok, true);
+  const ignoredHook = { path: 'hooks', message: 'hooks.Stop.0.hooks.0: Unknown hook type "nope"; entry ignored at runtime', code: null };
+  assertEq(pv.classify({ success: true, manifest: { errors: [] }, contents: [{ file: 'hooks/hooks.json', errors: [], warnings: [ignoredHook] }] }).ok, false,
+    'the validator passes an unknown hook type as a warning, yet that hook never runs');
+});
+
+test('plugin-validate.targets: the marketplace root and every plugin it lists', async () => {
+  const pv = await loadPluginValidate();
+  const t = pv.targets();
+  assertEq(t[0], '.', 'the marketplace itself first');
+  assert(t.includes('claude-code-boss') && t.includes('rf-reviewer'), `got ${JSON.stringify(t)}`);
+});
+
 // ─── rf-reviewer: manifest × __version__ no release-audit; clientInfo.version real ───
 const RA_PATH = path.resolve(ROOT, '..', '.github', 'scripts', 'release-audit.mjs');
 const loadReleaseAudit = () => import(require('url').pathToFileURL(RA_PATH).href);

@@ -1,0 +1,30 @@
+name: Plugin Validate
+
+# Claude Code's own validator (`claude plugin validate --json`) on the marketplace and on
+# every plugin it lists: manifest, hooks.json, skills, agents. It reads files only, so no
+# login or secret is needed. The CLI is pinned: a new validator rule lands here by a
+# deliberate bump, not by surprise on an unrelated PR.
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  plugin-validate:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6.0.2
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: '22'
+
+      - name: Install the Claude Code CLI (pinned)
+        run: npm install -g @anthropic-ai/claude-code@2.1.319
+
+      - name: Validate marketplace and plugins
+        run: node .github/scripts/plugin-validate.mjs check
