@@ -786,7 +786,8 @@ function bossPluginId(settings) {
 async function gatherContext({ probe = false, audit = false, contextSources: wantSources = false, scanBudgetMs } = {}) {
   // One time budget for the three history reads, split by how much each one tells the doctor.
   const share = (f) => (scanBudgetMs === undefined ? undefined : Math.round(scanBudgetMs * f));
-  const root = process.env.CLAUDE_PLUGIN_ROOT || '';
+  // Unset when run by hand (a session's Bash); a literal `${...}` left by the launcher still reaches checkEnv and fails.
+  const root = process.env.CLAUDE_PLUGIN_ROOT || pluginRoot();
   const data = dataDir();
   const activeDataResolved = process.env.CLAUDE_PLUGIN_DATA || '';
 

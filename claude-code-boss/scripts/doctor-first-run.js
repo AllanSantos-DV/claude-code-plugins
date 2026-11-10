@@ -74,7 +74,8 @@ function composeNotice({ key, results, fixes, audit, turnedOff = [], lang = user
   const rest = results.filter((r) => r.status !== 'ok' && !r.optional && !fixedIds.has(r.id)); // an optional piece that is simply absent (Smart Tool, rules) is in the full report, not in every session's context
   for (const r of rest) L.push(`${r.status === 'fail' ? 'PROBLEM' : 'Warning'} — ${r.label}: ${r.detail}${r.fix ? ` → ${r.fix}` : ''}`);
   if (ok.length) L.push('Restart Claude Code to load the changes. Undo everything: `node scripts/doctor.js --undo` (in the plugin folder).');
-  L.push('Full report any time: `node scripts/doctor.js --cost`.');
+  // Absolute, run from the user's project: the folder checks (memory, code graph) read the folder it runs in.
+  L.push('Full report any time: `node "' + path.join(pluginRoot, 'scripts', 'doctor.js') + '" --cost`, run from the project folder.');
   return L.join('\n');
 }
 

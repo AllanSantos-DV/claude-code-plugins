@@ -19670,6 +19670,13 @@ test('doctor-first-run: o aviso instrui o agente a contar o que foi desativado, 
   assert(!/INSTRUCTION FOR YOU/.test(none), 'nada desativado: o agente nao e instruido a perguntar nada');
 });
 
+test('doctor-first-run: the "full report" hint gives the installed doctor\'s absolute path, so it runs from the user\'s project (folder checks read the folder it runs in)', () => {
+  const firstRun = require('./doctor-first-run.js');
+  const t = firstRun.composeNotice({ key: 'k', results: [], fixes: [], audit: null, pluginRoot: 'C:\\plug\\3.9.0' });
+  assert(/Full report any time: `node "C:\\plug\\3\.9\.0[\\/]scripts[\\/]doctor\.js" --cost`, run from the project folder\./.test(t), t);
+  assert(!/`node scripts\/doctor\.js --cost`/.test(t), 'no relative path that only works inside the plugin folder');
+});
+
 test('dashboard-open: sobe o dashboard (idempotente), abre o navegador na aba Home e devolve a URL; falha do starter sai alto', async () => {
   const dOpen = require('./dashboard-open.js');
   const opened = [];
@@ -23482,6 +23489,23 @@ test('doctor.gatherContext: the first-run budget reaches the transcript and sub-
   assert(ctx.fixedCost.errors.some((e) => e.includes('budget')), 'the transcript scan stopped at its budget');
   assertEq(ctx.subagents.partial, true);
   fs.rmSync(proj, { recursive: true, force: true });
+});
+
+test('doctor run by hand (no CLAUDE_PLUGIN_ROOT, as from a session\'s Bash): the env check passes on the doctor\'s own folder; a literal ${...} still fails', async () => {
+  const doctor = require('./doctor.js');
+  const prev = process.env.CLAUDE_PLUGIN_ROOT;
+  try {
+    delete process.env.CLAUDE_PLUGIN_ROOT;
+    const byHand = await doctor.gatherContext({ probe: false });
+    assertEq(path.resolve(byHand.env.root), path.resolve(__dirname, '..'));
+    assertEq(doctor.checkEnv(byHand).status, 'ok');
+    process.env.CLAUDE_PLUGIN_ROOT = '${CLAUDE_PLUGIN_ROOT}';
+    assertEq(doctor.checkEnv(await doctor.gatherContext({ probe: false })).status, 'fail');
+    process.env.CLAUDE_PLUGIN_ROOT = path.join(os.tmpdir(), 'explicit-root');
+    assertEq((await doctor.gatherContext({ probe: false })).env.root, process.env.CLAUDE_PLUGIN_ROOT);
+  } finally {
+    if (prev === undefined) delete process.env.CLAUDE_PLUGIN_ROOT; else process.env.CLAUDE_PLUGIN_ROOT = prev;
+  }
 });
 
 test('skill promotion (Q44): the user override of kb.skillPromotion reaches brain-promote and the dashboard (not only the shipped file)', () => {
