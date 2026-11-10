@@ -2719,7 +2719,7 @@ async function loadHome() {
     const backendLabel = s.brain.backend || 'local';
     const backendConnected = s.brain.connected;
     const detailText = brainH && brainH.mode === 'mcp-memory'
-      ? (brainH.connected ? (brainH.details && brainH.details.serverUrl ? brainH.details.serverUrl : 'connected') : 'disconnected')
+      ? (brainH.state === 'degraded' ? `degraded: ${brainH.details.reason}` : brainH.connected ? (brainH.details && brainH.details.serverUrl ? brainH.details.serverUrl : 'connected') : 'disconnected')
       : (brainH && brainH.details && brainH.details.dbPath ? 'sqlite' : backendLabel);
     const latencyText = brainH && brainH.mode === 'mcp-memory' && brainH.connected
       ? ` · ${brainH.details.latency || 0}ms`
@@ -2727,7 +2727,7 @@ async function loadHome() {
     el.innerHTML = `
       <div class="stat"><div class="value">${s.hooks.active}/${s.hooks.total}</div><div class="label">Hooks Active</div><span class="badge ${s.hooks.active === s.hooks.total ? 'badge-green' : 'badge-yellow'}">${s.hooks.active === s.hooks.total ? 'All active' : s.hooks.active + ' active'}</span></div>
       <div class="stat"><div class="value">${s.brain.totalEntries}</div><div class="label">KB Entries</div><span class="badge ${backendConnected ? 'badge-green' : 'badge-red'}">${escapeHtml(detailText)}</span></div>
-      <div class="stat"><div class="value">${Math.floor(s.uptime / 60)}m</div><div class="label">Dashboard Uptime</div><span class="badge badge-green">${brainH && brainH.mode === 'mcp-memory' ? (brainH.connected ? '● online' + latencyText : '● offline') : 'local'}</span></div>
+      <div class="stat"><div class="value">${Math.floor(s.uptime / 60)}m</div><div class="label">Dashboard Uptime</div><span class="badge badge-green">${brainH && brainH.mode === 'mcp-memory' ? (brainH.state === 'degraded' ? '● degraded' + latencyText : brainH.connected ? '● online' + latencyText : '● offline') : 'local'}</span></div>
     `;
     const brainEl = document.getElementById('home-brain');
     if (s.brain.projects.length === 0) {

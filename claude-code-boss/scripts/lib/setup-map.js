@@ -17,7 +17,7 @@ const SMART_TOOL_NAME = /smart[-_]?tool/i;
 /**
  * @returns {Promise<{
  *   smartTool: {configured: boolean, servers: string[], reachable: boolean|null},
- *   memory: {backend: 'local'|'mcp-memory', connected: boolean|null, reason: string, scope: {id: string|null, strength: string, optedOut: boolean}},
+ *   memory: {backend: 'local'|'mcp-memory', connected: boolean|null, state?: 'ok'|'degraded'|'unreachable', reason: string, scope: {id: string|null, strength: string, optedOut: boolean}},
  *   graph: {applicable: boolean, state: string, nodes: number},
  *   rules: {files: Array<{path:string,tokens:number}>, policies: number},
  *   errors: string[]
@@ -75,7 +75,8 @@ async function gatherSetup({
     try {
       const h = await probeMemory(cfg);
       out.memory.connected = !!h.connected;
-      out.memory.reason = h.connected ? '' : String((h.details && (h.details.reason || (h.details.jarExists === false ? 'no server running and no jar installed' : ''))) || 'not connected');
+      out.memory.state = h.state || (h.connected ? 'ok' : 'unreachable');
+      out.memory.reason = h.connected ? String((h.state === 'degraded' && h.details && h.details.reason) || '') : String((h.details && (h.details.reason || (h.details.jarExists === false ? 'no server running and no jar installed' : ''))) || 'not connected');
     } catch (err) { errors.push(`memory: ${err.message}`); }
     out.graph.applicable = true;
     if (out.memory.connected) {

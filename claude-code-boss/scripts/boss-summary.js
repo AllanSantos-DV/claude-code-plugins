@@ -65,6 +65,7 @@ function brainOf(health, healthError) {
   const reason = health.details && health.details.reason ? String(health.details.reason).split(':')[0] : undefined;
   return {
     connected: health.connected === true,
+    state: String(health.state || (health.connected === true ? 'ok' : 'unreachable')),
     mode: String(health.mode || 'unknown'),
     backend: String(health.backend || 'unknown'),
     latencyMs: Number(health.latency) || 0,

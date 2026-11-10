@@ -2309,6 +2309,89 @@ for (const [body, expected] of [[{ ok: true }, true], [{ status: 'healthy', vers
   });
 }
 
+const DEGRADED_RERANK = { status: 'degraded', version: '3.0.2', checks: { database: 'ok', embedding_model: 'ok', version: 'ok' }, rerank: { mode: 'sota-local', status: 'failed', error: 'download do modelo falhou' }, problems: ['rerank failed: download do modelo falhou'] };
+
+/** A fake mcp-memory answering `body` (a raw string is sent as is) on a free port; returns { config, close }. */
+async function fakeMcpMemory(body) {
+  const http2 = require('http');
+  const runDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-mcphealth-state-'));
+  const server = http2.createServer((req, res) => { res.writeHead(200, { 'Content-Type': 'application/json' }); res.end(typeof body === 'string' ? body : JSON.stringify(body)); });
+  await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
+  fs.writeFileSync(path.join(runDir, 'daemon.json'), JSON.stringify({ url: `http://127.0.0.1:${server.address().port}` }));
+  return {
+    config: { backend: { type: 'mcp-memory', mcpMemory: { transport: 'http', runDir } } },
+    close: () => new Promise((resolve) => server.close(() => { fs.rmSync(runDir, { recursive: true, force: true }); resolve(); })),
+  };
+}
+
+for (const [name, body, state, connected, reason] of [
+  ['healthy', { status: 'healthy', version: '3.0.2' }, 'ok', true, undefined],
+  ['degraded with database and embedding_model ok', DEGRADED_RERANK, 'degraded', true, 'rerank failed: download do modelo falhou'],
+  ['degraded with the database failing', { ...DEGRADED_RERANK, checks: { database: 'failed', embedding_model: 'ok' } }, 'unreachable', false, /^health-bad:/],
+  ['unreadable JSON', '{not json', 'unreachable', false, 'health-timeout-or-unparseable'],
+]) {
+  test(`mcp-health.probeHealth: ${name} → ${state}`, async () => {
+    const fake = await fakeMcpMemory(body);
+    try {
+      let r;
+      for (let attempt = 0; attempt < 5; attempt++) { // same jitter retry as above
+        r = await mcpHealth.probeHealth(fake.config);
+        if (r.state === state) break;
+        await new Promise((resolve) => setTimeout(resolve, 100));
+      }
+      assertEq(r.state, state, JSON.stringify(r));
+      assertEq(r.connected, connected);
+      if (reason instanceof RegExp) assert(reason.test(r.details.reason), r.details.reason);
+      else assertEq(r.details.reason, reason);
+    } finally { await fake.close(); }
+  });
+}
+
+test('mcp-health.probeHealth: closed port → unreachable', async () => {
+  const dead = await new Promise((resolve) => { const t = require('http').createServer(); t.listen(0, '127.0.0.1', () => { const p = t.address().port; t.close(() => resolve(p)); }); });
+  const runDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-mcphealth-dead-'));
+  try {
+    fs.writeFileSync(path.join(runDir, 'daemon.json'), JSON.stringify({ url: `http://127.0.0.1:${dead}` }));
+    const r = await mcpHealth.probeHealth({ backend: { type: 'mcp-memory', mcpMemory: { transport: 'http', runDir } } });
+    assertEq([r.state, r.connected, r.details.reason], ['unreachable', false, 'tcp-closed']);
+  } finally { fs.rmSync(runDir, { recursive: true, force: true }); }
+});
+
+test('mcp-health.classifyHealth: a degraded answer without the essential checks is unreachable, and a secret in the reason is masked', () => {
+  assertEq(mcpHealth.classifyHealth({ status: 'degraded', problems: ['x'] }).state, 'unreachable', 'no checks: capture and search are not known to work');
+  assertEq(mcpHealth.classifyHealth({ status: 'degraded', checks: { database: 'ok' }, problems: ['x'] }).state, 'unreachable', 'embedding_model missing');
+  const masked = mcpHealth.classifyHealth({ ...DEGRADED_RERANK, problems: ['rerank failed: api_key=sk-abcdef123456'] });
+  assertEq(masked.state, 'degraded');
+  assert(!masked.reason.includes('sk-abcdef123456') && masked.reason.includes('[REDACTED]'), masked.reason);
+});
+
+test('brain-status.run: degraded is said once per session as degraded with the reason, again only when the state or reason changes, and anew after the record is reset', async () => {
+  const base = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-bstatus-once-'));
+  const bs = require('./brain-status.js');
+  let answer = { mode: 'mcp-memory', connected: true, state: 'degraded', project: 'p', backend: 'mcp-memory', details: { reason: 'rerank failed: download do modelo falhou' } };
+  const probe = async () => answer;
+  const ev = { session_id: 'sess-once-1', cwd: base };
+  try {
+    const first = await bs.run(ev, { probe, base });
+    assertEq(first, '[BRAIN-STATUS] mcp-memory degraded: rerank failed: download do modelo falhou (busca e captura funcionando)');
+    assert(!/unreachable|falls back/.test(first), first);
+    assertEq(await bs.run(ev, { probe, base }), null, 'same state and reason on the next prompt: silent');
+    assertEq(await bs.run(ev, { probe, base }), null, 'and on the one after');
+    const other = await bs.run({ ...ev, session_id: 'sess-once-2' }, { probe, base });
+    assert(other && other.includes('degraded'), 'another session hears it once too');
+    answer = { ...answer, details: { reason: 'rerank failed: timeout' } };
+    assert((await bs.run(ev, { probe, base })).includes('rerank failed: timeout'), 'a new reason is said');
+    answer = { mode: 'mcp-memory', connected: false, state: 'unreachable', project: 'p', backend: 'mcp-memory', details: { reason: 'tcp-closed' } };
+    assert(/unreachable/.test(await bs.run(ev, { probe, base })), 'a new state is said');
+    assertEq(await bs.run(ev, { probe, base }), null, 'unreachable is not repeated either');
+    answer = { mode: 'mcp-memory', connected: true, state: 'ok', project: 'p', backend: 'mcp-memory', details: {} };
+    assertEq(await bs.run(ev, { probe, base }), null, 'healthy: silent');
+    require('./lib/glob-injected.js').reset('sess-once-1', { base });
+    answer = { mode: 'mcp-memory', connected: true, state: 'degraded', project: 'p', backend: 'mcp-memory', details: { reason: 'rerank failed: download do modelo falhou' } };
+    assert((await bs.run(ev, { probe, base })).includes('degraded'), 'after compact or /clear wiped the context, said again');
+  } finally { fs.rmSync(base, { recursive: true, force: true }); }
+});
+
 // ─── decision-detect (regex extractors + heuristic) ─────────────────────────
 const dd = require('./decision-detect.js');
 
@@ -32503,7 +32586,9 @@ test('boss-summary.summarizeBoss: 30-day savings like the Curation panel, per-se
   assertEq(out.tokenGuard.exactTokens, bossTokens(52000));
   assertEq(out.tokenGuard.bySession, { sA: bossTokens(44000) }, 'only sessions of the last day, exact savings');
   assertEq(out.value, { days: 30, lessons: 1, cited: 1, injected: 0 });
-  assertEq(out.brain, { connected: false, mode: 'mcp-memory', backend: 'mcp-memory', latencyMs: 0, reason: 'health-bad' });
+  assertEq(out.brain, { connected: false, state: 'unreachable', mode: 'mcp-memory', backend: 'mcp-memory', latencyMs: 0, reason: 'health-bad' });
+  const degraded = bs.summarizeBoss([], { mode: 'mcp-memory', connected: true, state: 'degraded', backend: 'mcp-memory', latency: 4, details: { reason: 'rerank failed: download do modelo falhou' } }, { now });
+  assertEq(degraded.brain, { connected: true, state: 'degraded', mode: 'mcp-memory', backend: 'mcp-memory', latencyMs: 4, reason: 'rerank failed' });
   assert(!/secret|jar|127\.0\.0\.1|Users/.test(JSON.stringify(out)), `no path, URL or payload of the probe travels: ${JSON.stringify(out.brain)}`);
   const failed = bs.summarizeBoss([], null, { now, healthError: 'boom' });
   assertEq(failed.brain.connected, false);

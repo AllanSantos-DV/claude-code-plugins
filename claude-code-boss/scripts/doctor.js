@@ -620,6 +620,9 @@ function checkSetup(ctx) {
   if (m.backend === 'mcp-memory' && m.connected === false) {
     out.push({ ...base, id: 'setup-memory', label: 'Memory backend', status: 'warn', detail: `mcp-memory not connected (${m.reason || 'no reason given'})`,
       fix: 'Start the mcp-memory server (or switch the backend back to local in the dashboard); lessons and the code graph need it.' });
+  } else if (m.backend === 'mcp-memory' && m.state === 'degraded') {
+    out.push({ ...base, id: 'setup-memory', label: 'Memory backend', status: 'warn', detail: `mcp-memory degraded: ${m.reason || 'no reason reported'} (search and capture working)`,
+      fix: 'Optional: fix the part mcp-memory reports as failing; capture and search keep working meanwhile.' });
   } else {
     out.push({ ...base, id: 'setup-memory', label: 'Memory backend', status: 'ok', detail: m.backend === 'mcp-memory' ? 'mcp-memory connected' : 'local SQLite (inside the plugin)', fix: '' });
   }

@@ -5,12 +5,15 @@
  * Used by both dashboard.js (GET /api/brain/health) and brain-status.js
  * to prevent logic drift. Pure function: no side effects, no module-level state.
  *
- * Returns: { mode, connected, project, backend, details, latency }
+ * Returns: { mode, connected, state, project, backend, details, latency }, where state is
+ * 'ok', 'degraded' (reachable and working with a limitation; connected stays true and
+ * details.reason says which) or 'unreachable' (connected false).
  */
 const fs = require('fs');
 const path = require('path');
 const net = require('net');
 const { dataDir } = require('../../engine/lib/data-dir.js');
+const { redact } = require('../../engine/lib/redact.js');
 
 const HEALTH_TIMEOUT_MS = 2000;
 const HTTP_TIMEOUT_MS = 3000;
@@ -53,6 +56,25 @@ function httpGetJson(url, timeoutMs) {
   });
 }
 
+const ESSENTIAL_CHECKS = ['database', 'embedding_model'];
+
+/**
+ * Classify one parsed /health answer. mcp-memory answers {status:'healthy'} (>= 2.44) or {ok:true}
+ * (older); 3.x answers {status:'degraded', checks, problems[]} when an optional part (rerank) fails
+ * while the database and the embedding model, which capture and search need, still work.
+ * @param {object} json
+ * @returns {{state:'ok'}|{state:'degraded'|'unreachable', reason:string}}
+ */
+function classifyHealth(json) {
+  if (json && (json.ok === true || json.status === 'healthy')) return { state: 'ok' };
+  const checks = (json && json.checks) || {};
+  if (json && json.status === 'degraded' && ESSENTIAL_CHECKS.every((c) => checks[c] === 'ok')) {
+    const problems = Array.isArray(json.problems) ? json.problems.map(String).filter(Boolean) : [];
+    return { state: 'degraded', reason: redact(problems.join('; ').slice(0, 200)).text || 'no reason reported' };
+  }
+  return { state: 'unreachable', reason: `health-bad:${redact(JSON.stringify(json)).text.slice(0, 120)}` };
+}
+
 async function probeHealth(config, opts = {}) {
   const backendType = (config && config.backend && config.backend.type) || 'local';
   const mcpCfg = (config && config.backend && config.backend.mcpMemory) || {};
@@ -75,10 +97,8 @@ async function probeHealth(config, opts = {}) {
           if (!Number.isInteger(port) || !(await probeTcpPort(port))) return { ok: false, reason: 'tcp-closed' };
           const result = await httpGetJson(url + '/health', HTTP_TIMEOUT_MS);
           if (!result || !result.json) return { ok: false, reason: 'health-timeout-or-unparseable' };
-          // mcp-memory >= 2.44 answers /health with {status:'healthy'} (no `ok`);
-          // older builds answer {ok:true}. Accept both, nothing else.
-          if (result.json.ok === true || result.json.status === 'healthy') return { ok: true, latency: result.latency };
-          return { ok: false, reason: `health-bad:${JSON.stringify(result.json).slice(0, 120)}` };
+          const c = classifyHealth(result.json);
+          return c.state === 'unreachable' ? { ok: false, reason: c.reason } : { ok: true, latency: result.latency, state: c.state, reason: c.reason };
         } catch (err) {
           // probeTcpPort/httpGetJson resolve network failures themselves — reaching
           // here means something upstream broke (URL edge case). Surface it.
@@ -95,18 +115,21 @@ async function probeHealth(config, opts = {}) {
         daemonUrl = resolveUrl() || daemonUrl;
         r = await attempt(daemonUrl);
       }
-      if (r.ok) return { mode: 'mcp-memory', connected: true, project, backend: 'mcp-memory', details: { transport, serverUrl: daemonUrl }, latency: r.latency };
-      return { mode: 'mcp-memory', connected: false, project, backend: 'mcp-memory', details: { transport, serverUrl: daemonUrl, reason: r.reason }, latency: 0 };
+      if (r.ok) {
+        const details = r.state === 'degraded' ? { transport, serverUrl: daemonUrl, reason: r.reason } : { transport, serverUrl: daemonUrl };
+        return { mode: 'mcp-memory', connected: true, state: r.state, project, backend: 'mcp-memory', details, latency: r.latency };
+      }
+      return { mode: 'mcp-memory', connected: false, state: 'unreachable', project, backend: 'mcp-memory', details: { transport, serverUrl: daemonUrl, reason: r.reason }, latency: 0 };
     }
 
     const jarPath = mcpCfg.jarPath || path.join(dataDir(), 'mcp', 'mcp-memory-server.jar');
     const jarExists = fs.existsSync(jarPath);
-    return { mode: 'mcp-memory', connected: false, project, backend: 'mcp-memory', details: { transport, jarExists, jarPath }, latency: 0 };
+    return { mode: 'mcp-memory', connected: false, state: 'unreachable', project, backend: 'mcp-memory', details: { transport, jarExists, jarPath }, latency: 0 };
   }
 
   const dbPath = path.join(dataDir(), 'brain', project, 'brain.db');
   const exists = fs.existsSync(dbPath);
-  return { mode: 'local', connected: true, project, backend: 'sqlite', details: { dbPath, exists }, latency: 0 };
+  return { mode: 'local', connected: true, state: 'ok', project, backend: 'sqlite', details: { dbPath, exists }, latency: 0 };
 }
 
-module.exports = { probeHealth, probeTcpPort, httpGetJson, _derivePort };
+module.exports = { probeHealth, classifyHealth, probeTcpPort, httpGetJson, _derivePort };

@@ -3,7 +3,7 @@
  * brain-status.js — Reports the real backend integration status.
  *
  * Uses mcp-health.js (single source of truth) for probing.
- * Output (JSON): { mode, connected, project, backend, details, latency }
+ * Output (JSON): { mode, connected, state, project, backend, details, latency }
  */
 'use strict';
 
@@ -35,19 +35,24 @@ async function main(cwd = process.cwd()) {
  * Pure detector entry point for `user-prompt-submit-dispatcher.js` — NOT the
  * same as `main()` above (which is the raw-status CLI used by the
  * `brain-status` skill and manual/dashboard use, unchanged). Returns an
- * advisory string only when the mcp-memory backend is unreachable (`local`
- * is always `connected: true` by design — see mcp-health.js — so it never
- * warrants a nudge here); `null` when healthy/local, so most turns stay
- * silent instead of repeating the raw report every prompt.
+ * advisory string when the mcp-memory backend is degraded or unreachable
+ * (`local` is always ok by design — see mcp-health.js); `null` when healthy.
+ * The advisory stays in the context until the next compaction or /clear, so it
+ * is said once per session for each (state, reason) and again only when that changes.
  * @param {object} event
+ * @param {{probe?: Function, base?: string}} [deps] probe and once-per-session store root, for tests
  * @returns {Promise<string|null>}
  */
-async function run(event) {
+async function run(event, { probe = probeHealth, base } = {}) {
   try {
     const id = statusProject((event && event.cwd) || process.cwd());
     const config = loadBrainConfig();
-    const status = await probeHealth(config, id ? { project: id } : {});
-    if (status.connected) return null;
+    const status = await probe(config, id ? { project: id } : {});
+    if (status.connected && status.state !== 'degraded') return null;
+    const reason = (status.details && status.details.reason) || '';
+    const signature = `notice:brain-status:${status.state || 'unreachable'}:${reason}`;
+    if (!require('./lib/glob-injected.js').takeFresh(event && event.session_id, [{ id: signature }], { base }).length) return null;
+    if (status.state === 'degraded') return `[BRAIN-STATUS] mcp-memory degraded: ${reason} (busca e captura funcionando)`;
     const detail = status.details ? JSON.stringify(status.details) : '';
     return `[BRAIN-STATUS] mcp-memory backend unreachable (project: ${status.project}) ${detail}. ` +
       'Check the mcp-memory daemon is running; falls back to local behavior may be degraded until it reconnects.';
