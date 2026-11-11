@@ -3693,6 +3693,65 @@ test('dashboard scanServerKb: a project id the server refuses ("project_id igual
   } finally { fs.rmSync(dataDir, { recursive: true, force: true }); }
 });
 
+function runDashboardChild(body) {
+  const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-dash-child-'));
+  const script = `const assert = require('assert'); const dash = require(process.argv[1] + '/dashboard.js'); (async () => { ${body}\nconsole.log('OK'); })().catch((e) => { console.error(e.stack); process.exit(1); });`;
+  try {
+    const r = require('child_process').spawnSync(process.execPath, ['-e', script, __dirname], { env: { ...process.env, CLAUDE_PLUGIN_DATA: dataDir }, encoding: 'utf8', windowsHide: true, timeout: 20000 });
+    assert(r.status === 0 && /OK/.test(r.stdout), `child failed (status ${r.status}): ${r.stderr || r.stdout}`);
+  } finally { fs.rmSync(dataDir, { recursive: true, force: true }); }
+}
+
+test('dashboard scanServerKb: each project is counted with a one-document page and pagination.total, several at once, and the list stays sorted', () => {
+  runDashboardChild(`
+    const totals = { a: 5, b: 9, c: 1, d: 0, e: 7, f: 2, g: 3, h: 4, i: 6, j: 8 };
+    let inflight = 0, peak = 0; const limits = new Set();
+    const client = { callTool: async (name, args) => {
+      if (name === 'list_projects') return { text: JSON.stringify({ data: Object.keys(totals) }), raw: { content: [] } };
+      limits.add(args.limit); inflight++; peak = Math.max(peak, inflight);
+      await new Promise((r) => setTimeout(r, 15)); inflight--;
+      return { text: JSON.stringify({ documents: [{ id: 'x' }], pagination: { total: totals[args.metadata.project_id] } }), raw: { content: [] } };
+    } };
+    const got = await dash.scanServerKb(client, []);
+    assert.deepStrictEqual(got.map((p) => p.project + ':' + p.entries), ['b:9', 'j:8', 'e:7', 'i:6', 'a:5', 'h:4', 'g:3', 'f:2', 'c:1']);
+    assert.deepStrictEqual([...limits], [1], 'only the page size 1 is asked');
+    assert(peak > 1 && peak <= 8, 'projects are counted concurrently within the cap: peak ' + peak);
+  `);
+});
+
+test('dashboard quickKbList: a slow count answers the bare ids at once and keeps counting; a fast one answers the counts; a failure is thrown', () => {
+  runDashboardChild(`
+    const slow = () => new Promise((r) => setTimeout(() => r([{ project: 'a', entries: 2 }]), 300));
+    const ids = async () => ['a', 'b'];
+    assert.deepStrictEqual(await dash.quickKbList(slow, ids, 20), [{ project: 'a', entries: null }, { project: 'b', entries: null }]);
+    assert.deepStrictEqual(await dash.quickKbList(slow, ids, 2000), [{ project: 'a', entries: 2 }]);
+    await assert.rejects(dash.quickKbList(async () => { throw new Error('server down'); }, ids, 2000), /server down/);
+  `);
+});
+
+test('dashboard brainBackendStatus: the first status after boot already reports the connection, not "disconnected"', () => {
+  runDashboardChild(`
+    const http = require('http');
+    const daemon = http.createServer((req, res) => {
+      if (req.method === 'GET') { res.writeHead(200, { 'Content-Type': 'application/json' }); return res.end(JSON.stringify({ status: 'healthy', version: '9.9.9' })); }
+      if (req.method === 'DELETE') { res.writeHead(200); return res.end(); }
+      let b = ''; req.on('data', (c) => (b += c)); req.on('end', () => {
+        const msg = JSON.parse(b || '{}');
+        if (msg.method === 'initialize') { res.writeHead(200, { 'Content-Type': 'application/json', 'Mcp-Session-Id': 's1', 'MCP-Protocol-Version': '2025-06-18' }); return res.end(JSON.stringify({ jsonrpc: '2.0', id: msg.id, result: { protocolVersion: '2025-06-18', serverInfo: { name: 'fake', version: '9.9.9' }, capabilities: {} } })); }
+        if (msg.method === 'tools/list') { res.writeHead(200, { 'Content-Type': 'application/json' }); return res.end(JSON.stringify({ jsonrpc: '2.0', id: msg.id, result: { tools: [{ name: 'add_document' }] } })); }
+        res.writeHead(204); res.end();
+      });
+    });
+    await new Promise((r) => daemon.listen(0, '127.0.0.1', r));
+    const backend = require(process.argv[1] + '/../engine/brain-backend.js');
+    backend.__testHooks._injectConfig({ backend: { type: 'mcp-memory', mcpMemory: { transport: 'http', serverUrl: 'http://127.0.0.1:' + daemon.address().port } } });
+    const status = await dash.brainBackendStatus();
+    assert.strictEqual(status.mode, 'mcp-memory');
+    assert.strictEqual(status.connected, true);
+    await backend.close(); daemon.close();
+  `);
+});
+
 test('dashboard Home: o aviso de projetos recusados mostra id, pasta e motivo, com texto copiavel, e some quando nao ha nada a dizer', () => {
   const html = fs.readFileSync(path.join(__dirname, '..', 'dashboard', 'index.html'), 'utf8').replace(/\r\n/g, '\n'); // a CRLF checkout (autocrlf) has no bare \n}\n
   const src = (n) => { const i = html.indexOf('function ' + n); return html.slice(i, html.indexOf('\n}\n', i) + 3); };
@@ -24633,7 +24692,7 @@ test('dashboard server mode (Q58): status, project list, listing and skills pane
   const dash = fs.readFileSync(path.join(SCRIPTS, 'dashboard.js'), 'utf8');
   const body = (name, next) => dash.slice(dash.indexOf(name), dash.indexOf(next, dash.indexOf(name)));
   assert(/serverMode\(\)[\s\S]*serverKbSummary\(\)/.test(body('async function getStatusAsync', 'function getBrainBackend')), 'status counts from the server');
-  assert(/serverMode\(\)[\s\S]*serverKbSummary\(\)/.test(body('async function getBrainProjects', 'async function searchBrain')), 'project list from the server');
+  assert(/serverMode\(\)[\s\S]*quickKbList\(serverKbSummary, serverProjectIds/.test(body('async function getBrainProjects', 'async function searchBrain')), 'project list from the server');
   assert(/serverMode\(\)[\s\S]*listDocuments\(\{ type, projectId: project \}\)/.test(body('async function listBrainEntries', 'async function moveBrainEntryScope')), 'listing scoped to the project on the server');
   assert(/serverMode\(\)[\s\S]*serverKbSummary\(\)/.test(body('async function getSkillPromotionConfig', 'async function scanSkillCandidates')), 'skills panel offers the server project ids');
   const b = require('../engine/brain-backend.js');

@@ -3555,12 +3555,19 @@ async function loadBrain() {
 
   loadBackups();
   // Load KB projects
+  await refreshBrainProjects(0);
+}
+
+async function refreshBrainProjects(attempt) {
   try {
     state.brainProjects = await api('GET', '/api/brain/projects');
     const sel = document.getElementById('brain-project');
+    const chosen = sel.value;
     sel.innerHTML = '<option value="">Select project...</option>' +
-      state.brainProjects.map(p => `<option value="${escapeHtml(p.project)}">${escapeHtml(p.project)} (${p.entries} entries)</option>`).join('');
+      state.brainProjects.map(p => `<option value="${escapeHtml(p.project)}">${escapeHtml(p.project)} (${p.entries === null ? 'counting…' : p.entries + ' entries'})</option>`).join('');
+    sel.value = chosen;
     loadBrainStats();
+    if (state.brainProjects.some(p => p.entries === null) && attempt < 24) setTimeout(() => refreshBrainProjects(attempt + 1), 5000);
   } catch {}
 }
 
@@ -3747,7 +3754,7 @@ function loadBrainStats() {
   const el = document.getElementById('brain-stats');
   if (!project) { el.innerHTML = ''; return; }
   const p = state.brainProjects.find(x => x.project === project);
-  el.innerHTML = p ? `<p class="text-muted">${p.entries} entries | ${typeof p.dbSize === 'number' ? (p.dbSize / 1024).toFixed(1) + ' KB' : 'on the memory server'}</p>` : '';
+  el.innerHTML = p ? `<p class="text-muted">${p.entries === null ? 'counting…' : p.entries + ' entries'} | ${typeof p.dbSize === 'number' ? (p.dbSize / 1024).toFixed(1) + ' KB' : 'on the memory server'}</p>` : '';
 }
 
 async function searchBrain() {

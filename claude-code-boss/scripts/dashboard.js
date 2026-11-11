@@ -334,9 +334,7 @@ async function getStatusAsync(req, res) {
 
   let backendMode = 'local', backendConnected = false;
   try {
-    const backend = require('../engine/brain-backend.js');
-    backend.init({ project: 'default' });
-    const s = backend.getStatus();
+    const s = await brainBackendStatus();
     backendMode = s.mode || 'local';
     backendConnected = s.connected !== undefined ? s.connected : true;
   } catch (err) { console.error(`[DASHBOARD] Brain backend status error: ${err.message}`); }
@@ -373,6 +371,8 @@ let _serverKbIssues = [];
 // Stale-while-revalidate: a scan takes seconds on a big server, so a count up to KB_STALE_MAX_MS old is answered at once while one
 // refresh runs in the background; a failing refresh is logged and, once the count is older than that, thrown (never hidden for good).
 const KB_FRESH_MS = 60000;
+const KB_SCAN_CONCURRENCY = 8;
+const KB_QUICK_MS = 3000;
 const KB_STALE_MAX_MS = 600000;
 async function serverKbSummary() {
   const age = _serverKbCache ? Date.now() - _serverKbCache.at : Infinity;
@@ -396,26 +396,75 @@ class ServerToolRefusal extends Error {}
  * panel can name it on screen, not only in the Logs tab.
  */
 async function scanServerKb(client, issues = []) {
-  const parse = (name, r) => {
+  const parseData = (name, r) => {
     const text = (r && r.text) || '';
     if (r && r.raw && r.raw.isError) throw new ServerToolRefusal(`${name} refused by the memory server: ${text.slice(0, 300)}`);
-    let d;
-    try { d = JSON.parse(text || '{}'); } catch (err) { throw new ServerToolRefusal(`${name} answered non-JSON (${err.message}): ${text.slice(0, 300)}`); }
-    return Array.isArray(d) ? d : (d.data || d.projects || d.documents || d.results || d.items || []);
+    try { return JSON.parse(text || '{}'); } catch (err) { throw new ServerToolRefusal(`${name} answered non-JSON (${err.message}): ${text.slice(0, 300)}`); }
+  };
+  const listOf = (d) => (Array.isArray(d) ? d : (d.data || d.projects || d.documents || d.results || d.items || []));
+  const parse = (name, r) => listOf(parseData(name, r));
+  const documentCount = (r) => {
+    const d = parseData('list_documents', r);
+    const total = d && !Array.isArray(d) && d.pagination ? d.pagination.total : undefined;
+    return typeof total === 'number' ? total : listOf(d).length;
   };
   const ids = parse('list_projects', await client.callTool('list_projects', {})).filter((p) => typeof p === 'string' && (p === '__user__' || !p.startsWith('__')));
   const projects = [];
-  for (const project of ids) {
-    let entries;
-    try { entries = parse('list_documents', await client.callTool('list_documents', { metadata: { project_id: project } })).length; } catch (err) {
-      if (!(err instanceof ServerToolRefusal)) throw err;
-      console.error(`[DASHBOARD] project "${project}" left out of the memory list: ${err.message}`);
-      issues.push({ project, folder: /^[A-Za-z]:[\\/]|^[\\/~]/.test(project) ? project : null, reason: err.message });
-      continue;
+  let next = 0;
+  const worker = async () => {
+    while (next < ids.length) {
+      const project = ids[next++];
+      let entries;
+      try { entries = documentCount(await client.callTool('list_documents', { metadata: { project_id: project }, limit: 1, offset: 0 })); } catch (err) {
+        if (!(err instanceof ServerToolRefusal)) throw err;
+        console.error(`[DASHBOARD] project "${project}" left out of the memory list: ${err.message}`);
+        issues.push({ project, folder: /^[A-Za-z]:[\\/]|^[\\/~]/.test(project) ? project : null, reason: err.message });
+        continue;
+      }
+      if (entries > 0) projects.push({ project, entries });
     }
-    if (entries > 0) projects.push({ project, entries });
-  }
-  return projects.sort((a, b) => b.entries - a.entries);
+  };
+  await Promise.all(Array.from({ length: Math.min(KB_SCAN_CONCURRENCY, ids.length) }, worker));
+  return projects.sort((a, b) => b.entries - a.entries || a.project.localeCompare(b.project));
+}
+
+/**
+ * A client of the memory server on its own connection, so a scan never shares the backend singleton.
+ * @returns {object} an unconnected McpClient for the configured mcp-memory server
+ */
+function newServerKbClient() {
+  const mcp = ((require('../engine/lib/brain-config.js').load().backend || {}).mcpMemory) || {};
+  const McpClient = require('../engine/mcp-client.js');
+  return new McpClient({ transport: 'http', serverUrl: mcp.serverUrl || '', runDir: mcp.runDir || '', projectId: 'default', timeout: 30000, restartMode: 'background' });
+}
+
+/** The project ids on the server without their counts: one call, answered at once even when the counting scan is slow. */
+async function serverProjectIds() {
+  const client = newServerKbClient();
+  try {
+    await client.connect();
+    const r = await client.callTool('list_projects', {});
+    if (r && r.raw && r.raw.isError) throw new Error(`list_projects refused by the memory server: ${String(r.text || '').slice(0, 300)}`);
+    const d = JSON.parse((r && r.text) || '{}');
+    return (Array.isArray(d) ? d : (d.data || d.projects || [])).filter((p) => typeof p === 'string' && (p === '__user__' || !p.startsWith('__')));
+  } finally { client.close(); }
+}
+
+/**
+ * The project list for the selector: the counted list when the scan answers within `quickMs` (or is cached),
+ * else the bare ids with `entries: null` while the scan keeps running for the next call.
+ * @param {() => Promise<Array<{project: string, entries: number}>>} scan
+ * @param {() => Promise<string[]>} ids
+ * @param {number} quickMs
+ */
+async function quickKbList(scan, ids, quickMs) {
+  const pending = scan();
+  let timer;
+  const early = await Promise.race([pending.then((projects) => ({ projects })), new Promise((resolve) => { timer = setTimeout(() => resolve(null), quickMs); })]);
+  clearTimeout(timer);
+  if (early) return early.projects;
+  pending.catch((err) => console.error(`[DASHBOARD] counting the server projects failed: ${err.message}`));
+  return (await ids()).map((project) => ({ project, entries: null }));
 }
 
 async function refreshServerKb() {
@@ -425,9 +474,7 @@ async function refreshServerKb() {
   // never blocks the Home view for the launcher's boot (pre-release audit 3.1.1).
   if (!_serverKbInflight) {
     _serverKbInflight = (async () => {
-      const mcp = ((require('../engine/lib/brain-config.js').load().backend || {}).mcpMemory) || {};
-      const McpClient = require('../engine/mcp-client.js');
-      const client = new McpClient({ transport: 'http', serverUrl: mcp.serverUrl || '', runDir: mcp.runDir || '', projectId: 'default', timeout: 30000, restartMode: 'background' });
+      const client = newServerKbClient();
       try {
         await client.connect();
         const issues = [];
@@ -449,12 +496,16 @@ async function refreshServerKb() {
 
 // ─── API: Brain Backend Status ──────────────────────────────────────
 
-function getBrainBackend(req, res) {
+/** The backend status read after the connection attempt finished, so the first call after boot does not report "disconnected". */
+async function brainBackendStatus() {
+  const backend = require('../engine/brain-backend.js');
+  await backend.init({ project: 'default' });
+  return backend.getStatus();
+}
+
+async function getBrainBackend(req, res) {
   try {
-    const backend = require('../engine/brain-backend.js');
-    backend.init({ project: 'default' });
-    const status = backend.getStatus();
-    json(res, status);
+    json(res, await brainBackendStatus());
   } catch (err) {
     console.error(`[DASHBOARD] Brain backend unavailable: ${err.message}`);
     json(res, { mode: 'local', error: 'brain-backend not available', fallback: true });
@@ -615,7 +666,7 @@ function listConfigDomains(req, res) {
 
 async function getBrainProjects(req, res) {
   if (serverMode()) {
-    try { return json(res, await serverKbSummary()); } catch (err) { return fail(res, `memory server unreachable: ${err.message}`, 502); }
+    try { return json(res, await quickKbList(serverKbSummary, serverProjectIds, KB_QUICK_MS)); } catch (err) { return fail(res, `memory server unreachable: ${err.message}`, 502); }
   }
   const projects = [];
   const brainBaseDir = path.join(DATA_DIR, 'brain');
@@ -2739,4 +2790,4 @@ if (require.main === module) startDashboardServer();
 // exported so a test can call it with a fake res ({writeHead,end}) and assert
 // on the exact JSON it serializes — otherwise a bug in byokSafe (e.g. `x || null`
 // silently turning a valid `0` into `null`) would never be caught by any test.
-module.exports = { getCurationProjects, getCurationShells, deleteCurationShell, getValueSummary, getOutcomeSummary, getTuningRecommendations, _metricsMemo, getDoctorSwitchedOff, postDoctorUndo, getDoctorConfig, saveDoctorConfig, writeRouterOverride, resolveRouterFlags, getRouterConfig, fetchByokModelIds, getByokModels, opensWithField, postPluginUpdate, getProjectMarker, saveProjectMarker, saveCompactionConfig, getPhaseRestartMeasure, scanServerKb };
+module.exports = { getCurationProjects, getCurationShells, deleteCurationShell, getValueSummary, getOutcomeSummary, getTuningRecommendations, _metricsMemo, getDoctorSwitchedOff, postDoctorUndo, getDoctorConfig, saveDoctorConfig, writeRouterOverride, resolveRouterFlags, getRouterConfig, fetchByokModelIds, getByokModels, opensWithField, postPluginUpdate, getProjectMarker, saveProjectMarker, saveCompactionConfig, getPhaseRestartMeasure, scanServerKb, quickKbList, brainBackendStatus };
