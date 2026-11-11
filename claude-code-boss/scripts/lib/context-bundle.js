@@ -65,6 +65,29 @@ function parseSmartHits(text) {
   return out;
 }
 
+/**
+ * The JSON value a tool answer starts with, or null when it does not start with one. Smart Tool appends notes for the
+ * agent after the JSON as further text blocks, so the joined text is not JSON as a whole.
+ */
+function leadingJson(text) {
+  const s = String(text).trimStart();
+  if (s[0] !== '{' && s[0] !== '[') return null;
+  let depth = 0;
+  let inString = false;
+  let escaped = false;
+  for (let i = 0; i < s.length; i++) {
+    const c = s[i];
+    if (inString) {
+      if (escaped) escaped = false;
+      else if (c === '\\') escaped = true;
+      else if (c === '"') inString = false;
+    } else if (c === '"') inString = true;
+    else if (c === '{' || c === '[') depth++;
+    else if ((c === '}' || c === ']') && --depth === 0) return JSON.parse(s.slice(0, i + 1));
+  }
+  throw new Error(`unterminated JSON in the tool answer: ${s.slice(0, 120)}`);
+}
+
 /** Smart Tool search through its HTTP MCP endpoint, polling the background job when the index is still being built. */
 async function smartSearch(theme, root, { url, pollMs = 700, timeoutMs = 240000, call = mcpCallTool, sleep = (ms) => new Promise((r) => setTimeout(r, ms)), limits = DEFAULT_LIMITS } = {}) {
   if (!url) throw new Error('Smart Tool URL unknown (set contextBundle.smartToolUrl, or add the smart-tool MCP server)');
@@ -72,14 +95,15 @@ async function smartSearch(theme, root, { url, pollMs = 700, timeoutMs = 240000,
     project_root: root, query_identifiers: theme, query_comments: theme, group: 'all',
     top_k: { code: limits.codeHits, test: limits.testHits, doc: limits.docHits },
   });
-  let doc = null;
-  try { doc = JSON.parse(first); } catch (err) { void err; /* a direct (non-JSON) answer is already the result text */ }
+  let doc = leadingJson(first);
   if (!doc || typeof doc !== 'object') return parseSmartHits(first);
   const t0 = Date.now();
   while (doc.status === 'pending') {
     if (Date.now() - t0 > timeoutMs) throw new Error(`smart_search still pending after ${Math.round(timeoutMs / 1000)}s (${doc.phase || '?'})`);
     await sleep(pollMs);
-    doc = JSON.parse(await call(url, 'smart_search_result', { job_id: doc.job_id }));
+    const next = await call(url, 'smart_search_result', { job_id: doc.job_id });
+    doc = leadingJson(next);
+    if (!doc) throw new Error(`smart_search_result: not a JSON answer: ${next.slice(0, 120)}`);
   }
   if (doc.status && doc.status !== 'done') throw new Error(`smart_search ${doc.status}: ${doc.message || doc.error || ''}`);
   return parseSmartHits(typeof doc.result === 'string' ? doc.result : JSON.stringify(doc.result || ''));
@@ -91,7 +115,7 @@ async function smartSearch(theme, root, { url, pollMs = 700, timeoutMs = 240000,
  * the nested index, not the root one. A tie goes to the deeper project; no reads → the project dir.
  * @param {{projectDir:string, reads:string[], status:(dir:string)=>Promise<string>}} o
  *   reads: relative to projectDir, forward-slash; status: Smart Tool `project_manage action=status` for a folder
- *   (it fails with "No registered project" for a folder that is not one — any other failure is thrown)
+ *   (the registered project holding the folder, or a failure "No registered project" — any other failure is thrown)
  * @returns {Promise<{root:string, sub:string}>} sub: root relative to projectDir, forward-slash, '' for projectDir itself
  */
 async function registeredRoot({ projectDir, reads = [], status }) {
@@ -99,10 +123,13 @@ async function registeredRoot({ projectDir, reads = [], status }) {
   const lookup = (sub) => {
     const k = sub.toLowerCase();
     if (!memo.has(k)) {
-      memo.set(k, status(path.join(projectDir, sub)).then((text) => {
-        let real = null;
-        try { real = JSON.parse(text).project.root; } catch (err) { void err; /* not the JSON status: keep the folder as asked */ }
-        return path.relative(projectDir, real || path.join(projectDir, sub)).replace(/\\/g, '/');
+      const dir = path.join(projectDir, sub);
+      memo.set(k, status(dir).then((text) => {
+        // Searching a folder registers it as a project of its own, so a guessed root would split the real index.
+        const doc = leadingJson(text);
+        const real = doc && doc.project && doc.project.root;
+        if (!real) throw new Error(`project_manage status for ${dir}: no project root in the answer: ${String(text).slice(0, 120)}`);
+        return path.relative(projectDir, real).replace(/\\/g, '/');
       }, (err) => { if (/No registered project/i.test(err.message)) return null; throw err; }));
     }
     return memo.get(k);
@@ -253,4 +280,4 @@ async function buildBundle({ theme, root, deps = {}, limits = {}, exclude = new 
   return { theme, tokens: estTokens(text), files: [...new Set(kept.map((s) => s.path))], sections: kept, memory, notes, text };
 }
 
-module.exports = { buildBundle, smartSearch, registeredRoot, prefixHits, parseSmartHits, readExcerpt, findMapSections, keywordsOf, mcpCallTool, DEFAULT_LIMITS };
+module.exports = { buildBundle, smartSearch, registeredRoot, prefixHits, parseSmartHits, leadingJson, readExcerpt, findMapSections, keywordsOf, mcpCallTool, DEFAULT_LIMITS };

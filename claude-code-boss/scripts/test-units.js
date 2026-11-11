@@ -20126,6 +20126,28 @@ test('context-bundle.registeredRoot: o projeto registrado mais fundo que contem 
   assertEq(cb.prefixHits({ code: [{ path: 'scripts\\a.js', start: 1 }], doc: [] }, 'claude-code-boss'), { code: [{ path: 'claude-code-boss/scripts/a.js', start: 1 }], doc: [] });
 });
 
+test('context-bundle: a Smart Tool answer with notes after the JSON resolves to the registered project, never to the folder asked (searching that folder registers a stray project); an answer without a root fails loud', async () => {
+  const cb = require('./lib/context-bundle.js');
+  const P = path.join(os.tmpdir(), 'ccb-rr-note');
+  const note = '\nProject has 23 errors in its agent setup (hook_unknown_server). This note is for you; fix one only when the user asks.';
+  const status = async (dir) => `${JSON.stringify({ project: { root: path.join(P, 'claude-code-boss'), name: 'a "quoted" } name' }, resolved_from: dir }, null, 2)}${note}`;
+  const r = await cb.registeredRoot({ projectDir: P, reads: ['claude-code-boss/engine/lib/log-rotate.js', 'claude-code-boss/scripts/runtime-sweep.js'], status });
+  assertEq(r.sub, 'claude-code-boss', 'the enclosing registered project, not claude-code-boss/engine/lib');
+  let msg = null;
+  try { await cb.registeredRoot({ projectDir: P, reads: ['x/a.js'], status: async () => `Indexing in progress${note}` }); } catch (err) { msg = err.message; }
+  assert(/no project root in the answer/.test(msg || ''), `a status without a project root throws instead of guessing the folder (got: ${msg})`);
+  const calls = [];
+  const call = async (_u, name) => {
+    calls.push(name);
+    if (name === 'smart_search') return `${JSON.stringify({ status: 'pending', job_id: 'j1' })}${note}`;
+    return `${JSON.stringify({ status: 'done', result: 'code:\n  - path: scripts/a.js\n    start: 1\n    end: 9\n    score: 0.9' })}${note}`;
+  };
+  const hits = await cb.smartSearch('theme', P, { url: 'http://x/mcp', call, sleep: async () => {} });
+  assertEq(calls, ['smart_search', 'smart_search_result'], 'a pending job with a note is still polled');
+  assert(hits.code.length === 1 && hits.code[0].path === 'scripts/a.js', `the hits of the job (got ${JSON.stringify(hits)})`);
+  assertEq(cb.leadingJson('plain text answer'), null);
+});
+
 test('read-burst hook: num repositorio com projeto aninhado, o bundle busca no projeto registrado dos arquivos lidos (servico achado pelo run file), registra a raiz no diario, e com o servico parado avisa com a origem', async () => {
   const rb = require('./lib/read-burst.js');
   const hook = require('./read-burst-hook.js');

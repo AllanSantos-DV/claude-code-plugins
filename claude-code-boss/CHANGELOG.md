@@ -7,6 +7,7 @@
 - **A rajada de leitura entregue e ainda aberta quando a sessão termina é fechada e medida** (`scripts/session-end.js`, `scripts/lib/read-burst.js` `forget`): o SessionEnd grava quantos dos arquivos lidos depois já estavam no pacote e apaga o estado da sessão, do agente principal e dos subagentes.
 - **O estado da rajada de leitura de uma sessão que terminou sem SessionEnd sai depois de 7 dias** (`scripts/runtime-sweep.js`): a limpeza do início de sessão agora olha a pasta `.runtime/read-burst/`.
 - **A atualização pelo dashboard não imprime mais o aviso de depreciação DEP0190 do Node** (`scripts/lib/plugin-updater.js`): no Windows o `npm install` vai como uma linha só para o shell, sem lista de argumentos; o comando é o mesmo.
+- **A rajada de leitura volta a buscar no projeto certo com o Smart Tool 0.9.71** (`scripts/lib/context-bundle.js`): o Smart Tool passou a anexar avisos depois do JSON da resposta, e a leitura falhava em silêncio e buscava na pasta mais funda dos arquivos lidos, que o Smart Tool então registrava como um projeto à parte (o pacote saía vazio). Agora só o JSON do começo da resposta é lido, e uma resposta sem a raiz do projeto é um erro visível, nunca um palpite.
 
 ## [3.16.0] - 2026-11-10
 
