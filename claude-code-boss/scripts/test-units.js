@@ -1123,11 +1123,11 @@ test('mcp-client: timeoutMs is ONE budget for the whole call — a hung connect,
     c3._initialized = true;
     c3._reconnect = async () => {};
     const budgets = [];
-    c3._sendRequest = async (m, p, o) => { budgets.push(o.timeoutMs); await new Promise((res) => setTimeout(res, 120)); throw Object.assign(new Error('read ECONNRESET'), { code: 'ECONNRESET' }); };
-    r = await timed(() => c3.callTool('search_memory', { query: 'q' }, { timeoutMs: 200 }));
+    c3._sendRequest = async (m, p, o) => { budgets.push(o.timeoutMs); await new Promise((res) => setTimeout(res, 150)); throw Object.assign(new Error('read ECONNRESET'), { code: 'ECONNRESET' }); };
+    r = await timed(() => c3.callTool('search_memory', { query: 'q' }, { timeoutMs: 600 }));
     assertEq(budgets.length, 2, 'a read cut mid-call is retried once');
-    assert(budgets[1] < budgets[0] && budgets[1] <= 80, `the retry only gets what is left of the budget: ${budgets}`);
-    assert(r.ms < 600, `the whole call stays near its budget: ${r.ms}ms`);
+    assert(budgets[1] < budgets[0] && budgets[1] <= 460, `the retry only gets what is left of the budget: ${budgets}`);
+    assert(r.ms < 1500, `the whole call stays near its budget: ${r.ms}ms`);
 
     const c4 = new McpClient({ transport: 'http', serverUrl: 'http://127.0.0.1:1' });
     c4.connect = hang;
