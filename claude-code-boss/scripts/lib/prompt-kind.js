@@ -37,10 +37,20 @@ const NON_LESSON_PATTERNS = [
   /<channel\b[^>]*\bsource="[^"]*whatsapp/i,
 ];
 
+// A spoken request relayed by the orchestrator: the owner is on the line, so the answer's latency is
+// what he waits for. The marker sits in the request header, inside the head of the turn.
+const LIVE_VOICE_HEAD_CHARS = 600;
+const LIVE_VOICE_PATTERN = /\bPEDIDO \d+ \([^)\n]{0,80}origem: LIVE VOICE CALL\b/;
+
+/** @param {string} prompt @returns {boolean} true when the turn is a live voice call request */
+function isLiveVoicePrompt(prompt) {
+  return LIVE_VOICE_PATTERN.test(String(prompt || '').slice(0, LIVE_VOICE_HEAD_CHARS));
+}
+
 /** @param {string} text a user turn @returns {boolean} true when it is an orchestrator turn or a WhatsApp mirror/channel envelope */
 function isOrchestratorOrMirrorTurn(text) {
   const head = String(text || '').slice(0, NON_LESSON_HEAD_CHARS);
   return NON_LESSON_PATTERNS.some(re => re.test(head));
 }
 
-module.exports = { isSyntheticPrompt, SYNTHETIC_PREFIXES, isOrchestratorOrMirrorTurn };
+module.exports = { isSyntheticPrompt, SYNTHETIC_PREFIXES, isOrchestratorOrMirrorTurn, isLiveVoicePrompt };

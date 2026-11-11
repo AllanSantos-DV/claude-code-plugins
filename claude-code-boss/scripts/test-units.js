@@ -25323,6 +25323,44 @@ test('U6: brain_retrieve_context does not run a recall over a task-notification'
   }
 });
 
+const LIVE_VOICE_PROMPT = 'PEDIDO 1631 (tipo: indefinido, origem: LIVE VOICE CALL — the owner is on the line waiting for the spoken answer: register the intent in one short line) quanto custa a sessão de hoje?';
+
+test('prompt-kind.isLiveVoicePrompt: the voice-call request header yes, also inside a relayed envelope; a typed prompt quoting the words, the marker deep in the body, or empty no', () => {
+  const { isLiveVoicePrompt } = require('./lib/prompt-kind.js');
+  assertEq(isLiveVoicePrompt(LIVE_VOICE_PROMPT), true);
+  assertEq(isLiveVoicePrompt('<cross-session-message from-name="x">\n' + LIVE_VOICE_PROMPT), true);
+  assertEq(isLiveVoicePrompt('what does origem: LIVE VOICE CALL mean in the logs?'), false);
+  assertEq(isLiveVoicePrompt('PEDIDO 12 (tipo: codigo, origem: WhatsApp) ' + 'x'.repeat(700) + ' origem: LIVE VOICE CALL'), false);
+  assertEq(isLiveVoicePrompt(''), false);
+  assertEq(isLiveVoicePrompt(undefined), false);
+});
+
+test('brain_retrieve_context: a live voice turn skips the recall (no lookup, empty reply, latency recorded); an ordinary prompt of the same session still recalls', async () => {
+  const url = require('url');
+  const R = process.env.CLAUDE_PLUGIN_ROOT;
+  const mod = await import(url.pathToFileURL(path.join(R, 'servers', 'brain-server', 'lib', 'mcp-server.js')).href);
+  const rc = require(path.join(R, 'engine', 'lib', 'retrieve-core.js'));
+  const hookTools = require('./lib/hook-tools.js');
+  const originalRetrieve = rc.retrieve;
+  let calls = 0;
+  rc.retrieve = async () => { calls++; return { entries: [], capabilities: [] }; };
+  try {
+    const server = mod.createBrainServer({ pluginRoot: R, mode: 'http' });
+    hookTools._resetLatencyStats();
+    const res = await server.handleTool('brain_retrieve_context', { prompt: LIVE_VOICE_PROMPT, cwd: R });
+    assertEq(calls, 0, 'retrieve() never ran for the voice turn');
+    assertEq(res.content[0].text, '');
+    assertEq(hookTools.hookLatencyStats().brain_retrieve_context.calls, 1, 'the skipped turn is still counted in the hook latency');
+    const structured = await server.handleTool('brain_retrieve_context', { prompt: LIVE_VOICE_PROMPT, cwd: R, details: true });
+    assertEq(JSON.parse(structured.content[0].text).reason, 'live-voice');
+    assertEq(calls, 0);
+    await server.handleTool('brain_retrieve_context', { prompt: 'does this route through the worker client', cwd: R });
+    assertEq(calls, 1, 'a typed prompt still recalls');
+  } finally {
+    rc.retrieve = originalRetrieve;
+  }
+});
+
 // ─── Orchestrator request: degraded recall fallback, kinds filter + score/age, orchestrator/mirror turns ──────
 // Local-path retrieve() with the embedder and backend mode faked (no model load), and a fake store.
 // Earlier tests reload modules on purpose, so the top-level `retrieveCore` may be bound to a stale
