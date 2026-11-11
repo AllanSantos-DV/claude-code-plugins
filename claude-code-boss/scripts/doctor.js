@@ -237,6 +237,47 @@ function checkHooksEvents(ctx) {
   return { id: 'hooks-events', label: 'Hook events', status: 'ok', detail: `${events.length} event(s), all standard`, fix: '', critical: false };
 }
 
+/** Skill Manager source whose items this plugin asks about. */
+const SKILL_MANAGER_OWNER = 'claude-code-boss';
+
+const SKILL_MANAGER_WAITING = 'waiting for Skill Manager approval';
+
+/**
+ * Items the Skill Manager holds back are waiting for a decision, not broken: quarantined/held become a warning that
+ * names the item and the approve command; an active item with a newer version waiting stays active and says so.
+ * Not installed, or a source it does not know, adds nothing; a Manager that cannot be asked is reported, never read as clean.
+ */
+function checkSkillManager(ctx) {
+  const base = { id: 'skill-manager', label: 'Skill Manager approvals', critical: false };
+  const q = ctx.skillManager;
+  if (!q || !q.installed) return { ...base, status: 'ok', detail: 'Skill Manager not installed (nothing to approve)', fix: '' };
+  if (q.error) return { ...base, status: 'warn', detail: `could not ask the Skill Manager: ${q.error}`, fix: 'Run `skill-engine status` to see whether it answers.' };
+  if (!q.known) return { ...base, status: 'ok', detail: `Skill Manager does not manage ${q.owner}`, fix: '' };
+  const name = (i) => String(i.id).split('/').pop();
+  const waiting = q.items.filter((i) => i.state === 'quarantined' || i.state === 'held');
+  const updates = q.items.filter((i) => i.state === 'active' && i.pendingUpdate);
+  const gone = q.items.filter((i) => i.state === 'absent');
+  const parts = [];
+  if (waiting.length) parts.push(`${SKILL_MANAGER_WAITING}: ${waiting.map((i) => `${name(i)} (${i.state}${i.reason ? `: ${i.reason}` : ''})`).join(', ')}`);
+  if (updates.length) parts.push(`update held: ${updates.map(name).join(', ')} (the approved copy stays active)`);
+  if (gone.length) parts.push(`missing on disk: ${gone.map(name).join(', ')}`);
+  if (!parts.length) return { ...base, status: 'ok', detail: `${q.items.length} item(s) active`, fix: '' };
+  const approve = [...waiting, ...updates].map((i) => i.approve).filter(Boolean);
+  return {
+    ...base, status: 'warn', detail: parts.join('; '),
+    fix: approve.length ? `Approve with: ${approve.map((a) => (typeof a === 'string' ? a : JSON.stringify(a))).join(' ; ')}` : 'Open the Skill Manager (`skill-engine dashboard --section held`) and approve or decline.',
+  };
+}
+
+/** Asks the Skill Manager about this plugin's source (best effort: a failure is carried into the check, not thrown). */
+function gatherSkillManager() {
+  const sm = require('./lib/skill-manager-query.js');
+  try {
+    const r = sm.queryOwner(SKILL_MANAGER_OWNER);
+    return r ? { installed: true, ...r } : { installed: false };
+  } catch (err) { return { installed: true, owner: SKILL_MANAGER_OWNER, error: err.message }; }
+}
+
 /** Settings env the plugin manages (cache TTL, Tool Search, opt-in window): drift = what the next SessionStart would change. */
 function checkCostTuning(ctx) {
   const base = { id: 'cost-tuning', label: 'Cost settings (settings.json env)', critical: false };
@@ -694,7 +735,7 @@ function checkSetup(ctx) {
   return out;
 }
 
-const CHECKS = [checkNode, checkDaemonNode, checkNativeDeps, checkEnv, checkDataDirs, checkModel, checkDaemon, checkNativeRuntime, checkEmbedderProbe, checkEmbedderGuard, checkRecall, checkCrashes, checkCostTuning, checkBossConfig, checkFixedCost, checkCompactionRate, checkCompactionFloor, checkClaudeCompat, checkSubagentContexts, checkSessionModules, checkAutoCompactPoint, checkSetup, checkHooksEvents];
+const CHECKS = [checkNode, checkDaemonNode, checkNativeDeps, checkEnv, checkDataDirs, checkModel, checkDaemon, checkNativeRuntime, checkEmbedderProbe, checkEmbedderGuard, checkRecall, checkCrashes, checkCostTuning, checkBossConfig, checkFixedCost, checkCompactionRate, checkCompactionFloor, checkClaudeCompat, checkSubagentContexts, checkSessionModules, checkAutoCompactPoint, checkSetup, checkHooksEvents, checkSkillManager];
 
 /** Run every pure check over a ctx snapshot (a check may return one result or a list). */
 function runChecks(ctx) {
@@ -949,6 +990,7 @@ async function gatherContext({ probe = false, audit = false, contextSources: wan
     recall: gatherRecall(data),
     crashes: gatherCrashes(data),
     hooksEvents,
+    skillManager: gatherSkillManager(),
     costTuning,
     bossConfig,
     fixedCost,
@@ -1073,7 +1115,7 @@ if (require.main === module) {
 
 module.exports = {
   runChecks, summarize, applyFixes, FIXERS, checkCostTuning, checkBossConfig, checkFixedCost, checkSetup, bossPluginId, gatherContext, formatReport,
-  checkNode, checkDaemonNode, checkNativeDeps, checkEnv, checkDataDirs, checkModel, checkDaemon, checkNativeRuntime, checkEmbedderProbe, checkEmbedderGuard, checkRecall, checkCrashes, checkHooksEvents, checkCompactionFloor, gatherCompactionFloor, checkAutoCompactPoint, gatherAutoCompact,
+  checkNode, checkDaemonNode, checkNativeDeps, checkEnv, checkDataDirs, checkModel, checkDaemon, checkNativeRuntime, checkEmbedderProbe, checkEmbedderGuard, checkRecall, checkCrashes, checkHooksEvents, checkSkillManager, gatherSkillManager, checkCompactionFloor, gatherCompactionFloor, checkAutoCompactPoint, gatherAutoCompact,
   findDataDirCandidates, probeEmbedder, gatherNative, gatherCrashes, MIN_MSVCP,
   STANDARD_EVENTS, MIN_NODE,
 };

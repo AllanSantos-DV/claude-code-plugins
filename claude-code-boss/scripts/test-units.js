@@ -4893,6 +4893,62 @@ test('embed-worker-client guard: the worker (and the model) is not loaded until 
   }
 });
 
+function fakeSkillManagerHome(answer, { exit = 0 } = {}) {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-sm-'));
+  const cli = path.join(home, 'fake-cli.js');
+  fs.writeFileSync(path.join(home, 'answer.json'), JSON.stringify(answer));
+  fs.writeFileSync(cli, `const a = process.argv.slice(2); require('fs').writeFileSync(__dirname + '/argv.json', JSON.stringify(a)); process.stdout.write(require('fs').readFileSync(__dirname + '/answer.json', 'utf8')); process.exit(${exit});`);
+  fs.writeFileSync(path.join(home, 'cli.json'), JSON.stringify({ cli, node: process.execPath }));
+  return home;
+}
+
+test('doctor skill-manager: quarantined and held items are a WARN that says they wait for approval and shows the approve command, never a FAIL', () => {
+  const doctor = require('./doctor.js');
+  const sm = require('./lib/skill-manager-query.js');
+  const home = fakeSkillManagerHome({ ok: true, owner: 'claude-code-boss', known: true, items: [
+    { id: 'claude-code-boss/skill/curation', kind: 'skill', state: 'quarantined', reason: null, pendingUpdate: null, approve: 'skill-engine scan claude-code-boss' },
+    { id: 'claude-code-boss/skill/recall', kind: 'skill', state: 'held', reason: 'edited locally since skill-engine installed it', pendingUpdate: null, approve: null },
+    { id: 'claude-code-boss/skill/brain', kind: 'skill', state: 'active', reason: null, pendingUpdate: { to: '2' }, approve: 'skill-engine scan claude-code-boss/brain' },
+    { id: 'claude-code-boss/skill/ok', kind: 'skill', state: 'active', reason: null, pendingUpdate: null, approve: null },
+  ] });
+  try {
+    const q = sm.queryOwner('claude-code-boss', { home });
+    assertEq(JSON.parse(fs.readFileSync(path.join(home, 'argv.json'), 'utf8')).join(' '), 'query --owner claude-code-boss --json', 'the CLI is asked for this owner as JSON');
+    const r = doctor.checkSkillManager({ skillManager: { installed: true, ...q } });
+    assertEq(r.status, 'warn');
+    assert(!r.critical, 'never critical');
+    assert(/waiting for Skill Manager approval: curation \(quarantined\), recall \(held: edited locally/.test(r.detail), r.detail);
+    assert(/update held: brain \(the approved copy stays active\)/.test(r.detail), r.detail);
+    assert(!/ok\b.*missing/.test(r.detail) && !/missing on disk/.test(r.detail), 'an active item is not reported');
+    assert(r.fix.includes('skill-engine scan claude-code-boss') && r.fix.includes('skill-engine scan claude-code-boss/brain'), r.fix);
+    const all = doctor.runChecks({ skillManager: { installed: true, ...q } }).find((x) => x.id === 'skill-manager');
+    assert(all && all.status === 'warn', 'runChecks carries the check');
+  } finally { fs.rmSync(home, { recursive: true, force: true }); }
+});
+
+test('doctor skill-manager: all active, a source it does not know, a Manager that is not installed, and one that cannot be asked', () => {
+  const doctor = require('./doctor.js');
+  const sm = require('./lib/skill-manager-query.js');
+  const active = fakeSkillManagerHome({ ok: true, owner: 'claude-code-boss', known: true, items: [{ id: 'claude-code-boss/skill/a', kind: 'skill', state: 'active', reason: null, pendingUpdate: null, approve: null }] });
+  const unknown = fakeSkillManagerHome({ ok: true, owner: 'claude-code-boss', known: false, items: [] });
+  const broken = fakeSkillManagerHome({ nope: true }, { exit: 3 });
+  const empty = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-sm-none-'));
+  try {
+    assertEq(doctor.checkSkillManager({ skillManager: { installed: true, ...sm.queryOwner('claude-code-boss', { home: active }) } }).status, 'ok');
+    const u = doctor.checkSkillManager({ skillManager: { installed: true, ...sm.queryOwner('claude-code-boss', { home: unknown }) } });
+    assert(u.status === 'ok' && /does not manage/.test(u.detail), u.detail);
+    assertEq(sm.queryOwner('claude-code-boss', { home: empty }), null, 'no cli.json means the Manager is not installed');
+    assertEq(doctor.checkSkillManager({ skillManager: { installed: false } }).status, 'ok');
+    let threw = null;
+    try { sm.queryOwner('claude-code-boss', { home: broken }); } catch (err) { threw = err.message; }
+    assert(/exited 3/.test(threw || ''), 'a failing CLI throws: ' + threw);
+    const w = doctor.checkSkillManager({ skillManager: { installed: true, owner: 'claude-code-boss', error: threw } });
+    assert(w.status === 'warn' && /could not ask the Skill Manager/.test(w.detail), 'an unreachable Manager is a warning, never "all good"');
+    const gone = doctor.checkSkillManager({ skillManager: { installed: true, owner: 'x', known: true, items: [{ id: 'x/skill/gone', state: 'absent' }] } });
+    assert(gone.status === 'warn' && /missing on disk: gone/.test(gone.detail), gone.detail);
+  } finally { for (const d of [active, unknown, broken, empty]) fs.rmSync(d, { recursive: true, force: true }); }
+});
+
 test('doctor: the load test runs on the daemon\'s Node and records its outcome; checkEmbedderGuard names a keyword-only override and how to lift it', () => {
   const g = require('../engine/lib/embedder-guard.js');
   const data = crashDir(null);
@@ -20710,11 +20766,11 @@ test('doctor.runChecks + summarize: criticalFail flagged, counts add up', () => 
     hooksEvents: ['Stop'],
   };
   const results = doctor.runChecks(ctx);
-  assertEq(results.length, 23);
+  assertEq(results.length, 24);
   const s = doctor.summarize(results);
   assert(s.criticalFail, 'old node → criticalFail');
   assertEq(s.ok, false);
-  assertEq(s.counts.ok + s.counts.warn + s.counts.fail, 23);
+  assertEq(s.counts.ok + s.counts.warn + s.counts.fail, 24);
 });
 
 test('doctor.runChecks: all-healthy ctx → ok summary', () => {
