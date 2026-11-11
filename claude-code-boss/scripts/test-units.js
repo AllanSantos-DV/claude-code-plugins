@@ -1753,6 +1753,107 @@ test('brain-backend mcp: init() re-handshakes on project change (BLOCKING-B leak
   }
 });
 
+function ownerScopedDocs(docs) {
+  const deleted = [];
+  const toolResult = ({ name, arguments: args }) => {
+    const doc = docs[args.documentId];
+    if (name === 'get_document') {
+      if (!doc || deleted.includes(args.documentId)) return { content: [{ type: 'text', text: 'Document not found: ' + args.documentId }] };
+      return { content: [{ type: 'text', text: JSON.stringify({ id: args.documentId, content: 'c', metadata: doc.metadata }) }] };
+    }
+    if (name === 'delete_document') {
+      const declared = args.metadata && args.metadata.project_id;
+      if (declared !== doc.metadata.project_id) {
+        return { isError: true, content: [{ type: 'text', text: 'owner_denied: document belongs to ' + doc.metadata.project_id }] };
+      }
+      deleted.push(args.documentId);
+      return { content: [{ type: 'text', text: 'deleted' }] };
+    }
+    return { content: [{ type: 'text', text: 'OK' }] };
+  };
+  return { toolResult, deleted };
+}
+
+test('brain-backend deleteMcp: deleting a document of another project declares that document\'s project_id', async () => {
+  const docs = { d1: { metadata: { project_id: 'otherProj' } } };
+  const { toolResult, deleted } = ownerScopedDocs(docs);
+  const daemon = await startFakeDaemon({ toolResult });
+  delete require.cache[require.resolve('../engine/brain-backend.js')];
+  const backend = require('../engine/brain-backend.js');
+  backend.__testHooks._injectConfig({ backend: { type: 'mcp-memory', mcpMemory: { transport: 'http', serverUrl: daemon.url } } });
+  try {
+    await backend.init({ project: 'sessionProj' });
+    await backend.delete('d1');
+    assertEq(deleted, ['d1']);
+    await backend.close();
+  } finally {
+    delete require.cache[require.resolve('../engine/brain-backend.js')];
+    await daemon.close();
+  }
+});
+
+test('brain-backend deleteMcp: a document of the session project is still deleted', async () => {
+  const docs = { d2: { metadata: { project_id: 'sessionProj' } } };
+  const { toolResult, deleted } = ownerScopedDocs(docs);
+  const daemon = await startFakeDaemon({ toolResult });
+  delete require.cache[require.resolve('../engine/brain-backend.js')];
+  const backend = require('../engine/brain-backend.js');
+  backend.__testHooks._injectConfig({ backend: { type: 'mcp-memory', mcpMemory: { transport: 'http', serverUrl: daemon.url } } });
+  try {
+    await backend.init({ project: 'sessionProj' });
+    await backend.delete('d2');
+    assertEq(deleted, ['d2']);
+    await backend.close();
+  } finally {
+    delete require.cache[require.resolve('../engine/brain-backend.js')];
+    await daemon.close();
+  }
+});
+
+test('brain-backend deleteMcp: a document with no project_id is refused with a clear message and nothing is deleted', async () => {
+  const docs = { d3: { metadata: {} } };
+  const { toolResult, deleted } = ownerScopedDocs(docs);
+  const daemon = await startFakeDaemon({ toolResult });
+  delete require.cache[require.resolve('../engine/brain-backend.js')];
+  const backend = require('../engine/brain-backend.js');
+  backend.__testHooks._injectConfig({ backend: { type: 'mcp-memory', mcpMemory: { transport: 'http', serverUrl: daemon.url } } });
+  try {
+    await backend.init({ project: 'sessionProj' });
+    let msg = '';
+    try { await backend.delete('d3'); } catch (err) { msg = err.message; }
+    assert(/no project_id/.test(msg), 'refusal names the missing project_id: ' + msg);
+    assertEq(deleted, []);
+    await backend.close();
+  } finally {
+    delete require.cache[require.resolve('../engine/brain-backend.js')];
+    await daemon.close();
+  }
+});
+
+test('brain-backend deleteMcp: a server refusal of the delete surfaces as an error instead of a silent success', async () => {
+  const docs = { d4: { metadata: { project_id: 'otherProj' } } };
+  const { deleted } = ownerScopedDocs(docs);
+  const daemon = await startFakeDaemon({
+    toolResult: ({ name, arguments: args }) => (name === 'get_document'
+      ? { content: [{ type: 'text', text: JSON.stringify({ id: 'd4', content: 'c', metadata: docs.d4.metadata }) }] }
+      : { isError: true, content: [{ type: 'text', text: 'owner_denied: no' }] }),
+  });
+  delete require.cache[require.resolve('../engine/brain-backend.js')];
+  const backend = require('../engine/brain-backend.js');
+  backend.__testHooks._injectConfig({ backend: { type: 'mcp-memory', mcpMemory: { transport: 'http', serverUrl: daemon.url } } });
+  try {
+    await backend.init({ project: 'sessionProj' });
+    let msg = '';
+    try { await backend.delete('d4'); } catch (err) { msg = err.message; }
+    assert(/owner_denied/.test(msg), 'server refusal is thrown: ' + msg);
+    assertEq(deleted, []);
+    await backend.close();
+  } finally {
+    delete require.cache[require.resolve('../engine/brain-backend.js')];
+    await daemon.close();
+  }
+});
+
 test('brain-backend saveMcp: entry.projectId → metadata.project_id (scope=user lands in __user__); absent → omitted (handshake project)', async () => {
   const daemon = await startFakeDaemon({ toolResult: () => ({ content: [{ type: 'text', text: 'Document added with ID: x1' }] }) });
   delete require.cache[require.resolve('../engine/brain-backend.js')];

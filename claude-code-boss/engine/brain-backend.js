@@ -451,8 +451,20 @@ async function listDocumentsMcp({ type, projectId }) {
   return docs.map((item) => normalizeEntry({ ...item, documentId: item.documentId || item.id }));
 }
 
+/**
+ * Delete a server document. The server only accepts the delete from a caller that declares the
+ * document's owner scope, so the document is read first and its `project_id` is sent back.
+ * @param {string} id
+ * @throws {Error} when the document has no project_id, or the server refuses the delete
+ */
 async function deleteMcp(id) {
-  await _mcp.callTool('delete_document', { documentId: id });
+  const doc = parseResult(await _mcp.callTool('get_document', { documentId: id }));
+  if (!doc || !doc.id) return;
+  const projectId = doc.metadata && doc.metadata.project_id;
+  if (!projectId) throw new Error(`delete_document ${id}: the document has no project_id, so its owner scope cannot be declared; refusing to delete it`);
+  const result = await _mcp.callTool('delete_document', { documentId: id, metadata: { project_id: projectId } });
+  const raw = (result && result.raw) || result;
+  if (raw && raw.isError) throw new Error(`delete_document ${id} failed: ${String(result.text || '').slice(0, 200)}`);
 }
 
 async function listMcp(type, project) {
