@@ -39,7 +39,13 @@ function fileFor(opts) { return path.join(storeDir(opts), '.runtime', 'recall-he
 // → empty recall); before, only the daemon's stderr — kept nowhere — saw it.
 // 'compose-skipped' / 'project-arm-skipped': that arm's failure-rate breaker is open
 // (retrieve-core createArmBreaker), so the turn ran with the other arm only.
-const DEGRADED_REASONS = new Set(['no-compose', 'remote-error', 'timeout', 'project-arm-timeout', 'project-arm-error', 'circuit-open', 'retrieve-error', 'compose-skipped', 'project-arm-skipped']);
+// 'compose-slow': compose timed out while the daemon answered the project search (slow
+// embedder), as opposed to 'timeout', where nothing answered.
+const DEGRADED_REASONS = new Set(['no-compose', 'remote-error', 'timeout', 'compose-slow', 'project-arm-timeout', 'project-arm-error', 'circuit-open', 'retrieve-error', 'compose-skipped', 'project-arm-skipped']);
+
+// Degraded-ok: compose answered with `recall_warning` (some blocks empty because a step
+// failed). The recall was injected, so it counts as ok, but it is tracked and its warning kept.
+const PARTIAL_REASON = 'compose-partial';
 
 // Quantos outcomes recentes decidem o veredito. Grande o bastante para uma
 // degradação real não sumir num soluço; pequeno o bastante para o alarme APAGAR
@@ -70,12 +76,15 @@ function applyOutcome(state, reason, now, detail, ms, arms) {
   const lat = Number.isFinite(ms) && ms >= 0 ? { ms: Math.round(ms) } : {};
   // Per-arm timing ({compose:{ms,reason?}, project:{...}}): which arm is slow or failing.
   const perArm = arms && typeof arms === 'object' && Object.keys(arms).length ? { arms } : {};
-  recent.push(degraded ? { ok: false, reason, ts: now, ...lat, ...perArm } : { ok: true, ts: now, ...lat, ...perArm });
+  const partial = reason === PARTIAL_REASON;
+  recent.push(degraded ? { ok: false, reason, ts: now, ...lat, ...perArm } : { ok: true, ...(partial ? { partial: true } : {}), ts: now, ...lat, ...perArm });
   // Descarta o excedente pela FRENTE: a janela guarda sempre os mais recentes.
   if (recent.length > WINDOW_SIZE) recent.splice(0, recent.length - WINDOW_SIZE);
 
   return {
     ...h,
+    partial: (h.partial || 0) + (partial ? 1 : 0),
+    lastPartial: partial ? { ts: now, ...(detail ? { warning: String(detail).slice(0, 300) } : {}) } : (h.lastPartial || null),
     ok: (h.ok || 0) + (degraded ? 0 : 1),
     degraded: (h.degraded || 0) + (degraded ? 1 : 0),
     byReason: degraded
@@ -113,10 +122,18 @@ function summarize(state) {
     lifetimeDegraded: h.degraded || 0,
     windowTotal,
     windowDegraded,
+    windowPartial: recent.filter((e) => e && e.ok && e.partial).length,
+    // Degraded turns where the project search ran: answered means the daemon was up and only compose was slow.
+    windowDegradedArm: recent.filter((e) => e && e.ok === false && e.arms && e.arms.project).reduce((acc, e) => {
+      acc[e.arms.project.reason ? 'failed' : 'answered']++;
+      return acc;
+    }, { answered: 0, failed: 0 }),
+    windowByReason: recent.reduce((acc, e) => { if (e && e.ok === false) acc[e.reason] = (acc[e.reason] || 0) + 1; return acc; }, {}),
     total: windowTotal,
     degradedRate: windowTotal ? windowDegraded / windowTotal : 0,
     byReason: h.byReason || {},
     lastDegraded: h.lastDegraded || null,
+    lastPartial: h.lastPartial || null,
   };
 }
 

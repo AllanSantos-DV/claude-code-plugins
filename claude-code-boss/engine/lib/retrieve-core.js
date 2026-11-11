@@ -83,6 +83,37 @@ function withDeadline(run, ms, label) {
 }
 
 /**
+ * A `recall_warning` whose cause is a timeout means the embedder is slow or reloading (the first
+ * embed after an unload takes seconds), so a second try can succeed; any other cause (refused,
+ * backend down) will fail the same way again and is not retried.
+ */
+function isReloadWarning(warning) {
+  return /timed out|timeout/i.test(String(warning || ''));
+}
+
+/** Below this much budget left, a retry cannot finish an embed and only adds latency. */
+const MIN_RETRY_MS = 1000;
+
+/**
+ * compose_recall with at most ONE retry, inside one total budget (`budgetMs`, the same
+ * `timeoutMs` a single call had): retried only when the answer came back partial because the
+ * embedder timed out. A retry that answers in full wins; otherwise the first partial answer stands.
+ */
+async function composeWithReloadRetry(call, budgetMs) {
+  const t0 = Date.now();
+  const first = await withDeadline(call, budgetMs, 'compose');
+  const left = budgetMs - (Date.now() - t0);
+  if (!first || !isReloadWarning(first.warning) || !(budgetMs > 0) || left < MIN_RETRY_MS) return first;
+  try {
+    const second = await withDeadline(call, left, 'compose retry');
+    if (second && !second.warning) return { ...second, retried: true };
+  } catch (err) {
+    console.error(`[retrieve-core] compose retry after embedder timeout failed: ${err.message}`);
+  }
+  return { ...first, retried: true };
+}
+
+/**
  * Failure-rate breaker for ONE recall arm. The old breaker was a 15 s cooldown, useless
  * with prompts minutes apart, and it never opened while the other arm answered — so a
  * compose that timed out 13 times in a row cost 8 s on every one of those prompts.
@@ -227,6 +258,8 @@ function mergeFactsSpine(composeFacts, armFacts) {
  * Merged project-first (see mergeFactsSpine). Each arm degrades on its own: a failed
  * compose still injects the arm's hits (and records the compose reason); a failed arm
  * records 'project-arm-timeout'/'project-arm-error'. ONE health record per turn.
+ * A compose answer carrying `recall_warning` is partial but usable: it is injected, recorded
+ * as 'compose-partial' (degraded-ok, not a failure) and returned as `recallWarning`.
  *
  * `deps` is a test seam (inject a fake backend/recallHealth); production passes none.
  * @returns {Promise<{entries:object[], capabilities:object[], keywords:string[], project:string, reason?:string}>}
@@ -283,7 +316,7 @@ async function retrieveRemote(prompt, { project, ancestorIds, topK, keywords, ki
       !hasCompose
         ? Promise.reject(Object.assign(new Error('compose_recall unavailable'), { reason: 'no-compose' }))
         : runCompose
-          ? timed('compose', withDeadline((signal) => backendRef.compose(query, { ...(cc.overlay ? { metadata: cc.overlay } : {}), signal }), cc.timeoutMs, 'compose'))
+          ? timed('compose', composeWithReloadRetry((signal) => backendRef.compose(query, { ...(cc.overlay ? { metadata: cc.overlay } : {}), signal }), cc.timeoutMs))
           : skipped('compose-skipped'),
       !backendRef.search
         ? Promise.resolve([])
@@ -293,12 +326,21 @@ async function retrieveRemote(prompt, { project, ancestorIds, topK, keywords, ki
     ]);
     if (runCompose) breakers.compose.result(composeRes.status === 'fulfilled');
     if (runArm) breakers.project.result(armRes.status === 'fulfilled');
+    const armAnswered = runArm && armRes.status === 'fulfilled';
     let composeReason;
+    let composeWarning;
     let composed = { facts: [], capabilities: [] };
-    if (composeRes.status === 'fulfilled') composed = composeRes.value || composed;
-    else {
+    if (composeRes.status === 'fulfilled') {
+      composed = composeRes.value || composed;
+      if (composed.retried && arms.compose) arms.compose.retried = true;
+      if (composed.warning) {
+        composeWarning = composed.warning;
+        console.error(`[retrieve-core] compose answered partial${composed.retried ? ' after one retry' : ''}: ${composeWarning}`);
+      }
+    } else {
       const err = composeRes.reason;
-      composeReason = (err && err.reason) || (isTimeout(err) ? 'timeout' : 'remote-error');
+      // A compose timeout while the same daemon answered the project search is a slow embedder, not a dead backend.
+      composeReason = (err && err.reason) || (isTimeout(err) ? (armAnswered ? 'compose-slow' : 'timeout') : 'remote-error');
       if (composeReason !== 'no-compose') console.error(`[retrieve-core] compose failed (${composeReason}) — project arm only: ${err && err.message}`);
     }
     let armReason;
@@ -313,15 +355,14 @@ async function retrieveRemote(prompt, { project, ancestorIds, topK, keywords, ki
     const { facts, capabilities } = pickInjectable(merged, kinds ? [] : composed.capabilities, {
       topK, maxChars: cc.maxInjectChars, includeHomeSpine: cc.includeHomeSpine,
     });
-    // One record per turn: a failed compose outranks a failed arm, which outranks an honest miss.
-    const reason = composeReason || armReason || (facts.length ? undefined : 'no-match');
-    healthRef.record(reason, undefined, Date.now() - startedAt, arms);
+    // One record per turn: a failed compose outranks a failed arm, which outranks a partial compose, then an honest miss.
+    const reason = composeReason || armReason || (composeWarning ? 'compose-partial' : undefined) || (facts.length ? undefined : 'no-match');
+    healthRef.record(reason, reason === 'compose-partial' ? composeWarning : undefined, Date.now() - startedAt, arms);
     // Breaker: the daemon answered if compose, or a REAL project-arm search (a backend
     // without search() resolves [] locally — no evidence), settled fulfilled. Only a
     // transport failure of compose (timeout/remote-error — not 'no-compose', which is
     // an old daemon that IS up) with no such answer treats the daemon as down.
     const composeDown = composeReason === 'timeout' || composeReason === 'remote-error';
-    const armAnswered = runArm && armRes.status === 'fulfilled';
     if (composeDown && !armAnswered) {
       circuitOpenUntil = Date.now() + CIRCUIT_COOLDOWN_MS;
       if (backendRef.reportMcpFailure) backendRef.reportMcpFailure(composeRes.reason);
@@ -331,7 +372,12 @@ async function retrieveRemote(prompt, { project, ancestorIds, topK, keywords, ki
     }
     // A failed arm/compose means the recall is partial or empty because it could not look, not because nothing matched.
     const degraded = healthRef.isDegraded ? healthRef.isDegraded(reason) : recallHealth.isDegraded(reason);
-    return { entries: facts, capabilities, keywords, project, reason: facts.length && !composeReason ? undefined : reason, ...(degraded ? { degraded: true, degradedReason: reason } : {}) };
+    return {
+      entries: facts, capabilities, keywords, project,
+      reason: facts.length && !composeReason ? undefined : reason,
+      ...(composeWarning ? { recallWarning: composeWarning } : {}),
+      ...(degraded ? { degraded: true, degradedReason: reason } : {}),
+    };
   } catch (err) {
     const reason = isTimeout(err) ? 'timeout' : 'remote-error';
     console.error(`[retrieve-core] remote retrieve failed (${reason}): ${err.message}`);

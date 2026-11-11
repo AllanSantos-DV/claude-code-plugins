@@ -361,14 +361,19 @@ function splitComposeBlocks(blocks) {
   return { facts, capabilities };
 }
 
-/** compose_recall envelope → { blocks:[...] } → structured {facts, capabilities, entries}. */
+/**
+ * compose_recall envelope → { blocks:[...], recall_warning? } → structured {facts, capabilities, entries, warning?}.
+ * `warning` is mcp-memory's `recall_warning`: some blocks came back empty because a step failed
+ * (typically the embedder), so the answer is partial but usable.
+ */
 function parseComposeEnvelope(result) {
   const data = parseResult(result);
   const blocks = (data && Array.isArray(data.blocks)) ? data.blocks : [];
   const { facts, capabilities } = splitComposeBlocks(blocks);
   // entries mirrors the legacy flat shape so retrieval telemetry (% cited) keeps working.
   const entries = facts.map(f => ({ id: f.id, title: f.title, type: f.type, summary: f.summary, score: f.score }));
-  return { facts, capabilities, entries };
+  const warning = data && typeof data.recall_warning === 'string' && data.recall_warning.trim();
+  return { facts, capabilities, entries, ...(warning ? { warning } : {}) };
 }
 
 async function composeMcp(query, opts = {}) {

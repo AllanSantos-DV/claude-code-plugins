@@ -464,6 +464,36 @@ function checkNativeRuntime(ctx) {
   return { ...base, status: 'ok', detail: `msvcp140.dll ${msvcp} (>= ${MIN_MSVCP}), bundled onnxruntime ${n.bundledOrt || '?'}${sys}`, fix: '' };
 }
 
+/**
+ * Per-turn memory recall over the recent window (recall-health). A partial compose answer
+ * (`recall_warning`) was still injected, so it is degraded-ok: reported with its warning, never a
+ * failure. Only real degradation (>= 3 and >= 20% of the window, the brain-health gate) warns,
+ * telling a slow embedder (the project search kept answering in most degraded turns) from a
+ * backend that did not answer.
+ */
+function checkRecall(ctx) {
+  const r = ctx.recall;
+  const base = { id: 'recall', label: 'Memory recall', critical: false };
+  if (!r || !r.windowTotal) return { ...base, status: 'ok', detail: 'no recall recorded yet', fix: '' };
+  const partial = r.windowPartial
+    ? `; ${r.windowPartial} partial (degraded-ok)${r.lastPartial && r.lastPartial.warning ? `, last warning: ${r.lastPartial.warning}` : ''}`
+    : '';
+  if (!(r.windowDegraded >= 3 && r.degradedRate >= 0.2)) {
+    return { ...base, status: 'ok', detail: `${r.windowTotal - r.windowDegraded} of the last ${r.windowTotal} recalls answered${partial}`, fix: '' };
+  }
+  const reasons = Object.entries(r.windowByReason || {}).sort((a, b) => b[1] - a[1]).map(([k, n]) => `${k} x${n}`).join(', ');
+  const arm = r.windowDegradedArm || { answered: 0, failed: 0 };
+  const slow = arm.answered > arm.failed;
+  const armNote = arm.answered + arm.failed ? `; the project search answered in ${arm.answered} of the ${arm.answered + arm.failed} where it ran` : '';
+  return {
+    ...base, status: 'warn',
+    detail: `${r.windowDegraded} of the last ${r.windowTotal} recalls degraded (${reasons})${armNote}${partial}`,
+    fix: slow
+      ? 'The memory daemon answers but the embedder is slow (first embed after an unload): raise kb.retrieval.compose.timeoutMs in brain-config.json (default 8000), or keep the embedder loaded.'
+      : 'The memory backend is not answering: check it with backend_status (or the dashboard Brain tab) and restart it if it is down.',
+  };
+}
+
 function checkCrashes(ctx) {
   const c = ctx.crashes || { records: [] };
   const base = { id: 'daemon-crashes', label: 'Brain daemon crashes', critical: false };
@@ -580,6 +610,11 @@ function gatherNative({ sqlite = true } = {}) {
   };
 }
 
+/** recall-health window of the data dir the daemon writes to (no file yet → empty window). */
+function gatherRecall(data) {
+  return require('../engine/lib/recall-health.js').getStatus({ dataDir: data });
+}
+
 function gatherCrashes(data, now = Date.now()) {
   const ce = require('./lib/crash-evidence.js');
   const since = now - CRASH_WINDOW_DAYS * 86400000;
@@ -659,7 +694,7 @@ function checkSetup(ctx) {
   return out;
 }
 
-const CHECKS = [checkNode, checkDaemonNode, checkNativeDeps, checkEnv, checkDataDirs, checkModel, checkDaemon, checkNativeRuntime, checkEmbedderProbe, checkEmbedderGuard, checkCrashes, checkCostTuning, checkBossConfig, checkFixedCost, checkCompactionRate, checkCompactionFloor, checkClaudeCompat, checkSubagentContexts, checkSessionModules, checkAutoCompactPoint, checkSetup, checkHooksEvents];
+const CHECKS = [checkNode, checkDaemonNode, checkNativeDeps, checkEnv, checkDataDirs, checkModel, checkDaemon, checkNativeRuntime, checkEmbedderProbe, checkEmbedderGuard, checkRecall, checkCrashes, checkCostTuning, checkBossConfig, checkFixedCost, checkCompactionRate, checkCompactionFloor, checkClaudeCompat, checkSubagentContexts, checkSessionModules, checkAutoCompactPoint, checkSetup, checkHooksEvents];
 
 /** Run every pure check over a ctx snapshot (a check may return one result or a list). */
 function runChecks(ctx) {
@@ -911,6 +946,7 @@ async function gatherContext({ probe = false, audit = false, contextSources: wan
     native,
     embedderProbe,
     embedderGuard: guardApplies ? guardRec : null,
+    recall: gatherRecall(data),
     crashes: gatherCrashes(data),
     hooksEvents,
     costTuning,
@@ -1037,7 +1073,7 @@ if (require.main === module) {
 
 module.exports = {
   runChecks, summarize, applyFixes, FIXERS, checkCostTuning, checkBossConfig, checkFixedCost, checkSetup, bossPluginId, gatherContext, formatReport,
-  checkNode, checkDaemonNode, checkNativeDeps, checkEnv, checkDataDirs, checkModel, checkDaemon, checkNativeRuntime, checkEmbedderProbe, checkEmbedderGuard, checkCrashes, checkHooksEvents, checkCompactionFloor, gatherCompactionFloor, checkAutoCompactPoint, gatherAutoCompact,
+  checkNode, checkDaemonNode, checkNativeDeps, checkEnv, checkDataDirs, checkModel, checkDaemon, checkNativeRuntime, checkEmbedderProbe, checkEmbedderGuard, checkRecall, checkCrashes, checkHooksEvents, checkCompactionFloor, gatherCompactionFloor, checkAutoCompactPoint, gatherAutoCompact,
   findDataDirCandidates, probeEmbedder, gatherNative, gatherCrashes, MIN_MSVCP,
   STANDARD_EVENTS, MIN_NODE,
 };

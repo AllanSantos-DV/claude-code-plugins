@@ -5943,7 +5943,7 @@ test('retrieve-core retrieveRemote: compose que estoura sempre e PULADO pelo bre
   assert(Date.now() - t0 < 3000, 'every compose gave up at the 30 ms deadline');
   assertEq(composeCalls, 5, 'after 5 timeouts the compose arm is skipped (no 8 s wait on the next prompts)');
   assertEq(aborted, 5, 'every timed-out compose was cancelled through its signal');
-  assertEq(records.map((r) => r.reason), ['timeout', 'timeout', 'timeout', 'timeout', 'timeout', 'compose-skipped', 'compose-skipped']);
+  assertEq(records.map((r) => r.reason), ['compose-slow', 'compose-slow', 'compose-slow', 'compose-slow', 'compose-slow', 'compose-skipped', 'compose-skipped'], 'the project arm answered: a slow compose, not a dead backend');
   assert(records[0].arms.compose.reason === 'timeout' && Number.isFinite(records[0].arms.compose.ms), JSON.stringify(records[0].arms));
   assert(Number.isFinite(records[6].arms.project.ms) && !records[6].arms.project.reason, 'the project arm kept answering, timed');
   assertEq(records[6].arms.compose, undefined, 'a skipped arm has no timing');
@@ -5965,6 +5965,129 @@ test('recall-health.summarize: p50/p95 e falhas POR BRACO', () => {
   const sum = rh.summarize(st);
   assertEq(sum.arms.compose, { runs: 2, failed: 1, p50: 800, p95: 800 });
   assertEq(sum.arms.project, { runs: 2, failed: 0, p50: 400, p95: 400 });
+});
+
+// ─── compose com recall_warning: resultado parcial utilizavel (degraded-ok) e recarga lenta x backend morto ──
+// mcp-memory responde rapido com `recall_warning` quando o embedder falha (blocos vazios). Antes o Boss
+// descartava o aviso: a resposta parcial passava como recall perfeito, sem rastro no recall-health nem no doctor.
+const RELOAD_WARNING = 'recall incompleto: 1 bloco(s) sem resultado por falha — type=procedural scope=projB: backend=tei forçado: o sidecar de embeddings falhou e não há fallback em CPU: request timed out';
+const DEAD_WARNING = 'recall incompleto: 1 bloco(s) sem resultado por falha — type=procedural scope=projB: backend=tei forçado: o sidecar de embeddings falhou e não há fallback em CPU: Connection refused';
+
+test('brain-backend compose: parseComposeEnvelope keeps recall_warning as `warning`', () => {
+  const { parseComposeEnvelope } = require('../engine/brain-backend.js').__testHooks;
+  const out = parseComposeEnvelope({ text: JSON.stringify({ query: 'q', blocks: [], recall_warning: DEAD_WARNING }) });
+  assertEq(out.warning, DEAD_WARNING);
+  assertEq(parseComposeEnvelope({ text: JSON.stringify({ query: 'q', blocks: [] }) }).warning, undefined, 'a full answer carries no warning');
+});
+
+test('retrieve-core retrieveRemote: compose com recall_warning de backend morto e injetado como parcial (compose-partial, nao degradado), aviso exposto, SEM retry', async () => {
+  retrieveCore.__testHooks.resetCircuit();
+  let calls = 0;
+  const fake = fakeComposeBackend({
+    onCompose: async () => { calls++; return { facts: [{ id: 'k1', title: 'K1', type: 'knowledge', scope: 'projB', summary: 'kept', score: 0.9 }], capabilities: [], warning: DEAD_WARNING }; },
+    onSearch: async () => [],
+  });
+  const records = [];
+  const out = await retrieveCore.__testHooks.retrieveRemote('a real prompt here', { project: 'projB', ancestorIds: [], topK: 5, keywords: ['x'] },
+    { backend: fake, recallHealth: { record: (reason, detail) => records.push({ reason, detail }), isDegraded: require('../engine/lib/recall-health.js').isDegraded } });
+  assertEq(calls, 1, 'a dead backend fails the same way again: no retry');
+  assertEq(out.entries.map((e) => e.id), ['k1'], 'the partial blocks are still injected');
+  assertEq(out.recallWarning, DEAD_WARNING, 'the warning reaches the caller');
+  assertEq(out.degraded, undefined, 'a partial answer is not a failed recall');
+  assertEq(records, [{ reason: 'compose-partial', detail: DEAD_WARNING }], 'recorded as degraded-ok with the warning');
+  assert(!require('../engine/lib/recall-health.js').isDegraded('compose-partial'), 'compose-partial counts as ok');
+});
+
+test('retrieve-core retrieveRemote: recall_warning de timeout (embedder recarregando) tenta UMA vez mais dentro do mesmo orcamento; a resposta completa vence', async () => {
+  retrieveCore.__testHooks.resetCircuit();
+  let calls = 0;
+  const fake = fakeComposeBackend({
+    onCompose: async () => {
+      calls++;
+      return calls === 1
+        ? { facts: [], capabilities: [], warning: RELOAD_WARNING }
+        : { facts: [{ id: 'p1', title: 'P1', type: 'procedural', scope: 'projB', summary: 'full', score: 0.9 }], capabilities: [] };
+    },
+    onSearch: async () => [],
+  });
+  const records = [];
+  const out = await withUserConfig({ kb: { retrieval: { compose: { timeoutMs: 5000 } } } }, () => retrieveCore.__testHooks.retrieveRemote('a real prompt here', { project: 'projB', ancestorIds: [], topK: 5, keywords: ['x'] },
+    { backend: fake, recallHealth: { record: (reason, _d, _ms, arms) => records.push({ reason, arms }) } }));
+  assertEq(calls, 2, 'one retry after the embedder timed out');
+  assertEq(out.entries.map((e) => e.id), ['p1'], 'the full retry answer is the one injected');
+  assertEq(out.recallWarning, undefined);
+  assertEq(records.map((r) => r.reason), [undefined], 'a recovered retry is a plain ok');
+  assertEq(records[0].arms.compose.retried, true, 'the retry is visible in the per-arm timing');
+
+  calls = 0;
+  const still = fakeComposeBackend({ onCompose: async () => { calls++; return { facts: [], capabilities: [], warning: RELOAD_WARNING }; }, onSearch: async () => [] });
+  const reasons = [];
+  const out2 = await withUserConfig({ kb: { retrieval: { compose: { timeoutMs: 5000 } } } }, () => retrieveCore.__testHooks.retrieveRemote('a real prompt here', { project: 'projB', ancestorIds: [], topK: 5, keywords: ['x'] },
+    { backend: still, recallHealth: { record: (r) => reasons.push(r) } }));
+  assertEq(calls, 2, 'never more than one retry');
+  assertEq(reasons, ['compose-partial'], 'still reloading: the partial answer stands, degraded-ok');
+  assertEq(out2.recallWarning, RELOAD_WARNING);
+});
+
+test('retrieve-core retrieveRemote: sem orcamento para terminar um embed (< 1 s restante), o aviso de timeout NAO gera retry', async () => {
+  retrieveCore.__testHooks.resetCircuit();
+  let calls = 0;
+  const fake = fakeComposeBackend({
+    onCompose: async () => { calls++; await new Promise((r) => setTimeout(r, 400)); return { facts: [], capabilities: [], warning: RELOAD_WARNING }; },
+    onSearch: async () => [],
+  });
+  const reasons = [];
+  await withUserConfig({ kb: { retrieval: { compose: { timeoutMs: 1200 } } } }, () => retrieveCore.__testHooks.retrieveRemote('a real prompt here', { project: 'projB', ancestorIds: [], topK: 5, keywords: ['x'] },
+    { backend: fake, recallHealth: { record: (r) => reasons.push(r) } }));
+  assertEq(calls, 1, 'the retry would not fit in the budget left');
+  assertEq(reasons, ['compose-partial']);
+});
+
+test('retrieve-core retrieveRemote: compose que estoura com o braco do projeto mudo e backend morto (timeout); com o braco respondendo e embedder lento (compose-slow)', async () => {
+  retrieveCore.__testHooks.resetCircuit();
+  const hang = (_q, opts) => new Promise((_, rej) => opts.signal.addEventListener('abort', () => rej(opts.signal.reason)));
+  const reasons = [];
+  const run = (backend) => withUserConfig({ kb: { retrieval: { compose: { timeoutMs: 30 } } } }, () => retrieveCore.__testHooks.retrieveRemote('a real prompt here', { project: 'projB', ancestorIds: [], topK: 5, keywords: ['x'] },
+    { backend, recallHealth: { record: (r) => reasons.push(r) }, armBreakers: { compose: retrieveCore.__testHooks.createArmBreaker(), project: retrieveCore.__testHooks.createArmBreaker() } }));
+  await run(fakeComposeBackend({ onCompose: hang, onSearch: async () => [{ id: 'p1', title: 'hit', score: 0.9 }] }));
+  retrieveCore.__testHooks.resetCircuit();
+  await run(fakeComposeBackend({ onCompose: hang, onSearch: async () => { throw new Error('connect ECONNREFUSED'); } }));
+  retrieveCore.__testHooks.resetCircuit();
+  assertEq(reasons, ['compose-slow', 'timeout']);
+  assert(require('../engine/lib/recall-health.js').isDegraded('compose-slow'), 'a slow compose still lost its blocks: degraded');
+});
+
+test('recall-health: compose-partial conta como ok, fica fora da taxa de degradacao e guarda o ultimo aviso', () => {
+  const rh = require('../engine/lib/recall-health.js');
+  let st = {};
+  st = rh.applyOutcome(st, 'compose-partial', 1, DEAD_WARNING, 300);
+  st = rh.applyOutcome(st, 'compose-slow', 2, null, 8000);
+  st = rh.applyOutcome(st, undefined, 3, null, 500);
+  const sum = rh.summarize(st);
+  assertEq([sum.ok, sum.degraded, sum.windowPartial, sum.windowDegraded], [2, 1, 1, 1]);
+  assertEq(sum.lastPartial.warning, DEAD_WARNING);
+  assertEq(sum.windowByReason, { 'compose-slow': 1 });
+});
+
+test('doctor.checkRecall: parcial e degraded-ok (ok com o aviso); degradacao real avisa e diz se e embedder lento ou backend mudo', () => {
+  const doc = require('./doctor.js');
+  assertEq(doc.checkRecall({}).status, 'ok', 'no recall recorded yet');
+  const rh = require('../engine/lib/recall-health.js');
+  const ANS = { compose: { ms: 8000, reason: 'timeout' }, project: { ms: 300 } };
+  const MUTE = { compose: { ms: 8000, reason: 'timeout' }, project: { ms: 8000, reason: 'project-arm-timeout' } };
+  const window = (turns) => rh.summarize(turns.reduce((s, t, i) => {
+    const [r, arms] = Array.isArray(t) ? t : [t];
+    return rh.applyOutcome(s, r, i, r === 'compose-partial' ? DEAD_WARNING : null, 100, arms);
+  }, {}));
+  const partial = doc.checkRecall({ recall: window(['compose-partial', 'compose-partial', 'compose-partial', undefined]) });
+  assertEq(partial.status, 'ok', 'partial answers are not a failure');
+  assert(partial.detail.includes('3 partial (degraded-ok)') && partial.detail.includes(DEAD_WARNING), partial.detail);
+  const slow = doc.checkRecall({ recall: window([['compose-slow', ANS], ['compose-skipped', ANS], ['compose-slow', ANS], ['timeout', MUTE], 'circuit-open', undefined]) });
+  assertEq(slow.status, 'warn');
+  assert(/compose-slow x2, compose-skipped x1, timeout x1, circuit-open x1/.test(slow.detail) && /answered in 3 of the 4 where it ran/.test(slow.detail) && /embedder is slow/.test(slow.fix), JSON.stringify(slow));
+  const dead = doc.checkRecall({ recall: window([['timeout', MUTE], ['timeout', MUTE], 'circuit-open', undefined]) });
+  assertEq(dead.status, 'warn');
+  assert(/not answering/.test(dead.fix), dead.fix);
 });
 
 test('retrieve-core retrieveRemote (2.29.1): project arm ALWAYS fires (focus+ancestors+__user__, no home) with the capped query; merged project-first', async () => {
@@ -6262,7 +6385,7 @@ test('retrieve-core retrieveRemote (2.29.1 merge): compose timeout but the proje
   fake.reportMcpFailure = () => reports.push('failure');
   const args = ['a real prompt here', { project: 'projB', ancestorIds: [], topK: 5, keywords: ['x'] }, { backend: fake, recallHealth: { record: () => {} } }];
   const first = await retrieveCore.__testHooks.retrieveRemote(...args);
-  assertEq(first.reason, 'timeout', 'the slow compose is still reported');
+  assertEq(first.reason, 'compose-slow', 'the slow compose is still reported, as slow rather than a dead backend');
   assertEq(reports, ['success'], 'an answered arm proves the daemon is reachable');
   const second = await retrieveCore.__testHooks.retrieveRemote(...args);
   assert(second.reason !== 'circuit-open', 'the next turn is NOT short-circuited');
@@ -20412,11 +20535,11 @@ test('doctor.runChecks + summarize: criticalFail flagged, counts add up', () => 
     hooksEvents: ['Stop'],
   };
   const results = doctor.runChecks(ctx);
-  assertEq(results.length, 22);
+  assertEq(results.length, 23);
   const s = doctor.summarize(results);
   assert(s.criticalFail, 'old node → criticalFail');
   assertEq(s.ok, false);
-  assertEq(s.counts.ok + s.counts.warn + s.counts.fail, 22);
+  assertEq(s.counts.ok + s.counts.warn + s.counts.fail, 23);
 });
 
 test('doctor.runChecks: all-healthy ctx → ok summary', () => {

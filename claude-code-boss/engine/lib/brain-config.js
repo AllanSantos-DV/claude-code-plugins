@@ -217,7 +217,7 @@ function getIngestion() {
  * compose_recall knobs (mcp-memory recall path). Config: kb.retrieval.compose.
  *   includeHomeSpine (bool, default true) — inject the never-filtered global spine.
  *   maxInjectChars   (int,  default 6000) — hard cap on total injected fact text.
- *   timeoutMs        (int,  default 8000) — abort a slow compose → degraded (empty).
+ *   timeoutMs        (int,  default 8000) — total compose budget, one retry included; a slow compose → degraded (empty).
  *   overlay          (obj  | null)        — generic metadata overlay for active blocks.
  *   maxQueryChars    (int,  default 300)  — recall query cap; 0 = send the whole prompt.
  *   projectArmMinScore (num, default 0.65) — floor for the project-arm search_memory hits.
