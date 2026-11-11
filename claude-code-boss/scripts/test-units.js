@@ -3752,6 +3752,21 @@ test('dashboard brainBackendStatus: the first status after boot already reports 
   `);
 });
 
+test('dashboard theme: muted and dim text reach WCAG AA (4.5:1) on every surface of both themes', () => {
+  const html = fs.readFileSync(path.join(__dirname, '..', 'dashboard', 'index.html'), 'utf8');
+  const block = (re) => { const m = html.match(re); assert(m, `theme block missing: ${re}`); return m[1]; };
+  const themes = { dark: block(/\n:root \{\s*\n\s*--bg:([\s\S]*?)\n\}/).replace(/^/, '--bg:'), light: block(/\[data-theme="light"\] \{([\s\S]*?)\n\}/) };
+  const lum = (hex) => { const c = [1, 3, 5].map((i) => parseInt(hex.slice(i, i + 2), 16) / 255).map((v) => (v <= 0.03928 ? v / 12.92 : ((v + 0.055) / 1.055) ** 2.4)); return 0.2126 * c[0] + 0.7152 * c[1] + 0.0722 * c[2]; };
+  const ratio = (a, b) => { const [x, y] = [lum(a), lum(b)].sort((p, q) => q - p); return (x + 0.05) / (y + 0.05); };
+  for (const [name, css] of Object.entries(themes)) {
+    const tok = (k) => { const m = css.match(new RegExp(`--${k}:\\s*(#[0-9a-fA-F]{6})`)); assert(m, `${name}: --${k} missing`); return m[1]; };
+    for (const fg of ['fg-muted', 'fg-dim']) for (const bg of ['bg', 'bg-card', 'bg-soft', 'bg-hover']) {
+      const r = ratio(tok(fg), tok(bg));
+      assert(r >= 4.5, `${name}: --${fg} on --${bg} is ${r.toFixed(2)}:1, below 4.5:1`);
+    }
+  }
+});
+
 test('dashboard Home: o aviso de projetos recusados mostra id, pasta e motivo, com texto copiavel, e some quando nao ha nada a dizer', () => {
   const html = fs.readFileSync(path.join(__dirname, '..', 'dashboard', 'index.html'), 'utf8').replace(/\r\n/g, '\n'); // a CRLF checkout (autocrlf) has no bare \n}\n
   const src = (n) => { const i = html.indexOf('function ' + n); return html.slice(i, html.indexOf('\n}\n', i) + 3); };
