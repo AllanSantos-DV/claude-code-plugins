@@ -33806,6 +33806,65 @@ test('http-daemon GET /hook/boss-summary: REAL daemon — token-gated, one cache
   }
 });
 
+test('http-daemon GET /hook/boss-summary: REAL daemon — the read runs in its own worker, so a slow first read never queues a Stop or PostToolUse hook', async () => {
+  seedBossMetrics('sid-boss-A');
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-boss-readworker-'));
+  const { startHttpDaemon } = await import(require('url').pathToFileURL(path.join(ROOT, 'servers', 'brain-server', 'lib', 'http-daemon.js')).href);
+  const savedTok = process.env.BRAIN_HTTP_TOKEN; delete process.env.BRAIN_HTTP_TOKEN;
+  const d = await startHttpDaemon({ pluginRoot: ROOT, dataDir: dir, port: 0 });
+  try {
+    const base = `http://127.0.0.1:${d.httpServer.address().port}`;
+    const token = fs.readFileSync(path.join((await (await fetch(`${base}/health`)).json()).dataDir, 'brain-http.token'), 'utf8').trim();
+    assertEq((await fetch(`${base}/hook/boss-summary`, { headers: { Authorization: `Bearer ${token}` } })).status, 200);
+    const h = await (await fetch(`${base}/health`)).json();
+    assert(h.readWorker && h.readWorker.spawned === 1, 'the read spawned its own worker');
+    assertEq(h.hookWorker.spawned, 0, 'the hook worker the Stop and PostToolUse hooks queue on stayed idle');
+  } finally {
+    if (savedTok !== undefined) process.env.BRAIN_HTTP_TOKEN = savedTok;
+    await d.shutdown();
+  }
+});
+
+test('boss-summary.createRowReader: a project whose db stamp did not change is not opened again; a changed one is read past its last id', () => {
+  const { createRowReader } = require('./boss-summary.js');
+  const db = { a: [{ id: 1, ts: 1000 }], b: [{ id: 1, ts: 1500 }] };
+  const stamps = { a: 's1', b: 's1' };
+  const opened = [];
+  const store = {
+    listProjects: () => Object.keys(db),
+    dbStamp: (p) => stamps[p],
+    getEventLogIsolated: (p, o) => { opened.push(p); return db[p].filter((r) => r.id > (o.sinceId || 0)); },
+  };
+  const read = createRowReader(store);
+  assertEq(read(0).rows.length, 2);
+  assertEq(opened, ['a', 'b'], 'the cold read opens every project');
+  opened.length = 0;
+  assertEq(read(0).rows.length, 2, 'same rows from the cache');
+  assertEq(opened, [], 'no stamp changed → no db opened');
+  db.a.push({ id: 2, ts: 2000 }); stamps.a = 's2';
+  assertEq(read(0).rows.length, 3);
+  assertEq(opened, ['a'], 'only the project whose stamp changed is opened');
+  opened.length = 0;
+  assertEq(read(1200).rows.map((r) => r.ts).sort(), [1500, 2000], 'a skipped project still drops rows that left the window');
+  assertEq(opened, [], 'and that stays free');
+});
+
+test('boss-summary.dbStamp: changes when the project records an event, a stamp (not a throw) for a missing db', () => {
+  const { dbStamp } = require('./boss-summary.js');
+  const ms = require('../engine/lib/metrics-store.js');
+  ms.close();
+  assert(ms.init({ project: 'stamp-p' }));
+  try {
+    ms.recordMetric('lesson.captured', { type: 'lesson' }, 's1');
+    const s1 = dbStamp('stamp-p');
+    assertEq(typeof s1, 'string');
+    assertEq(dbStamp('stamp-p'), s1, 'unchanged while nothing is written');
+    ms.recordMetric('lesson.captured', { type: 'lesson', n: 2 }, 's1');
+    assert(dbStamp('stamp-p') !== s1, 'a write changes the stamp');
+    assertEq(typeof dbStamp('no-such-project-stamp'), 'string', 'a missing db is a stamp, not a throw');
+  } finally { ms.close(); }
+});
+
 test('boss-summary: the first reads stop at the budget and finish on later calls, so a cold start never holds the heavy lane', () => {
   const bs = require('./boss-summary.js');
   let clock = 0;

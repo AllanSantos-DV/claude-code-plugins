@@ -4,7 +4,7 @@
   "displayName": "Claude Code Boss — Brain & Curation",
   "description": "Semantic knowledge base (Brain) + curated shell execution + lightweight learning for Claude Code. Auto-indexed KB with vector search, anti context-bloat curation, and advisory pattern/correction capture. Relies on native Agent/Workflow tools for orchestration.",
   "author": {
-    "name": "Allan Santos"
+    "name": "the maintainer"
   },
   "homepage": "https://allansantos-dv.github.io/claude-code-plugins/claude-code-boss/",
   "license": "MIT",

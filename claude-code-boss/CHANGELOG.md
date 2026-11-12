@@ -3,6 +3,7 @@
 ## [Unreleased]
 
 ### Fixed
+- **A faixa do Boss deixa de segurar os hooks de Stop e PostToolUse no daemon** (`servers/brain-server/lib/http-daemon.js`, `scripts/boss-summary.js`, `dbStamp`): o cálculo da faixa (`hook_boss_summary`, 3 a 18 s, 325 vezes em 3 h) corria no mesmo worker dos hooks e enfileirava tudo atrás dele. Agora tem um worker próprio (`readWorker` no `/health`), e a leitura incremental só abre o banco de métricas dos projetos cujo arquivo mudou (mtime e tamanho do db, do WAL e do marcador de adoção): a leitura a quente de 312 projetos caiu de 1,3–2,3 s para ~0,15 s.
 - **Um reset de conexão com o daemon deixa de aparecer como erro do batimento da pasta** (`hooks/compaction.mjs` `send`/`backgroundFailed`, `scripts/lib/module-daemon.mjs` `isTransportError`): o envio refaz o aperto de mão e repete uma vez quando a conexão cai (ECONNRESET, ECONNREFUSED, socket fechado); uma falha de transporte que sobra vai para a trilha com a hora e o tempo desde a última resposta do daemon, e só aparece na tela a cada terceira seguida.
 - **O diário da rajada de leitura não cresce mais sem limite** (`scripts/lib/read-burst.js`): `.runtime/read-burst.jsonl` passa a girar em 1 MB, guardando 3 arquivos.
 - **A rajada de leitura entregue e ainda aberta quando a sessão termina é fechada e medida** (`scripts/session-end.js`, `scripts/lib/read-burst.js` `forget`): o SessionEnd grava quantos dos arquivos lidos depois já estavam no pacote e apaga o estado da sessão, do agente principal e dos subagentes.

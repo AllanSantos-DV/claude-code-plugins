@@ -15,6 +15,8 @@
  *   brain      — the backend probe (lib/mcp-health.js) without paths or URLs: the reply
  *                travels to every session, so it carries a reason CODE, never a location
  */
+const fs = require('fs');
+const path = require('path');
 const { summarizeCuration, CURATION_EVENTS, ECONOMY_EVENTS } = require('./lib/curation-metrics.js');
 const { summarize } = require('./lib/value-summary.js');
 const { CHARS_PER_TOKEN } = require('./lib/economy-metrics.js');
@@ -74,14 +76,34 @@ function brainOf(health, healthError) {
 }
 
 /**
- * Every project's rows of the window. The daemon asks every 30 s on the heavy lane, so the reader is
- * INCREMENTAL: it keeps, per project, the rows of the window and the last row id it saw, and a later call
- * asks the store only for rows with a greater id (backlog: ~0.7 s of full re-read, 230 projects). Rows that
- * left the window are dropped from the cache; a project whose db is gone leaves the cache with it.
- * The first read opens every project's db (~15 s measured after a daemon start) and would hold the heavy lane,
- * and every Stop queued behind it: once first reads have taken budgetMs, the projects not yet in the cache wait
- * for the next call and the answer says `complete: false`.
- * @param {{listProjects:Function, getEventLogIsolated:Function}} [storeArg]  injectable for tests
+ * What changes when a project's metrics change: mtime and size of the db, its WAL and the carried-over marker.
+ * @param {string} project
+ * @returns {string|null} null when the files cannot be stat'ed
+ */
+function dbStamp(project) {
+  const db = require('../engine/lib/metrics-store.js')._dbPath(project, require('../engine/lib/data-dir.js').dirResolver()());
+  try {
+    return [db, `${db}-wal`, path.join(path.dirname(db), 'adopted.json')].map((p) => {
+      try { const st = fs.statSync(p); return `${st.mtimeMs}:${st.size}`; } catch (err) {
+        if (err.code === 'ENOENT') return '-';
+        throw err;
+      }
+    }).join('|');
+  } catch (err) {
+    console.error(`[boss-summary] dbStamp(${project}) failed: ${err.message}`);
+    return null;
+  }
+}
+
+/**
+ * Every project's rows of the window. The daemon asks every 30 s, so the reader is INCREMENTAL: it keeps,
+ * per project, the rows of the window, the last row id it saw and the stamp (mtime and size) of the db files.
+ * A project whose stamp did not change is not opened at all (opening 312 dbs costs seconds even with nothing
+ * new); a changed one asks the store only for rows with a greater id. Rows that left the window are dropped
+ * from the cache; a project whose db is gone leaves the cache with it.
+ * The first read opens every project's db (~17 s measured after a cold start): once first reads have taken
+ * budgetMs, the projects not yet in the cache wait for the next call and the answer says `complete: false`.
+ * @param {{listProjects:Function, getEventLogIsolated:Function, dbStamp?:Function}} [storeArg]  injectable for tests; the default store is stamped by dbStamp here, an injected one without dbStamp is opened on every call
  * @param {{now?:Function}} [opts]  clock, injectable for tests
  * @returns {(sinceTs:number, budgetMs?:number) => {rows:object[], complete:boolean}}
  */
@@ -99,8 +121,15 @@ function createRowReader(storeArg, { now = Date.now } = {}) {
       const cold = !cache.has(project);
       if (cold && coldMs >= budgetMs) { complete = false; continue; }
       const t0 = now();
-      const slot = cache.get(project) || { lastId: 0, rows: [] };
+      const slot = cache.get(project) || { lastId: 0, rows: [], stamp: null };
+      const stamp = storeArg ? (storeArg.dbStamp ? storeArg.dbStamp(project) : null) : dbStamp(project);
+      if (!cold && stamp != null && stamp === slot.stamp) {
+        slot.rows = slot.rows.filter((r) => Number(r.ts) >= sinceTs);
+        for (const r of slot.rows) rows.push(r);
+        continue;
+      }
       const fresh = store.getEventLogIsolated(project, { eventNames, sinceTs, sinceId: slot.lastId });
+      slot.stamp = stamp;
       for (const r of fresh) if (Number(r.id) > slot.lastId) slot.lastId = Number(r.id);
       slot.rows = slot.rows.filter((r) => Number(r.ts) >= sinceTs).concat(fresh);
       cache.set(project, slot);
@@ -131,4 +160,4 @@ async function run() {
   return summarizeBoss(rows, health, { now, healthError });
 }
 
-module.exports = { run, summarizeBoss, createRowReader, DAYS };
+module.exports = { run, summarizeBoss, createRowReader, dbStamp, DAYS };

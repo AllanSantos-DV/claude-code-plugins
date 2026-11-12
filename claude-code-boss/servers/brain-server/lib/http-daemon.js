@@ -34,7 +34,7 @@ const MAX_SESSIONS = 50; // limite de sessões simultâneas para evitar exaustã
 // Under the Stop hook's 29s worker deadline: a hook already running when a swap or a
 // backend switch shuts the daemon down gets its answer instead of "Connection closed".
 const SHUTDOWN_DRAIN_MS = 25_000;
-// How long a module read route's answer is reused (~0.7 s over 230 projects' metrics, measured).
+// How long a module read route's answer is reused (a warm read of 312 projects' metrics: 1.3 to 2.3 s, measured).
 const READ_CACHE_MS = 30_000;
 // A module read is a figure for a band, not a decision: its computation may outlast the reply and still
 // lands in the cache (the first one after a daemon start opens every project's metrics db: ~15 s measured).
@@ -105,6 +105,9 @@ export async function startHttpDaemon({ pluginRoot, dataDir, port, host = '127.0
       createRequire(import.meta.url)(path.join(pluginRoot, 'scripts', 'lib', 'hook-tools.js')).recordBackgroundLatency(name, runMs, lagMs, ok);
     },
   });
+  // The module read routes (the Boss band polls from every session) get their own worker: a first read opens every
+  // project's metrics db (~17 s) and, in the worker above, held every Stop and PostToolUse hook behind it.
+  const readWorker = createHookWorker({ pluginRoot });
   // C4c: per-hook latency (process-wide accumulator shared by every session's hookTools).
   // Read at /health time; an unloadable module must not stop the boot — reported, not hidden.
   const hookLatencyStats = () => {
@@ -152,13 +155,12 @@ export async function startHttpDaemon({ pluginRoot, dataDir, port, host = '127.0
   // Built on first use: an unloadable module must not stop the daemon from booting (the
   // embedder rule above) — the route answers 503 with the reason instead.
   let moduleHookTools = null;
-  const getModuleHookTools = () => {
-    if (!moduleHookTools) {
-      moduleHookTools = createRequire(import.meta.url)(path.join(pluginRoot, 'scripts', 'lib', 'hook-tools.js'))
-        .createHookTools({ pluginRoot, hookWorker, deadlines: Object.fromEntries(Object.values(MODULE_READ_ROUTES).map((n) => [n, READ_COMPUTE_MS])) });
-    }
-    return moduleHookTools;
-  };
+  let moduleReadTools = null;
+  const hookToolsFor = (worker, deadlines) => createRequire(import.meta.url)(path.join(pluginRoot, 'scripts', 'lib', 'hook-tools.js'))
+    .createHookTools({ pluginRoot, hookWorker: worker, deadlines });
+  const getModuleHookTools = () => (moduleHookTools = moduleHookTools || hookToolsFor(hookWorker));
+  const getModuleReadTools = () => (moduleReadTools = moduleReadTools
+    || hookToolsFor(readWorker, Object.fromEntries(Object.values(MODULE_READ_ROUTES).map((n) => [n, READ_COMPUTE_MS]))));
   const MODULE_HOOK_ROUTES = { '/hook/compaction-event': 'hook_compaction_event' };
   // Read-only GET routes for modules (hooks/boss.mjs polls one from every open session):
   // the answer is cached and a computation in flight is shared, so N sessions cost one.
@@ -168,7 +170,7 @@ export async function startHttpDaemon({ pluginRoot, dataDir, port, host = '127.0
     const hit = readCache.get(url);
     if (hit && hit.pending) return hit.pending;
     if (hit && Date.now() - hit.at < readCacheMs) return Promise.resolve(hit.value);
-    const pending = getModuleHookTools().handle(MODULE_READ_ROUTES[url], {}).then((out) => {
+    const pending = getModuleReadTools().handle(MODULE_READ_ROUTES[url], {}).then((out) => {
       const text = (out && out.content && out.content[0] && out.content[0].text) || '{}';
       const value = JSON.parse(text);
       const refusal = moduleReadRefusal(MODULE_READ_ROUTES[url], value);
@@ -204,7 +206,7 @@ export async function startHttpDaemon({ pluginRoot, dataDir, port, host = '127.0
           ok: true, ...proof, pluginRoot, dataDir, version, pid: process.pid, port,
           // The doctor checks the daemon's real runtime: the hook that spawned it may have had another node on PATH.
           node: { version: process.version, execArgv: process.execArgv, nodeOptions: process.env.NODE_OPTIONS || '' },
-          sessions: sessions.size, hookWorker: hookWorker.stats(), hookLatency: hookLatencyStats(), unhandledRejections, startedAt, uptimeMs: Date.now() - startedAt,
+          sessions: sessions.size, hookWorker: hookWorker.stats(), readWorker: readWorker.stats(), hookLatency: hookLatencyStats(), unhandledRejections, startedAt, uptimeMs: Date.now() - startedAt,
         }));
         return;
       }
@@ -414,6 +416,7 @@ export async function startHttpDaemon({ pluginRoot, dataDir, port, host = '127.0
     await closed;
     try { await kbWorker.shutdown(); } catch (e) { void e; }
     try { await hookWorker.shutdown(); } catch (e) { void e; }
+    try { await readWorker.shutdown(); } catch (e) { void e; }
     if (embedderModule) embedderModule.setDelegate(null); // never leave the module pointing at a closed worker
     try { await embedWorker.shutdown(); } catch (e) { void e; }
   }
