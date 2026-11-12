@@ -1,6 +1,6 @@
 # Claude Code Plugins
 
-Monorepo de plugins para [Claude Code Desktop](https://claude.ai/download) — desenvolvido por **Allan Santos**.
+Monorepo de plugins para [Claude Code Desktop](https://claude.ai/download) — mantido por **the maintainer**.
 
 ## Plugins
 
