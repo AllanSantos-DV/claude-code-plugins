@@ -32385,13 +32385,15 @@ async function folderCutRun(ce, { gated }) {
 }
 
 // The heartbeat alone, against a fake engine: only the notices it logs over `beats` ticks (withTranscript: classic SessionStart seen).
-// folderAnswer: what the daemon answers to the heartbeat's folder report ({status, text}), default a healthy reply.
-async function heartbeatNotices({ withTranscript, beats, folderAnswer, extraEnv = {}, breakdown = { rawMaxTokens: 1000000, autoCompactThreshold: 967000 } }) {
+// folderAnswer: what the daemon answers to the heartbeat's folder report ({status, text} or {throws}: a transport failure), default a healthy reply.
+// transport: (dir) => a $.http.fetch of its own (a real server), replacing the fake daemon.
+async function heartbeatNotices({ withTranscript, beats, folderAnswer, anyAnswer, transport, extraEnv = {}, breakdown = { rawMaxTokens: 1000000, autoCompactThreshold: 967000 } }) {
   const cmp = await import(require('url').pathToFileURL(path.join(ROOT, 'hooks', 'compaction.mjs')).href);
   const hooks = collectModuleHooks(cmp.register);
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-heartbeat-'));
   fs.writeFileSync(path.join(dir, 'brain-http.token'), 'tok');
-  fs.writeFileSync(path.join(dir, 'brain-http.lock.json'), JSON.stringify({ port: 1 }));
+  const realFetch = transport ? transport(dir) : null;
+  fs.writeFileSync(path.join(dir, 'brain-http.lock.json'), JSON.stringify({ port: realFetch ? realFetch.port : 1 }));
   const transcript = path.join(dir, 'session.jsonl');
   fs.writeFileSync(transcript, '');
   const config = { enabled: true, thresholdPercent: 30, minIntervalMs: 600000, folderTtl: true, warmCeilingTokens: 0, thresholdMaxTokens: 0 };
@@ -32400,18 +32402,20 @@ async function heartbeatNotices({ withTranscript, beats, folderAnswer, extraEnv 
   const $ = {
     env: { get: async (k) => env[k] },
     fs: { read: async (p) => fs.readFileSync(p, 'utf8') },
-    http: { fetch: async (url, init) => {
+    http: { fetch: realFetch || (async (url, init) => {
       if (url.split('?')[0].endsWith('/health')) {
         const nonce = new URL(url).searchParams.get('nonce');
         return { status: 200, ok: true, text: JSON.stringify({ dataDir: dir, proof: require('crypto').createHmac('sha256', 'tok').update(nonce).digest('hex') }) };
       }
       const payload = JSON.parse(JSON.parse(init.body).payload);
+      const down = anyAnswer && anyAnswer(payload.kind);
+      if (down && down.throws) throw new Error(down.throws);
       if (payload.kind === 'error') out.trail.push(payload);
       if (payload.kind === 'hello') out.hellos.push(payload);
-      if (folderAnswer && payload.kind === 'folder') { const a = folderAnswer(); return { status: a.status, ok: a.status === 200, text: a.text }; }
+      if (folderAnswer && payload.kind === 'folder') { const a = folderAnswer(); if (a.throws) throw new Error(a.throws); return { status: a.status, ok: a.status === 200, text: a.text }; }
       const reply = payload.kind === 'hello' ? { config } : payload.kind === 'folder' || payload.kind === 'folder-end' ? { folderTtl: { ttl: '5m', live: 1, allAbove: true, action: 'none' } } : {};
       return { status: 200, ok: true, text: JSON.stringify(reply) };
-    } },
+    }) },
     session: {
       id: async () => 'sid-heartbeat', cwd: async () => dir, root: async () => dir, authorize: async () => ({ kind: 'api-key' }),
       usage: async () => ({ context: { tokens: 400000, window: 1000000, breakdown } }),
@@ -32429,7 +32433,7 @@ async function heartbeatNotices({ withTranscript, beats, folderAnswer, extraEnv 
   await fire((t) => t.ms === 1);
   for (let i = 0; i < beats; i++) await fire((t) => t.ms === 120000);
   fs.rmSync(dir, { recursive: true, force: true });
-  return { shown: out.logs.filter((l) => /no transcript path/.test(l)), trail: out.trail.filter((e) => e.stage === 'heartbeat'), logs: out.logs, toasts: out.toasts, hellos: out.hellos };
+  return { shown: out.logs.filter((l) => /no transcript path/.test(l)), trail: out.trail.filter((e) => e.stage === 'heartbeat'), allTrail: out.trail, logs: out.logs, toasts: out.toasts, hellos: out.hellos };
 }
 
 test('compaction hook: at session start, CLAUDE_AUTOCOMPACT_PCT_OVERRIDE=15 on a 1M window is shown once (toast + log) naming the variable and recorded in the hello; without it nothing is shown', async () => {
@@ -32503,6 +32507,82 @@ test('compaction hook: a daemon that fail-opens the heartbeat\'s folder report (
   assertEq(r.logs, [], `a degraded daemon reply never reaches the screen, got ${JSON.stringify(r.logs)}`);
   const other = await heartbeatNotices({ withTranscript: false, beats: 1, folderAnswer: () => ({ status: 500, text: 'boom' }) });
   assert(other.logs.some((l) => /folder heartbeat failed: hook_compaction_event folder: daemon answered 500 boom/.test(l)), `a real failure is still shown: ${JSON.stringify(other.logs)}`);
+});
+
+// A real local daemon stand-in: answers /health with the proof, and destroys the connection of the first POST of a kind.
+function resettingDaemon({ resetFirstOf }) {
+  const http = require('http');
+  const seen = []; let resets = 0; let dir = null;
+  const server = http.createServer((req, res) => {
+    if (req.url.split('?')[0] === '/health') {
+      const nonce = new URL(req.url, 'http://x').searchParams.get('nonce');
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      return res.end(JSON.stringify({ dataDir: dir, proof: require('crypto').createHmac('sha256', 'tok').update(nonce).digest('hex') }));
+    }
+    let body = '';
+    req.on('data', (c) => { body += c; });
+    req.on('end', () => {
+      const payload = JSON.parse(JSON.parse(body).payload);
+      seen.push(payload.kind);
+      if (payload.kind === resetFirstOf && resets === 0) { resets += 1; return req.socket.destroy(); }
+      const reply = payload.kind === 'hello' ? { config: { enabled: true, thresholdPercent: 30, minIntervalMs: 600000, folderTtl: true, warmCeilingTokens: 0, thresholdMaxTokens: 0 } } : payload.kind === 'folder' ? { folderTtl: { ttl: '5m', live: 1, allAbove: true, action: 'none' } } : {};
+      res.writeHead(200, { 'Content-Type': 'application/json' }); res.end(JSON.stringify(reply));
+    });
+  });
+  const ready = new Promise((r) => server.listen(0, '127.0.0.1', r));
+  const factory = (d) => {
+    dir = d;
+    // The Claude Code module op wraps the runtime's error as "$.http.fetch(url) failed: CODE: message".
+    const fetchOp = (url, init) => new Promise((resolve, reject) => {
+      const u = new URL(url);
+      const req = http.request({ host: u.hostname, port: u.port, path: u.pathname + u.search, method: init && init.method || 'GET', headers: init && init.headers, agent: false }, (res) => {
+        let text = ''; res.on('data', (c) => { text += c; }); res.on('end', () => resolve({ status: res.statusCode, ok: res.statusCode < 300, text }));
+      });
+      req.on('error', (err) => reject(new Error(`$.http.fetch(${url}) failed: ${err.code}: The socket connection was closed unexpectedly`)));
+      if (init && init.body) req.write(init.body);
+      req.end();
+    });
+    fetchOp.port = server.address().port;
+    return fetchOp;
+  };
+  return { ready, factory, seen, close: () => new Promise((r) => { server.close(r); server.closeAllConnections(); }), resets: () => resets };
+}
+
+test('compaction hook: a connection the daemon resets is retried once on a fresh handshake — the folder report goes through and the person sees nothing', async () => {
+  const daemon = resettingDaemon({ resetFirstOf: 'folder' });
+  await daemon.ready;
+  try {
+    const r = await heartbeatNotices({ withTranscript: false, beats: 1, transport: daemon.factory });
+    assertEq(daemon.resets(), 1, 'the daemon reset one connection');
+    assertEq(r.logs, [], `a single reset is retried, never shown: ${JSON.stringify(r.logs)}`);
+    assert(daemon.seen.filter((k) => k === 'folder').length >= 3, `the reset report was sent again and the heartbeat still reports: ${daemon.seen}`);
+  } finally { await daemon.close(); }
+});
+
+test('compaction hook: transport failures that outlast the retry reach the trail with their time and the time since the last answer, and the screen only on every third in a row', async () => {
+  const down = () => ({ throws: '$.http.fetch(http://127.0.0.1:1/hook/compaction-event) failed: ECONNRESET: The socket connection was closed unexpectedly' });
+  let i = 0;
+  const downFor = (n) => (kind) => (kind !== 'hello' && i++ < n ? down() : {});
+  const heartbeatLogs = (r) => r.logs.filter((l) => /\d+ in a row\)/.test(l));
+  const two = await heartbeatNotices({ withTranscript: false, beats: 1, anyAnswer: downFor(2) });
+  assertEq(two.logs, [], `two in a row stay off the screen: ${JSON.stringify(two.logs)}`);
+  i = 0;
+  const r = await heartbeatNotices({ withTranscript: false, beats: 4, anyAnswer: downFor(10) });
+  const shown = heartbeatLogs(r);
+  assert(shown.length >= 1, `a long run of failures reaches the screen: ${JSON.stringify(r.logs)}`);
+  for (const line of shown) {
+    assert(/ECONNRESET.*\(at \d{4}-\d\d-\d\dT[\d:.]+Z, \d+ ms since the last daemon answer, \d+ in a row\)/.test(line), `time, gap and count are in the line: ${line}`);
+    assertEq(Number(/(\d+) in a row/.exec(line)[1]) % 3, 0, `shown only on every third: ${line}`);
+  }
+  const t = r.allTrail.filter((e) => e.stage === 'transport');
+  assert(t.length >= 3, `the failures reach the trail once the daemon answers again: ${JSON.stringify(r.allTrail)}`);
+  assert(t.every((e) => e.outcome === 'daemon-unreachable' && typeof e.sinceOkMs === 'number' && /ECONNRESET/.test(e.cause)), `each record has the cause and the gap: ${JSON.stringify(t)}`);
+});
+
+test('module-daemon isTransportError: a reset, refusal or closed socket is transport; an answer with a status or a degraded reply is not', async () => {
+  const { isTransportError } = await import(require('url').pathToFileURL(path.join(ROOT, 'scripts', 'lib', 'module-daemon.mjs')).href);
+  for (const m of ['$.http.fetch(http://127.0.0.1:38217/hook/x) failed: ECONNRESET: The socket connection was closed unexpectedly', 'connect ECONNREFUSED 127.0.0.1:38217', 'fetch failed', 'other side closed']) assert(isTransportError(new Error(m)), m);
+  for (const m of ['hook_compaction_event folder: daemon answered 500 boom', '[claude-code-boss] hook x degradado no daemon (fail-open): prazo']) assert(!isTransportError(new Error(m)), m);
 });
 
 test('compaction hook: the heartbeat does not warn about a missing transcript path when it has one (dangling else in 3.13.0)', async () => {

@@ -3,6 +3,7 @@
 ## [Unreleased]
 
 ### Fixed
+- **Um reset de conexão com o daemon deixa de aparecer como erro do batimento da pasta** (`hooks/compaction.mjs` `send`/`backgroundFailed`, `scripts/lib/module-daemon.mjs` `isTransportError`): o envio refaz o aperto de mão e repete uma vez quando a conexão cai (ECONNRESET, ECONNREFUSED, socket fechado); uma falha de transporte que sobra vai para a trilha com a hora e o tempo desde a última resposta do daemon, e só aparece na tela a cada terceira seguida.
 - **O diário da rajada de leitura não cresce mais sem limite** (`scripts/lib/read-burst.js`): `.runtime/read-burst.jsonl` passa a girar em 1 MB, guardando 3 arquivos.
 - **A rajada de leitura entregue e ainda aberta quando a sessão termina é fechada e medida** (`scripts/session-end.js`, `scripts/lib/read-burst.js` `forget`): o SessionEnd grava quantos dos arquivos lidos depois já estavam no pacote e apaga o estado da sessão, do agente principal e dos subagentes.
 - **O estado da rajada de leitura de uma sessão que terminou sem SessionEnd sai depois de 7 dias** (`scripts/runtime-sweep.js`): a limpeza do início de sessão agora olha a pasta `.runtime/read-burst/`.

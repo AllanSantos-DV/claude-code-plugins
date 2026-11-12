@@ -14,6 +14,12 @@ const msg = (err) => String(err && err.message ? err.message : err);
  */
 export const isDaemonDegraded = (err) => /degradado no daemon \(fail-open\)/.test(msg(err));
 
+/**
+ * The request never got an answer: the connection was reset, refused or closed under it (an idle socket the daemon already
+ * closed, a daemon restarting). Retrying on a fresh connection is safe; an answer with a status is not this.
+ */
+export const isTransportError = (err) => /ECONNRESET|ECONNREFUSED|EPIPE|ETIMEDOUT|UND_ERR_SOCKET|socket connection was closed|connection (?:was )?closed|other side closed|fetch failed/i.test(msg(err));
+
 // ── HMAC-SHA256 in plain JS: the module's environment has no Node (so no `crypto`). Checked against node:crypto in test-units. ──
 const K256 = [
   0x428a2f98, 0x71374491, 0xb5c0fbcf, 0xe9b5dba5, 0x3956c25b, 0x59f111f1, 0x923f82a4, 0xab1c5ed5, 0xd807aa98, 0x12835b01, 0x243185be, 0x550c7dc3, 0x72be5d74, 0x80deb1fe, 0x9bdc06a7, 0xc19bf174,

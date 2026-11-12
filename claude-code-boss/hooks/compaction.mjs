@@ -27,7 +27,7 @@
 // Observability: every decision and cut goes to the boss metrics store through the
 // daemon (POST /hook/compaction-event → tool hook_compaction_event → scripts/compaction-event.js).
 
-import { daemon as sharedDaemon, isDaemonDegraded } from '../scripts/lib/module-daemon.mjs';
+import { daemon as sharedDaemon, isDaemonDegraded, isTransportError } from '../scripts/lib/module-daemon.mjs';
 import { planCompaction, buildBrief, decideTiming, decideTurnEnd, classifyResume, estimateTokens, thresholdFor, fallbackWindow, chooseCompaction, isCacheWarm, isMechanicalCut, resumedAnswerAt, decidePhaseRestart, lastTurnDelivered, phaseRestartNotice, describeFailure, compactResultError, engineAutoCompactPoint, autoCompactWarning, DEFAULTS } from '../scripts/lib/compaction-core.mjs';
 
 // Kept equal to package.json by scripts/sync-version.js. The daemon compares it with the installed plugin: a session
@@ -40,6 +40,9 @@ const PERSON_ORIGINS = new Set(['composer', 'bridge', 'sdk']);
 const FOLDER_HEARTBEAT_MS = 2 * 60000;
 // A cut of ours the engine refuses reaches compactFailed right after the hook answers; its run event waits this long for it.
 const ACCEPT_WAIT_MS = 2000;
+// Consecutive transport failures before the person is told; one is a socket the daemon closed while idle.
+const TRANSPORT_FAILS_SHOWN = 3;
+const TRANSPORT_TRAIL_MAX = 10;
 
 function newCtx() {
   return {
@@ -69,6 +72,9 @@ function newCtx() {
     folderAbove: false,      // past the threshold at the last look (what the folder report says)
     folderTtl: null,         // the daemon's last answer for this folder ({ttl, live, allAbove, action})
     heartbeat: false,        // the folder heartbeat loop is running
+    transportFails: 0,       // background steps in a row that got no answer from the daemon
+    transportTrail: [],      // those failures, written to the trail with the next answer
+    lastOkAt: null,          // when the daemon last answered this session
     // A compaction ran and no API call has been seen since: every size reading is still the pre-cut one (E2E 14/10:
     // the gate compacted the just-cut session again from it). No new compaction until a real call is observed.
     awaitCallAfterCut: false,
@@ -119,23 +125,56 @@ async function send($, ctx, kind, data) {
   const post = async (d) => $.http.fetch(`${d.base}/hook/compaction-event`, {
     method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${d.token}` }, body: JSON.stringify(args),
   });
-  let r = await post(await daemon($, ctx));
+  let r;
+  try { r = await post(await daemon($, ctx)); }
+  catch (err) { // a socket the daemon already closed: one retry on a fresh handshake and connection
+    if (!isTransportError(err)) throw err;
+    r = await post(await daemon($, ctx, true));
+  }
   if (r.status === 401) r = await post(await daemon($, ctx, true)); // the daemon restarted with a new token
   if (!r.ok) throw new Error(`hook_compaction_event ${kind}: daemon answered ${r.status} ${String(r.text).slice(0, 200)}`);
+  ctx.lastOkAt = await $.clock.now();
+  ctx.transportFails = 0;
+  flushTransportTrail($, ctx);
   const out = r.text ? JSON.parse(r.text) : {};
   if (out.systemMessage) throw new Error(out.systemMessage); // the hook degraded in the daemon (visible)
   return out;
 }
 
-// A background step (trail, folder report, observation) failed. A daemon that fail-opened the hook already has it in
-// its log and /health; the person cannot act on it, so it stays off the screen. Any other failure is said.
-function backgroundFailed($, what, err) {
-  if (!isDaemonDegraded(err)) $.ui.log(`compaction: ${what}: ${String(err && err.message ? err.message : err)}`);
+// Transport failures the daemon could not hear about when they happened go to the trail with the next answer.
+function flushTransportTrail($, ctx) {
+  const pending = ctx.transportTrail.splice(0);
+  for (const data of pending) send($, ctx, 'error', data).catch((err) => { void err; }); // a failing trail write is not retried: the next failure records itself
+}
+
+/**
+ * A background step (trail, folder report, observation) failed. A daemon that fail-opened the hook already has it in
+ * its log and /health; the person cannot act on it, so it stays off the screen. A transport failure (reset, refused)
+ * goes to the trail with its time and the time since the last answer, and reaches the screen only after
+ * TRANSPORT_FAILS_SHOWN in a row. Any other failure is said.
+ * @param {object} $  the module's ops
+ * @param {object} ctx  per-session state
+ * @param {string} what  the step that failed
+ * @param {Error} err
+ */
+function backgroundFailed($, ctx, what, err) {
+  if (isDaemonDegraded(err)) return;
+  const text = String(err && err.message ? err.message : err);
+  if (!isTransportError(err)) { $.ui.log(`compaction: ${what}: ${text}`); return; }
+  ctx.transportFails += 1;
+  Promise.resolve($.clock.now()).then((now) => {
+    const sinceOkMs = ctx.lastOkAt == null ? null : now - ctx.lastOkAt;
+    const detail = `${what}: ${text} (at ${new Date(now).toISOString()}, ${sinceOkMs == null ? 'no daemon answer yet' : `${sinceOkMs} ms since the last daemon answer`}, ${ctx.transportFails} in a row)`;
+    if (ctx.transportTrail.length < TRANSPORT_TRAIL_MAX) {
+      ctx.transportTrail.push({ stage: 'transport', outcome: 'daemon-unreachable', cause: detail, sinceOkMs });
+    }
+    if (ctx.transportFails % TRANSPORT_FAILS_SHOWN === 0) $.ui.log(`compaction: ${detail}`);
+  });
 }
 
 // Trail events never block the session.
 function emit($, ctx, kind, data) {
-  send($, ctx, kind, data).catch((err) => backgroundFailed($, `${kind} event not recorded`, err));
+  send($, ctx, kind, data).catch((err) => backgroundFailed($, ctx, `${kind} event not recorded`, err));
 }
 
 function noteVersion($, ctx, reply) {
@@ -191,7 +230,7 @@ async function folderFromReply($, ctx, reply) {
     const { thr } = await currentWindow($, ctx);
     const tokens = (Number(o.input) || 0) + (Number(o.read) || 0) + (Number(o.write) || 0);
     ctx.folderAbove = thr.thresholdTokens != null && tokens >= thr.thresholdTokens;
-  } catch (err) { backgroundFailed($, 'folder threshold check failed', err); }
+  } catch (err) { backgroundFailed($, ctx, 'folder threshold check failed', err); }
 }
 
 // Every 2 min: pick up the calls that landed in the transcript after their turn ended (interactive: the answer's
@@ -212,7 +251,7 @@ function startHeartbeat($, ctx) {
       // A turn-end re-check armed by the 1h window while the turn's 5m writes had not landed yet would wait the hour
       // and the next message would re-write a cold cache: re-judge it now by the shorter window.
       if (ctx.turnEndWaitTtlMs && ttlInUse(ctx).ttlMs < ctx.turnEndWaitTtlMs) await turnEnd($, ctx);
-    })().catch((err) => backgroundFailed($, 'folder heartbeat failed', err)).finally(beat);
+    })().catch((err) => backgroundFailed($, ctx, 'folder heartbeat failed', err)).finally(beat);
   });
   beat();
 }
@@ -259,7 +298,7 @@ async function noteCold($, ctx, detectedBy, extra = {}) {
       detectedBy, answerAt: s.lastAnswerAt, coldAt: s.lastAnswerAt == null ? null : s.lastAnswerAt + s.ttlMs, idleMs: s.idleMs,
       ttlMs: s.ttlMs, ttlSource: s.ttlSource, resumed: s.resumed, tokens, tokensSource, ...extra,
     });
-  } catch (err) { backgroundFailed($, 'cache-cold event not recorded', err); }
+  } catch (err) { backgroundFailed($, ctx, 'cache-cold event not recorded', err); }
 }
 
 // The expiry timer of the current answer (re-armed by a newer answer or a changed TTL).
@@ -312,7 +351,7 @@ async function ensureConfig($, ctx) {
   if (ctx.configLoaded) return;
   try { await hello($, ctx); } catch (err) {
     // Never act on defaults: the user may have switched compaction off (slider, free profile).
-    backgroundFailed($, 'boss config unreachable — not acting this time', err);
+    backgroundFailed($, ctx, 'boss config unreachable — not acting this time', err);
   }
 }
 
@@ -352,13 +391,13 @@ async function afterTurn($, ctx) {
     await folderFromReply($, ctx, reply);
     if (ctx.interactive && ctx.config.folderTtl !== false && ctx.folder) {
       try { await reportFolder($, ctx); } catch (err) {
-        backgroundFailed($, 'folder TTL report failed', err);
+        backgroundFailed($, ctx, 'folder TTL report failed', err);
       }
       startHeartbeat($, ctx);
     }
     await watchCold($, ctx); // after the observation: the TTL is the one this turn's writes proved
   } catch (err) {
-    backgroundFailed($, 'turn observation failed', err);
+    backgroundFailed($, ctx, 'turn observation failed', err);
   }
 }
 
@@ -461,7 +500,7 @@ async function turnEnd($, ctx, trigger = 'turn-end') {
 // answer time and may have no live size: the transcript knows both (the daemon reads it; records nothing).
 async function transcriptTail($, ctx) {
   try { return (await send($, ctx, 'tail', {})).tail || null; } catch (err) {
-    $.ui.log(`compaction: transcript reading failed, the gate has no age/size for this session: ${String(err && err.message ? err.message : err)}`);
+    backgroundFailed($, ctx, 'transcript reading failed, the gate has no age/size for this session', err);
     return null;
   }
 }
@@ -483,14 +522,14 @@ async function reopenLook($, ctx) {
     const tokens = context.tokens ?? ctx.measuredTokens ?? tail.tokens;
     const warm = isCacheWarm({ now: await $.clock.now(), lastAnswerAt: ctx.lastAnswerAt, ttlMs: ttlInUse(ctx).ttlMs });
     ctx.folderAbove = thr.thresholdTokens != null && tokens != null && tokens >= thr.thresholdTokens && warm;
-  } catch (err) { backgroundFailed($, 'folder threshold at reopen failed', err); }
+  } catch (err) { backgroundFailed($, ctx, 'folder threshold at reopen failed', err); }
   return tail;
 }
 
 // Join the folder (below or at its real side of the threshold): a folder switched to 5m by the others goes back to 1h.
 async function joinFolder($, ctx) {
   if (!ctx.folder) return;
-  try { await reportFolder($, ctx); } catch (err) { backgroundFailed($, 'folder join failed', err); }
+  try { await reportFolder($, ctx); } catch (err) { backgroundFailed($, ctx, 'folder join failed', err); }
   startHeartbeat($, ctx); // also after a failed join: the next beat reports again instead of the session never counting in its folder
 
 }
@@ -827,9 +866,9 @@ export const register = (on) => {
     // Leave the folder FIRST (session.end's budget is short): if this session held its TTL at 5m, it goes back now.
     // E2E 14/10: after the transcript read below, the leave never reached the daemon. A crash is swept by the next
     // report of any session (and the next session start).
-    try { await reportFolder($, ctx, { end: true }); } catch (err) { backgroundFailed($, 'folder leave failed', err); }
+    try { await reportFolder($, ctx, { end: true }); } catch (err) { backgroundFailed($, ctx, 'folder leave failed', err); }
     if (ctx.config.enabled && ctx.transcriptPath) {
-      try { const { id, reply } = await observeCalls($, ctx); settleFrom($, ctx, id, reply); } catch (err) { backgroundFailed($, 'end-of-session observation failed', err); }
+      try { const { id, reply } = await observeCalls($, ctx); settleFrom($, ctx, id, reply); } catch (err) { backgroundFailed($, ctx, 'end-of-session observation failed', err); }
     }
     if (ctx.run && ctx.run.ours && !ctx.run.emitted) sayRun($, ctx, ctx.run, { engineAccepted: null, acceptance: 'session-ended-before-confirmation' });
     return next(e);
