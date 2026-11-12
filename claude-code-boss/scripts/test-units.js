@@ -33815,7 +33815,12 @@ test('http-daemon GET /hook/boss-summary: REAL daemon — the read runs in its o
   try {
     const base = `http://127.0.0.1:${d.httpServer.address().port}`;
     const token = fs.readFileSync(path.join((await (await fetch(`${base}/health`)).json()).dataDir, 'brain-http.token'), 'utf8').trim();
-    assertEq((await fetch(`${base}/hook/boss-summary`, { headers: { Authorization: `Bearer ${token}` } })).status, 200);
+    let status = 0;
+    for (let i = 0; i < 40 && status !== 200; i++) {
+      status = (await fetch(`${base}/hook/boss-summary`, { headers: { Authorization: `Bearer ${token}` } })).status;
+      if (status !== 200) await new Promise((r) => setTimeout(r, 500));
+    }
+    assertEq(status, 200, 'a cold read that outlasts the reply answers 503 while it warms, then 200');
     const h = await (await fetch(`${base}/health`)).json();
     assert(h.readWorker && h.readWorker.spawned === 1, 'the read spawned its own worker');
     assertEq(h.hookWorker.spawned, 0, 'the hook worker the Stop and PostToolUse hooks queue on stayed idle');
