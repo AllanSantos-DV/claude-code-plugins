@@ -31455,6 +31455,26 @@ test('folder-ttl.report: switch when all are past it, restore after the cut, oth
   } finally { sb.done(); }
 });
 
+test('folder-ttl.report: a zero-filled or garbled state file is moved aside and the report succeeds, instead of throwing "not valid JSON" on every call', () => {
+  const ft = require('./lib/folder-ttl.js');
+  const sb = folderTtlSandbox();
+  const quiet = console.error; console.error = () => {};
+  try {
+    const dir = path.join(sb.root, 'proj'); fs.mkdirSync(dir, { recursive: true });
+    const run = () => ({ status: 128, stdout: '', stderr: '' });
+    const opts = (now) => ({ now, file: sb.state, run, engineIdle: ENGINE_IDLE_OFF });
+    for (const [label, bytes] of [['zero-filled', Buffer.alloc(3283)], ['garbled', Buffer.from([0xff, 0xfe, 0x80, 0x81, 0xc3, 0x28])]]) {
+      fs.writeFileSync(sb.state, bytes);
+      const r = ft.report({ sessionId: 'A', folder: dir, above: false }, opts(1000));
+      assertEq([r.action, r.live], ['none', 1], `${label}: the report goes through`);
+      assert(r.stateRecovered && fs.readFileSync(r.stateRecovered).equals(bytes), `${label}: the unreadable file is kept aside, byte for byte`);
+      assert(JSON.parse(fs.readFileSync(sb.state, 'utf8')).folders, `${label}: a valid state file is written back`);
+    }
+    fs.writeFileSync(sb.state, Buffer.alloc(16));
+    assertEq(ft.sweep({ now: 2000, file: sb.state, run, engineIdle: ENGINE_IDLE_OFF }).swept, [], 'the sweep over an unreadable file does not throw');
+  } finally { console.error = quiet; sb.done(); }
+});
+
 test('folder-ttl.report: a file we create is removed on restore (and its .claude dir), a dead owner is swept at anyone\'s next report, session end restores', () => {
   const ft = require('./lib/folder-ttl.js');
   const sb = folderTtlSandbox();

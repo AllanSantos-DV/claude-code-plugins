@@ -136,10 +136,24 @@ function restore(dir, owned) {
   return { restored: true };
 }
 
+/**
+ * The folder state. A file that does not parse (a crash left it zero-filled or torn: the write is atomic but not
+ * fsynced) is moved aside and the state starts empty, so one bad file cannot fail every later report.
+ * @param {string} file
+ * @returns {{folders: object, recovered?: string}}  `recovered` = where the unreadable file went
+ */
 function loadState(file) {
   if (!fs.existsSync(file)) return { folders: {} };
-  const s = JSON.parse(fs.readFileSync(file, 'utf8'));
-  return s && typeof s === 'object' && s.folders ? s : { folders: {} };
+  try {
+    const s = JSON.parse(fs.readFileSync(file, 'utf8'));
+    return s && typeof s === 'object' && s.folders ? s : { folders: {} };
+  } catch (err) {
+    if (!(err instanceof SyntaxError)) throw err;
+    const aside = `${file}.corrupt-${Date.now()}`;
+    fs.renameSync(file, aside);
+    console.error(`[folder-ttl] state file unreadable (${err.message.slice(0, 80)}); moved to ${aside}, starting empty`);
+    return { folders: {}, recovered: aside };
+  }
 }
 
 /** Bring one folder's file in line with its plan. Mutates the entry; returns what happened. */
@@ -207,9 +221,11 @@ function report(r, { now = Date.now(), file = statePath(), run = hiddenSpawnSync
   if (r.end) delete entry.sessions[r.sessionId];
   else entry.sessions[r.sessionId] = { above: r.above === true, seenAt: now };
   const { mine, swept, errors } = reconcileAll(state, key, now, { run, liveMs, stepAside });
+  const { recovered } = state;
+  delete state.recovered;
   writeJsonAtomic(file, state);
   if (errors.length && (!mine || mine.action !== 'error')) swept.push(...errors.map((m) => ({ action: 'error', detail: m })));
-  return { folder: entry.dir, live: mine.live.length, allAbove: mine.allAbove, ttl: mine.ttl, action: mine.action, detail: mine.detail, swept };
+  return { folder: entry.dir, live: mine.live.length, allAbove: mine.allAbove, ttl: mine.ttl, action: mine.action, detail: mine.detail, swept, ...(recovered && { stateRecovered: recovered }) };
 }
 
 /**
