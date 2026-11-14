@@ -26,7 +26,10 @@
  * cooldown-store, recall-health, active-research-state) this is a best-effort,
  * last-writer-wins residual — acceptable for advisory state, but a true fix
  * would need cross-process locking or a per-entry journal (as the turn/verify/
- * failure/retrieval journals already use). No fsync: not power-loss durable.
+ * failure/retrieval journals already use).
+ *
+ * The temp file is fsynced before the rename: without it a crash or power loss can leave the
+ * renamed file with its data blocks never written (zero-filled), which parses as invalid JSON.
  */
 const fs = require('fs');
 const path = require('path');
@@ -69,22 +72,37 @@ function _renameWithRetry(rename, tmp, file) {
 }
 
 /**
+ * Write `data` to `file` and flush it to disk before returning.
+ * @param {string} file
+ * @param {string|Buffer} data
+ */
+function writeFileSynced(file, data) {
+  const fd = fs.openSync(file, 'w');
+  try {
+    fs.writeSync(fd, data);
+    fs.fsyncSync(fd);
+  } finally {
+    fs.closeSync(fd);
+  }
+}
+
+/**
  * Atomically write `data` to `file` via a unique temp sibling + rename.
  * @param {string} file destination path
  * @param {string|Buffer} data payload
  * @param {{mkdirSync?:Function,writeFileSync?:Function,renameSync?:Function,unlinkSync?:Function}} [io]
- *        optional fs seam for tests (defaults to node `fs`)
+ *        optional fs seam for tests (defaults to node `fs`; the default write fsyncs)
  */
 function writeFileAtomic(file, data, io) {
   const mkdir = (io && io.mkdirSync) || fs.mkdirSync;
-  const write = (io && io.writeFileSync) || fs.writeFileSync;
+  const write = (io && io.writeFileSync) || writeFileSynced;
   const rename = (io && io.renameSync) || fs.renameSync;
   const unlink = (io && io.unlinkSync) || fs.unlinkSync;
 
   mkdir(path.dirname(file), { recursive: true });
   const tmp = tempPathFor(file);
-  write(tmp, data);
   try {
+    write(tmp, data);
     _renameWithRetry(rename, tmp, file);
   } catch (err) {
     // Commit failed: the destination is untouched. Best-effort cleanup of the

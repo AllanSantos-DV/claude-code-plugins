@@ -13943,7 +13943,11 @@ test('router: 429 seguido de reset ao ler o corpo vai ao plano B, não vira 502'
         res.writeHead(429, { 'content-type': 'application/json' });
         res.on('error', (err) => { void err; });
         res.write('{"type":"error"');
-        setTimeout(() => res.socket.resetAndDestroy(), 50);
+        // The reset waits two check phases after the timer: a reset that lands before the client's poll phase
+        // reads the 429 head discards it (RST drops unread data) and the request fails before any status exists.
+        setTimeout(() => setImmediate(() => setImmediate(() => res.socket.resetAndDestroy())), 50);
+        const stallUntil = Date.now() + 150;
+        while (Date.now() < stallUntil) { /* a late event loop, as on a loaded machine */ }
         return;
       }
       res.writeHead(200, { 'content-type': 'application/json' });
@@ -23197,6 +23201,32 @@ test('atomic-write: retries a transient rename failure (EPERM) instead of droppi
   atomicLib.writeFileAtomic(f, JSON.stringify({ v: 'committed' }), io);
   assert(calls === 3, `expected 3 rename attempts (2 EPERM + 1 ok), got ${calls}`);
   assertEq(JSON.parse(fs.readFileSync(f, 'utf-8')), { v: 'committed' });
+});
+
+test('atomic-write: the temp file is fsynced before the rename, and the descriptor is closed even when the flush fails', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-atomic-'));
+  const f = path.join(dir, 'state.json');
+  const { fsyncSync, renameSync, closeSync } = fs;
+  const order = [];
+  let closed = 0;
+  try {
+    fs.fsyncSync = (fd) => { order.push('fsync'); return fsyncSync(fd); };
+    fs.renameSync = (a, b) => { order.push('rename'); return renameSync(a, b); };
+    atomicLib.writeFileAtomic(f, JSON.stringify({ v: 1 }));
+    assertEq(order, ['fsync', 'rename'], 'data reaches the disk before the name is published');
+    assertEq(JSON.parse(fs.readFileSync(f, 'utf-8')), { v: 1 });
+
+    fs.fsyncSync = () => { throw new Error('EIO: flush failed'); };
+    fs.closeSync = (fd) => { closed += 1; return closeSync(fd); };
+    let message = '';
+    try { atomicLib.writeFileAtomic(f, JSON.stringify({ v: 2 })); } catch (err) { message = err.message; }
+    assert(/EIO/.test(message), 'a failed flush surfaces, it is not swallowed');
+    assertEq(closed, 1, 'the descriptor is closed');
+    assertEq(fs.readdirSync(dir), ['state.json'], 'no orphan temp file is left');
+    assertEq(JSON.parse(fs.readFileSync(f, 'utf-8')), { v: 1 }, 'the destination keeps the last good content');
+  } finally {
+    Object.assign(fs, { fsyncSync, renameSync, closeSync });
+  }
 });
 
 test('atomic-write: a NON-transient rename error is NOT retried (fails fast, dest untouched)', () => {

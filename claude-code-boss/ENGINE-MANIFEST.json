@@ -11,7 +11,7 @@
     "engine/brain-graph.js": "b13ecdd9a75b036f68305e9835012cd6c0a337db9a74d54d38495f0788085864",
     "engine/brain-index.js": "68a2745982756d0db0a144d22891d21ad69ef106231de8c5e8e65341da8027b8",
     "engine/brain-store.js": "403c8db4f6ba68c40cf8d1cef7d9a865fa778f1a528640514cad27cf6d8a0f73",
-    "engine/lib/atomic-write.js": "30facc15cbf4c99f8be1b5219c3e0e3c7170f8491d68af884c2c81c376c3fc1c",
+    "engine/lib/atomic-write.js": "7ffaa3a06173855ade24ed2e0b633406ed481c3d6176be70797f4be96007d5f0",
     "engine/lib/brain-config.js": "131ef555117facaa6a4822df75e129032baeb1d1dddf29340d8d019cd43bdd0a",
     "engine/lib/command-signature.js": "25bc28e9c3a90512a8af98cd444502eaf967cec79b977000405319b8ba6f96d6",
     "engine/lib/config-merge.js": "33561b03262009f2bd5cda829d7d35649b3bf22b4f23d53ed5f7cb71df87779f",
