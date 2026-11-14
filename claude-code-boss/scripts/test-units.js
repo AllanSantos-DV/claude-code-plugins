@@ -18100,11 +18100,16 @@ test('http-daemon shutdown: frees the port at once but answers the requests alre
       req.write('{"jsonrpc":"2.0","id":7,');
       d.__finish = () => req.end('"method":"tools/list","params":{}}');
     });
-    await new Promise((r) => setTimeout(r, 100));
+    const deadline = Date.now() + 10000;
+    while (await new Promise((r) => d.httpServer.getConnections((e, n) => r(n))) < 1) {
+      assert(Date.now() < deadline, 'the in-flight request reached the server');
+      await new Promise((r) => setTimeout(r, 10));
+    }
     const down = d.shutdown();
-    await new Promise((r) => setTimeout(r, 100));
     let refused = null;
-    try { await fetch(`http://127.0.0.1:${port}/health`); } catch (err) { refused = err; }
+    while (!refused && Date.now() < deadline) {
+      try { await fetch(`http://127.0.0.1:${port}/health`); await new Promise((r) => setTimeout(r, 10)); } catch (err) { refused = err; }
+    }
     assert(refused, 'the port is released while draining, so a swap can start the new daemon');
     d.__finish();
     const r = await pending;
