@@ -232,6 +232,38 @@ export function createKbLockPool(poolSize) {
   return locks;
 }
 
+/** Slack over the arms' own deadline, so a recall that only just fits still lands before the hard stop. */
+const RECALL_BUDGET_SLACK_MS = 250;
+
+/**
+ * Races a recall against its hard budget.
+ * @param {Promise<object>} work  the recall in flight (its late rejection is swallowed, not unhandled)
+ * @param {number} budgetMs  0 disables the ceiling
+ * @returns {Promise<{expired: boolean, value?: object}>} rejects only when the recall itself failed in time
+ */
+export async function withRecallBudget(work, budgetMs) {
+  if (!(budgetMs > 0)) return { expired: false, value: await work };
+  let timer;
+  const stop = new Promise((resolve) => { timer = setTimeout(() => resolve({ expired: true }), budgetMs + RECALL_BUDGET_SLACK_MS); });
+  work.catch((err) => { void err; });
+  try {
+    return await Promise.race([work.then((value) => ({ expired: false, value })), stop]);
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+/**
+ * Builds the Brain MCP server: tool definitions plus the request handlers behind them.
+ * @param {object} [opts]
+ * @param {string} opts.pluginRoot  plugin directory the tools load their scripts from
+ * @param {string} [opts.mode]  'http' (shared daemon) or 'stdio'
+ * @param {object} [opts.kbWorker]  daemon-wide pool that keeps synchronous SQLite off the main thread
+ * @param {object} [opts.kbLock]  lock serializing the KB tools
+ * @param {object} [opts.hookWorker]  heavy-lane worker for hook tools
+ * @param {Function} [opts.requestRestart]  asks the daemon supervisor for a restart
+ * @returns {object} the MCP server
+ */
 export function createBrainServer({ pluginRoot, mode = 'http', kbWorker, kbLock, hookWorker, requestRestart = () => {}, _testHooks } = {}) {
   const PLUGIN_ROOT = pluginRoot;
 
@@ -1176,11 +1208,19 @@ export function createBrainServer({ pluginRoot, mode = 'http', kbWorker, kbLock,
           if (args && args.cwd && !focusId) return emptyReply({ reason: 'no-project-id' });
           const project = resolveProject(args);
           const retrieveCore = require(path.join(PLUGIN_ROOT, 'engine', 'lib', 'retrieve-core.js'));
-          // Same rationale as getKB()/recordLessonMetric() above: the LOCAL (non
-          // mcp-memory) search path inside retrieve() runs synchronous better-sqlite3
-          // work — route it through kbWorker in 'http' mode so brain_retrieve_context
-          // (fires on every UserPromptSubmit) can't block /health for other sessions.
-          const { entries, capabilities, degraded, degradedReason, reason } = await retrieveCore.retrieve(prompt || '', { project: focusId || project, ancestorIds: chain, kinds }, kbWorker ? { store: kbWorker.clientsFor(focusId || project).storeClient } : {});
+          // The local search runs synchronous SQLite: through kbWorker so it cannot block /health.
+          // The hook path (not a structured caller) has a hard budget: past it the prompt goes on without memory.
+          const budgetMs = structured ? 0 : require(path.join(PLUGIN_ROOT, 'engine', 'lib', 'brain-config.js')).getRecallCompose().hookBudgetMs;
+          const work = retrieveCore.retrieve(prompt || '', { project: focusId || project, ancestorIds: chain, kinds, budgetMs }, kbWorker ? { store: kbWorker.clientsFor(focusId || project).storeClient } : {});
+          const outcome = await withRecallBudget(work, budgetMs);
+          if (outcome.expired) {
+            timed('expired');
+            console.error(`[brain_retrieve_context] recall passed its ${budgetMs}ms budget: the prompt goes on without memory`);
+            try { require(path.join(PLUGIN_ROOT, 'engine', 'lib', 'recall-health.js')).record('budget', `recall passed ${budgetMs}ms`, Date.now() - t0); }
+            catch (e) { console.error(`[brain_retrieve_context] recall-health: ${e.message}`); }
+            return emptyReply({ reason: 'budget', degraded: true, degradedReason: 'budget' });
+          }
+          const { entries, capabilities, degraded, degradedReason, reason } = outcome.value;
           // mcp_tool hooks on UserPromptSubmit only inject when the tool returns a
           // JSON output with hookSpecificOutput.additionalContext; empty → no inject.
           // The journal measures the REAL retrieval (full entries); injection

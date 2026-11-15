@@ -264,10 +264,11 @@ function mergeFactsSpine(composeFacts, armFacts) {
  * `deps` is a test seam (inject a fake backend/recallHealth); production passes none.
  * @returns {Promise<{entries:object[], capabilities:object[], keywords:string[], project:string, reason?:string}>}
  */
-async function retrieveRemote(prompt, { project, ancestorIds, topK, keywords, kinds = null }, deps = {}) {
+async function retrieveRemote(prompt, { project, ancestorIds, topK, keywords, kinds = null, budgetMs = 0 }, deps = {}) {
   const backendRef = deps.backend || backend;
   const healthRef = deps.recallHealth || recallHealth;
   const cc = brainConfig.getRecallCompose();
+  if (budgetMs > 0) cc.timeoutMs = Math.min(cc.timeoutMs, budgetMs);
   const startedAt = Date.now();
   const isTimeout = (err) => /timed out|timeout/i.test((err && err.message) || '');
   // Checks BOTH this function's own fast breaker AND brain-backend.js's shared
@@ -459,6 +460,7 @@ async function lexicalFallback(storeRef, keywords, { project, topK, kinds }) {
  *   degraded (+ degradedReason): the semantic search failed or was unavailable — an empty result then
  *   means "could not look", not "nothing relevant"; entries found by keyword instead carry `lexical:true`.
  *   opts.kinds — keep only entries of these memory types (and no capability pointers).
+ *   opts.budgetMs — remote backend only: ceiling for each arm (never above the configured compose timeout).
  */
 async function retrieve(prompt, opts = {}, deps = {}) {
   const project = opts.project || 'default';
@@ -472,7 +474,7 @@ async function retrieve(prompt, opts = {}, deps = {}) {
 
   // Remote backend → the external daemon owns embeddings + search.
   if (backend.peekMode() === 'mcp-memory') {
-    return retrieveRemote(prompt, { project, ancestorIds, topK, keywords, kinds }, deps);
+    return retrieveRemote(prompt, { project, ancestorIds, topK, keywords, kinds, budgetMs: opts.budgetMs > 0 ? opts.budgetMs : 0 }, deps);
   }
 
   const storeRef = deps.store || store;

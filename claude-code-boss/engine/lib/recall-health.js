@@ -41,7 +41,7 @@ function fileFor(opts) { return path.join(storeDir(opts), '.runtime', 'recall-he
 // (retrieve-core createArmBreaker), so the turn ran with the other arm only.
 // 'compose-slow': compose timed out while the daemon answered the project search (slow
 // embedder), as opposed to 'timeout', where nothing answered.
-const DEGRADED_REASONS = new Set(['no-compose', 'remote-error', 'timeout', 'compose-slow', 'project-arm-timeout', 'project-arm-error', 'circuit-open', 'retrieve-error', 'compose-skipped', 'project-arm-skipped']);
+const DEGRADED_REASONS = new Set(['no-compose', 'remote-error', 'timeout', 'compose-slow', 'project-arm-timeout', 'project-arm-error', 'circuit-open', 'retrieve-error', 'compose-skipped', 'project-arm-skipped', 'budget']);
 
 // Degraded-ok: compose answered with `recall_warning` (some blocks empty because a step
 // failed). The recall was injected, so it counts as ok, but it is tracked and its warning kept.

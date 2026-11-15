@@ -1834,7 +1834,7 @@ test('brain-backend deleteMcp: a server refusal of the delete surfaces as an err
   const docs = { d4: { metadata: { project_id: 'otherProj' } } };
   const { deleted } = ownerScopedDocs(docs);
   const daemon = await startFakeDaemon({
-    toolResult: ({ name, arguments: args }) => (name === 'get_document'
+    toolResult: ({ name }) => (name === 'get_document'
       ? { content: [{ type: 'text', text: JSON.stringify({ id: 'd4', content: 'c', metadata: docs.d4.metadata }) }] }
       : { isError: true, content: [{ type: 'text', text: 'owner_denied: no' }] }),
   });
@@ -6288,6 +6288,27 @@ test('retrieve-core retrieveRemote: compose que estoura com o braco do projeto m
   assert(require('../engine/lib/recall-health.js').isDegraded('compose-slow'), 'a slow compose still lost its blocks: degraded');
 });
 
+test('retrieve-core retrieveRemote: o orcamento do hook corta compose e braco abaixo do timeout configurado e o prompt segue com o que respondeu', async () => {
+  retrieveCore.__testHooks.resetCircuit();
+  const hang = (_q, opts) => new Promise((_, rej) => opts.signal.addEventListener('abort', () => rej(opts.signal.reason)));
+  const reasons = [];
+  const t0 = Date.now();
+  const out = await withUserConfig({ kb: { retrieval: { compose: { timeoutMs: 8000 } } } }, () => retrieveCore.__testHooks.retrieveRemote('a real prompt here', { project: 'projB', ancestorIds: [], topK: 5, keywords: ['x'], budgetMs: 150 },
+    { backend: fakeComposeBackend({ onCompose: hang, onSearch: async () => [{ id: 'p1', title: 'hit', score: 0.9 }] }), recallHealth: { record: (r) => reasons.push(r) }, armBreakers: { compose: retrieveCore.__testHooks.createArmBreaker(), project: retrieveCore.__testHooks.createArmBreaker() } }));
+  assert(Date.now() - t0 < 2000, `answered inside the budget, took ${Date.now() - t0} ms`);
+  assertEq(reasons, ['compose-slow']);
+  assertEq(out.entries.map((e) => e.id), ['p1']);
+  retrieveCore.__testHooks.resetCircuit();
+});
+
+test('brain-config.getRecallCompose: hookBudgetMs vale 1800 por padrao, nunca passa de 2000 e ignora valor invalido', () => {
+  const get = () => require('../engine/lib/brain-config.js').getRecallCompose().hookBudgetMs;
+  assertEq(withUserConfig({}, get), 1800);
+  assertEq(withUserConfig({ kb: { retrieval: { compose: { hookBudgetMs: 9000 } } } }, get), 2000);
+  assertEq(withUserConfig({ kb: { retrieval: { compose: { hookBudgetMs: 900 } } } }, get), 900);
+  assertEq(withUserConfig({ kb: { retrieval: { compose: { hookBudgetMs: 10 } } } }, get), 1800);
+});
+
 test('recall-health: compose-partial conta como ok, fica fora da taxa de degradacao e guarda o ultimo aviso', () => {
   const rh = require('../engine/lib/recall-health.js');
   let st = {};
@@ -10627,9 +10648,9 @@ test('scope-rules: the hook is declared, served by the daemon with the origin in
   const hooks = JSON.parse(fs.readFileSync(path.join(ROOT, 'hooks', 'hooks.json'), 'utf8')).hooks;
   const ups = hooks.UserPromptSubmit.flatMap((g) => g.hooks).filter((h) => h.tool === 'hook_scope_rules');
   assertEq(ups.length, 1, 'UserPromptSubmit carries one hook_scope_rules entry');
-  const post = hooks.PostToolUse.filter((g) => g.hooks.some((h) => h.tool === 'hook_scope_rules'));
-  assertEq(post.length, 1, 'PostToolUse carries one hook_scope_rules entry');
-  assert(new RegExp(`^${post[0].matcher}$`).test('Read') && new RegExp(`^${post[0].matcher}$`).test('Edit'), 'evidence from Read and Edit');
+  const { routesFor: scopeRoutes } = require('./lib/hook-routes.js');
+  assert(['Read', 'Edit'].every((t) => scopeRoutes('PostToolUse', t).some((r) => r.tool === 'hook_scope_rules')), 'PostToolUse routes Read and Edit to hook_scope_rules');
+  assert(new RegExp('^(?:' + hooks.PostToolUse[0].matcher + ')$').test('Read'), 'and the one PostToolUse entry reaches them');
   const ht = require('./lib/hook-tools.js');
   const spec = ht.HOOKS.hook_scope_rules;
   // mcp_tool hooks have no command line to carry --hook-origin: every one declares it in its degraded text.
@@ -18239,6 +18260,53 @@ test('SessionStart with the memory server UP spawns NOTHING (headless `claude -p
   assertEq(await ens.ensureMemoryServer({ McpClient: Down, kickLauncher: () => false }), 'error', 'no launcher installed is reported, not counted as kicked');
 });
 
+test('brain-daemon-ensure.UserPromptSubmit: a memory server that died mid-session is relaunched once per failure, found at run time in the registry (isolated daemon and port)', async () => {
+  const ens = require('./brain-daemon-ensure.js');
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-relaunch-'));
+  const runDir = path.join(dir, 'run');
+  fs.mkdirSync(runDir);
+  const writeRegistry = (port) => fs.writeFileSync(path.join(runDir, 'daemon.json'), JSON.stringify({ url: `http://127.0.0.1:${port}`, port }));
+  const prev = process.env.MCP_RUN_DIR;
+  process.env.MCP_RUN_DIR = runDir;
+  let kicked = 0;
+  const deps = (now) => ({
+    root: ROOT, data: dir, dir, now, runSetupInBackground: () => false,
+    ensureDaemon: async () => ({ status: 'current' }),
+    loadConfig: () => ({ backend: { type: 'mcp-memory', mcpMemory: { transport: 'http' } } }),
+    kickLauncher: () => { kicked++; return true; },
+  });
+  const ups = { hook_event_name: 'UserPromptSubmit' };
+  const marker = path.join(dir, '.runtime', 'memory-server-kick.json');
+  const daemon = await startFakeDaemon();
+  try {
+    writeRegistry(daemon.port);
+    await ens.run(ups, deps(1000));
+    assertEq(kicked, 0, 'a healthy server is never relaunched');
+    assert(!fs.existsSync(marker), 'no kick marker while the server answers');
+
+    await daemon.close();
+    writeRegistry(daemon.port);
+    await ens.run(ups, deps(2000));
+    assertEq(kicked, 1, 'the dead server is relaunched at the next prompt');
+    await ens.run(ups, deps(2000 + 1000));
+    assertEq(kicked, 1, 'a prompt inside the cooldown does not kick again');
+    await ens.run(ups, deps(2000 + ens.KICK_MARKER_COOLDOWN_MS + 1));
+    assertEq(kicked, 2, 'a server still down after the cooldown is tried again');
+
+    const revived = await startFakeDaemon();
+    try {
+      writeRegistry(revived.port);
+      await ens.run(ups, deps(9e6));
+      assertEq(kicked, 2, 'a server back up is not kicked');
+      assert(!fs.existsSync(marker), 'the marker is cleared once the server answers again');
+    } finally { await revived.close(); }
+  } finally {
+    if (prev === undefined) delete process.env.MCP_RUN_DIR; else process.env.MCP_RUN_DIR = prev;
+    try { await daemon.close(); } catch (err) { void err; }
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 test('mcp-launcher.kickLauncher on Windows goes through wscript + run-hidden.vbs (cmd.exe detached opened a VISIBLE terminal window — measured)', () => {
   const L = require('./lib/mcp-bootstrap/launcher.js');
   const [cmd, argv] = L.kickCommand('C:\\u\\.mcp-memory\\bin\\mcp-memory-daemon.cmd', 'win32');
@@ -18873,10 +18941,10 @@ test('skill-metric.run: chamada da ferramenta Skill grava skill.invoked com o no
 
 test('hooks.json: PostToolUse matcher Skill -> hook_skill_metric com tool_name e tool_input', () => {
   const hj = JSON.parse(fs.readFileSync(path.join(ROOT, 'hooks', 'hooks.json'), 'utf8')).hooks;
-  const g = (hj.PostToolUse || []).find((x) => x.matcher === 'Skill');
-  assert(g, 'grupo PostToolUse:Skill');
-  const h = g.hooks.find((x) => x.tool === 'hook_skill_metric');
-  assert(h && h.input.tool_name === '${tool_name}' && h.input.tool_input === '${tool_input}', 'hook_skill_metric recebe tool_name/tool_input');
+  const h = hj.PostToolUse[0].hooks[0];
+  assert(new RegExp('^(?:' + hj.PostToolUse[0].matcher + ')$').test('Skill'), 'o despachante recebe a ferramenta Skill');
+  assert(require('./lib/hook-routes.js').routesFor('PostToolUse', 'Skill').some((r) => r.tool === 'hook_skill_metric'), 'e a roteia para hook_skill_metric');
+  assert(h.input.tool_name === '${tool_name}' && h.input.tool_input === '${tool_input}', 'o despachante recebe tool_name/tool_input');
 });
 
 // ─── U2 value-summary (aggregation) + session-summary detector ───────────────
@@ -21296,18 +21364,20 @@ test('user-prompt-submit-dispatcher.withTimeout: distinguishes a genuine error f
   assertEq(okOutcome.value, 'VALUE');
 });
 
-test('session-start-dispatcher.DETECTORS: 17 detectors, correct order + shape (model-router-ensure excluded)', () => {
+test('session-start-dispatcher.DETECTORS: 19 detectors, correct order + shape (model-router-ensure excluded)', () => {
   const d = require('./session-start-dispatcher.js');
   const names = d.DETECTORS.map(x => x.name);
   assertEq(names, [
-    'brain-daemon-ensure', 'memory-rotate', 'runtime-sweep', 'session-whitelist', 'brain-health',
+    'brain-daemon-ensure', 'mcp-memory-auto-update', 'memory-rotate', 'runtime-sweep', 'session-whitelist', 'brain-health',
     'project-snapshot', 'curation-session', 'doctor-advisory', 'doctor-first-run',
     'review-checklist-advisory', 'tuning-advisory', 'value-digest', 'project-identity-advisory',
     'backend-onboarding-advisory', 'marketplace-autoupdate', 'graph-warm', 'powershell-advisory', 'policy-inject',
   ]);
   assert(d.DETECTORS.every(x => typeof x.mod.run === 'function'), 'every detector exposes run()');
   assert(!names.includes('model-router-ensure'), 'model-router-ensure must stay OUT (process.exit() in its main flow)');
-  assertEq(d.DETECTORS.find(x => x.name === 'brain-daemon-ensure').timeoutMs, 120000);
+  assertEq(d.DETECTORS.find(x => x.name === 'brain-daemon-ensure').timeoutMs, 5000, 'the session start waits seconds for the daemon check, never for the update');
+  assert(d.DETECTORS.filter(x => !x.bg).every(x => x.timeoutMs <= 5000), 'every detector the session waits for has a ceiling of a few seconds');
+  assertEq(d.DETECTORS.filter(x => x.bg).map(x => x.name), ['mcp-memory-auto-update', 'memory-rotate', 'runtime-sweep', 'marketplace-autoupdate', 'graph-warm']);
   assertEq(d.DETECTORS.find(x => x.name === 'doctor-first-run').timeoutMs, 5000, 'the cost audit runs in a detached process: SessionStart only claims it');
   const hooks = JSON.parse(fs.readFileSync(path.join(ROOT, 'hooks', 'hooks.json'), 'utf8'));
   const sessionCommands = hooks.hooks.SessionStart.flatMap(group => group.hooks || []).map(h => (h.args || []).join(' '));
@@ -21326,6 +21396,61 @@ test('session-start-dispatcher.dispatch: no SessionStart de COMPACT roda so o qu
   ran.length = 0;
   await d.dispatch({ hook_event_name: 'SessionStart', source: 'startup' }, { detectors: fakes });
   assertEq(ran.length, d.DETECTORS.length, 'a real start runs every detector');
+});
+
+test('session-start-dispatcher.dispatch: a fase de primeiro plano nao espera os detectores bg, e a fase bg roda so eles', async () => {
+  const d = require('./session-start-dispatcher.js');
+  const ran = [];
+  const fakes = [
+    { name: 'fg', mod: { run: () => { ran.push('fg'); return 'FG'; } } },
+    { name: 'slow-bg', mod: { run: async () => { ran.push('slow-bg'); await new Promise((r) => setTimeout(r, 300)); return 'BG'; } }, bg: true, timeoutMs: 1000 },
+  ];
+  const t0 = Date.now();
+  assertEq(await d.dispatch({}, { detectors: fakes }), 'FG');
+  assert(Date.now() - t0 < 250 && ran.join() === 'fg', 'the foreground pass neither ran nor waited for the bg detector');
+  assertEq(await d.dispatch({}, { detectors: fakes, phase: 'background' }), 'BG');
+  assertEq(ran, ['fg', 'slow-bg']);
+});
+
+test('hook-owner.declaredOrigin: um hook mcp_tool de plugin e atribuido pelo command plugin:<plugin>:<servidor>/<tool> que o host grava', () => {
+  const { declaredOrigin, describe } = require('./lib/hook-owner.js');
+  assertEq(declaredOrigin({ command: 'plugin:claude-code-boss:brain-server/hook_correction_detect' }), 'claude-code-boss');
+  assertEq(declaredOrigin({ command: 'plugin:other-plugin:srv/some_tool' }), 'other-plugin');
+  assertEq(declaredOrigin({ command: 'brain/brain_retrieve_context' }), null, 'a user-level alias carries no plugin: still undeclared');
+  assertEq(declaredOrigin({ command: 'node x.js --hook-origin=skill-repo' }), 'skill-repo');
+  assertEq(describe({ type: 'hook_cancelled', hookName: 'UserPromptSubmit', timedOut: true, timeoutMs: 5000, command: 'plugin:claude-code-boss:brain-server/hook_scope_rules' }),
+    'Hook UserPromptSubmit estourou o tempo (5s) → origem: claude-code-boss.');
+});
+
+test('mcp-server.withRecallBudget: devolve o que chegou a tempo, corta o que passa do orcamento e engole a rejeicao tardia', async () => {
+  const { withRecallBudget } = await import(require('url').pathToFileURL(path.join(ROOT, 'servers', 'brain-server', 'lib', 'mcp-server.js')).href);
+  assertEq(await withRecallBudget(Promise.resolve({ a: 1 }), 100), { expired: false, value: { a: 1 } });
+  assertEq(await withRecallBudget(Promise.resolve({ a: 2 }), 0), { expired: false, value: { a: 2 } }, 'budget 0 = no ceiling');
+  const t0 = Date.now();
+  const late = new Promise((_, rej) => setTimeout(() => rej(new Error('late failure')), 600));
+  assertEq(await withRecallBudget(late, 50), { expired: true });
+  assert(Date.now() - t0 < 500, `stopped at the budget, took ${Date.now() - t0} ms`);
+  await new Promise((r) => setTimeout(r, 650));
+  let threw = null;
+  try { await withRecallBudget(Promise.reject(new Error('fast failure')), 100); } catch (err) { threw = err; }
+  assertEq(threw && threw.message, 'fast failure', 'a recall that fails in time still reaches the handler fail-open path');
+});
+
+test('brain-daemon-ensure: o auto-update em segundo plano deixa a falha como aviso que o proximo prompt toma uma vez; no SessionStart o run() pula o update quando pedido', async () => {
+  const bde = require('./brain-daemon-ensure.js');
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-bde-notice-'));
+  assertEq(bde.takeAutoUpdateNotice({ dir }), null);
+  await bde.runAutoUpdateInBackground({ hook_event_name: 'SessionStart' }, { dir, loadConfig: () => ({}), runAutoUpdate: async () => ({ status: 'current' }) });
+  assertEq(bde.takeAutoUpdateNotice({ dir }), null, 'success leaves nothing to tell');
+  await bde.runAutoUpdateInBackground({ hook_event_name: 'SessionStart' }, { dir, loadConfig: () => ({}), runAutoUpdate: async () => ({ status: 'error', error: 'boom', advisory: '[BRAIN] auto-update falhou: boom' }) });
+  assertEq(bde.takeAutoUpdateNotice({ dir }), '[BRAIN] auto-update falhou: boom');
+  assertEq(bde.takeAutoUpdateNotice({ dir }), null, 'told once');
+  let updates = 0;
+  const deps = { root: ROOT, data: dir, runSetupInBackground: () => false, ensureDaemon: async () => ({ status: 'ok' }), loadConfig: () => ({ backend: { type: 'local' } }), runAutoUpdate: async () => { updates++; return { status: 'current' }; } };
+  await bde.run({ hook_event_name: 'SessionStart' }, { ...deps, skipAutoUpdate: true });
+  assertEq(updates, 0, 'skipAutoUpdate: the session start does not run the update');
+  await bde.run({ hook_event_name: 'SessionStart' }, deps);
+  assertEq(updates, 1, 'standalone run() keeps its old behavior');
 });
 
 test('session-start-dispatcher.dispatch: side-effect-only detectors (non-string return) are excluded from the merged text', async () => {
@@ -25234,7 +25359,7 @@ test('U5: curation-detect journals a bulky MAIN-session command, not a sub-agent
   assertEq(tj.readEntries(sMain).length, 1, 'main session: bulky command journaled for its Stop');
   assertEq(tj.readEntries(sSub).length, 0, 'sub-agent: not journaled for the parent Stop');
   const hooks = JSON.parse(fs.readFileSync(path.join(ROOT, 'hooks', 'hooks.json'), 'utf8')).hooks;
-  for (const tool of ['hook_posttoolusebash_dispatcher', 'hook_posttoolusefailure_dispatcher']) {
+  for (const tool of ['hook_posttooluse_dispatcher', 'hook_posttoolusefailure_dispatcher']) {
     const h = Object.values(hooks).flat().flatMap(g => g.hooks || []).find(x => x.tool === tool);
     assertEq(h.input.agent_id, '${agent_id}', `${tool} passes agent_id`);
   }
@@ -25445,7 +25570,8 @@ test('PowerShell parity: error-guard, curation-detect and decision-detect treat 
   assertEq(await dd.run({ tool_name: 'Read', tool_input: { command: 'git commit -m "x"' } }), undefined, 'decision-detect ignores non-shell tools');
 
   const hooks = JSON.parse(fs.readFileSync(path.join(ROOT, 'hooks', 'hooks.json'), 'utf8')).hooks;
-  const tools = (event, name) => hooks[event].filter(g => new RegExp(`^(?:${g.matcher})$`).test(name)).flatMap(g => g.hooks.map(h => h.tool));
+  const { routesFor: routed } = require('./lib/hook-routes.js');
+  const tools = (event, name) => (hooks[event].some(g => new RegExp('^(?:' + g.matcher + ')$').test(name)) ? routed(event, name).map(r => r.tool) : []);
   assert(tools('PostToolUse', 'PowerShell').includes('hook_posttoolusebash_dispatcher'), 'PostToolUse dispatcher matches PowerShell');
   assert(tools('PreToolUse', 'PowerShell').includes('hook_error_guard'), 'error-guard matches PowerShell');
   assert(!tools('PreToolUse', 'PowerShell').includes('hook_curation_guard'), 'curation-guard is NOT registered a second time on the PowerShell matcher (two updatedInput owners overwrite each other): powershell-guard composes the curation redirect with the 5.1 chain fix into ONE updatedInput');
@@ -25526,12 +25652,14 @@ test('session-practices: the free profile and a hook switched off in the dashboa
 
 test('session-practices: wired as an mcp_tool sibling on Bash and PowerShell, with agent_id', () => {
   const hooks = JSON.parse(fs.readFileSync(path.join(ROOT, 'hooks', 'hooks.json'), 'utf8')).hooks;
+  const { routesFor: routedTo } = require('./lib/hook-routes.js');
   for (const tool of ['Bash', 'PowerShell']) {
-    const hs = hooks.PreToolUse.filter((g) => new RegExp(`^(?:${g.matcher})$`).test(tool)).flatMap((g) => g.hooks).filter((h) => h.tool === 'hook_session_practices');
-    assertEq(hs.length, 1, `registered once on ${tool}`);
-    assertEq(hs[0].type, 'mcp_tool');
-    assertEq(hs[0].input.agent_id, '${agent_id}', 'sub-agent id reaches the hook');
+    assert(hooks.PreToolUse.some((g) => new RegExp('^(?:' + g.matcher + ')$').test(tool)), 'the PreToolUse entry reaches ' + tool);
+    assertEq(routedTo('PreToolUse', tool).filter((r) => r.tool === 'hook_session_practices').length, 1, 'routed once on ' + tool);
   }
+  const hs = hooks.PreToolUse[0].hooks[0];
+  assertEq(hs.type, 'mcp_tool');
+  assertEq(hs.input.agent_id, '${agent_id}', 'sub-agent id reaches the hook');
   assert(require('./lib/hook-tools.js').HOOKS.hook_session_practices, 'served by the daemon');
 });
 
@@ -30779,7 +30907,12 @@ test('plugin-updater.killStale: so casa modulos da PASTA DE CACHE do plugin, nao
     // but each must really be called by a shipped module, so none is left orphaned.
     const { HOOKS: SPECS_G } = require('./lib/hook-tools.js');
     const moduleCalled = Object.keys(SPECS_G).filter(n => SPECS_G[n].caller === 'module');
-    assertEq([...new Set(hookEntries.map(h => h.tool))].sort(), [...hookTools.names].filter(n => !moduleCalled.includes(n)).sort());
+    const { ROUTES: ROUTES_G, DISPATCHERS: DISPATCHERS_G } = require('./lib/hook-routes.js');
+    const routedTools = Object.values(ROUTES_G).flat().map(r => r.tool);
+    assertEq([...new Set([...hookEntries.map(h => h.tool), ...routedTools])].sort(), [...hookTools.names].filter(n => !moduleCalled.includes(n)).sort());
+    for (const [dispatcher, event] of Object.entries(DISPATCHERS_G)) {
+      assertEq(hookEntries.filter(h => h.tool === dispatcher).length, 1, event + ': exactly one hooks.json entry for ' + dispatcher);
+    }
     // The entry (hooks.json "modules", one per plugin) imports one file per feature from hooks/.
     const modulesSrc = fs.readdirSync(path.join(ROOT, 'hooks')).filter(f => f.endsWith('.mjs')).map(f => fs.readFileSync(path.join(ROOT, 'hooks', f), 'utf8')).join('\n');
     // …through a daemon route (the tools are unlisted, a module cannot $.mcp.call them):
@@ -30798,6 +30931,100 @@ test('plugin-updater.killStale: so casa modulos da PASTA DE CACHE do plugin, nao
     for (const s of ['pretooluse-bash-dispatcher', 'graph-guard', 'policy-enforce-shadow', 'posttoolusebash-dispatcher', 'file-edit-detect', 'policy-glob-inject', 'skill-metric', 'posttoolusefailure-dispatcher', 'stop-dispatcher', 'policy-inject']) {
       assert(!spawned.some(c => c.includes(`/scripts/${s}.js`)), `${s} must not be spawned anymore`);
     }
+  });
+
+  // ── one dispatcher call per tool event (the 8 PreToolUse and 7 PostToolUse entries it replaced) ──
+  const { routesFor, unionMatcher } = require('./lib/hook-routes.js');
+  const { mergeHookOutputs } = require('./lib/hook-merge.js');
+  const READ_BURST_TOOLS = ['Read', 'Grep', 'Glob', 'LS', 'mcp__smart-tool__smart_search', 'mcp__smart-tool__smart_search_result', 'mcp__smart-tool__smart_scout', 'Edit', 'Write', 'MultiEdit', 'NotebookEdit', 'Bash', 'PowerShell'];
+  // What the old hooks.json ran for each tool: [event, tool name, hooks].
+  const OLD_WIRING = [
+    ['PreToolUse', 'Bash', ['hook_curation_guard', 'hook_error_guard', 'hook_session_practices']],
+    ['PreToolUse', 'PowerShell', ['hook_error_guard', 'hook_powershell_guard', 'hook_session_practices']],
+    ['PreToolUse', 'Write', ['hook_file_format_guard']],
+    ['PreToolUse', 'Edit', ['hook_policy_enforce_shadow']],
+    ['PreToolUse', 'Grep', ['hook_graph_guard']],
+    ['PreToolUse', 'Glob', ['hook_graph_guard']],
+    ['PreToolUse', 'Read', []],
+    ['PreToolUse', 'Task', []],
+    ['PostToolUse', 'Bash', ['hook_posttoolusebash_dispatcher', 'hook_read_burst']],
+    ['PostToolUse', 'PowerShell', ['hook_posttoolusebash_dispatcher', 'hook_read_burst']],
+    ['PostToolUse', 'Skill', ['hook_skill_metric']],
+    ['PostToolUse', 'Write', ['hook_file_format_guard', 'hook_file_edit_detect', 'hook_policy_glob_inject', 'hook_scope_rules', 'hook_read_burst']],
+    ['PostToolUse', 'Edit', ['hook_file_edit_detect', 'hook_policy_glob_inject', 'hook_scope_rules', 'hook_read_burst']],
+    ['PostToolUse', 'MultiEdit', ['hook_file_edit_detect', 'hook_policy_glob_inject', 'hook_scope_rules', 'hook_read_burst']],
+    ['PostToolUse', 'NotebookEdit', ['hook_file_edit_detect', 'hook_policy_glob_inject', 'hook_scope_rules', 'hook_read_burst']],
+    ['PostToolUse', 'Read', ['hook_scope_rules', 'hook_read_burst']],
+    ['PostToolUse', 'Grep', ['hook_read_burst']],
+    ['PostToolUse', 'mcp__smart-tool__smart_scout', ['hook_read_burst']],
+    ['PostToolUse', 'Task', []],
+  ];
+  test('hook-routes: cada ferramenta aciona os mesmos hooks que o hooks.json antigo acionava, e o matcher do hooks.json cobre exatamente essas ferramentas', () => {
+    for (const [event, tool, expected] of OLD_WIRING) {
+      assertEq(routesFor(event, tool).map(r => r.tool).sort(), [...expected].sort(), `${event} ${tool}`);
+    }
+    const hooks = JSON.parse(fs.readFileSync(path.join(ROOT, 'hooks', 'hooks.json'), 'utf8')).hooks;
+    for (const event of ['PreToolUse', 'PostToolUse']) {
+      assertEq(hooks[event].length, 1, `${event}: one group`);
+      assertEq(hooks[event][0].matcher, unionMatcher(event));
+      assertEq(hooks[event][0].hooks.length, 1, `${event}: one call per event`);
+    }
+    assert(READ_BURST_TOOLS.every(t => new RegExp('^(?:' + hooks.PostToolUse[0].matcher + ')$').test(t)), 'every read-burst tool still reaches the dispatcher');
+    assertEq(hooks.PreToolUse[0].hooks[0].tool, 'hook_pretooluse_dispatcher');
+    assertEq(hooks.PostToolUse[0].hooks[0].tool, 'hook_posttooluse_dispatcher');
+    assert(hooks.PreToolUse[0].hooks[0].timeout <= 6 && hooks.PostToolUse[0].hooks[0].timeout <= 6, 'a guard that hangs costs a few seconds, not the old 8-10');
+  });
+
+  test('hook-merge: deny vence ask vence allow, contextos e mensagens somam, updatedInput some quando a chamada e negada', () => {
+    const j = (o) => JSON.stringify(o);
+    const hso = (x) => ({ hookSpecificOutput: { hookEventName: 'PreToolUse', ...x } });
+    assertEq(mergeHookOutputs([]), '{}');
+    assertEq(mergeHookOutputs(['{}', '']), '{}');
+    const m = JSON.parse(mergeHookOutputs([
+      j({ systemMessage: 'a', ...hso({ permissionDecision: 'allow', updatedInput: { command: 'x' }, additionalContext: 'c1' }) }),
+      j({ systemMessage: 'b', ...hso({ permissionDecision: 'deny', permissionDecisionReason: 'no', additionalContext: 'c2' }) }),
+    ]));
+    assertEq(m.hookSpecificOutput.permissionDecision, 'deny');
+    assertEq(m.hookSpecificOutput.permissionDecisionReason, 'no');
+    assert(!('updatedInput' in m.hookSpecificOutput), 'a denied call is not rewritten');
+    assertEq(m.hookSpecificOutput.additionalContext, 'c1\n\nc2');
+    assertEq(m.systemMessage, 'a b');
+    const ask = JSON.parse(mergeHookOutputs([j(hso({ permissionDecision: 'allow' })), j(hso({ permissionDecision: 'ask', updatedInput: { command: 'y' } }))]));
+    assertEq([ask.hookSpecificOutput.permissionDecision, ask.hookSpecificOutput.updatedInput], ['ask', { command: 'y' }]);
+    const bad = [];
+    assertEq(mergeHookOutputs(['{not json', j({ systemMessage: 'ok' })], { onBad: (err) => bad.push(err.message) }), j({ systemMessage: 'ok' }));
+    assertEq(bad.length, 1);
+  });
+
+  test('dispatcher: a resposta do hook_pretooluse_dispatcher e a fusao das respostas dos hooks que ele aciona', async () => {
+    const ev = { ...base, session_id: `dsp-par-${Date.now()}`, hook_event_name: 'PreToolUse', tool_name: 'Bash', tool_input: { command: 'sleep 300' }, agent_id: '' };
+    const subs = [];
+    for (const r of routesFor('PreToolUse', 'Bash')) subs.push(await viaTool(r.tool, { ...ev, session_id: `${ev.session_id}-solo` }, proj));
+    const direct = JSON.parse(await viaTool('hook_pretooluse_dispatcher', ev, proj));
+    assertEq(direct.hookSpecificOutput.permissionDecision, 'deny', JSON.stringify(direct));
+    assert(/run_in_background: true/.test(direct.hookSpecificOutput.permissionDecisionReason), JSON.stringify(direct));
+    assertEq(direct, JSON.parse(mergeHookOutputs(subs)));
+  });
+
+  test('dispatcher: ferramenta sem hook roteado responde {} sem chamar ninguem, e cada hook roteado guarda a propria latencia', async () => {
+    assertEq(await viaTool('hook_pretooluse_dispatcher', { ...base, hook_event_name: 'PreToolUse', tool_name: 'Task', tool_input: {} }, proj), '{}');
+    assertEq(await viaTool('hook_posttooluse_dispatcher', { ...base, hook_event_name: 'PostToolUse', tool_name: 'Task', tool_input: {}, tool_response: {} }, proj), '{}');
+    await viaTool('hook_pretooluse_dispatcher', { ...base, hook_event_name: 'PreToolUse', tool_name: 'Bash', tool_input: { command: 'echo lat' } }, proj);
+    const stats = require('./lib/hook-tools.js').hookLatencyStats();
+    assert(stats.hook_pretooluse_dispatcher && stats.hook_pretooluse_dispatcher.calls >= 1, 'the dispatcher records its own latency');
+    assert(stats.hook_curation_guard && stats.hook_curation_guard.calls >= 1, 'and each routed hook keeps its own');
+  });
+
+  test('dispatcher: prazos e eventos dos hooks roteados continuam conhecidos pelo alarme de latencia', () => {
+    const ht = require('./lib/hook-tools.js');
+    const dl = ht.deadlinesFromHooksJson(ROOT);
+    const ev = ht.eventsFromHooksJson(ROOT);
+    assert(dl.hook_pretooluse_dispatcher <= 5000, `dispatcher deadline ${dl.hook_pretooluse_dispatcher}`);
+    for (const r of [...routesFor('PreToolUse', 'Bash'), ...routesFor('PostToolUse', 'Edit')]) {
+      assert(Number.isFinite(dl[r.tool]), `deadline for ${r.tool}`);
+    }
+    assertEq([ev.hook_error_guard, ev.hook_scope_rules, ev.hook_read_burst], ['PreToolUse', 'UserPromptSubmit', 'PostToolUse']);
+    assertEq(ev.brain_retrieve_context, 'UserPromptSubmit');
   });
 
   // ── G2: heavy lane runs in the daemon's hook worker, not on the main thread ──
@@ -30989,10 +31216,12 @@ test('plugin-updater.killStale: so casa modulos da PASTA DE CACHE do plugin, nao
     const { HOOKS: SPECS_D } = require('./lib/hook-tools.js');
     // module-called tools have no hooks.json entry: they run on the default deadline.
     // + brain_retrieve_context: not a hook_* tool, but hooks.json calls it on every prompt (TIMED_TOOLS).
-    assertEq(Object.keys(d).sort(), [...[...hookTools.names].filter(n => SPECS_D[n].caller !== 'module'), 'brain_retrieve_context'].sort());
+    assertEq(Object.keys(d).sort(), [...[...hookTools.names].filter(n => !SPECS_D[n] || SPECS_D[n].caller !== 'module'), 'brain_retrieve_context'].sort());
     assertEq(d.hook_stop_dispatcher, 29000);
-    assertEq(d.hook_curation_guard, 7000);
+    assertEq(d.hook_pretooluse_dispatcher, 5000);
+    assertEq(d.hook_curation_guard, 4000, 'a routed hook keeps its own deadline under the dispatcher');
     assertEq(d.hook_graph_guard, 4000);
+    assertEq(d.brain_retrieve_context, 3000, 'the recall is cut near its budget, not at the old 30 s');
   });
 
   test('G5: an inline hook past its deadline answers with the visible fail-open message, not a hang', async () => {
@@ -34670,9 +34899,11 @@ test('file-format-guard: Write over a CRLF / BOM file is repaired on disk with n
 test('file-format-guard: hooks.json / daemon tool / config wiring', () => {
   const fs = require('fs'), path = require('path');
   const hooks = JSON.parse(fs.readFileSync(path.join(ROOT, 'hooks', 'hooks.json'), 'utf8')).hooks;
-  const uses = (ev) => hooks[ev].filter((g) => g.hooks.some((h) => h.tool === 'hook_file_format_guard')).map((g) => g.matcher);
+  const { ROUTES } = require('./lib/hook-routes.js');
+  const uses = (ev) => ROUTES[ev].filter((r) => r.tool === 'hook_file_format_guard').map((r) => r.matcher);
   assertEq(uses('PreToolUse'), ['Write']);
   assertEq(uses('PostToolUse'), ['Write']);
+  assert(hooks.PreToolUse.length === 1 && hooks.PostToolUse.length === 1, 'reached through the one dispatcher entry per event');
   assert(require('./lib/hook-tools.js').HOOKS.hook_file_format_guard, 'registered');
   const c = require('./lib/hooks-config.js').getFileFormatGuard();
   assertEq(c, { enabled: true });

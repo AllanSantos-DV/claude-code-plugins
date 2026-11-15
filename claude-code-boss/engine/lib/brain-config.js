@@ -230,6 +230,9 @@ function getRecallCompose() {
     includeHomeSpine: c.includeHomeSpine !== false,
     maxInjectChars: Number.isInteger(c.maxInjectChars) && c.maxInjectChars > 0 ? c.maxInjectChars : 6000,
     timeoutMs: Number.isInteger(c.timeoutMs) && c.timeoutMs > 0 ? c.timeoutMs : 8000,
+    // Hard ceiling for the per-prompt recall (UserPromptSubmit blocks the prompt on it): both arms and the whole
+    // handler stop here and the prompt goes on without memory. 25% of 6,152 measured recalls took 5 s or more.
+    hookBudgetMs: Number.isInteger(c.hookBudgetMs) && c.hookBudgetMs >= 500 ? Math.min(c.hookBudgetMs, 2000) : 1800,
     overlay,
     // The server's compose cost grows with query length. On real prompts, 800 chars took a median
     // 9.1 s, so half of them hit the 8 s deadline and injected no compose fact at all; 300 chars

@@ -1349,14 +1349,26 @@ async function setHooksProfile(req, res) {
 
 // ─── API: Hooks ────────────────────────────────────────────────────
 
+/**
+ * The hooks one hooks.json group runs, with each event dispatcher spelled out as the hooks it routes to
+ * (each one keeps its own switch).
+ * @param {{matcher?: string, hooks?: object[]}} group
+ * @returns {{hook: object, matcher: string}[]}
+ */
+function expandDispatchers(group) {
+  const { ROUTES, DISPATCHERS } = require('./lib/hook-routes.js');
+  return (group.hooks || []).flatMap((hook) => (hook && DISPATCHERS[hook.tool]
+    ? ROUTES[DISPATCHERS[hook.tool]].map((r) => ({ hook: { ...hook, tool: r.tool }, matcher: r.matcher }))
+    : [{ hook, matcher: group.matcher || '*' }]));
+}
+
 function getHooks(req, res) {
   const hooksRaw = readJSON(path.join(ROOT, 'hooks', 'hooks.json'));
   if (!hooksRaw) return json(res, []);
   const result = [];
   for (const [event, handlers] of Object.entries(hooksRaw.hooks)) {
     for (const h of handlers) {
-      const matcher = h.matcher || '*';
-      for (const hook of (h.hooks || [])) {
+      for (const { hook, matcher } of expandDispatchers(h)) {
         const cmd = hookDisplayCmd(hook);
         const isMcp = hook && hook.type === 'mcp_tool';
         const fullPath = hookScriptPath(hook);

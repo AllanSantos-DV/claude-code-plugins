@@ -134,9 +134,13 @@ async function run(event, deps = {}) {
       return (crashNote + (down || '')).trim() || null;
     }
     once.recovered('brain-daemon', { base: data });
+    if (event && event.hook_event_name === 'UserPromptSubmit') {
+      const cfg = (deps.loadConfig || brainConfig.load)();
+      const mm = (cfg && cfg.backend) || {};
+      if (mm.type === 'mcp-memory' && !((mm.mcpMemory || {}).serverUrl)) await relaunchDeadMemoryServer({ ...deps, dir: data });
+    }
     if (event && event.hook_event_name === 'SessionStart') {
       const loadConfig = deps.loadConfig || brainConfig.load;
-      const runAutoUpdate = deps.runAutoUpdate || mcpAutoUpdate.runAutoUpdate;
       const cfg = loadConfig();
       // Contract step 1 (native-java ADR-023): a daemon that died or never came up at logon is
       // started at session start, before the first recall — but ONLY when its /health does not
@@ -144,14 +148,54 @@ async function run(event, deps = {}) {
       // every few seconds) started a process tree each time for a daemon already up.
       const mm = (cfg && cfg.backend) || {};
       if (mm.type === 'mcp-memory' && !((mm.mcpMemory || {}).serverUrl)) await (deps.ensureMemoryServer || ensureMemoryServer)(deps);
-      const updateResult = await runAutoUpdate({ event, config: cfg });
-      if (updateResult && updateResult.status === 'error') return crashNote + updateResult.advisory;
+      if (!deps.skipAutoUpdate) {
+        const updateResult = await (deps.runAutoUpdate || mcpAutoUpdate.runAutoUpdate)({ event, config: cfg });
+        if (updateResult && updateResult.status === 'error') return crashNote + updateResult.advisory;
+      }
     }
     return crashNote ? crashNote.trimEnd() : null;
   } catch (err) {
     console.error(`[brain-daemon-ensure] ${err.message}`);
     return null; // nunca bloqueia o início da sessão
   }
+}
+
+const noticeFile = (dir) => path.join(dir || dataDir(), '.runtime', 'mcp-auto-update.notice');
+
+/**
+ * The mcp-memory auto-update, run apart from the session start (its download and restart can take
+ * a minute). A failure cannot ride this session's context any more: it waits as a notice that the
+ * next prompt takes once (takeAutoUpdateNotice).
+ * @param {object} event  SessionStart payload
+ * @param {{loadConfig?: Function, runAutoUpdate?: Function, dir?: string}} [deps]
+ * @returns {Promise<{status: string}|null>}
+ */
+async function runAutoUpdateInBackground(event, deps = {}) {
+  const cfg = (deps.loadConfig || brainConfig.load)();
+  const result = await (deps.runAutoUpdate || mcpAutoUpdate.runAutoUpdate)({ event, config: cfg });
+  if (result && result.status === 'error') {
+    const file = noticeFile(deps.dir);
+    fs.mkdirSync(path.dirname(file), { recursive: true });
+    fs.writeFileSync(file, result.advisory);
+    once.logDetail(`mcp-memory auto-update failed: ${result.error}`, { base: deps.dir });
+  }
+  return result;
+}
+
+/**
+ * The failed background auto-update, once: the advisory text, or null when none is waiting.
+ * @param {{dir?: string}} [opts]
+ * @returns {string|null}
+ */
+function takeAutoUpdateNotice({ dir } = {}) {
+  const file = noticeFile(dir);
+  let text;
+  try { text = fs.readFileSync(file, 'utf8'); } catch (err) {
+    if (err.code !== 'ENOENT') console.error(`[brain-daemon-ensure] auto-update notice unreadable: ${err.message}`);
+    return null;
+  }
+  try { fs.unlinkSync(file); } catch (err) { console.error(`[brain-daemon-ensure] auto-update notice not removed: ${err.message}`); }
+  return text || null;
 }
 
 /**
@@ -185,6 +229,43 @@ async function ensureMemoryServer(deps = {}) {
   }
 }
 
+const KICK_MARKER_COOLDOWN_MS = 120000;
+const kickMarker = (dir) => path.join(dir || dataDir(), '.runtime', 'memory-server-kick.json');
+
+/**
+ * Mid-session relaunch of a memory server that died: asks its launcher to start it, once per
+ * failure. The kick is remembered on disk (hook processes are short-lived) and not repeated
+ * while the cooldown runs; the marker goes away as soon as the server answers again.
+ * @param {{dir?: string, now?: number, ensureMemoryServer?: Function}} [deps]
+ * @returns {Promise<'alive'|'kicked'|'cooldown'|'error'|'kicked-visible'>}
+ */
+async function relaunchDeadMemoryServer(deps = {}) {
+  const file = kickMarker(deps.dir);
+  const now = deps.now || Date.now();
+  let last = 0;
+  try { last = JSON.parse(fs.readFileSync(file, 'utf8')).at || 0; } catch (err) {
+    if (err.code !== 'ENOENT') console.error(`[brain-daemon-ensure] kick marker unreadable: ${err.message}`);
+  }
+  const probe = deps.probeOnly || (async () => {
+    const Client = deps.McpClient || require('../engine/mcp-client.js');
+    const c = new Client({ restartMode: 'background', kickLauncher: () => false });
+    const url = c.serverUrl || c._discoverDaemonUrl();
+    return !!(url && await c._httpHealth(url));
+  });
+  if (await probe()) {
+    if (last) try { fs.unlinkSync(file); } catch (err) { if (err.code !== 'ENOENT') console.error(`[brain-daemon-ensure] kick marker not removed: ${err.message}`); }
+    return 'alive';
+  }
+  if (last && now - last < KICK_MARKER_COOLDOWN_MS) return 'cooldown';
+  try {
+    fs.mkdirSync(path.dirname(file), { recursive: true });
+    fs.writeFileSync(file, JSON.stringify({ at: now }));
+  } catch (err) { console.error(`[brain-daemon-ensure] kick marker not written: ${err.message}`); }
+  const outcome = await (deps.ensureMemoryServer || ensureMemoryServer)(deps);
+  once.logDetail(`memory server was down at a prompt: launcher ${outcome}`, { base: deps.dir });
+  return outcome;
+}
+
 async function main() {
   let eventName = 'SessionStart';
   try {
@@ -206,4 +287,4 @@ async function main() {
 if (require.main === module) main();
 
 module.exports = {
-  crashAdvisory, pluginRoot, runSetupInBackground, run, ensureMemoryServer };
+  relaunchDeadMemoryServer, KICK_MARKER_COOLDOWN_MS, crashAdvisory, pluginRoot, runSetupInBackground, run, ensureMemoryServer, runAutoUpdateInBackground, takeAutoUpdateNotice };

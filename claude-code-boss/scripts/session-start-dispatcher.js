@@ -20,10 +20,14 @@
  * CONCURRENT with per-detector timeouts, exactly like
  * `user-prompt-submit-dispatcher.js` — see that file's header for the full
  * rationale (a plain sequential loop turns the old parallel processes'
- * `max()` latency into a `sum()`). Ceilings mirror the old standalone hooks,
- * except brain-daemon-ensure gets 120000 because its once-per-24h mcp-memory
- * update may download and restart the Java daemon. The outer hook keeps a 5s
- * margin.
+ * `max()` latency into a `sum()`).
+ *
+ * The session waits only for what it needs. Every detector in the foreground pass has a
+ * ceiling of a few seconds, and the process exits as soon as they settle, so a hung one
+ * never holds the session start (it used to wait for the slowest ceiling: the mcp-memory
+ * update alone had 120 s). The detectors flagged `bg` (maintenance with no text for the
+ * session, and the mcp-memory update) run in a detached copy of this script started after
+ * the answer is out (`CCB_SESSION_START_BACKGROUND=1`), with their long ceilings.
  *
  * Two detector shapes coexist here (unlike the other dispatchers, which are
  * uniform):
@@ -45,6 +49,9 @@
  */
 'use strict';
 
+const fs = require('fs');
+const path = require('path');
+const { spawn } = require('child_process');
 const { readStdin, parsePayload, emitJson, emitEmpty } = require('./lib/hook-io.js');
 const { settleWithin: withTimeout } = require('../engine/lib/settle-within.js');
 const brainDaemonEnsure = require('./brain-daemon-ensure.js');
@@ -68,12 +75,17 @@ const runtimeSweep = require('./runtime-sweep.js');
 
 const SEP = '\n\n';
 
-// Ceilings mirror each detector's OLD standalone `hooks.json` timeout (ms).
+// Marks the detached copy (argv stays untouched: the hook command's signature must not change its behavior).
+const BACKGROUND_ENV = 'CCB_SESSION_START_BACKGROUND';
+
+// Foreground ceilings are a few seconds; `bg` detectors keep the ceilings of their old standalone hooks.
 const DETECTORS = [
-  { name: 'brain-daemon-ensure', mod: brainDaemonEnsure, timeoutMs: 120000 },
-  { name: 'memory-rotate', mod: memoryRotate, timeoutMs: 10000 },
-  { name: 'runtime-sweep', mod: runtimeSweep, timeoutMs: 5000 },
-  { name: 'session-whitelist', mod: sessionWhitelist, timeoutMs: 10000 },
+  // The daemon check only: its update (download + restart) is the separate background step below.
+  { name: 'brain-daemon-ensure', mod: { run: (event) => brainDaemonEnsure.run(event, { skipAutoUpdate: true }) }, timeoutMs: 5000 },
+  { name: 'mcp-memory-auto-update', mod: { run: (event) => brainDaemonEnsure.runAutoUpdateInBackground(event) }, timeoutMs: 120000, bg: true },
+  { name: 'memory-rotate', mod: memoryRotate, timeoutMs: 10000, bg: true },
+  { name: 'runtime-sweep', mod: runtimeSweep, timeoutMs: 5000, bg: true },
+  { name: 'session-whitelist', mod: sessionWhitelist, timeoutMs: 5000 },
   { name: 'brain-health', mod: brainHealth, timeoutMs: 5000 },
   { name: 'project-snapshot', mod: projectSnapshot, timeoutMs: 5000 },
   { name: 'curation-session', mod: curationSession, timeoutMs: 5000 },
@@ -81,14 +93,14 @@ const DETECTORS = [
   // Once per build; only claims the run and starts the audit in a detached process (the notice comes on the next prompt).
   { name: 'doctor-first-run', mod: doctorFirstRun, timeoutMs: 5000 },
   { name: 'review-checklist-advisory', mod: reviewChecklistAdvisory, timeoutMs: 5000 },
-  { name: 'tuning-advisory', mod: tuningAdvisory, timeoutMs: 8000 },
+  { name: 'tuning-advisory', mod: tuningAdvisory, timeoutMs: 3000 },
   { name: 'value-digest', mod: valueDigest, timeoutMs: 5000 },
   { name: 'project-identity-advisory', mod: projectIdentityAdvisory, timeoutMs: 5000 },
   { name: 'backend-onboarding-advisory', mod: backendOnboardingAdvisory, timeoutMs: 5000 },
-  { name: 'marketplace-autoupdate', mod: marketplaceAutoupdate, timeoutMs: 15000 },
-  { name: 'graph-warm', mod: graphWarm, timeoutMs: 5000 },
+  { name: 'marketplace-autoupdate', mod: marketplaceAutoupdate, timeoutMs: 15000, bg: true },
+  { name: 'graph-warm', mod: graphWarm, timeoutMs: 5000, bg: true },
   { name: 'powershell-advisory', mod: powershellAdvisory, timeoutMs: 5000 },
-  { name: 'policy-inject', mod: policyInject, timeoutMs: 10000 },
+  { name: 'policy-inject', mod: policyInject, timeoutMs: 3000 },
 ];
 
 // SessionStart also fires after every compaction (source 'compact' — more often than real
@@ -96,7 +108,7 @@ const DETECTORS = [
 // compacted context may have lost is re-sent, plus the daemon check; maintenance, digests,
 // the doctor and update checks already ran at the start of this session.
 const COMPACT_DETECTORS = new Set([
-  'brain-daemon-ensure', 'curation-session', 'review-checklist-advisory',
+  'brain-daemon-ensure', 'mcp-memory-auto-update', 'curation-session', 'review-checklist-advisory',
   'project-identity-advisory', 'powershell-advisory', 'policy-inject',
 ]);
 
@@ -117,12 +129,15 @@ const COMPACT_DETECTORS = new Set([
  * `opts.detectors` overrides the real detector list (test-only — mirrors the
  * other dispatchers here).
  * @param {object} event  SessionStart payload
- * @param {{detectors?: Array<{name:string, mod:{run:Function}, timeoutMs?:number}>}} [opts]
+ * @param {{detectors?: Array<{name:string, mod:{run:Function}, timeoutMs?:number, bg?:boolean}>, phase?: 'foreground'|'background'}} [opts]
+ *   phase: which detectors run — the ones the session waits for (default) or the `bg` ones.
  * @returns {Promise<string|null>}
  */
 async function dispatch(event, opts = {}) {
   const all = Array.isArray(opts.detectors) ? opts.detectors : DETECTORS;
-  const list = event && event.source === 'compact' ? all.filter((d) => COMPACT_DETECTORS.has(d.name)) : all;
+  const background = opts.phase === 'background';
+  const phased = all.filter((d) => !!d.bg === background);
+  const list = event && event.source === 'compact' ? phased.filter((d) => COMPACT_DETECTORS.has(d.name)) : phased;
   const results = await Promise.all(list.map(async ({ name, mod, timeoutMs }) => {
     const outcome = await withTimeout(Promise.resolve().then(() => mod.run(event)), timeoutMs || 5000);
     if (outcome.status === 'timeout') {
@@ -140,6 +155,35 @@ async function dispatch(event, opts = {}) {
   return texts.length ? texts.join(SEP) : null;
 }
 
+/**
+ * Starts the `bg` detectors in a hidden detached copy of this script and hands it the event on stdin.
+ * Its stderr goes to `.runtime/session-start-background.log`.
+ * @param {string} raw  the SessionStart payload as received
+ * @returns {Promise<void>} settles once the event is in the child's pipe (exiting earlier would drop it)
+ */
+function startBackground(raw) {
+  const log = path.join(require('../engine/lib/data-dir.js').dataDir(), '.runtime', 'session-start-background.log');
+  fs.mkdirSync(path.dirname(log), { recursive: true });
+  const fd = fs.openSync(log, 'a');
+  try {
+    const child = spawn(process.execPath, [__filename], { detached: true, windowsHide: true, stdio: ['pipe', 'ignore', fd], env: { ...process.env, [BACKGROUND_ENV]: '1' } });
+    child.on('error', (err) => console.error(`[claude-code-boss:session-start-dispatcher] background start failed: ${err.message}`));
+    child.unref();
+    return new Promise((resolve) => {
+      child.stdin.on('error', (err) => { console.error(`[claude-code-boss:session-start-dispatcher] background stdin: ${err.message}`); resolve(); });
+      child.stdin.end(raw, resolve);
+    });
+  } finally {
+    fs.closeSync(fd);
+  }
+}
+
+/** The detached pass: the `bg` detectors only, no output. */
+async function mainBackground() {
+  const event = parsePayload(await readStdin()) || {};
+  await dispatch(event, { phase: 'background' });
+}
+
 async function main() {
   const raw = await readStdin();
   const event = parsePayload(raw) || {};
@@ -151,18 +195,21 @@ async function main() {
   if (event.source === 'compact' || event.source === 'clear') require('./lib/scope-rules.js').resetInjected(event.session_id, { source: event.source });
   try { require('./lib/plugin-dir-heal.js').healOpenSessions(); } catch (err) { console.error(`[claude-code-boss:session-start-dispatcher] plugin dir heal: ${err.message}`); }
   const text = await dispatch(event);
-  if (text) {
-    emitJson({ hookSpecificOutput: { hookEventName: eventName, additionalContext: text } });
-    return;
-  }
-  emitEmpty();
+  if (text) emitJson({ hookSpecificOutput: { hookEventName: eventName, additionalContext: text } });
+  else emitEmpty();
+  try { await startBackground(raw); } catch (err) { console.error(`[claude-code-boss:session-start-dispatcher] background start: ${err.message}`); }
 }
+
+// A detector that timed out may still hold handles: exit once stdout has flushed or the hook waits for it.
+const exitAfterFlush = () => process.stdout.write('', () => process.exit(0));
 
 if (require.main === module) {
   require('./lib/hook-prefix.js').install('session-start-dispatcher');
-  main().catch((err) => {
+  const background = process.env[BACKGROUND_ENV] === '1';
+  (background ? mainBackground() : main()).then(exitAfterFlush, (err) => {
     console.error(`[claude-code-boss:session-start-dispatcher] fatal: ${err && err.message ? err.message : err}`);
-    emitEmpty();
+    if (!background) emitEmpty();
+    exitAfterFlush();
   });
 }
 

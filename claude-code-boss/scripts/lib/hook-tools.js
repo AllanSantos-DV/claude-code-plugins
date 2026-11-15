@@ -25,6 +25,8 @@
 const path = require('path');
 const { performance } = require('perf_hooks');
 const { runWithHookEnv } = require('./hook-context.js');
+const { ROUTES, DISPATCHERS, routesFor } = require('./hook-routes.js');
+const { mergeHookOutputs } = require('./hook-merge.js');
 
 const EMPTY = '{}';
 
@@ -225,6 +227,9 @@ function eventsFromHooksJson(pluginRoot) {
       for (const h of (g && g.hooks) || []) if (h.type === 'mcp_tool' && !out[h.tool]) out[h.tool] = event;
     }
   }
+  for (const [tool, event] of Object.entries(DISPATCHERS)) {
+    if (out[tool]) for (const r of ROUTES[event]) if (!out[r.tool]) out[r.tool] = event;
+  }
   return out;
 }
 
@@ -237,9 +242,12 @@ function deadlinesFromHooksJson(pluginRoot) {
   const hooks = JSON.parse(require('fs').readFileSync(path.join(pluginRoot, 'hooks', 'hooks.json'), 'utf8')).hooks || {};
   for (const group of Object.values(hooks).flat()) {
     for (const h of (group && group.hooks) || []) {
-      if (h.type !== 'mcp_tool' || !(HOOKS[h.tool] || TIMED_TOOLS.has(h.tool))) continue;
+      if (h.type !== 'mcp_tool' || !(HOOKS[h.tool] || DISPATCHERS[h.tool] || TIMED_TOOLS.has(h.tool))) continue;
       const s = Number(h.timeout) > 0 ? Number(h.timeout) : DEFAULT_TIMEOUT_S;
       out[h.tool] = Math.max(MIN_DEADLINE_MS, s * 1000 - DEADLINE_MARGIN_MS);
+      if (DISPATCHERS[h.tool]) {
+        for (const r of ROUTES[DISPATCHERS[h.tool]]) out[r.tool] = Math.max(MIN_DEADLINE_MS, r.timeoutS * 1000 - DEADLINE_MARGIN_MS);
+      }
     }
   }
   return out;
@@ -316,13 +324,45 @@ function createHookTools({ pluginRoot, hookWorker, deadlines } = {}) {
   const deadlineMs = { ...deadlinesFromHooksJson(pluginRoot), ...(deadlines || {}) };
   const properties = {};
   for (const [k, description] of Object.entries(FIELDS)) properties[k] = { type: 'string', description };
-  const definitions = Object.keys(HOOKS).map((name) => ({
-    name,
-    description: `Internal hook transport (claude-code-boss hooks.json) — not for direct use. Runs ${HOOKS[name].script}.`,
-    inputSchema: { type: 'object', properties },
-  }));
+  const definitions = [
+    ...Object.keys(HOOKS).map((name) => ({
+      name,
+      description: `Internal hook transport (claude-code-boss hooks.json) — not for direct use. Runs ${HOOKS[name].script}.`,
+      inputSchema: { type: 'object', properties },
+    })),
+    ...Object.entries(DISPATCHERS).map(([name, event]) => ({
+      name,
+      description: `Internal hook transport (claude-code-boss hooks.json) — not for direct use. Runs every ${event} hook that applies to the tool call and merges their answers.`,
+      inputSchema: { type: 'object', properties },
+    })),
+  ];
+
+  /**
+   * One call per event: runs the hooks routed to this tool call together (each through handleOne, so it
+   * keeps its switch, deadline and latency record) and merges their answers like the host merges siblings.
+   */
+  async function handleDispatch(name, args) {
+    const event = DISPATCHERS[name];
+    const t0 = performance.now();
+    let outcome = 'ok';
+    const routes = routesFor(event, args && args.tool_name);
+    const work = Promise.all(routes.map((r) => handleOne(r.tool, args)))
+      .then((replies) => mergeHookOutputs(replies.map((r) => r.content[0].text), {
+        onBad: (err, text) => console.error(`[hook-tools] ${name}: unparsable hook output skipped (${err.message}): ${String(text).slice(0, 80)}`),
+      }));
+    const ms = deadlineMs[name] || DEFAULT_TIMEOUT_S * 1000 - DEADLINE_MARGIN_MS;
+    const text = await withDeadline(name, ms, work, () => { outcome = 'expired'; });
+    if (outcome === 'ok' && text.includes(`hook ${name} degradado`)) outcome = 'degraded';
+    recordLatency(name, performance.now() - t0, outcome);
+    return { content: [{ type: 'text', text }] };
+  }
 
   async function handle(name, args) {
+    if (DISPATCHERS[name]) return handleDispatch(name, args);
+    return handleOne(name, args);
+  }
+
+  async function handleOne(name, args) {
     const spec = HOOKS[name];
     if (!spec) throw new Error(`unknown hook tool: ${name}`);
     // Switched off in the dashboard (update-safe user-config, BACKLOG Q43): answer
@@ -356,7 +396,7 @@ function createHookTools({ pluginRoot, hookWorker, deadlines } = {}) {
     return { content: [{ type: 'text', text }] };
   }
 
-  return { definitions, names: new Set(Object.keys(HOOKS)), handle };
+  return { definitions, names: new Set([...Object.keys(HOOKS), ...Object.keys(DISPATCHERS)]), handle };
 }
 
 module.exports = { createHookTools, runHookInline, deadlinesFromHooksJson, eventsFromHooksJson, rebuildEvent, hookLatencyStats, recordLatency, recordBackgroundLatency, _resetLatencyStats, HOOKS, FIELDS };

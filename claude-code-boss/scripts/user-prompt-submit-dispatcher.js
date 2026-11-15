@@ -166,6 +166,11 @@ async function main() {
     const doctor = require('./doctor-first-run.js').takeNotice();
     if (doctor) text = text ? `${text}${SEP}${doctor}` : doctor;
   } catch (err) { console.error(`[claude-code-boss:user-prompt-submit-dispatcher] doctor first-run notice: ${err.message}`); }
+  // The mcp-memory update that failed in the background since SessionStart: once, to the agent.
+  try {
+    const failed = brainDaemonEnsure.takeAutoUpdateNotice();
+    if (failed) text = text ? `${text}${SEP}${failed}` : failed;
+  } catch (err) { console.error(`[claude-code-boss:user-prompt-submit-dispatcher] auto-update notice: ${err.message}`); }
   // Still alive: keeps this session's plugin dir out of the cache prune however long it stays open.
   try {
     require('./lib/session-root.js').touchSessionRecord(event.session_id);

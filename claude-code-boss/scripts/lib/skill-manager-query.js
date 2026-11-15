@@ -29,10 +29,13 @@ function locateCli(home) {
  * @returns {{owner: string, known: boolean, items: Array<{id: string, kind: string, state: string, reason: string|null, pendingUpdate: *, approve: *}>}}
  * @throws when the CLI cannot be run or does not answer JSON (the caller reports it; it is never read as "all good").
  */
-function queryOwner(owner, { home, run = spawnSync } = {}) {
+function queryOwner(owner, { home, run } = {}) {
   const ptr = locateCli(home);
   if (!ptr) return null;
-  const r = run(ptr.node, [ptr.cli, 'query', '--owner', owner, '--json'], { encoding: 'utf8', timeout: QUERY_TIMEOUT_MS, windowsHide: true });
+  const args = [ptr.cli, 'query', '--owner', owner, '--json'];
+  const r = run
+    ? run(ptr.node, args, { encoding: 'utf8', timeout: QUERY_TIMEOUT_MS, windowsHide: true })
+    : spawnSync(ptr.node, args, { encoding: 'utf8', timeout: QUERY_TIMEOUT_MS, windowsHide: true });
   if (r.error) throw new Error(`skill-engine query failed to run: ${r.error.message}`);
   if (r.status !== 0) throw new Error(`skill-engine query exited ${r.status}: ${String(r.stderr || r.stdout || '').trim().slice(0, 200)}`);
   let out;

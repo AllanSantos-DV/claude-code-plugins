@@ -13,7 +13,8 @@
  * hook declares, never a guess —
  *   - command hook   → `--hook-origin=<project>` at the end of the command line (the record
  *     carries the command; every command hook in hooks/hooks.json is signed with it);
- *   - no command line (mcp_tool) → the error text starts with `[hook-origin=<project>]`.
+ *   - mcp_tool hook of a plugin → the record's `command` is `plugin:<plugin>:<server>/<tool>`, which names the owner;
+ *     any other mcp_tool → the error text starts with `[hook-origin=<project>]`.
  * Declared → "origem: <project>"; not declared (or two different declarations) → "origem não
  * declarada". Never "dono" or "provável".
  *
@@ -34,11 +35,15 @@ const UNDECLARED = 'origem não declarada';
 const NAME = '[a-z0-9][a-z0-9._-]{0,63}';
 const IN_COMMAND = new RegExp(String.raw`(?:^|\s)${HOOK_ORIGIN_FLAG}=(${NAME})(?=\s|$)`, 'gi');
 const IN_OUTPUT = new RegExp(String.raw`\[hook-origin=(${NAME})\]`, 'gi');
+const PLUGIN_MCP_TOOL = new RegExp(String.raw`^plugin:(${NAME}):[^/\s]+/\S+$`, 'i');
 
 const readJson = (file) => require('../../engine/lib/json-file.js').readJsonLoud(file, 'hook-owner');
 
 /** Origin declared by a failed hook (command first, then its output), or null if none / two different. */
 function declaredOrigin({ command = '', output = '' } = {}) {
+  // An mcp_tool hook is recorded as `plugin:<plugin>:<server>/<tool>`: the plugin that ships the server owns it.
+  const plugin = PLUGIN_MCP_TOOL.exec(String(command || '').trim());
+  if (plugin) return plugin[1].toLowerCase();
   for (const [text, re] of [[command, IN_COMMAND], [output, IN_OUTPUT]]) {
     const found = new Set([...String(text || '').matchAll(re)].map((m) => m[1].toLowerCase()));
     if (found.size === 1) return [...found][0];
