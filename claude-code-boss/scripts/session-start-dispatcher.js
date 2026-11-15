@@ -86,7 +86,7 @@ const DETECTORS = [
   { name: 'memory-rotate', mod: memoryRotate, timeoutMs: 10000, bg: true },
   { name: 'runtime-sweep', mod: runtimeSweep, timeoutMs: 5000, bg: true },
   { name: 'session-whitelist', mod: sessionWhitelist, timeoutMs: 5000 },
-  { name: 'brain-health', mod: brainHealth, timeoutMs: 5000 },
+  { name: 'brain-health', mod: brainHealth, timeoutMs: 3000 },
   { name: 'project-snapshot', mod: projectSnapshot, timeoutMs: 5000 },
   { name: 'curation-session', mod: curationSession, timeoutMs: 5000 },
   { name: 'doctor-advisory', mod: doctorAdvisory, timeoutMs: 5000 },
