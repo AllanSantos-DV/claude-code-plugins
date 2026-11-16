@@ -55,6 +55,24 @@ function scopeLine(st) {
   return `📦 ${(st && st.project_id) || '(id unresolved)'} · ${st ? st.state : ''}${st && typeof st.nodes === 'number' ? ` · ${st.nodes} nodes/${st.edges} edges` : ''}`;
 }
 
+/**
+ * The backend's freshness block of a ready graph as one line: when it was last indexed, how old it is
+ * and, with retention on, when it leaves the server unless re-indexed. Empty when the backend reports none.
+ * @param {{freshness?: object}} st  the /status answer
+ * @returns {string}
+ */
+function freshnessLine(st) {
+  const f = st && st.freshness;
+  if (!f || typeof f !== 'object') return '';
+  const parts = [];
+  if (f.last_ingest_at) parts.push(`last indexed ${f.last_ingest_at}`);
+  if (typeof f.age_hours === 'number') parts.push(`${f.age_hours} h old`);
+  if (typeof f.retention_days === 'number') parts.push(f.retention_days === 0 ? 'retention off' : `retention ${f.retention_days} d`);
+  if (f.removal_from) parts.push(`removed from ${f.removal_from} unless re-indexed`);
+  if (f.retention_error) parts.push(`retention error: ${f.retention_error}`);
+  return parts.length ? `🕒 ${parts.join(' · ')}` : '';
+}
+
 const DEFINITIONS = [
   {
     name: 'graph_analyze',
@@ -201,6 +219,8 @@ function createGraphTools({ cwd = () => process.cwd(), fetchImpl = globalThis.fe
           const lines = [scopeLine(st), `root: ${p.ctx.root}`];
           if (st.state === 'ready' && st.nodes === 0) lines.push('⚠️ ' + G.zeroNodesMessage(st));
           if (st.state !== 'ready' && st.hint) lines.push('hint: ' + st.hint);
+          const fresh = freshnessLine(st);
+          if (fresh) lines.push(fresh);
           if (Array.isArray(st.topHubs) && st.topHubs.length) lines.push('hubs:\n' + fmtList(st.topHubs, 8));
           return text(lines.join('\n'));
         }

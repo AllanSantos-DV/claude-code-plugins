@@ -7,11 +7,9 @@
  * measured on a 135k-node graph), and returns the NARROW paths where a symbol
  * lives — so a broad recursive text search (native Grep/Glob, or bash
  * grep -r/rg/find at the repo root) should first ask the graph WHERE to look,
- * then the agent uses the Smart Tool (smart_search) instead of narrowing the search. The guard enforces that
- * ordering with a DENY-ONCE: the first broad search is denied with the exact
- * two-step instruction; retrying the identical call passes (per-session sig
- * stamp), so there is never a deadlock and free-text searches lose at most one
- * round-trip.
+ * then the agent uses the Smart Tool (smart_search) instead of narrowing the search. The guard only
+ * ADVISES: the first broad search of each kind carries the exact two-step instruction as context
+ * (per-session sig stamp), and the search itself always runs, so nothing is ever blocked.
  *
  * What the guard must NEVER do (measured constraint): wait for indexing. A
  * 20k-file repo took ~4.6min to index (one-time, async 202) — so `not_indexed`

@@ -26963,6 +26963,27 @@ test('graph/tools: capability 404 surfaces update guidance', async () => {
   const out = await t.handle('graph_status', {});
   assert(out.content[0].text.includes('does not expose the Graph API'), 'update guidance');
 });
+test('graph/tools: graph_status relays the backend freshness (last index, age, retention) and stays silent when the backend reports none', async () => {
+  graphClient.__clearCapCache();
+  const ready = { project_id: 'github.com/acme/x', root: '/r', state: 'ready', nodes: 3, edges: 2 };
+  const fresh = { last_ingest_at: '2026-11-14T10:00:00Z', age_hours: 5.5, retention_days: 30, removal_from: '2026-12-14T10:00:00Z' };
+  const withFresh = makeGraphFetch({ status: { status: 200, json: { ...ready, freshness: fresh } } });
+  const t1 = createGraphTools({ cwd: () => ROOT, fetchImpl: withFresh.fetchImpl, discover: async () => ({ url: 'http://tfresh' }) });
+  const text1 = (await t1.handle('graph_status', {})).content[0].text;
+  assert(text1.includes('last indexed 2026-11-14T10:00:00Z'), 'last ingest relayed');
+  assert(text1.includes('5.5 h old'), 'age relayed');
+  assert(text1.includes('retention 30 d') && text1.includes('removed from 2026-12-14T10:00:00Z unless re-indexed'), 'retention deadline relayed');
+
+  const bad = { last_ingest_at: '2026-11-14T10:00:00Z', age_hours: 1, retention_days: null, removal_from: null, retention_error: 'bad days' };
+  const invalid = makeGraphFetch({ status: { status: 200, json: { ...ready, freshness: bad } } });
+  const t2 = createGraphTools({ cwd: () => ROOT, fetchImpl: invalid.fetchImpl, discover: async () => ({ url: 'http://tfresh2' }) });
+  const text2 = (await t2.handle('graph_status', {})).content[0].text;
+  assert(text2.includes('retention error: bad days') && !text2.includes('retention off'), 'invalid retention config surfaced, not shown as off');
+
+  const none = makeGraphFetch({ status: { status: 200, json: ready } });
+  const t3 = createGraphTools({ cwd: () => ROOT, fetchImpl: none.fetchImpl, discover: async () => ({ url: 'http://tfresh3' }) });
+  assert(!(await t3.handle('graph_status', {})).content[0].text.includes('🕒'), 'no freshness line when the backend sends none');
+});
 test('graph/tools: read tool never ingests when not ready', async () => {
   graphClient.__clearCapCache();
   const m = makeGraphFetch({ status: { status: 200, json: { state: 'not_indexed', nodes: 0, edges: 0 } } });
