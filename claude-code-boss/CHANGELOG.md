@@ -2,7 +2,19 @@
 
 ## [Unreleased]
 
+## [3.17.0] - 2026-11-16
+
+### Added
+- **O Boss relança o servidor de memória que morreu com a sessão aberta** (`scripts/brain-daemon-ensure.js` `relaunchDeadMemoryServer`): a cada prompt o hook confere o `/health` do servidor (a URL vem do registro que ele mesmo grava, sem porta fixa) e, se estiver fora do ar, chama o launcher uma vez; um marcador em disco segura novas chamadas por 2 minutos e some quando o servidor volta. Antes só o início da sessão chamava o launcher, e um servidor morto no meio da sessão ficava fora até a sessão seguinte (68 minutos medidos).
+- **O `graph_status` mostra a frescura do grafo** (`scripts/lib/graph/tools.js` `freshnessLine`): última indexação, idade em horas, retenção e a data a partir da qual o grafo sai do servidor se não for reindexado. Uma retenção configurada errada aparece como erro, não como "retenção desligada".
+
+### Changed
+- **O recall de cada prompt tem teto de 1,8 s e segue sem memória em vez de segurar o prompt** (`servers/brain-server/lib/mcp-server.js` `withRecallBudget`, `engine/lib/recall-health.js`): ao estourar, o prompt vai adiante sem o contexto e a saúde do recall registra o motivo `budget`. Medido no build instalado: 158 a 262 ms (antes, um quarto das chamadas passava de 5 s).
+- **O início da sessão não espera mais o passo mais lento** (`scripts/session-start-dispatcher.js`): cada passo tem teto próprio de no máximo 5 s (3 s para a checagem de saúde do Brain), o auto-update do servidor de memória corre em segundo plano e o aviso de uma falha dele chega no prompt seguinte. Medido: 3,7 s com o daemon aquecido (antes, 10,4 s no p90 e até 122 s).
+- **Os hooks de ferramenta do Brain viram uma chamada por evento** (`hooks/hooks.json`, `scripts/lib/hook-routes.js`, `scripts/lib/hook-merge.js`): os 8 hooks de PreToolUse e os 7 de PostToolUse passam por um despachante só por evento, e o dono do hook aparece no comando gravado pelo Claude Code, de modo que uma falha deixa de chegar sem identidade.
+
 ### Fixed
+- **O texto do graph-guard diz o que ele faz** (`README.md`, `scripts/lib/graph-guard-core.js`): o guard só avisa uma vez por busca única e a busca roda sempre; a documentação falava em negar na primeira busca.
 - **A faixa do Boss deixa de segurar os hooks de Stop e PostToolUse no daemon** (`servers/brain-server/lib/http-daemon.js`, `scripts/boss-summary.js`, `dbStamp`): o cálculo da faixa (`hook_boss_summary`, 3 a 18 s, 325 vezes em 3 h) corria no mesmo worker dos hooks e enfileirava tudo atrás dele. Agora tem um worker próprio (`readWorker` no `/health`), e a leitura incremental só abre o banco de métricas dos projetos cujo arquivo mudou (mtime e tamanho do db, do WAL e do marcador de adoção): a leitura a quente de 312 projetos caiu de 1,3–2,3 s para ~0,15 s.
 - **Um reset de conexão com o daemon deixa de aparecer como erro do batimento da pasta** (`hooks/compaction.mjs` `send`/`backgroundFailed`, `scripts/lib/module-daemon.mjs` `isTransportError`): o envio refaz o aperto de mão e repete uma vez quando a conexão cai (ECONNRESET, ECONNREFUSED, socket fechado); uma falha de transporte que sobra vai para a trilha com a hora e o tempo desde a última resposta do daemon, e só aparece na tela a cada terceira seguida.
 - **O diário da rajada de leitura não cresce mais sem limite** (`scripts/lib/read-burst.js`): `.runtime/read-burst.jsonl` passa a girar em 1 MB, guardando 3 arquivos.
