@@ -212,6 +212,12 @@ other log` is not `git log` + args, and a script that pins a flag (a "dry-run" w
 NOT be passthrough — forwarding `--ci` would change what it does. Leading `VAR=value`
 assignments are kept on the rewritten command.
 
+**`commandTokens`** (with `passthrough`) — for one script that serves several subcommands of the
+same program (`aliases: ["git add", "git commit"]`): the number of leading alias tokens that are
+the script's own command (`1` = `git`). The script then receives the subcommand
+(`git commit -q -m x` → `node git-commit.mjs commit -q -m x`) and hands `args` straight to
+`git`. Without it the alias itself is stripped and the script would get only `-q -m x`.
+
 `outputLines` is **enforced**, not just a hint: on a successful run, output beyond
 `outputLines` lines (or `outputChars` chars, default `outputLines * 100`) is flagged
 `curated-success-noisy` by `curation-classifier.js`. Entries without `outputLines`

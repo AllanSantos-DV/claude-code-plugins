@@ -150,6 +150,9 @@ function loadShellsFile(shellsPath) {
  * @param {boolean} [args.passthrough] - the script hands ALL its arguments to the command it
  *   curates (`npm test "$@"`): every command that starts with one of its aliases is then
  *   redirected with its arguments and flags — the same command runs, only the output is curated.
+ * @param {number} [args.commandTokens] - with `passthrough`: how many leading tokens of an alias are
+ *   the script's own command; the rest goes to the script. A script for "git add" and "git commit"
+ *   sets 1, so it receives `add …` / `commit …` instead of only the flags.
  * @param {string} [args.cwd] - working directory for project root resolution
  * @returns {{isError:true, message:string} | {decision:'registered'|'updated', id:string, scriptPath:string, shellsConfigPath:string, aliases:string[], message:string}}
  */
@@ -232,6 +235,7 @@ function register(args) {
   const outputChars = pick(Number.isFinite(a.outputChars) && a.outputChars > 0 ? a.outputChars : undefined, prev.outputChars, undefined);
   const acceptsArgs = pick(typeof a.acceptsArgs === 'boolean' ? a.acceptsArgs : undefined, prev.acceptsArgs, undefined);
   const passthrough = pick(typeof a.passthrough === 'boolean' ? a.passthrough : undefined, prev.passthrough, undefined);
+  const commandTokens = pick(Number.isInteger(a.commandTokens) && a.commandTokens >= 0 ? a.commandTokens : undefined, prev.commandTokens, undefined);
   const entry = {
     id,
     label: pick(a.label ? String(a.label) : undefined, prev.label, id),
@@ -244,6 +248,7 @@ function register(args) {
     ...(outputChars ? { outputChars } : {}),
     ...(acceptsArgs === true ? { acceptsArgs: true } : {}),
     ...(passthrough === true ? { passthrough: true } : {}),
+    ...(passthrough === true && commandTokens !== undefined ? { commandTokens } : {}),
     timeoutMs: pick(Number.isFinite(a.timeoutMs) ? a.timeoutMs : undefined, prev.timeoutMs, DEFAULT_TIMEOUT_MS),
   };
 

@@ -197,7 +197,9 @@ function argsAfter(part, baseTokens) {
  * The `passthrough` script whose alias this part starts with (longest alias wins), and the
  * arguments to hand it: what follows the SCRIPT's own command — the base alias for a variant
  * alias ("git stash list" over "git stash" → `list`), the alias itself for an alternative
- * spelling ("npx vitest run" next to "npm test").
+ * spelling ("npx vitest run" next to "npm test"). A script whose aliases are different
+ * subcommands of one program ("git add", "git commit") declares `commandTokens` (1 for `git`):
+ * only that many leading tokens are the script's command, so the subcommand reaches it.
  * @returns {{shell:object, args:string}|null}
  */
 function passthroughMatch(text, profiles) {
@@ -206,7 +208,8 @@ function passthroughMatch(text, profiles) {
     if (!pr.shell || pr.shell.passthrough !== true) continue;
     const own = pr.sig.split(' ');
     if (argsAfter(text, own) === null) continue;
-    const strip = pr.extraFrom ? own.slice(0, pr.extraFrom) : own;
+    const declared = Number.isInteger(pr.shell.commandTokens) && pr.shell.commandTokens >= 0 ? pr.shell.commandTokens : null;
+    const strip = declared !== null ? own.slice(0, declared) : pr.extraFrom ? own.slice(0, pr.extraFrom) : own;
     if (!best || own.length > best.len) best = { shell: pr.shell, args: argsAfter(text, strip), len: own.length };
   }
   return best && { shell: best.shell, args: best.args };

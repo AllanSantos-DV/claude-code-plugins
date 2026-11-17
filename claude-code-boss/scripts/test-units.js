@@ -5395,6 +5395,23 @@ test('passthrough redirect: a script that forwards its argv takes EVERY variant 
   assertEq(rw('npm run build'), `${inv('plain.mjs')}`, 'a non-passthrough script keeps the exact rule');
 });
 
+test('passthrough redirect: a script that serves several subcommands of one program (commandTokens) receives the subcommand, with its usual options', () => {
+  const { planRedirect } = require('./lib/curation-redirect.js');
+  const R = path.resolve(os.tmpdir(), 'ccb-pass-sub-repo');
+  const H = require('./curation-paths.js').curationHome(R).replace(/\\/g, '/');
+  const inv = `CCB_PROJECT_ROOT="${R.replace(/\\/g, '/')}" node "${H}/scripts/git-commit.mjs"`;
+  const shells = [{ id: 'git-commit', script: 'scripts/git-commit.mjs', aliases: ['git add', 'git commit'], passthrough: true, commandTokens: 1 }];
+  const rw = (c) => planRedirect(c, shells, R).rewritten;
+  assertEq(rw('git add -A'), `${inv} add -A`, 'git add -A');
+  assertEq(rw('git add src/a.js docs/b.md'), `${inv} add src/a.js docs/b.md`, 'git add with paths');
+  assertEq(rw('git commit -q -m "fix: x"'), `${inv} commit -q -m "fix: x"`, 'git commit -q -m');
+  assertEq(rw('git commit --amend --no-edit'), `${inv} commit --amend --no-edit`, 'git commit --amend');
+  assertEq(rw('git add -A && git commit -m x'), `${inv} add -A && ${inv} commit -m x`, 'each part of a chain keeps its subcommand');
+  assertEq(rw('git log -1'), null, 'another subcommand is not redirected');
+  const legacy = [{ id: 'git-commit', script: 'scripts/git-commit.mjs', aliases: ['git add', 'git commit'], passthrough: true }];
+  assertEq(planRedirect('git commit -q -m x', legacy, R).rewritten, `${inv} -q -m x`, 'without commandTokens the rule is unchanged');
+});
+
 test('C2b shape-output: passes small output untouched; cuts by lines or chars and reports both counts', () => {
   const { shape } = require('./shape-output.js');
   assertEq(shape('a\nb\n', { maxLines: 5, maxChars: 100 }), { cut: false, shown: 'a\nb\n', shownLines: 2, rawLines: 2 });
@@ -5595,6 +5612,9 @@ test('register (EXTEND path): updating an existing id keeps omitted fields and m
     reg.register({ cwd: proj, id: 'tests', scriptPath: 'tests.mjs', aliases: ['npm test'] });
     const pt = JSON.parse(fs.readFileSync(shellsFile, 'utf8')).shells.find((s) => s.id === 'tests');
     assertEq([pt.passthrough, pt.command], [true, 'scripts/tests.mjs'], 'passthrough written when declared and kept; the path is relative to the curation home');
+    reg.register({ cwd: proj, id: 'tests', scriptPath: 'tests.mjs', aliases: ['npm test'], commandTokens: 1 });
+    reg.register({ cwd: proj, id: 'tests', scriptPath: 'tests.mjs', aliases: ['npm test'] });
+    assertEq(JSON.parse(fs.readFileSync(shellsFile, 'utf8')).shells.find((s) => s.id === 'tests').commandTokens, 1, 'commandTokens written when declared and kept across an update that omits it');
     const fresh = reg.register({ cwd: proj, id: 'new-one', scriptPath: '.vscode/scripts/new.mjs', aliases: ['npm run new'] });
     assert(fresh.isError && /content is required/.test(fresh.message), 'a NEW id without content is refused');
     fs.rmSync(script);
