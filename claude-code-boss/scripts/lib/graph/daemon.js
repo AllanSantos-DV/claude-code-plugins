@@ -13,6 +13,7 @@
 const { readFileSync } = require('fs');
 const { join } = require('path');
 const { homedir } = require('os');
+const { resolveBearer, tokenFromVault } = require('../../../engine/lib/mcp-auth.js');
 
 /** run-dir: env MCP_RUN_DIR → ~/.mcp-memory/run/ (client needs no JVM system property). */
 function resolveRunDir() {
@@ -61,6 +62,24 @@ async function discover({ fetchImpl = globalThis.fetch, runDir } = {}) {
   return alive ? info : null;
 }
 
+/** A GET probe of `path` under `base`, in the shape resolveBearer expects. Never throws. */
+function fetchProbe(base, fetchImpl) {
+  return async (path, timeoutMs) => {
+    const ctrl = new AbortController();
+    const t = setTimeout(() => ctrl.abort(), timeoutMs);
+    try {
+      const res = await fetchImpl(base + path, { signal: ctrl.signal });
+      let body = null;
+      try { body = await res.json(); } catch (e) { void e; /* no JSON body */ }
+      return { alive: res.status === 200 || res.status === 503, statusCode: res.status, health: body };
+    } catch (e) {
+      return { alive: false, error: e && e.message };
+    } finally {
+      clearTimeout(t);
+    }
+  };
+}
+
 /**
  * SAME-SERVER resolver factory (ADR-020 coherence). Produce a discover()-shaped async fn bound to
  * the mcp-memory backend's OWN daemon resolution, so the graph rides the SAME server the KB backend
@@ -71,10 +90,12 @@ async function discover({ fetchImpl = globalThis.fetch, runDir } = {}) {
  *   3. runDir unset        → discover falls back to the default run dir (resolveRunDir).
  * DI-friendly (fetchImpl) so it stays testable without a live daemon. Returns null when the
  * resolved daemon is unreachable/absent, so the graph tools fail open (never throw).
- * @param {{serverUrl?:string, runDir?:string}} cfg
- * @returns {(opts?:{fetchImpl?:Function}) => Promise<{url:string}|null>}
+ * An explicit serverUrl that advertises `features.auth` also yields the Bearer from the system vault
+ * (`bearer`), which graphBase hands to every graph call; a daemon found in the registry is local and needs none.
+ * @param {{serverUrl?:string, runDir?:string, loadToken?:Function, authProbeTimeoutMs?:number}} cfg
+ * @returns {(opts?:{fetchImpl?:Function}) => Promise<{url:string, bearer?:string}|null>}
  */
-function makeResolver({ serverUrl = '', runDir = '' } = {}) {
+function makeResolver({ serverUrl = '', runDir = '', loadToken = tokenFromVault, authProbeTimeoutMs = 5000 } = {}) {
   const url = String(serverUrl || '').trim();
   const dir = String(runDir || '').trim();
   return async ({ fetchImpl = globalThis.fetch } = {}) => {
@@ -82,7 +103,10 @@ function makeResolver({ serverUrl = '', runDir = '' } = {}) {
       // Explicit base = the SAME daemon the KB backend points at. Health-check it (200/503 alive)
       // and use it directly; do NOT read a registry (which could name a different, foreign daemon).
       const alive = await health(url, { fetchImpl });
-      return alive ? { url: url.replace(/\/+$/, '') } : null;
+      if (!alive) return null;
+      const base = url.replace(/\/+$/, '');
+      const bearer = await resolveBearer({ baseUrl: base, probe: fetchProbe(base, fetchImpl), loadToken, timeoutMs: authProbeTimeoutMs });
+      return bearer ? { url: base, bearer } : { url: base };
     }
     // No explicit URL → discover from the configured runDir (default run dir only when unset).
     return discover({ fetchImpl, runDir: dir || undefined });

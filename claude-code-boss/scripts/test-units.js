@@ -1000,6 +1000,12 @@ function startAuthDaemon({ auth = true, hangFeatureProbe = false, token = 'vault
       return res.end(JSON.stringify({ status: 'healthy', features: { auth } }));
     }
     if (req.method === 'DELETE') { seen.authorization.push(req.headers.authorization || null); res.writeHead(200); return res.end(); }
+    if (req.method === 'POST' && req.url === '/api/v1/graph/status') {
+      seen.authorization.push(req.headers.authorization || null);
+      if (auth && req.headers.authorization !== `Bearer ${token}`) { res.writeHead(401, { 'Content-Type': 'application/json' }); return res.end('{"error":"unauthorized"}'); }
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      return res.end('{"state":"ready","nodes":3}');
+    }
     if (req.method === 'POST' && req.url === '/mcp') {
       let body = '';
       req.on('data', (c) => (body += c));
@@ -1071,6 +1077,59 @@ test('mcp-client auth: the features probe timing out fails open with a warning a
     assert(warns.some((w) => /features\.auth|auth probe/i.test(w)), 'a warning names the probe: ' + warns.join(' | '));
     c.close();
   } finally { console.error = realError; await daemon.close(); }
+});
+
+test('graph client auth: features.auth true → the vault Bearer rides every graph call to the explicit serverUrl', async () => {
+  const daemon = await startAuthDaemon({ auth: true });
+  try {
+    const G = require('./lib/graph/client.js');
+    const resolve = require('./lib/graph/daemon.js').makeResolver({ serverUrl: daemon.url, loadToken: () => 'vault-token' });
+    const base = await G.graphBase({ discover: resolve });
+    const { json } = await G.post(base, 'status', { root: process.cwd() }, {});
+    assertEq(json.state, 'ready');
+    assert(daemon.seen.authorization.length === 1 && daemon.seen.authorization[0] === 'Bearer vault-token', JSON.stringify(daemon.seen.authorization));
+  } finally { await daemon.close(); }
+});
+
+test('graph client auth: no token in the vault → the resolver fails loud with the coded error', async () => {
+  const daemon = await startAuthDaemon({ auth: true });
+  try {
+    const resolve = require('./lib/graph/daemon.js').makeResolver({ serverUrl: daemon.url, loadToken: () => null });
+    const err = await require('./lib/graph/client.js').graphBase({ discover: resolve }).then(() => null, (e) => e);
+    assert(err && err.code === 'MCP_TOKEN_MISSING' && /mcp-token/.test(err.message), String(err && err.message));
+    assertEq(daemon.seen.authorization.length, 0, 'no graph call without the token');
+  } finally { await daemon.close(); }
+});
+
+test('graph client auth: features.auth false sends no Authorization and never reads the vault; a probe that hangs fails open with a warning', async () => {
+  const G = require('./lib/graph/client.js');
+  const { makeResolver } = require('./lib/graph/daemon.js');
+  const open = await startAuthDaemon({ auth: false });
+  const hung = await startAuthDaemon({ auth: false, hangFeatureProbe: true });
+  const warns = [];
+  const realError = console.error;
+  let reads = 0;
+  try {
+    const base = await G.graphBase({ discover: makeResolver({ serverUrl: open.url, loadToken: () => { reads++; return 'x'; } }) });
+    await G.post(base, 'status', { root: process.cwd() }, {});
+    assertEq([reads, open.seen.authorization], [0, [null]]);
+    console.error = (...a) => { warns.push(a.join(' ')); };
+    const hungBase = await G.graphBase({ discover: makeResolver({ serverUrl: hung.url, authProbeTimeoutMs: 150, loadToken: () => 'x' }) });
+    await G.post(hungBase, 'status', { root: process.cwd() }, {});
+    assert(warns.some((w) => /features\.auth|auth probe/i.test(w)), 'a warning names the probe: ' + warns.join(' | '));
+    assertEq(hung.seen.authorization, [null]);
+  } finally { console.error = realError; await open.close(); await hung.close(); }
+});
+
+test('graph client auth: a daemon found through the local registry is local — no features probe, no vault', async () => {
+  const daemon = await startAuthDaemon({ auth: true });
+  const runDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-graph-run-'));
+  fs.writeFileSync(path.join(runDir, 'daemon.json'), JSON.stringify({ url: daemon.url }));
+  let reads = 0;
+  try {
+    const info = await require('./lib/graph/daemon.js').makeResolver({ runDir, loadToken: () => { reads++; return 'x'; } })();
+    assertEq([info && info.url === daemon.url, info && info.bearer, reads, daemon.seen.featureProbes], [true, undefined, 0, 0]);
+  } finally { await daemon.close(); fs.rmSync(runDir, { recursive: true, force: true }); }
 });
 
 test('mcp-client remote serverUrl: never reads the local registry nor starts or kicks the local launcher', async () => {
@@ -27203,7 +27262,7 @@ test('graph/daemon: makeResolver prefers explicit serverUrl (same server, no reg
   const fetchImpl = async (u) => { seen.push(String(u)); return { status: 200 }; };
   const info = await graphDaemon.makeResolver({ serverUrl: 'http://explicit:7', runDir: otherDir })({ fetchImpl });
   assertEq(info, { url: 'http://explicit:7' });
-  assert(seen.length > 0 && seen.every((u) => u.startsWith('http://explicit:7/health')), 'health-checked the EXPLICIT url only');
+  assert(seen.some((u) => u === 'http://explicit:7/health') && seen.every((u) => u.startsWith('http://explicit:7/')), 'health-checked (and probed for features.auth) the EXPLICIT url only');
   assert(seen.every((u) => !u.includes('from-registry')), 'the registry url was NOT consulted');
 });
 test('graph/daemon: makeResolver falls back to runDir daemon.json when no serverUrl', async () => {

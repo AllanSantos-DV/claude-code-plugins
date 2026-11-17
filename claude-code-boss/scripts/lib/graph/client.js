@@ -20,6 +20,7 @@ const { resolve: pathResolve } = require('path');
 const { realpathSync, existsSync } = require('fs');
 const { homedir } = require('os');
 const { RETRY_DELAYS_MS, isRefused, neverReached, refusedCode, sleep } = require('../refused-retry.js');
+const { rememberBearer, bearerFor } = require('../../../engine/lib/mcp-auth.js');
 
 class GraphError extends Error {
   constructor(status, code, message, extra = {}) {
@@ -80,7 +81,9 @@ async function graphBase({ discover, fetchImpl = globalThis.fetch } = {}) {
   if (typeof discover !== 'function') throw new GraphError(0, 'NO_DISCOVER', 'graphBase requires an injected discover()');
   const info = await discover({ fetchImpl });
   if (!info || !info.url) return null;
-  return String(info.url).replace(/\/+$/, '');
+  const base = String(info.url).replace(/\/+$/, '');
+  rememberBearer(base, info.bearer);
+  return base;
 }
 
 /**
@@ -96,7 +99,7 @@ async function post(base, sub, ctx, extra = {}, { fetchImpl = globalThis.fetch, 
   try {
     let url = base;
     const send = () => fetchImpl(`${url}/api/v1/graph/${sub}`, {
-      method: 'POST', headers: { 'content-type': 'application/json' },
+      method: 'POST', headers: { 'content-type': 'application/json', ...(bearerFor(url) ? { authorization: `Bearer ${bearerFor(url)}` } : {}) },
       body: JSON.stringify(body), signal: ctrl.signal,
     });
     // A reset ingest may already be stored, so a write is sent again only when it never reached the daemon.

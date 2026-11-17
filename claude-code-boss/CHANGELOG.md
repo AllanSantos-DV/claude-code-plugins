@@ -3,6 +3,7 @@
 ## [Unreleased]
 
 ### Added
+- **As ferramentas de grafo e o guarda de grafo mandam o Bearer a um servidor de memória remoto autenticado** (`engine/lib/mcp-auth.js`, `scripts/lib/graph/daemon.js` `makeResolver`, `scripts/lib/graph/client.js`): com `backend.mcpMemory.serverUrl` preenchido e `features.auth` ligada, o grafo usa a mesma resolução do token do cofre do cliente MCP (uma só regra para os dois) e manda `Authorization` em cada chamada, em vez de receber 401. Sem token guardado a falha é alta e aponta `node scripts/mcp-token.js set`; um daemon achado pelo registro local não é sondado nem usa o cofre.
 - **O Boss usa o token do cofre do sistema num servidor de memória remoto e não mexe no daemon local** (`engine/mcp-client.js` `_resolveAuth`, `scripts/lib/mcp-token-vault.js`, `scripts/mcp-token.js`): com `backend.mcpMemory.serverUrl` preenchido, o Boss lê `features.auth` em `/api/v1/server/health` e, se a autenticação está ligada, manda o Bearer guardado no cofre (DPAPI no Windows, Keychain no macOS, `secret-tool` no Linux), sempre pelo stdin e nunca em arquivo de texto nem em argv. Sem token guardado a falha é alta e aponta `node scripts/mcp-token.js set`; se a sonda não responde, segue sem token com um aviso. Um `serverUrl` explícito também deixa de ler o registro do daemon local na checagem de saúde com redescoberta (`readHealth({ rediscover })`).
 
 ## [3.17.0] - 2026-11-16

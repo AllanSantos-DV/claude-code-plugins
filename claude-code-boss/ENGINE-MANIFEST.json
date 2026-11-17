@@ -26,6 +26,7 @@
     "engine/lib/json-list-store.js": "82e643dc3257bf5dc6df838b37fc2f28f673979514e2f98890a6df06913f5a39",
     "engine/lib/kb-row.js": "703b9a348eb37e0e984c573255fb203e2619eb3ccdc73807528ae8a56aababcf",
     "engine/lib/log-rotate.js": "203dbb482fe09df3b18e950e8b62e41374a7b46f8ae90edc7389c6542708066e",
+    "engine/lib/mcp-auth.js": "7f3f02ece097a4e017453ff718bb946e208ef527ca5a7ebc66e289a3542b6a08",
     "engine/lib/mcp-token-vault.js": "4deb21cff36318a585d541fe09f70ee53d3f292993d174618453689c259ca43f",
     "engine/lib/metrics-project.js": "326374a271ca2e246ad63263c6ba14e6cfd04c8c5ae79b46ad5634ee9701adc7",
     "engine/lib/metrics-store.js": "ac7f5a0603ce923ccfd81ef6940425496f68fd935554869b99700f09611e2101",
@@ -45,7 +46,7 @@
     "engine/lib/shell-escape.js": "992e6ca8e1d3b7236b8b8236cf956ee80e800f0c0532c0d1f5209be49b66b795",
     "engine/lib/sqlite-compat.js": "122746c15131a2e800451ed6d6903216f462ac59163ab65e66b8687e8ce7baaf",
     "engine/lib/text-utils.js": "68dd660d8c8c6b6930e3de9304d2d56bb2fdc6773029aa3d46b8b0eb605ad08a",
-    "engine/mcp-client.js": "c1e7c810340b9fdbfdacffdf885844700589a26711147a6b8b8610707ccbac74",
+    "engine/mcp-client.js": "96f14db175cdde2e71531f9dfc58843713941cbb28539b73aee19544835e4584",
     "scripts/lib/mcp-bootstrap/launcher.js": "c7060022f13347b30648ed2fac16898d86f0850be70bbd4e7054e63ab2366ba7",
     "scripts/lib/mcp-bootstrap/registry.js": "62077187fdac17229d34745cd7c8f5c501e148724331d3873b28bc3a74391fa0"
   }

@@ -7,11 +7,7 @@ const http = require('http');
 const { URL } = require('url');
 const EventEmitter = require('events');
 
-/** The Bearer token of a remote memory server, from the OS vault (data dir of the plugin). */
-function tokenFromVault() {
-  const vault = require('./lib/mcp-token-vault.js');
-  return vault.loadToken(require('./lib/data-dir.js').dataDir(), vault.TOKEN_REF);
-}
+const { resolveBearer, tokenFromVault } = require('./lib/mcp-auth.js');
 
 /** The rejection for a call cancelled through its AbortSignal (no retry, not a transport failure). */
 function abortError(method, signal) {
@@ -202,19 +198,12 @@ class McpClient extends EventEmitter {
   async _resolveAuth() {
     this._bearer = '';
     if (!this.serverUrl) return;
-    const probe = await this.readHealth({ baseUrl: this._resolvedUrl, path: '/api/v1/server/health', timeoutMs: this.authProbeTimeoutMs });
-    if (!probe.alive && probe.statusCode === 404) return;
-    if (!probe.alive && probe.statusCode !== 401) {
-      console.error(`[MCP] auth probe (features.auth) at ${this._resolvedUrl} did not answer (${probe.error || probe.statusCode}) — continuing without a token`);
-      return;
-    }
-    const authOn = probe.statusCode === 401 || (probe.health && probe.health.features && probe.health.features.auth === true);
-    if (!authOn) return;
-    const token = this._loadToken();
-    if (!token) {
-      throw Object.assign(new Error(`the memory server at ${this._resolvedUrl} requires a Bearer token and none is stored in the system vault — store it with: node scripts/mcp-token.js set (token on stdin)`), { code: 'MCP_TOKEN_MISSING' });
-    }
-    this._bearer = token;
+    this._bearer = await resolveBearer({
+      baseUrl: this._resolvedUrl,
+      probe: (healthPath, timeoutMs) => this.readHealth({ baseUrl: this._resolvedUrl, path: healthPath, timeoutMs }),
+      loadToken: this._loadToken,
+      timeoutMs: this.authProbeTimeoutMs,
+    });
   }
 
   /** Read the daemon registry (~/.mcp-memory/run/daemon.json) and return its base URL. */
