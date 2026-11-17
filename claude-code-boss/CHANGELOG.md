@@ -2,11 +2,15 @@
 
 ## [Unreleased]
 
+### Added
+- **O Boss usa o token do cofre do sistema num servidor de memória remoto e não mexe no daemon local** (`engine/mcp-client.js` `_resolveAuth`, `scripts/lib/mcp-token-vault.js`, `scripts/mcp-token.js`): com `backend.mcpMemory.serverUrl` preenchido, o Boss lê `features.auth` em `/api/v1/server/health` e, se a autenticação está ligada, manda o Bearer guardado no cofre (DPAPI no Windows, Keychain no macOS, `secret-tool` no Linux), sempre pelo stdin e nunca em arquivo de texto nem em argv. Sem token guardado a falha é alta e aponta `node scripts/mcp-token.js set`; se a sonda não responde, segue sem token com um aviso. Um `serverUrl` explícito também deixa de ler o registro do daemon local na checagem de saúde com redescoberta (`readHealth({ rediscover })`).
+
 ## [3.17.0] - 2026-11-16
 
 ### Added
 - **O Boss relança o servidor de memória que morreu com a sessão aberta** (`scripts/brain-daemon-ensure.js` `relaunchDeadMemoryServer`): a cada prompt o hook confere o `/health` do servidor (a URL vem do registro que ele mesmo grava, sem porta fixa) e, se estiver fora do ar, chama o launcher uma vez; um marcador em disco segura novas chamadas por 2 minutos e some quando o servidor volta. Antes só o início da sessão chamava o launcher, e um servidor morto no meio da sessão ficava fora até a sessão seguinte (68 minutos medidos).
 - **O `graph_status` mostra a frescura do grafo** (`scripts/lib/graph/tools.js` `freshnessLine`): última indexação, idade em horas, retenção e a data a partir da qual o grafo sai do servidor se não for reindexado. Uma retenção configurada errada aparece como erro, não como "retenção desligada".
+
 
 ### Changed
 - **O recall de cada prompt tem teto de 1,8 s e segue sem memória em vez de segurar o prompt** (`servers/brain-server/lib/mcp-server.js` `withRecallBudget`, `engine/lib/recall-health.js`): ao estourar, o prompt vai adiante sem o contexto e a saúde do recall registra o motivo `budget`. Medido no build instalado: 158 a 262 ms (antes, um quarto das chamadas passava de 5 s).

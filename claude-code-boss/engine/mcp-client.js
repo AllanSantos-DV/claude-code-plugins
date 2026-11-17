@@ -7,6 +7,12 @@ const http = require('http');
 const { URL } = require('url');
 const EventEmitter = require('events');
 
+/** The Bearer token of a remote memory server, from the OS vault (data dir of the plugin). */
+function tokenFromVault() {
+  const vault = require('./lib/mcp-token-vault.js');
+  return vault.loadToken(require('./lib/data-dir.js').dataDir(), vault.TOKEN_REF);
+}
+
 /** The rejection for a call cancelled through its AbortSignal (no retry, not a transport failure). */
 function abortError(method, signal) {
   const why = signal && signal.reason && signal.reason.message ? `: ${signal.reason.message}` : '';
@@ -80,6 +86,9 @@ class McpClient extends EventEmitter {
     this._runLauncher = typeof opts.runLauncher === 'function' ? opts.runLauncher : null; // test seam
     // One restart per outage: a later one only after the cooldown, so a daemon that cannot start is reported, not hammered.
     this.restartWaitMs = Number.isFinite(opts.restartWaitMs) ? opts.restartWaitMs : 5000;
+    this._loadToken = typeof opts.loadToken === 'function' ? opts.loadToken : tokenFromVault;
+    this.authProbeTimeoutMs = Number.isFinite(opts.authProbeTimeoutMs) ? opts.authProbeTimeoutMs : 5000;
+    this._bearer = '';
     this.restartTimeoutMs = Number.isFinite(opts.restartTimeoutMs) ? opts.restartTimeoutMs : 60000;
     this.restartCooldownMs = Number.isFinite(opts.restartCooldownMs) ? opts.restartCooldownMs : 60000;
     this._lastRestartAt = 0;
@@ -180,8 +189,32 @@ class McpClient extends EventEmitter {
     if (!alive) {
       throw new Error(`MCP daemon at ${this._resolvedUrl} is not reachable (/health failed). Is it running?`);
     }
+    await this._resolveAuth();
     this._startTime = Date.now();
     await this._handshake();
+  }
+
+  /**
+   * For a server the user pointed to (serverUrl): read `features.auth` from its health and, when it
+   * is on, take the Bearer token from the system vault. A probe that does not answer fails open
+   * with a warning (the next call fails like any unreachable server); a missing token fails loud.
+   */
+  async _resolveAuth() {
+    this._bearer = '';
+    if (!this.serverUrl) return;
+    const probe = await this.readHealth({ baseUrl: this._resolvedUrl, path: '/api/v1/server/health', timeoutMs: this.authProbeTimeoutMs });
+    if (!probe.alive && probe.statusCode === 404) return;
+    if (!probe.alive && probe.statusCode !== 401) {
+      console.error(`[MCP] auth probe (features.auth) at ${this._resolvedUrl} did not answer (${probe.error || probe.statusCode}) — continuing without a token`);
+      return;
+    }
+    const authOn = probe.statusCode === 401 || (probe.health && probe.health.features && probe.health.features.auth === true);
+    if (!authOn) return;
+    const token = this._loadToken();
+    if (!token) {
+      throw Object.assign(new Error(`the memory server at ${this._resolvedUrl} requires a Bearer token and none is stored in the system vault — store it with: node scripts/mcp-token.js set (token on stdin)`), { code: 'MCP_TOKEN_MISSING' });
+    }
+    this._bearer = token;
   }
 
   /** Read the daemon registry (~/.mcp-memory/run/daemon.json) and return its base URL. */
@@ -199,20 +232,20 @@ class McpClient extends EventEmitter {
    * `rediscover` re-reads daemon.json on every call so a restart that changed
    * ports can be observed by lifecycle code.
    */
-  readHealth({ baseUrl, rediscover = false } = {}) {
+  readHealth({ baseUrl, rediscover = false, path: healthPath = '/health', timeoutMs = 5000 } = {}) {
     return new Promise((resolve) => {
       const resolved = baseUrl
-        || (rediscover ? this._discoverDaemonUrl() : '')
+        || (rediscover && !this.serverUrl ? this._discoverDaemonUrl() : '')
         || this.serverUrl
         || this._resolvedUrl;
       let u;
-      try { u = new URL(String(resolved || '').replace(/\/+$/, '') + '/health'); }
+      try { u = new URL(String(resolved || '').replace(/\/+$/, '') + healthPath); }
       catch (err) {
         console.error(`[MCP] bad server URL "${resolved}": ${err.message}`);
         return resolve({ alive: false, url: resolved || '', error: err.message });
       }
       const lib = u.protocol === 'https:' ? https : http;
-      const req = lib.get({ hostname: u.hostname, port: u.port, path: u.pathname, timeout: 5000 }, (res) => {
+      const req = lib.get({ hostname: u.hostname, port: u.port, path: u.pathname, timeout: timeoutMs }, (res) => {
         let body = '';
         res.on('data', chunk => { if (body.length < 65536) body += chunk; });
         res.on('end', () => {
@@ -248,6 +281,7 @@ class McpClient extends EventEmitter {
       const headers = { 'Content-Type': 'application/json', 'Content-Length': data.length, 'Accept': 'application/json, text/event-stream' };
       // NOTE: deliberately NO `Origin` header — the daemon 403s a non-loopback Origin; absent = allowed.
       if (this._sessionId) headers['Mcp-Session-Id'] = this._sessionId;
+      if (this._bearer) headers.Authorization = `Bearer ${this._bearer}`;
 
       const lib = u.protocol === 'https:' ? https : http;
       const req = lib.request(
@@ -471,7 +505,7 @@ class McpClient extends EventEmitter {
         const u = new URL(this._resolvedUrl + '/mcp');
         const lib = u.protocol === 'https:' ? https : http;
         const req = lib.request(
-          { hostname: u.hostname, port: u.port, path: u.pathname, method: 'DELETE', headers: { 'Mcp-Session-Id': this._sessionId }, timeout: 3000 },
+          { hostname: u.hostname, port: u.port, path: u.pathname, method: 'DELETE', headers: { 'Mcp-Session-Id': this._sessionId, ...(this._bearer ? { Authorization: `Bearer ${this._bearer}` } : {}) }, timeout: 3000 },
           (res) => res.resume(),
         );
         req.on('timeout', () => req.destroy());

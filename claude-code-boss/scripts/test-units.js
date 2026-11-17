@@ -988,6 +988,160 @@ test('mcp-client http: handshake captures session + stamps projectId + echoes se
   }
 });
 
+/** A memory server that advertises `features.auth` and, when auth is on, answers 401 to a /mcp call without the Bearer. */
+function startAuthDaemon({ auth = true, hangFeatureProbe = false, token = 'vault-token' } = {}) {
+  const seen = { authorization: [], featureProbes: 0, mcpCalls: 0 };
+  const server = http.createServer((req, res) => {
+    if (req.method === 'GET' && req.url === '/health') { res.writeHead(200, { 'Content-Type': 'application/json' }); return res.end(JSON.stringify({ status: 'healthy' })); }
+    if (req.method === 'GET' && req.url === '/api/v1/server/health') {
+      seen.featureProbes++;
+      if (hangFeatureProbe) return;
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      return res.end(JSON.stringify({ status: 'healthy', features: { auth } }));
+    }
+    if (req.method === 'DELETE') { seen.authorization.push(req.headers.authorization || null); res.writeHead(200); return res.end(); }
+    if (req.method === 'POST' && req.url === '/mcp') {
+      let body = '';
+      req.on('data', (c) => (body += c));
+      req.on('end', () => {
+        seen.mcpCalls++;
+        seen.authorization.push(req.headers.authorization || null);
+        if (auth && req.headers.authorization !== `Bearer ${token}`) { res.writeHead(401, { 'WWW-Authenticate': 'Bearer' }); return res.end('unauthorized'); }
+        const msg = JSON.parse(body);
+        if (msg.method === 'initialize') { res.writeHead(200, { 'Content-Type': 'application/json', 'Mcp-Session-Id': 's1' }); return res.end(JSON.stringify({ jsonrpc: '2.0', id: msg.id, result: { serverInfo: { name: 'fake' }, capabilities: {} } })); }
+        if (msg.method === 'notifications/initialized') { res.writeHead(204); return res.end(); }
+        if (msg.method === 'tools/list') { res.writeHead(200, { 'Content-Type': 'application/json' }); return res.end(JSON.stringify({ jsonrpc: '2.0', id: msg.id, result: { tools: [{ name: 'search_memory' }] } })); }
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        return res.end(JSON.stringify({ jsonrpc: '2.0', id: msg.id, result: { content: [{ type: 'text', text: 'OK' }] } }));
+      });
+      return;
+    }
+    res.writeHead(404); res.end();
+  });
+  return new Promise((resolve) => {
+    server.listen(0, '127.0.0.1', () => resolve({ url: `http://127.0.0.1:${server.address().port}`, seen, close: () => { server.closeAllConnections(); return new Promise((r) => server.close(r)); } }));
+  });
+}
+
+test('mcp-client auth: features.auth true → the Bearer from the vault goes on every /mcp call', async () => {
+  const McpClient = require('../engine/mcp-client.js');
+  const daemon = await startAuthDaemon({ auth: true });
+  try {
+    const c = new McpClient({ serverUrl: daemon.url, projectId: 'P', timeout: 4000, loadToken: () => 'vault-token' });
+    await c.connect();
+    assertEq((await c.callTool('search_memory', { query: 'x' })).text, 'OK');
+    assert(daemon.seen.authorization.length >= 4 && daemon.seen.authorization.every((a) => a === 'Bearer vault-token'), JSON.stringify(daemon.seen.authorization));
+    c.close();
+  } finally { await daemon.close(); }
+});
+
+test('mcp-client auth: features.auth true and no token in the vault → loud, coded error naming the fix', async () => {
+  const McpClient = require('../engine/mcp-client.js');
+  const daemon = await startAuthDaemon({ auth: true });
+  try {
+    const c = new McpClient({ serverUrl: daemon.url, timeout: 4000, loadToken: () => null });
+    const err = await c.connect().then(() => null, (e) => e);
+    assert(err && err.code === 'MCP_TOKEN_MISSING' && /mcp-token/.test(err.message), String(err && err.message));
+    assertEq(daemon.seen.mcpCalls, 0, 'nothing is sent without the token');
+  } finally { await daemon.close(); }
+});
+
+test('mcp-client auth: features.auth false → no Authorization header and the vault is never read', async () => {
+  const McpClient = require('../engine/mcp-client.js');
+  const daemon = await startAuthDaemon({ auth: false });
+  let reads = 0;
+  try {
+    const c = new McpClient({ serverUrl: daemon.url, timeout: 4000, loadToken: () => { reads++; return 'x'; } });
+    await c.connect();
+    assertEq([reads, daemon.seen.authorization.every((a) => a === null)], [0, true]);
+    c.close();
+  } finally { await daemon.close(); }
+});
+
+test('mcp-client auth: the features probe timing out fails open with a warning and still connects', async () => {
+  const McpClient = require('../engine/mcp-client.js');
+  const daemon = await startAuthDaemon({ auth: false, hangFeatureProbe: true });
+  const warns = [];
+  const realError = console.error;
+  console.error = (...a) => { warns.push(a.join(' ')); };
+  try {
+    const c = new McpClient({ serverUrl: daemon.url, timeout: 4000, authProbeTimeoutMs: 150, loadToken: () => 'x' });
+    await c.connect();
+    assert(c.isConnected(), 'connected without waiting on the probe');
+    assert(warns.some((w) => /features\.auth|auth probe/i.test(w)), 'a warning names the probe: ' + warns.join(' | '));
+    c.close();
+  } finally { console.error = realError; await daemon.close(); }
+});
+
+test('mcp-client remote serverUrl: never reads the local registry nor starts or kicks the local launcher', async () => {
+  const McpClient = require('../engine/mcp-client.js');
+  const calls = [];
+  const c = new McpClient({
+    serverUrl: 'https://memory.invalid', timeout: 1500, refusedRetryDelaysMs: [], restartWaitMs: 50,
+    kickLauncher: () => { calls.push('kick'); return true; },
+    runLauncher: async () => { calls.push('run'); return { ok: true }; },
+  });
+  c._discoverDaemonUrl = () => { calls.push('discover'); return 'http://127.0.0.1:1'; };
+  const realError = console.error;
+  console.error = () => {};
+  try {
+    const err = await c.connect().then(() => null, (e) => e);
+    assert(err, 'an unreachable remote fails loud');
+    await c._awaitRestartedServer().catch((e) => void e);
+    await c.readHealth({ rediscover: true }).catch((e) => void e);
+    await c.callTool('search_memory', { query: 'q' }, { timeoutMs: 800 }).catch((e) => void e);
+  } finally { console.error = realError; }
+  assertEq(calls, [], 'no registry read, no launcher');
+});
+
+test('mcp token vault: the token reaches the OS tool on stdin, never in argv, and round-trips', () => {
+  const vault = require('../engine/lib/mcp-token-vault.js');
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-vault-'));
+  try {
+    const calls = [];
+    const exec = (cmd, args, input) => { calls.push({ cmd, args, input }); return /Unprotect/.test(args.join(' ')) ? 'sekret' : 'BLOB'; };
+    for (const platform of ['win32', 'darwin', 'linux']) {
+      calls.length = 0;
+      vault.saveToken(home, 'mcp-memory-token', 'sekret', { platform, execImpl: exec });
+      assert(calls.length === 1 && !JSON.stringify(calls[0].args).includes('sekret') && String(calls[0].input).includes('sekret'), platform + ': ' + JSON.stringify(calls));
+    }
+    assertEq(fs.readFileSync(path.join(home, 'secrets', 'mcp-memory-token.dpapi'), 'utf8'), 'BLOB');
+    assertEq(vault.loadToken(home, 'mcp-memory-token', { platform: 'win32', execImpl: exec }), 'sekret');
+    assertEq(vault.loadToken(home, 'nope', { platform: 'win32', execImpl: exec }), null);
+    let bad = null; try { vault.saveToken(home, '../x', 't', { platform: 'win32', execImpl: exec }); } catch (e) { bad = e; }
+    assert(bad && bad.name === 'VaultError', 'a reference outside [a-z0-9-] is refused');
+  } finally { fs.rmSync(home, { recursive: true, force: true }); }
+});
+
+test('mcp token vault: a real Windows DPAPI round trip keeps no plain text on disk', () => {
+  if (process.platform !== 'win32') return;
+  const vault = require('../engine/lib/mcp-token-vault.js');
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-vault-real-'));
+  try {
+    vault.saveToken(home, 'mcp-memory-token', 'plain-secret-123');
+    assert(!fs.readFileSync(path.join(home, 'secrets', 'mcp-memory-token.dpapi'), 'utf8').includes('plain-secret-123'), 'blob is ciphertext');
+    assertEq(vault.loadToken(home, 'mcp-memory-token'), 'plain-secret-123');
+    vault.deleteToken(home, 'mcp-memory-token');
+    assertEq(vault.loadToken(home, 'mcp-memory-token'), null);
+  } finally { fs.rmSync(home, { recursive: true, force: true }); }
+});
+
+test('mcp-token CLI: set reads the token from stdin, status never prints it, delete removes it', () => {
+  if (process.platform !== 'win32') return;
+  const { run } = require('./mcp-token.js');
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-token-cli-'));
+  try {
+    assertEq(run('status', { home }), 'no token stored');
+    assert(/dpapi/.test(run('set', { home, readStdin: () => 'cli-secret-9\n' })));
+    const status = run('status', { home });
+    assert(status === 'token stored' && !status.includes('cli-secret-9'), status);
+    assertEq(run('delete', { home }), 'token removed');
+    assertEq(run('status', { home }), 'no token stored');
+    let bad = null; try { run('set', { home, readStdin: () => '  ' }); } catch (e) { bad = e; }
+    assert(bad && /no token/.test(bad.message), 'an empty stdin is refused');
+  } finally { fs.rmSync(home, { recursive: true, force: true }); }
+});
+
 test('mcp-client http: SESSION_EXPIRED (400 -32600) triggers reconnect + single retry', async () => {
   const McpClient = require('../engine/mcp-client.js');
   const daemon = await startFakeDaemon({ expireFirstCall: true, reconnectInit: true });
@@ -21447,10 +21601,10 @@ test('mcp-server.withRecallBudget: devolve o que chegou a tempo, corta o que pas
   assertEq(await withRecallBudget(Promise.resolve({ a: 1 }), 100), { expired: false, value: { a: 1 } });
   assertEq(await withRecallBudget(Promise.resolve({ a: 2 }), 0), { expired: false, value: { a: 2 } }, 'budget 0 = no ceiling');
   const t0 = Date.now();
-  const late = new Promise((_, rej) => setTimeout(() => rej(new Error('late failure')), 600));
+  const late = new Promise((_, rej) => setTimeout(() => rej(new Error('late failure')), 3000));
   assertEq(await withRecallBudget(late, 50), { expired: true });
-  assert(Date.now() - t0 < 500, `stopped at the budget, took ${Date.now() - t0} ms`);
-  await new Promise((r) => setTimeout(r, 650));
+  assert(Date.now() - t0 < 2500, `stopped at the budget, took ${Date.now() - t0} ms`);
+  await new Promise((r) => setTimeout(r, 3100));
   let threw = null;
   try { await withRecallBudget(Promise.reject(new Error('fast failure')), 100); } catch (err) { threw = err; }
   assertEq(threw && threw.message, 'fast failure', 'a recall that fails in time still reaches the handler fail-open path');

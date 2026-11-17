@@ -141,6 +141,7 @@ nenhum                       → off            (cinza)
 | `backend` | `"local"` | `local` (SQLite) ou `mcp-memory` (Java daemon) |
 | `backend.mcpMemory.autoUpdate.enabled` | `true` | No HTTP, verifica/aplica updates no `SessionStart` |
 | `backend.mcpMemory.autoUpdate.allowRemote` | `false` | Permite chamar `update` em `serverUrl` não-loopback; fallback de restart local continua proibido |
+| `backend.mcpMemory.serverUrl` | `""` | Servidor do mcp-memory que você apontou (vazio = o daemon local anunciado em `~/.mcp-memory/run/daemon.json`). Com ele preenchido o Boss nunca lê esse registro nem sobe o launcher local. Se o servidor anuncia `features.auth` em `/api/v1/server/health`, o Boss manda o Bearer guardado no cofre do sistema (DPAPI no Windows, Keychain no macOS, `secret-tool` no Linux); guarde-o com `node scripts/mcp-token.js set` (token pelo stdin) e confira com `status`. Sem token guardado a chamada falha alto, apontando esse comando; se a sonda não responder, segue sem token com um aviso |
 | `backend.mcpMemory.autoUpdate.intervalMs` | `86400000` | Intervalo mínimo entre tentativas (24h) |
 | `backend.mcpMemory.autoUpdate.updateTimeoutMs` | `30000` | Teto da chamada mutável `update` sem retry |
 | `backend.mcpMemory.autoUpdate.restartTimeoutMs` | `25000` | Teto para `/health.version` confirmar a versão nova |
