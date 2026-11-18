@@ -4,6 +4,9 @@
  * rules of a scope: POST {daemon}/api/v1/scoped-rules/lookup (contract: native-java
  * docs/contracts/regras-por-escopo.md).
  *
+ * A `serverUrl` the user pointed to is asked directly, never the local announcement; when that server
+ * advertises `features.auth`, the vault Bearer (engine/lib/mcp-auth.js) goes on the call.
+ *
  * REST and not the shared MCP connection: the Boss daemon serves sessions of many projects, and
  * the MCP tool takes the project from the connection's handshake, while the REST route takes the
  * calling session's `project_id` on each call.
@@ -18,6 +21,7 @@ const path = require('path');
 const os = require('os');
 const { readDaemonUrl } = require('./mcp-bootstrap/registry.js');
 const { RETRY_DELAYS_MS, isRefused, refusedCode, sleep } = require('./refused-retry.js');
+const { makeResolver } = require('./graph/daemon.js');
 
 const DOWN_MS = 30_000;
 // The live server answered in 0.9-2.2 s: a 2 s cap dropped the rules of about one prompt in five.
@@ -29,10 +33,10 @@ const fail = (code, message) => Object.assign(new Error(message), { code });
 
 /**
  * @param {{files?: string[], projectId?: string, idPrefix?: string, includeText?: boolean, limit?: number}} q
- * @param {{fetchImpl?: Function, runDir?: string, delays?: number[], timeoutMs?: number, downMs?: number, now?: () => number, wait?: (ms: number) => Promise<void>}} [o]
+ * @param {{fetchImpl?: Function, runDir?: string, serverUrl?: string, loadToken?: () => string|null, delays?: number[], timeoutMs?: number, downMs?: number, now?: () => number, wait?: (ms: number) => Promise<void>}} [o]
  *   timeoutMs: the whole lookup, tries and backoff included; now/wait: the clock and the backoff wait
  * @returns {Promise<{count: number, rules: object[]}>}
- * @throws {Error} code MEMORY_SERVER_DOWN | LOOKUP_UNSUPPORTED | LOOKUP_REJECTED | LOOKUP_FAILED
+ * @throws {Error} code MCP_TOKEN_MISSING | MEMORY_SERVER_DOWN | LOOKUP_UNSUPPORTED | LOOKUP_REJECTED | LOOKUP_FAILED
  */
 async function lookupScopedRules(q, o = {}) {
   const { fetchImpl = globalThis.fetch, delays = RETRY_DELAYS_MS, timeoutMs = BUDGET_MS, downMs = DOWN_MS, now = Date.now, wait = sleep } = o;
@@ -49,12 +53,20 @@ async function lookupScopedRules(q, o = {}) {
       if (now() + ms >= deadline) break;
       await wait(ms);
     }
-    const base = readDaemonUrl(runDir, { label: 'scoped-rules', requirePort: true });
-    if (!base) continue;
+    let base;
+    let bearer = '';
+    if (o.serverUrl) {
+      const info = await makeResolver({ serverUrl: o.serverUrl, loadToken: o.loadToken })({ fetchImpl });
+      if (!info) { last = `${o.serverUrl}: not answering`; continue; }
+      ({ url: base, bearer = '' } = info);
+    } else {
+      base = readDaemonUrl(runDir, { label: 'scoped-rules', requirePort: true });
+      if (!base) continue;
+    }
     let res;
     try {
       res = await fetchImpl(`${String(base).replace(/\/+$/, '')}/api/v1/scoped-rules/lookup`, {
-        method: 'POST', headers: { 'content-type': 'application/json' },
+        method: 'POST', headers: { 'content-type': 'application/json', ...(bearer ? { authorization: `Bearer ${bearer}` } : {}) },
         body: JSON.stringify(body), signal: AbortSignal.timeout(Math.max(1, deadline - now())),
       });
     } catch (err) {

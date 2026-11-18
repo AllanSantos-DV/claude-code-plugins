@@ -213,7 +213,8 @@ function render(rules, maxChars) {
 
 async function defaultLookup({ files, projectId }) {
   if (require('../../engine/brain-backend.js').peekMode() !== 'mcp-memory') return null;
-  return require('./scoped-rules-client.js').lookupScopedRules({ files, projectId, idPrefix: 'rule:' });
+  const mcp = (require('../../engine/lib/brain-config.js').load().backend || {}).mcpMemory || {};
+  return require('./scoped-rules-client.js').lookupScopedRules({ files, projectId, idPrefix: 'rule:' }, { serverUrl: mcp.serverUrl || '', runDir: mcp.runDir || undefined });
 }
 
 /**

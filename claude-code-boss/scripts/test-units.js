@@ -1000,6 +1000,12 @@ function startAuthDaemon({ auth = true, hangFeatureProbe = false, token = 'vault
       return res.end(JSON.stringify({ status: 'healthy', features: { auth } }));
     }
     if (req.method === 'DELETE') { seen.authorization.push(req.headers.authorization || null); res.writeHead(200); return res.end(); }
+    if (req.method === 'POST' && req.url === '/api/v1/scoped-rules/lookup') {
+      seen.authorization.push(req.headers.authorization || null);
+      if (auth && req.headers.authorization !== `Bearer ${token}`) { res.writeHead(401, { 'Content-Type': 'application/json' }); return res.end('{"error":"unauthorized"}'); }
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      return res.end('{"count":1,"rules":[{"id":"rule:sempre:a","text":"x"}]}');
+    }
     if (req.method === 'POST' && req.url === '/api/v1/graph/status') {
       seen.authorization.push(req.headers.authorization || null);
       if (auth && req.headers.authorization !== `Bearer ${token}`) { res.writeHead(401, { 'Content-Type': 'application/json' }); return res.end('{"error":"unauthorized"}'); }
@@ -1130,6 +1136,50 @@ test('graph client auth: a daemon found through the local registry is local — 
     const info = await require('./lib/graph/daemon.js').makeResolver({ runDir, loadToken: () => { reads++; return 'x'; } })();
     assertEq([info && info.url === daemon.url, info && info.bearer, reads, daemon.seen.featureProbes], [true, undefined, 0, 0]);
   } finally { await daemon.close(); fs.rmSync(runDir, { recursive: true, force: true }); }
+});
+
+test('scoped-rules-client auth: an explicit serverUrl is asked with the vault Bearer, and the local registry is never read', async () => {
+  const client = require('./lib/scoped-rules-client.js');
+  const daemon = await startAuthDaemon({ auth: true });
+  const runDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-sr-run-'));
+  try {
+    client._resetDown();
+    const r = await client.lookupScopedRules({ idPrefix: 'rule:' }, { serverUrl: daemon.url, runDir, loadToken: () => 'vault-token' });
+    assertEq(r.rules[0].id, 'rule:sempre:a');
+    assertEq(daemon.seen.authorization, ['Bearer vault-token']);
+  } finally { await daemon.close(); fs.rmSync(runDir, { recursive: true, force: true }); client._resetDown(); }
+});
+
+test('scoped-rules-client auth: authentication on and no token stored fails loud with MCP_TOKEN_MISSING, before any lookup', async () => {
+  const client = require('./lib/scoped-rules-client.js');
+  const daemon = await startAuthDaemon({ auth: true });
+  try {
+    client._resetDown();
+    const err = await client.lookupScopedRules({}, { serverUrl: daemon.url, loadToken: () => null }).then(() => null, (e) => e);
+    assert(err && err.code === 'MCP_TOKEN_MISSING' && /mcp-token/.test(err.message), String(err && err.message));
+    assertEq(daemon.seen.authorization.length, 0, 'no lookup without the token');
+  } finally { await daemon.close(); client._resetDown(); }
+});
+
+test('scoped-rules-client auth: features.auth off sends no Authorization and never reads the vault', async () => {
+  const client = require('./lib/scoped-rules-client.js');
+  const daemon = await startAuthDaemon({ auth: false });
+  let reads = 0;
+  try {
+    client._resetDown();
+    const r = await client.lookupScopedRules({}, { serverUrl: daemon.url, loadToken: () => { reads++; return 'x'; } });
+    assertEq([r.rules.length, reads, daemon.seen.authorization], [1, 0, [null]]);
+  } finally { await daemon.close(); client._resetDown(); }
+});
+
+test('scoped-rules-client auth: a wrong stored token is a rejected lookup (401), not a silent empty answer', async () => {
+  const client = require('./lib/scoped-rules-client.js');
+  const daemon = await startAuthDaemon({ auth: true });
+  try {
+    client._resetDown();
+    const err = await client.lookupScopedRules({}, { serverUrl: daemon.url, loadToken: () => 'wrong' }).then(() => null, (e) => e);
+    assert(err && err.code === 'LOOKUP_REJECTED' && /401/.test(err.message), String(err && err.message));
+  } finally { await daemon.close(); client._resetDown(); }
 });
 
 test('mcp-client remote serverUrl: never reads the local registry nor starts or kicks the local launcher', async () => {
