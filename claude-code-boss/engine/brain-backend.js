@@ -270,6 +270,14 @@ function normalizeEntry(data) {
   return entry;
 }
 
+/** The per-call options a recall forwards to the client: its cancel signal and its narrowed server budget. */
+function callOpts(opts) {
+  return {
+    ...(opts.signal ? { signal: opts.signal } : {}),
+    ...(opts.recallBudgetMs > 0 ? { recallBudgetMs: opts.recallBudgetMs } : {}),
+  };
+}
+
 /**
  * search_memory on the mcp-memory server. The server's order is kept as is: it puts the session's own
  * project first and sorts each group by score, so re-sorting by `score` would push other projects' hits
@@ -290,7 +298,7 @@ async function searchMcp(query, opts = {}) {
     ...(minScore > 0 ? { minScore } : {}),
     ...(Object.keys(metadata).length ? { metadata } : {}),
     ...(opts.includeHome ? { includeHome: true } : {}),
-  }, opts.signal ? { signal: opts.signal } : {});
+  }, callOpts(opts));
   return parseSearchResults(result).slice(0, topK).map(item => normalizeSearchItem(item));
 }
 
@@ -372,7 +380,9 @@ function parseComposeEnvelope(result) {
   const { facts, capabilities } = splitComposeBlocks(blocks);
   // entries mirrors the legacy flat shape so retrieval telemetry (% cited) keeps working.
   const entries = facts.map(f => ({ id: f.id, title: f.title, type: f.type, summary: f.summary, score: f.score }));
-  const warning = data && typeof data.recall_warning === 'string' && data.recall_warning.trim();
+  const degraded = data && Array.isArray(data.recall_degraded) && data.recall_degraded.length
+    ? `recall degraded inside its budget: ${data.recall_degraded.join(', ')}` : '';
+  const warning = (data && typeof data.recall_warning === 'string' && data.recall_warning.trim()) || degraded;
   return { facts, capabilities, entries, ...(warning ? { warning } : {}) };
 }
 
@@ -380,7 +390,7 @@ async function composeMcp(query, opts = {}) {
   const args = { query: typeof query === 'string' ? query : '', includeLifecycleState: true };
   if (opts.metadata && typeof opts.metadata === 'object') args.metadata = opts.metadata;
   if (opts.setup) args.setup = true;
-  const result = await _mcp.callTool('compose_recall', args, opts.signal ? { signal: opts.signal } : {});
+  const result = await _mcp.callTool('compose_recall', args, callOpts(opts));
   return parseComposeEnvelope(result);
 }
 

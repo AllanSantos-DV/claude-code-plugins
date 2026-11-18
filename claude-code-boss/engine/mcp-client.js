@@ -15,6 +15,15 @@ function abortError(method, signal) {
   return Object.assign(new Error(`MCP request "${method}" aborted${why}`), { code: 'ABORTED', name: 'AbortError' });
 }
 
+/**
+ * The `tools/call` params. `opts.recallBudgetMs` asks the memory server to degrade a recall inside that many ms
+ * (MCP `_meta.recallBudgetMs`), so it answers before the caller's own deadline.
+ */
+function toolCallParams(name, args, opts) {
+  const budget = opts && opts.recallBudgetMs;
+  return { name, arguments: args, ...(budget > 0 ? { _meta: { recallBudgetMs: budget } } : {}) };
+}
+
 /** The error of a call whose budget ran out; `step` names where (connect, probes, reconnect, retry). */
 function deadlineError(name, ms, step) {
   return Object.assign(new Error(`MCP call "${name}" timed out: its ${ms} ms budget ran out during ${step}`), { code: 'DEADLINE' });
@@ -369,7 +378,7 @@ class McpClient extends EventEmitter {
     try {
       const left = _budget.deadline ? _budget.deadline - Date.now() : 0;
       if (_budget.deadline && left <= 0) throw deadlineError(name, _budget.ms, 'the retry');
-      return await this._sendRequest('tools/call', { name, arguments: args }, _budget.deadline ? { ...opts, timeoutMs: left } : opts);
+      return await this._sendRequest('tools/call', toolCallParams(name, args, opts), _budget.deadline ? { ...opts, timeoutMs: left } : opts);
     } catch (err) {
       // The caller gave up (its deadline): retrying would only redo the slow call.
       if (err && (err.code === 'ABORTED' || err.code === 'DEADLINE')) throw err;

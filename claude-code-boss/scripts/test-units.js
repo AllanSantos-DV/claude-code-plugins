@@ -6584,6 +6584,66 @@ test('retrieve-core retrieveRemote: o orcamento do hook corta compose e braco ab
   retrieveCore.__testHooks.resetCircuit();
 });
 
+// ─── orcamento de recuperacao estreitado: o hook pede ao servidor um prazo menor que o proprio ──
+// hookBudgetMs (1800) igualava o orcamento do servidor (1800): o braco do projeto (1,2 a 1,9 s) corria contra o
+// prazo e o breaker abria. O servidor aceita params._meta.recallBudgetMs (minimo 200) e degrada dentro dele.
+test('retrieve-core narrowedRecallBudget: hook menos 300 ms, piso de 200 ms, 0 sem orcamento', () => {
+  const n = retrieveCore.__testHooks.narrowedRecallBudget;
+  assertEq(n(1800), 1500);
+  assertEq(n(500), 200);
+  assertEq(n(0), 0);
+  assertEq(n(undefined), 0);
+});
+
+test('mcp-client callTool: opts.recallBudgetMs viaja em params._meta.recallBudgetMs; sem ele nao ha _meta', async () => {
+  const McpClient = require('../engine/mcp-client.js');
+  const c = new McpClient({ transport: 'http', url: 'http://127.0.0.1:1' });
+  c._initialized = true;
+  const sent = [];
+  c._sendRequest = async (method, params) => { sent.push({ method, params }); return { content: [{ type: 'text', text: '{}' }] }; };
+  await c.callTool('search_memory', { query: 'q' }, { recallBudgetMs: 1500 });
+  await c.callTool('search_memory', { query: 'q' });
+  assertEq(sent[0].params._meta, { recallBudgetMs: 1500 });
+  assertEq(sent[1].params._meta, undefined);
+});
+
+test('retrieve-core retrieveRemote: compose e braco do projeto recebem recallBudgetMs = orcamento do hook - 300 ms', async () => {
+  retrieveCore.__testHooks.resetCircuit();
+  const seen = {};
+  const fake = fakeComposeBackend({
+    onCompose: async (_q, o) => { seen.compose = o.recallBudgetMs; return { facts: [], capabilities: [] }; },
+    onSearch: async (_q, o) => { seen.search = o.recallBudgetMs; return []; },
+  });
+  await retrieveCore.__testHooks.retrieveRemote('a real prompt here', { project: 'projB', ancestorIds: [], topK: 5, keywords: ['x'], budgetMs: 1800 },
+    { backend: fake, recallHealth: { record: () => {} } });
+  assertEq(seen, { compose: 1500, search: 1500 });
+  seen.compose = seen.search = 'unset';
+  await retrieveCore.__testHooks.retrieveRemote('a real prompt here', { project: 'projB', ancestorIds: [], topK: 5, keywords: ['x'] },
+    { backend: fake, recallHealth: { record: () => {} } });
+  assertEq(seen, { compose: 0, search: 0 }, 'a structured caller with no hook budget narrows nothing');
+});
+
+test('brain-backend: recall_degraded sem recall_warning tambem vira aviso parcial; search degradado segue respondido', () => {
+  const { parseComposeEnvelope } = require('../engine/brain-backend.js').__testHooks;
+  const out = parseComposeEnvelope({ text: JSON.stringify({ query: 'q', blocks: [], recall_degraded: ['reranker-budget'] }) });
+  assert(out.warning && /reranker-budget/.test(out.warning), out.warning);
+});
+
+test('retrieve-core retrieveRemote: braco do projeto degradado dentro do orcamento conta como respondido para o breaker', async () => {
+  retrieveCore.__testHooks.resetCircuit();
+  const breakers = { compose: retrieveCore.__testHooks.createArmBreaker(), project: retrieveCore.__testHooks.createArmBreaker() };
+  const fake = fakeComposeBackend({
+    onCompose: async () => ({ facts: [], capabilities: [], warning: 'recall degradou: reranker-budget' }),
+    onSearch: async () => [{ id: 'p1', title: 'hit', score: 0.9 }],
+  });
+  for (let i = 0; i < 8; i++) {
+    await retrieveCore.__testHooks.retrieveRemote('a real prompt here', { project: 'projB', ancestorIds: [], topK: 5, keywords: ['x'], budgetMs: 1800 },
+      { backend: fake, recallHealth: { record: () => {} }, armBreakers: breakers });
+  }
+  assertEq(breakers.compose.state().open, false, 'compose answered partial: never a breaker failure');
+  assertEq(breakers.project.state().open, false);
+});
+
 test('brain-config.getRecallCompose: hookBudgetMs vale 1800 por padrao, nunca passa de 2000 e ignora valor invalido', () => {
   const get = () => require('../engine/lib/brain-config.js').getRecallCompose().hookBudgetMs;
   assertEq(withUserConfig({}, get), 1800);

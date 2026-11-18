@@ -91,6 +91,19 @@ function isReloadWarning(warning) {
   return /timed out|timeout/i.test(String(warning || ''));
 }
 
+/** Margin the hook leaves between the budget it asks the memory server for and its own deadline. */
+const SERVER_BUDGET_MARGIN_MS = 300;
+/** The smallest budget the memory server accepts from a caller. */
+const MIN_SERVER_BUDGET_MS = 200;
+
+/**
+ * The recall budget to request from the memory server for a hook that gives up after `hookBudgetMs`: sooner than the
+ * hook, so the server degrades inside its own answer instead of racing the hook's deadline. 0 = no hook budget, nothing narrowed.
+ */
+function narrowedRecallBudget(hookBudgetMs) {
+  return hookBudgetMs > 0 ? Math.max(MIN_SERVER_BUDGET_MS, hookBudgetMs - SERVER_BUDGET_MARGIN_MS) : 0;
+}
+
 /** Below this much budget left, a retry cannot finish an embed and only adds latency. */
 const MIN_RETRY_MS = 1000;
 
@@ -282,6 +295,7 @@ async function retrieveRemote(prompt, { project, ancestorIds, topK, keywords, ki
   try {
     await backendRef.init({ project, skipEmbedder: true });
     const query = capQuery(prompt, cc.maxQueryChars);
+    const recallBudgetMs = narrowedRecallBudget(budgetMs);
     // Pool-warming (ADR-017): fire a home-federated search IN PARALLEL with compose
     // so ingested HOME docs accumulate recall signal and graduate (async Dreaming).
     // Best-effort, NOT injected, result DISCARDED — and fire-and-forget: retrieve-core
@@ -317,12 +331,12 @@ async function retrieveRemote(prompt, { project, ancestorIds, topK, keywords, ki
       !hasCompose
         ? Promise.reject(Object.assign(new Error('compose_recall unavailable'), { reason: 'no-compose' }))
         : runCompose
-          ? timed('compose', composeWithReloadRetry((signal) => backendRef.compose(query, { ...(cc.overlay ? { metadata: cc.overlay } : {}), signal }), cc.timeoutMs))
+          ? timed('compose', composeWithReloadRetry((signal) => backendRef.compose(query, { ...(cc.overlay ? { metadata: cc.overlay } : {}), signal, recallBudgetMs }), cc.timeoutMs))
           : skipped('compose-skipped'),
       !backendRef.search
         ? Promise.resolve([])
         : runArm
-          ? timed('project', withDeadline((signal) => armSearch(query, { projectIds: armIds, includeHome: false, topK: topK + 4, signal }), ANCESTOR_TIMEOUT_MS || cc.timeoutMs, 'project arm'))
+          ? timed('project', withDeadline((signal) => armSearch(query, { projectIds: armIds, includeHome: false, topK: topK + 4, signal, recallBudgetMs }), ANCESTOR_TIMEOUT_MS || cc.timeoutMs, 'project arm'))
           : skipped('project-arm-skipped'),
     ]);
     if (runCompose) breakers.compose.result(composeRes.status === 'fulfilled');
@@ -573,5 +587,5 @@ module.exports = {
   retrieve, formatContext, describeItems, filterInjectableEntries, pickInjectable, injectionOrigins, ANCESTOR_TIMEOUT_MS,
   // F2 test seam: retrieveRemote accepts an injected fake backend/recallHealth via its
   // 3rd `deps` arg; mergeFactsSpine is pure (order/dedup assertions).
-  __testHooks: { retrieveRemote, mergeFactsSpine, lexicalFallback, normalizeKinds, capQuery, projectArmIds, armHitsToFacts, createArmBreaker, withDeadline, resetCircuit: () => { circuitOpenUntil = 0; armBreakers.compose = createArmBreaker(); armBreakers.project = createArmBreaker(); } },
+  __testHooks: { retrieveRemote, mergeFactsSpine, lexicalFallback, normalizeKinds, capQuery, projectArmIds, armHitsToFacts, createArmBreaker, withDeadline, narrowedRecallBudget, resetCircuit: () => { circuitOpenUntil = 0; armBreakers.compose = createArmBreaker(); armBreakers.project = createArmBreaker(); } },
 };

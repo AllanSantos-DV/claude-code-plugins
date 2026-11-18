@@ -2,6 +2,9 @@
 
 ## [Unreleased]
 
+### Fixed
+- **O recall do hook pede ao servidor de memória um prazo menor que o do próprio hook** (`engine/lib/retrieve-core.js` `narrowedRecallBudget`, `engine/mcp-client.js` `_meta.recallBudgetMs`, `engine/brain-backend.js`): o orçamento do hook (1800 ms) igualava o do servidor e o braço do projeto (1,2 a 1,9 s) corria contra o prazo, abrindo o breaker. Agora `compose_recall` e `search_memory` levam `recallBudgetMs` = orçamento do hook menos 300 ms (piso 200) e o servidor degrada dentro dele; uma resposta com `recall_degraded` conta como respondida (`compose-partial`), não como falha. Requer memory-server com `_meta.recallBudgetMs`; servidores antigos ignoram o campo.
+
 ### Added
 - **As regras do dono por escopo respeitam o servidor de memória remoto e mandam o Bearer** (`scripts/lib/scoped-rules-client.js`, `scripts/lib/scope-rules.js` `defaultLookup`): com `backend.mcpMemory.serverUrl` preenchido, o `lookupScopedRules` pergunta a esse endereço em vez do anúncio do daemon local e, com `features.auth` ligado, manda o token do cofre (a mesma regra de `engine/lib/mcp-auth.js`). Sem token guardado a falha é alta (`MCP_TOKEN_MISSING`); um token errado vira `LOOKUP_REJECTED` (401).
 - **As ferramentas de grafo e o guarda de grafo mandam o Bearer a um servidor de memória remoto autenticado** (`engine/lib/mcp-auth.js`, `scripts/lib/graph/daemon.js` `makeResolver`, `scripts/lib/graph/client.js`): com `backend.mcpMemory.serverUrl` preenchido e `features.auth` ligada, o grafo usa a mesma resolução do token do cofre do cliente MCP (uma só regra para os dois) e manda `Authorization` em cada chamada, em vez de receber 401. Sem token guardado a falha é alta e aponta `node scripts/mcp-token.js set`; um daemon achado pelo registro local não é sondado nem usa o cofre.
