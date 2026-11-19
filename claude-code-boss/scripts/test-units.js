@@ -34332,6 +34332,143 @@ test('compaction-event hello: records the module version (null = a module from b
   });
 });
 
+test('build-id.buildIdOf: a versioned cache folder names the build (two builds of one version differ); a checkout or an unrelated folder falls back to the version', () => {
+  const { buildIdOf } = require('./lib/build-id.js');
+  assertEq(buildIdOf(path.join('cache', 'mk', 'claude-code-boss', '3.17.0-dev.ce6163d5682f'), '3.17.0'), '3.17.0-dev.ce6163d5682f');
+  assertEq(buildIdOf(path.join('cache', 'mk', 'claude-code-boss', '3.17.0'), '3.17.0'), '3.17.0');
+  assertEq(buildIdOf(path.join('src', 'claude-code-boss'), '3.17.0'), '3.17.0', 'a checkout is the version');
+  assertEq(buildIdOf(path.join('cache', 'claude-code-boss', '3.16.9-dev.aaaaaaaaaaaa'), '3.17.0'), '3.17.0', 'a folder of another version is not this build');
+  assertEq(buildIdOf('', '3.17.0'), '3.17.0');
+});
+
+test('compaction-event hello: records the full build next to the module version, and the build tells two builds of one version apart', async () => {
+  await withCmpStore(async (ce, store) => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-cmp-build-'));
+    await ce.run({ session_id: 'sid-build', cwd: dir, payload: { kind: 'hello', host: 'h', auth: 'a', moduleVersion: require('../package.json').version } });
+    const row = store().getEventLog({ eventName: 'compaction.session' }).find((r) => r.sessionId === 'sid-build').payload;
+    assertEq(row.installedBuild, require('./lib/build-id.js').buildIdOf(path.resolve(__dirname, '..'), require('../package.json').version));
+    assert(typeof row.installedBuild === 'string' && row.installedBuild.startsWith(row.installedVersion), `build ${row.installedBuild} starts with the version ${row.installedVersion}`);
+  });
+});
+
+// A compaction cut handed the engine tool results that Claude Code copied with the pre-cut parent; this repairs the
+// transcripts already written that way, and never touches a row that is not such a copy.
+function transcriptFixture() {
+  const row = (o) => JSON.stringify(o);
+  const sys = (uuid, parentUuid, subtype) => row({ type: 'system', subtype, uuid, parentUuid, sessionId: 's' });
+  const asst = (uuid, parentUuid, mid, ...ids) => row({ type: 'assistant', uuid, parentUuid, sessionId: 's', message: { id: mid, content: ids.map((id) => ({ type: 'tool_use', id, name: 'Read', input: {} })) } });
+  const res = (uuid, parentUuid, id, src) => row({ type: 'user', uuid, parentUuid, sessionId: 's', ...(src ? { sourceToolAssistantUUID: src } : {}), message: { content: [{ type: 'tool_result', tool_use_id: id, content: 'x' }] } });
+  const text = (uuid, parentUuid, t) => row({ type: 'user', uuid, parentUuid, sessionId: 's', message: { content: t } });
+  return [
+    text('u0', null, 'start'), asst('a0', 'u0', 'm0', 't0'), res('r0', 'a0', 't0', 'a0'),
+    asst('a1', 'r0', 'm1', 't1', 't2'), res('r1', 'a1', 't1', 'a1'), res('r2', 'r1', 't2', 'a1'),
+    sys('b1', null, 'compact_boundary'), text('brief', 'b1', '[Compaction brief: x]'),
+    asst('a1c', 'brief', 'm1', 't1', 't2'),                       // the copy keeps both calls of one response in one row
+    res('r1c', 'a1', 't1', 'a1'),                                  // crossing: parent and source are the pre-cut original
+    res('r2c', 'r1c', 't2', 'a1'),                                 // parent is a kept copy: fine
+    asst('a9', 'r2c', 'm9', 't9'),
+    res('rf', 'a1', 't3', 'a1'),                                   // crossing, its call is not in the copy: found by the response id
+    res('r9', 'a0', 't8', 'a0'),                                   // crossing, no copy of that call or response: reported, not guessed
+    text('q', 'r0', 'Another Claude session sent a message'),      // crossing, NOT a tool result: left alone
+    '',
+  ];
+}
+
+test('transcript-repair.planRepair: a tool result copied with the pre-cut parent is re-pointed to the copy of its call (by tool id, else by response); anything else crossing is left alone', () => {
+  const { planRepair, applyFixes } = require('./lib/transcript-repair.js');
+  const lines = transcriptFixture();
+  const plan = planRepair(lines.join('\n'));
+  assertEq(plan.fixes.map((f) => [f.line, f.from, f.to]), [[9, 'a1', 'a1c'], [12, 'a1', 'a1c']], 'r1c by tool id, rf by response id');
+  assertEq(plan.unfixable, 2, 'r9 (no copy of its call) and the queued message (not a tool result) are reported, not touched');
+  assertEq(plan.boundaries, 1);
+  const fixed = applyFixes(lines, plan.fixes);
+  const r1c = JSON.parse(fixed[9]);
+  assertEq([r1c.parentUuid, r1c.sourceToolAssistantUUID], ['a1c', 'a1c'], 'parent and source both follow the copy');
+  assertEq(fixed.filter((l, i) => l !== lines[i]).length, 2, 'no other line changes');
+  assertEq(planRepair(fixed.join('\n')).fixes.length, 0, 'idempotent');
+});
+
+test('transcript-repair.planRepair: every compaction segment is repaired, not only the last (a file under 5 MB loads whole)', () => {
+  const { planRepair } = require('./lib/transcript-repair.js');
+  const l = transcriptFixture().slice(0, -1);
+  const second = [JSON.stringify({ type: 'system', subtype: 'compact_boundary', uuid: 'b2', parentUuid: null }), JSON.stringify({ type: 'user', uuid: 'brief2', parentUuid: 'b2', message: { content: 'brief2' } }),
+    JSON.stringify({ type: 'assistant', uuid: 'a2c', parentUuid: 'brief2', message: { id: 'm1', content: [{ type: 'tool_use', id: 't1', name: 'Read', input: {} }] } }),
+    JSON.stringify({ type: 'user', uuid: 'r2cc', parentUuid: 'a1c', message: { content: [{ type: 'tool_result', tool_use_id: 't1', content: 'x' }] } }), ''];
+  const plan = planRepair([...l, ...second].join('\n'));
+  assertEq(plan.boundaries, 2);
+  assert(plan.fixes.some((f) => f.from === 'a1' && f.to === 'a1c') && plan.fixes.some((f) => f.from === 'a1c' && f.to === 'a2c'), JSON.stringify(plan.fixes));
+});
+
+function repairRig() {
+  const base = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-repair-'));
+  const root = path.join(base, 'projects'); const sessionsDir = path.join(base, 'sessions'); const backupRoot = path.join(base, 'data', 'transcript-repair');
+  fs.mkdirSync(path.join(root, 'proj'), { recursive: true }); fs.mkdirSync(sessionsDir, { recursive: true });
+  const old = new Date(Date.now() - 3600e3);
+  const put = (id, content = transcriptFixture().join('\n')) => { const f = path.join(root, 'proj', `${id}.jsonl`); fs.writeFileSync(f, content); fs.utimesSync(f, old, old); return f; };
+  return { base, root, sessionsDir, backupRoot, put };
+}
+
+test('transcript-repair.repairTranscripts: backs up under the Boss folder with a manifest, skips a live session and a file written a moment ago, verifies, and is idempotent', () => {
+  const { repairTranscripts } = require('./lib/transcript-repair.js');
+  const rig = repairRig();
+  const closed = rig.put('closed-1'); const live = rig.put('live-1'); const recent = rig.put('recent-1');
+  const now = new Date(); fs.utimesSync(recent, now, now);
+  fs.writeFileSync(path.join(rig.sessionsDir, '4242.json'), JSON.stringify({ pid: 4242, sessionId: 'live-1' }));
+  const before = fs.readFileSync(closed, 'utf8');
+  const report = repairTranscripts({ root: rig.root, sessionsDir: rig.sessionsDir, backupRoot: rig.backupRoot, isAlive: (pid) => pid === 4242, now: Date.now(), runId: 'run-1' });
+  assertEq([report.repaired, report.skippedLive, report.skippedRecent, report.failed], [1, ['proj/live-1.jsonl'], ['proj/recent-1.jsonl'], []]);
+  assertEq(fs.readFileSync(path.join(rig.backupRoot, 'run-1', 'proj', 'closed-1.jsonl'), 'utf8'), before, 'the backup is the file as it was');
+  assertEq(fs.readFileSync(live, 'utf8'), before, 'a live session is not written');
+  assertEq(fs.readFileSync(recent, 'utf8'), before, 'a file written a moment ago is not written');
+  assert(fs.readFileSync(closed, 'utf8') !== before, 'the closed one was repaired');
+  const manifest = JSON.parse(fs.readFileSync(path.join(rig.backupRoot, 'run-1', 'manifest.json'), 'utf8'));
+  assertEq(manifest.files.map((f) => [f.file, f.rowsFixed]), [['proj/closed-1.jsonl', 2]]);
+  assert(/^[0-9a-f]{64}$/.test(manifest.files[0].sha256Before) && manifest.files[0].sha256After !== manifest.files[0].sha256Before, 'the manifest holds both hashes');
+  assertEq(manifest.files[0].bytesBefore, Buffer.byteLength(before));
+  const again = repairTranscripts({ root: rig.root, sessionsDir: rig.sessionsDir, backupRoot: rig.backupRoot, isAlive: (pid) => pid === 4242, now: Date.now(), runId: 'run-2' });
+  assertEq(again.repaired, 0, 'a repaired file is not touched twice');
+  assert(!fs.existsSync(path.join(rig.backupRoot, 'run-2', 'proj', 'closed-1.jsonl')), 'and is not backed up again');
+});
+
+test('transcript-repair.repairTranscripts: an unreadable entry of a running pid stops everything; one of a dead pid is a leftover; a failed verification restores the backup', () => {
+  const { repairTranscripts } = require('./lib/transcript-repair.js');
+  const rig = repairRig();
+  const f = rig.put('closed-2');
+  fs.writeFileSync(path.join(rig.sessionsDir, '77.json'), '   ');
+  nassert.throws(() => repairTranscripts({ root: rig.root, sessionsDir: rig.sessionsDir, backupRoot: rig.backupRoot, isAlive: (pid) => pid === 77, retryMs: 0, runId: "r" }), /sessions\/77\.json unreadable/);
+  assertEq(fs.readFileSync(f, 'utf8'), transcriptFixture().join('\n'), 'nothing was written');
+  const ok = repairTranscripts({ root: rig.root, sessionsDir: rig.sessionsDir, backupRoot: rig.backupRoot, isAlive: () => false, runId: 'r2' });
+  assertEq(ok.repaired, 1, 'a dead pid leftover does not block');
+  const rig2 = repairRig(); const g = rig2.put('closed-3'); const original = fs.readFileSync(g, 'utf8');
+  const bad = repairTranscripts({ root: rig2.root, sessionsDir: rig2.sessionsDir, backupRoot: rig2.backupRoot, isAlive: () => false, runId: 'r3', verify: () => 'forced mismatch' });
+  assertEq([bad.repaired, bad.failed.map((x) => x.why)], [0, ['forced mismatch; restored from backup']]);
+  assertEq(fs.readFileSync(g, 'utf8'), original, 'the file is back as it was');
+});
+
+test('transcript-repair.adoptBackup: moves a backup tree into the Boss folder and records what was repaired from the files themselves', () => {
+  const { repairTranscripts, adoptBackup, defaultBackupRoot } = require('./lib/transcript-repair.js');
+  const rig = repairRig();
+  rig.put('a-1'); rig.put('a-2');
+  const elsewhere = path.join(rig.base, 'elsewhere');
+  repairTranscripts({ root: rig.root, sessionsDir: rig.sessionsDir, backupRoot: elsewhere, isAlive: () => false, runId: 'old' });
+  const tree = path.join(elsewhere, 'old');
+  fs.rmSync(path.join(tree, 'manifest.json'));
+  const rec = adoptBackup({ from: tree, root: rig.root, backupRoot: rig.backupRoot, runId: 'adopted' });
+  assertEq(rec.files.map((f) => [f.file, f.rowsFixed]).sort(), [['proj/a-1.jsonl', 2], ['proj/a-2.jsonl', 2]]);
+  assert(!fs.existsSync(tree), 'moved, not copied');
+  assert(fs.existsSync(path.join(rig.backupRoot, 'adopted', 'proj', 'a-1.jsonl')), 'the files are under the Boss folder');
+  assertEq(JSON.parse(fs.readFileSync(path.join(rig.backupRoot, 'adopted', 'manifest.json'), 'utf8')).files.length, 2);
+  nassert.throws(() => adoptBackup({ from: tree, root: rig.root, backupRoot: rig.backupRoot, runId: 'again' }), /does not exist/);
+  const dd = path.join(rig.base, 'dd');
+  assertEq(defaultBackupRoot(() => dd), path.join(dd, 'transcript-repair'), 'the stable folder is under the plugin data dir');
+});
+
+test('compaction-core.planCompaction: a tool result among the newest messages is also handed back without its handle', () => {
+  const msgs = cmpSession();
+  const p = cmpCore.planCompaction(msgs, { preserveRecentMessages: msgs.length });
+  for (const m of p.messages) if (m.toolResults && m.toolResults.length) assertEq(m.handle, undefined, 'pinned results lose the handle too');
+});
+
 test('compaction-report.staleModuleSessions + doctor.checkSessionModules: sessions on another module version are listed (newest hello wins) and warned about', () => {
   const { staleModuleSessions } = require('./lib/compaction-report.js');
   const doctor = require('./doctor.js');

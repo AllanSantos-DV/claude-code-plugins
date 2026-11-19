@@ -10,7 +10,8 @@
  * them), runs `run(ev)` here, with `ev.payload` = `{ kind, ... }`.
  *
  *   hello    → the compaction config + the cache TTL already observed for this host; recorded as `compaction.session`
- *              with the module version and the engine auto-compact point the session reported (engineAutoCompactPoint)
+ *              with the module version, the full installed build and the engine auto-compact point the session reported
+ *              (engineAutoCompactPoint)
  *   turn     → reads the LAST response's real `usage` from the transcript (the module's
  *              turn usage has no TTL breakdown) and records `cache.turn`: host, auth
  *              kind, model, cache read/write and the contracted window (ephemeral_5m /
@@ -43,6 +44,11 @@ const TTL_LOOKBACK = 500; // cache.turn rows read to judge a host's window
 /** The plugin version this daemon runs: what a session's module is compared with. */
 function installedVersion() {
   return require(path.join(__dirname, '..', 'package.json')).version;
+}
+
+/** The full build this daemon runs (two builds can share a version): the session's module is the one installed when it said hello. */
+function installedBuild() {
+  return require('./lib/build-id.js').buildIdOf(path.resolve(__dirname, '..'), installedVersion());
 }
 
 function cacheCycle() {
@@ -194,7 +200,7 @@ async function run(ev) {
   if (kind === 'hello') {
     // A record first opens this project's store, so the verdict reads its history.
     // moduleVersion null = a module from before the version was sent: an old one, by definition.
-    await metrics.record('compaction.session', { host: data.host, auth: data.auth, source: data.source || null, moduleVersion: data.moduleVersion || null, installedVersion: installedVersion(), autocompact: data.autocompact || null }, ctx);
+    await metrics.record('compaction.session', { host: data.host, auth: data.auth, source: data.source || null, moduleVersion: data.moduleVersion || null, installedVersion: installedVersion(), installedBuild: installedBuild(), autocompact: data.autocompact || null }, ctx);
     return { config: compactionConfig(), ttl: ttlVerdictFor(hostKey, storedCacheTurns()), installedVersion: installedVersion() };
   }
 
