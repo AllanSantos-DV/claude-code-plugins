@@ -34419,7 +34419,7 @@ function seedBossMetrics(sid) {
 }
 
 // A module's `$` with only what boss.mjs uses; `fetchImpl` defaults to the real network (loopback).
-function fakeBoss$({ env, fetchImpl, cost = 1.234, sessionId = 'sid-boss-A' } = {}) {
+function fakeBoss$({ env, fetchImpl, cost = 1.234, sessionId = 'sid-boss-A', runAfter = false } = {}) {
   const calls = { logs: [], invalidations: 0, commands: [], timers: [] };
   const $ = {
     env: { get: async (k) => (env || {})[k] },
@@ -34432,7 +34432,7 @@ function fakeBoss$({ env, fetchImpl, cost = 1.234, sessionId = 'sid-boss-A' } = 
     ui: { log: (t) => calls.logs.push(t), invalidate: (ev) => { assertEq(ev, 'ui.render'); calls.invalidations++; }, resolve: () => ({ Box: 'Box', Text: 'Text' }) },
     command: { register: async (spec) => { calls.commands.push(spec); } },
     clock: {
-      after: (ms) => { calls.timers.push(['after', ms]); return { cancel() {} }; },
+      after: (ms, cb) => { calls.timers.push(['after', ms]); if (runAfter && cb) setImmediate(cb); return { cancel() {} }; },
       every: (ms) => { calls.timers.push(['every', ms]); return { cancel() {} }; },
     },
   };
@@ -34755,12 +34755,12 @@ test('boss.mjs: daemon down → the band says so (logged once, not per poll); a 
   fs.writeFileSync(path.join(dir, 'brain-http.token'), 'tok');
   fs.writeFileSync(path.join(dir, 'brain-http.lock.json'), JSON.stringify({ port: 1 }));
   const env = { CLAUDE_PLUGIN_DATA: dir };
-  const down = fakeBoss$({ env, fetchImpl: async () => { throw new Error('connect ECONNREFUSED 127.0.0.1:1'); } });
+  const down = fakeBoss$({ env, runAfter: true, fetchImpl: async () => { throw new Error('$.http.fetch(http://127.0.0.1:1/hook/boss-summary) failed: connect ECONNREFUSED 127.0.0.1:1'); } });
   const ctx = {};
-  await boss.refresh(down.$, ctx);
-  await boss.refresh(down.$, ctx);
-  assert(ctx.line.includes('daemon do Brain sem resposta: connect ECONNREFUSED'), ctx.line);
-  assertEq(down.calls.logs.length, 1, 'one log line for one failure');
+  for (let i = 0; i < 4; i++) await boss.refresh(down.$, ctx);
+  assert(ctx.line.includes('daemon do Brain indisponível') && !ctx.line.includes('ECONNREFUSED'), `a clear one-line notice, never the raw socket error: ${ctx.line}`);
+  assertEq(down.calls.logs.length, 1, 'one log line for one outage, written only once it lasted several polls');
+  assert(down.calls.logs[0].includes('ECONNREFUSED') && down.calls.logs[0].includes('hook-origin=claude-code-boss'), down.calls.logs[0]);
   assertEq(down.calls.invalidations, 1);
   let summaryReply = '{}';
   const off = fakeBoss$({ env, fetchImpl: async (url, init) => {
@@ -34778,6 +34778,50 @@ test('boss.mjs: daemon down → the band says so (logged once, not per poll); a 
   await command(off.$, { command: 'boss' }, async () => ({}));
   const tree = await render(off.$, { component: 'AbovePrompt', props: { hasSurvey: false } }, async () => null);
   assertEq(tree.children[0].children[0], 'Boss · sessão US$ 1,23 · Token Guard −0 tokens na sessão (30d: −10) · Brain no ar');
+});
+
+const notLegacyHandshake = (line) => !/\/health challenge/.test(line);
+
+test('boss.mjs: a daemon restarting under a poll (refused, then back on a new port) is reached inside the same read — run file re-read, nothing shown or logged', async () => {
+  const boss = await import(require('url').pathToFileURL(path.join(ROOT, 'hooks', 'boss.mjs')).href);
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-boss-restart-'));
+  fs.writeFileSync(path.join(dir, 'brain-http.token'), 'tok');
+  const lock = path.join(dir, 'brain-http.lock.json');
+  fs.writeFileSync(lock, JSON.stringify({ port: 1 }));
+  const seen = [];
+  const b = fakeBoss$({ env: { CLAUDE_PLUGIN_DATA: dir }, runAfter: true, fetchImpl: async (url) => {
+    seen.push(url.split('?')[0]);
+    if (url.includes(':1/')) { fs.writeFileSync(lock, JSON.stringify({ port: 2 })); throw new Error('connect ECONNREFUSED 127.0.0.1:1'); }
+    if (url.split('?')[0].endsWith('/health')) return { status: 200, ok: true, text: JSON.stringify({ dataDir: dir }) };
+    return { status: 200, ok: true, text: JSON.stringify({ tokenGuard: { days: 30, savedTokens: 10, sessionTokens: 0 }, brain: { connected: true } }) };
+  } });
+  const ctx = {};
+  await boss.refresh(b.$, ctx);
+  assert(ctx.line.includes('Brain no ar'), ctx.line);
+  assertEq(b.calls.logs.filter(notLegacyHandshake).length, 0, 'a restart the read survived is not logged');
+  assert(seen.some((u) => u.startsWith('http://127.0.0.1:2/')), `the retry went to the port of the re-read run file: ${seen.join(' ')}`);
+});
+
+test('boss.mjs: after an outage ends the notice goes away and the next outage is logged again', async () => {
+  const boss = await import(require('url').pathToFileURL(path.join(ROOT, 'hooks', 'boss.mjs')).href);
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-boss-outage-'));
+  fs.writeFileSync(path.join(dir, 'brain-http.token'), 'tok');
+  fs.writeFileSync(path.join(dir, 'brain-http.lock.json'), JSON.stringify({ port: 1 }));
+  let up = false;
+  const b = fakeBoss$({ env: { CLAUDE_PLUGIN_DATA: dir }, runAfter: true, fetchImpl: async (url) => {
+    if (!up) throw new Error('connect ECONNREFUSED 127.0.0.1:1');
+    if (url.split('?')[0].endsWith('/health')) return { status: 200, ok: true, text: JSON.stringify({ dataDir: dir }) };
+    return { status: 200, ok: true, text: JSON.stringify({ tokenGuard: { days: 30, savedTokens: 10, sessionTokens: 0 }, brain: { connected: true } }) };
+  } });
+  const ctx = {};
+  for (let i = 0; i < 3; i++) await boss.refresh(b.$, ctx);
+  assertEq(b.calls.logs.filter(notLegacyHandshake).length, 1);
+  up = true;
+  await boss.refresh(b.$, ctx);
+  assert(ctx.line.includes('Brain no ar') && !ctx.line.includes('indisponível'), ctx.line);
+  up = false;
+  for (let i = 0; i < 3; i++) await boss.refresh(b.$, ctx);
+  assertEq(b.calls.logs.filter(notLegacyHandshake).length, 2, 'the second outage is logged again');
 });
 
 test('boss.mjs: a daemon that fail-opens the summary (503: deadline missed / worker exited with code 1) shows the person nothing — the band keeps its last numbers', async () => {

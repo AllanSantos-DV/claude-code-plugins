@@ -15,12 +15,17 @@
 // the dashboard: no band at all.
 // The engine turns every module off under disableAllHooks (and allowManagedModsOnly).
 
-import { daemon, isDaemonDegraded } from '../scripts/lib/module-daemon.mjs';
+import { daemon, isDaemonDegraded, isTransportError } from '../scripts/lib/module-daemon.mjs';
 import { bandLine, bossMarkdown } from '../scripts/lib/boss-band.mjs';
 
 // At least 5 s between reads of one session; the daemon reuses its answer for 30 s.
 export const POLL_MS = 10_000;
 const ROUTE = '/hook/boss-summary';
+// A daemon restarting (an install, a crash relaunch) refuses connections for a few seconds: a read waits this
+// long between attempts, re-reading the run file each time, before it counts the daemon as down.
+export const RETRY_DELAYS_MS = [1000, 2000];
+// Reads in a row that find the daemon down before the outage is written to the session log (once per outage).
+export const DOWN_LOGGED_AFTER = 3;
 const msg = (err) => String(err && err.message ? err.message : err);
 
 function newCtx() {
@@ -36,13 +41,36 @@ function newCtx() {
   };
 }
 
+const sleep = ($, ms) => new Promise((resolve) => { $.clock.after(ms, resolve); });
+/** The daemon cannot be reached: the connection was refused/reset, or its run file is gone (it is not running). */
+const unreachable = (err) => isTransportError(err) || /run file .* (unreadable|has no valid port)/.test(msg(err));
+
+/** The daemon down for the whole retry window: a clear one-line reason; the raw cause stays in `cause` for the log. */
+class DaemonDown extends Error {
+  constructor(cause) {
+    super(`daemon do Brain indisponível (reiniciando ou parado) — nova tentativa em ${POLL_MS / 1000} s`);
+    this.cause = msg(cause);
+  }
+}
+
 async function readSummary($, ctx) {
   // Read on every poll: /clear gives the session a new id without a session.start this module sees.
   const sessionId = await $.session.id();
   const get = async (d) => $.http.fetch(`${d.base}${ROUTE}?session=${encodeURIComponent(sessionId)}`, {
     headers: { Authorization: `Bearer ${d.token}` },
   });
-  let r = await get(await daemon($, ctx, false, 'boss'));
+  let r;
+  for (let attempt = 0; ; attempt++) {
+    try {
+      r = await get(await daemon($, ctx, attempt > 0, 'boss'));
+      break;
+    } catch (err) {
+      if (!unreachable(err)) throw err;
+      ctx.daemon = null;
+      if (attempt >= RETRY_DELAYS_MS.length) throw new DaemonDown(err);
+      await sleep($, RETRY_DELAYS_MS[attempt]);
+    }
+  }
   if (r.status === 401) r = await get(await daemon($, ctx, true, 'boss')); // the daemon restarted with a new token
   if (!r.ok) throw new Error(`GET ${ROUTE} answered ${r.status}: ${String(r.text).slice(0, 200)}`);
   return JSON.parse(r.text);
@@ -62,6 +90,7 @@ export async function refresh($, ctx) {
     ctx.summary = ctx.disabled ? null : s;
     ctx.error = null;
     ctx.loggedError = '';
+    ctx.downReads = 0;
   } catch (err) {
     // The daemon answered; only this read fail-opened there (missed deadline, recycled worker). The band
     // keeps its last numbers and the next poll tries again — nothing on the screen (the daemon's log and
@@ -69,7 +98,10 @@ export async function refresh($, ctx) {
     if (!isDaemonDegraded(err)) {
       ctx.error = msg(err);
       ctx.daemon = null; // the next read checks /health again (a restarted daemon, another install on the port)
-      if (ctx.error !== ctx.loggedError) {
+      if (err instanceof DaemonDown) {
+        ctx.downReads = (ctx.downReads || 0) + 1;
+        if (ctx.downReads === DOWN_LOGGED_AFTER) $.ui.log(`[hook-origin=claude-code-boss] boss: ${ctx.error} — ${err.cause}`);
+      } else if (ctx.error !== ctx.loggedError) {
         ctx.loggedError = ctx.error;
         $.ui.log(`boss: ${ctx.error}`);
       }
