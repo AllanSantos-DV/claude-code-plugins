@@ -266,6 +266,10 @@ export async function withRecallBudget(work, budgetMs) {
  */
 export function createBrainServer({ pluginRoot, mode = 'http', kbWorker, kbLock, hookWorker, requestRestart = () => {}, _testHooks } = {}) {
   const PLUGIN_ROOT = pluginRoot;
+  const recallBudget = require(path.join(PLUGIN_ROOT, 'engine', 'lib', 'recall-deadline.js')).createRecallBudget({
+    getConfig: () => require(path.join(PLUGIN_ROOT, 'engine', 'lib', 'brain-config.js')).getRecallCompose(),
+    readLatencies: () => require(path.join(PLUGIN_ROOT, 'engine', 'lib', 'recall-health.js')).recentLatencies(),
+  });
 
   // ─── KB modules (lazy-loaded) ──────────────────────────────────────────────
   // kbWorker (set by http-daemon.js, one per daemon process) is a POOL of N
@@ -1211,7 +1215,7 @@ export function createBrainServer({ pluginRoot, mode = 'http', kbWorker, kbLock,
           const retrieveCore = require(path.join(PLUGIN_ROOT, 'engine', 'lib', 'retrieve-core.js'));
           // The local search runs synchronous SQLite: through kbWorker so it cannot block /health.
           // The hook path (not a structured caller) has a hard budget: past it the prompt goes on without memory.
-          const budgetMs = structured ? 0 : require(path.join(PLUGIN_ROOT, 'engine', 'lib', 'brain-config.js')).getRecallCompose().hookBudgetMs;
+          const budgetMs = structured ? 0 : recallBudget.forSession(session_id);
           const work = retrieveCore.retrieve(prompt || '', { project: focusId || project, ancestorIds: chain, kinds, budgetMs }, kbWorker ? { store: kbWorker.clientsFor(focusId || project).storeClient } : {});
           const outcome = await withRecallBudget(work, budgetMs);
           if (outcome.expired) {

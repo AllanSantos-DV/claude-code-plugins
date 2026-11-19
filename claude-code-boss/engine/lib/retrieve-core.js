@@ -281,7 +281,7 @@ async function retrieveRemote(prompt, { project, ancestorIds, topK, keywords, ki
   const backendRef = deps.backend || backend;
   const healthRef = deps.recallHealth || recallHealth;
   const cc = brainConfig.getRecallCompose();
-  if (budgetMs > 0) cc.timeoutMs = Math.min(cc.timeoutMs, budgetMs);
+  if (budgetMs > 0) cc.timeoutMs = budgetMs;
   const startedAt = Date.now();
   const isTimeout = (err) => /timed out|timeout/i.test((err && err.message) || '');
   // Checks BOTH this function's own fast breaker AND brain-backend.js's shared

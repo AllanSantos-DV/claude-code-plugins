@@ -220,19 +220,21 @@ function getIngestion() {
  *   timeoutMs        (int,  default 8000) — total compose budget, one retry included; a slow compose → degraded (empty).
  *   overlay          (obj  | null)        — generic metadata overlay for active blocks.
  *   maxQueryChars    (int,  default 300)  — recall query cap; 0 = send the whole prompt.
+ *   hookBudgetMinMs / hookBudgetMaxMs (int, default 4000 / 12000, ceiling at most 14000) — the per-prompt recall
+ *     deadline is adaptive between them (engine/lib/recall-deadline.js); only past the ceiling does the prompt go on without memory.
  *   projectArmMinScore (num, default 0.65) — floor for the project-arm search_memory hits.
  */
 function getRecallCompose() {
   const cfg = load();
   const c = (cfg.kb && cfg.kb.retrieval && cfg.kb.retrieval.compose) || {};
   const overlay = (c.overlay && typeof c.overlay === 'object' && !Array.isArray(c.overlay)) ? c.overlay : null;
+  const hookMin = Number.isInteger(c.hookBudgetMinMs) && c.hookBudgetMinMs >= 500 ? Math.min(c.hookBudgetMinMs, 14000) : 4000;
   return {
     includeHomeSpine: c.includeHomeSpine !== false,
     maxInjectChars: Number.isInteger(c.maxInjectChars) && c.maxInjectChars > 0 ? c.maxInjectChars : 6000,
     timeoutMs: Number.isInteger(c.timeoutMs) && c.timeoutMs > 0 ? c.timeoutMs : 8000,
-    // Hard ceiling for the per-prompt recall (UserPromptSubmit blocks the prompt on it): both arms and the whole
-    // handler stop here and the prompt goes on without memory. 25% of 6,152 measured recalls took 5 s or more.
-    hookBudgetMs: Number.isInteger(c.hookBudgetMs) && c.hookBudgetMs >= 500 ? Math.min(c.hookBudgetMs, 2000) : 1800,
+    hookBudgetMinMs: hookMin,
+    hookBudgetMaxMs: Math.max(hookMin, Number.isInteger(c.hookBudgetMaxMs) && c.hookBudgetMaxMs >= 500 ? Math.min(c.hookBudgetMaxMs, 14000) : 12000),
     overlay,
     // The server's compose cost grows with query length. On real prompts, 800 chars took a median
     // 9.1 s, so half of them hit the 8 s deadline and injected no compose fact at all; 300 chars

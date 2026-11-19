@@ -137,6 +137,16 @@ function summarize(state) {
   };
 }
 
+/**
+ * How long each recent recall took, degraded ones included (a recall cut at its deadline says the deadline was too
+ * short). Recalls with no recorded duration are left out. PURE.
+ * @returns {number[]}
+ */
+function latenciesOf(state) {
+  const recent = state && Array.isArray(state.recent) ? state.recent : [];
+  return recent.filter((e) => e && Number.isFinite(e.ms)).map((e) => e.ms);
+}
+
 /** Record one recall outcome (`detail`: optional error text kept on lastDegraded; `opts.dataDir`: the host's). */
 function record(reason, detail, ms, arms, opts) {
   const h = applyOutcome(read(opts), reason, Date.now(), detail, ms, arms);
@@ -154,4 +164,9 @@ function getStatus(opts) {
   return summarize(read(opts));
 }
 
-module.exports = { record, getStatus, isDegraded, applyOutcome, summarize, WINDOW_SIZE, fileFor };
+/** The recent recall durations kept on disk (see latenciesOf). */
+function recentLatencies(opts) {
+  return latenciesOf(read(opts));
+}
+
+module.exports = { record, getStatus, isDegraded, applyOutcome, summarize, latenciesOf, recentLatencies, WINDOW_SIZE, fileFor };

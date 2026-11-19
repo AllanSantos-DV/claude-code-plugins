@@ -225,7 +225,7 @@
               "sessionRoot": "${CLAUDE_PROJECT_DIR}",
               "session_id": "${session_id}"
             },
-            "timeout": 4
+            "timeout": 15
           },
           {
             "type": "mcp_tool",

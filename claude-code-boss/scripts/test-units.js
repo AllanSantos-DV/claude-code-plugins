@@ -6644,12 +6644,86 @@ test('retrieve-core retrieveRemote: braco do projeto degradado dentro do orcamen
   assertEq(breakers.project.state().open, false);
 });
 
-test('brain-config.getRecallCompose: hookBudgetMs vale 1800 por padrao, nunca passa de 2000 e ignora valor invalido', () => {
-  const get = () => require('../engine/lib/brain-config.js').getRecallCompose().hookBudgetMs;
-  assertEq(withUserConfig({}, get), 1800);
-  assertEq(withUserConfig({ kb: { retrieval: { compose: { hookBudgetMs: 9000 } } } }, get), 2000);
-  assertEq(withUserConfig({ kb: { retrieval: { compose: { hookBudgetMs: 900 } } } }, get), 900);
-  assertEq(withUserConfig({ kb: { retrieval: { compose: { hookBudgetMs: 10 } } } }, get), 1800);
+test('brain-config.getRecallCompose: o prazo do recall vai de 4 s (piso) a 12 s (teto), o teto nunca passa de 14 s e valor invalido volta ao padrao', () => {
+  const get = () => { const c = require('../engine/lib/brain-config.js').getRecallCompose(); return [c.hookBudgetMinMs, c.hookBudgetMaxMs]; };
+  const cfg = (c) => ({ kb: { retrieval: { compose: c } } });
+  assertEq(withUserConfig({}, get), [4000, 12000]);
+  assertEq(withUserConfig(cfg({ hookBudgetMaxMs: 60000 }), get), [4000, 14000]);
+  assertEq(withUserConfig(cfg({ hookBudgetMinMs: 6000, hookBudgetMaxMs: 9000 }), get), [6000, 9000]);
+  assertEq(withUserConfig(cfg({ hookBudgetMinMs: 10, hookBudgetMaxMs: 'x' }), get), [4000, 12000]);
+  assertEq(withUserConfig(cfg({ hookBudgetMinMs: 13000, hookBudgetMaxMs: 8000 }), get), [13000, 13000], 'the ceiling never sits below the floor');
+});
+
+test('recall-deadline: piso de 4 s sem historico, segue o p90 observado com folga e nunca passa do teto', () => {
+  const { adaptiveDeadlineMs } = require('../engine/lib/recall-deadline.js');
+  const base = { minMs: 4000, maxMs: 12000 };
+  assertEq(adaptiveDeadlineMs({ ...base }), 4000, 'no history: the floor');
+  assertEq(adaptiveDeadlineMs({ ...base, latencies: [800, 1200, 1900, 2000] }), 4000, 'fast recalls never drop it under the floor');
+  assertEq(adaptiveDeadlineMs({ ...base, latencies: [5000, 5000, 5000, 5000, 5000] }), 6500, 'p90 5 s x 1.3 headroom');
+  assertEq(adaptiveDeadlineMs({ ...base, latencies: [30000, 30000] }), 12000, 'capped at the ceiling');
+});
+
+test('recall-deadline (maquina carregada): CPU ocupada e varias sessoes alargam o prazo, dentro do teto; so o teto corta a memoria', () => {
+  const { adaptiveDeadlineMs } = require('../engine/lib/recall-deadline.js');
+  const base = { minMs: 4000, maxMs: 12000 };
+  const idle = adaptiveDeadlineMs({ ...base, latencies: [3000, 3000, 3000] });
+  const busyCpu = adaptiveDeadlineMs({ ...base, latencies: [3000, 3000, 3000], cpuBusy: 0.95 });
+  const manySessions = adaptiveDeadlineMs({ ...base, latencies: [3000, 3000, 3000], sessions: 6 });
+  const both = adaptiveDeadlineMs({ ...base, latencies: [3000, 3000, 3000], cpuBusy: 0.95, sessions: 6 });
+  assertEq(idle, 4000);
+  assert(busyCpu > idle && manySessions > idle && both > busyCpu && both > manySessions, `${idle} < ${busyCpu}, ${manySessions} < ${both}`);
+  assertEq(adaptiveDeadlineMs({ ...base, latencies: [11000, 11000], cpuBusy: 1, sessions: 20 }), 12000, 'a loaded machine still stops at the ceiling');
+});
+
+test('recall-deadline: o contador de sessoes conta as distintas da janela e o amostrador de CPU mede o uso entre duas leituras', () => {
+  const { createSessionTracker, createCpuSampler } = require('../engine/lib/recall-deadline.js');
+  let t = 0;
+  const tracker = createSessionTracker({ windowMs: 1000, now: () => t });
+  tracker.note('a'); tracker.note('b'); tracker.note('a');
+  assertEq(tracker.count(), 2);
+  t = 2000;
+  tracker.note('c');
+  assertEq(tracker.count(), 1, 'a and b left the window');
+  let times = { user: 0, nice: 0, sys: 0, idle: 0, irq: 0 };
+  const sampler = createCpuSampler(() => [{ times }, { times }]);
+  assertEq(sampler.sample(), 0, 'no baseline yet');
+  times = { user: 75, nice: 0, sys: 0, idle: 25, irq: 0 };
+  assertEq(sampler.sample(), 0.75);
+});
+
+test('recall-deadline createRecallBudget: le a latencia gravada, as sessoes e a CPU a cada pedido e respeita a config viva', () => {
+  const { createRecallBudget, createSessionTracker } = require('../engine/lib/recall-deadline.js');
+  let cpu = 0;
+  let lat = [1000];
+  let cfg = { hookBudgetMinMs: 4000, hookBudgetMaxMs: 12000 };
+  const budget = createRecallBudget({ getConfig: () => cfg, readLatencies: () => lat, sessions: createSessionTracker(), cpu: { sample: () => cpu } });
+  assertEq(budget.forSession('s1'), 4000);
+  lat = [6000, 6000, 6000];
+  cpu = 0.5;
+  budget.forSession('s2');
+  const loaded = budget.forSession('s3');
+  assert(loaded > 6000 * 1.3, `latency, 3 sessions and a busy CPU stretch it past the plain headroom, got ${loaded}`);
+  cfg = { hookBudgetMinMs: 4000, hookBudgetMaxMs: 7000 };
+  assertEq(budget.forSession('s3'), 7000, 'the config ceiling applies at once');
+});
+
+test('recall-health.recentLatencies: devolve a duracao de cada recall recente, degradados inclusive (e vazio sem historico)', () => {
+  const rh = require('../engine/lib/recall-health.js');
+  let st = rh.applyOutcome(null, undefined, 1, null, 900);
+  st = rh.applyOutcome(st, 'timeout', 2, null, 1800);
+  st = rh.applyOutcome(st, undefined, 3, null, undefined);
+  assertEq(rh.latenciesOf(st), [900, 1800], 'a recall with no recorded duration is left out');
+  assertEq(rh.latenciesOf(null), []);
+});
+
+test('hooks.json: o timeout do hook do recall cobre o teto adaptativo mais a folga do servidor e a margem do prazo do daemon', () => {
+  const hooks = JSON.parse(fs.readFileSync(path.join(ROOT, 'hooks', 'hooks.json'), 'utf8')).hooks;
+  let entry;
+  for (const g of Object.values(hooks).flat()) for (const h of g.hooks || []) if (h.type === 'mcp_tool' && h.tool === 'brain_retrieve_context') entry = h;
+  const ceilingMs = require('../engine/lib/brain-config.js').getRecallCompose().hookBudgetMaxMs;
+  const deadlineMs = require('../scripts/lib/hook-tools.js').deadlinesFromHooksJson(ROOT).brain_retrieve_context;
+  assert(deadlineMs >= ceilingMs + 250 + 500, `the daemon deadline (${deadlineMs} ms) leaves the recall its ceiling (${ceilingMs} ms) plus slack`);
+  assert(entry.timeout * 1000 > deadlineMs, 'the host timeout is above the daemon deadline');
 });
 
 test('recall-health: compose-partial conta como ok, fica fora da taxa de degradacao e guarda o ultimo aviso', () => {
@@ -31585,7 +31659,7 @@ test('plugin-updater.killStale: so casa modulos da PASTA DE CACHE do plugin, nao
     assertEq(d.hook_pretooluse_dispatcher, 5000);
     assertEq(d.hook_curation_guard, 4000, 'a routed hook keeps its own deadline under the dispatcher');
     assertEq(d.hook_graph_guard, 4000);
-    assertEq(d.brain_retrieve_context, 3000, 'the recall is cut near its budget, not at the old 30 s');
+    assertEq(d.brain_retrieve_context, 14000, 'the recall is cut near its adaptive ceiling (12 s + slack), not at the old 30 s');
   });
 
   test('G5: an inline hook past its deadline answers with the visible fail-open message, not a hang', async () => {
