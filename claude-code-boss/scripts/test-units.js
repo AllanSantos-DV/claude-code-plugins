@@ -31937,7 +31937,7 @@ test('compaction-core.planCompaction: stale results truncated with a note, every
   assert(!('r2' in why), 'r2 is inside the pinned newest messages');
   assertEq(p.verbatimTextIntact, true);
   for (let i = 0; i < msgs.length; i++) assertEq(p.messages[i].text, msgs[i].text, `text ${i} verbatim`);
-  assert(p.messages[0] === msgs[0] && p.messages[6] === msgs[6], 'untouched → same object (engine handle kept)');
+  assert(p.messages[0] === msgs[0] && p.messages[5] === msgs[5], 'untouched → same object (engine handle kept)');
   assertEq(p.messages[2].handle, undefined, 'a rebuilt message carries no handle');
   assert(/\[compaction: \d+ chars of this Read result pruned — a later read\/edit of src\/p\.js supersedes it\]/.test(p.messages[2].toolResults[0].text), 'the cut says why');
   assert(p.ratio > 0.5, `ratio ${p.ratio}`);
@@ -31977,10 +31977,38 @@ test('compaction-core.buildBrief: the verbatim tail by tokens (briefTailTokens, 
     for (const m of tail) for (const u of m.toolUses || []) uses.add(u.tool_use_id);
     for (const m of tail) for (const r of m.toolResults || []) assert(uses.has(r.tool_use_id), `no orphan result ${r.tool_use_id}`);
     assertEq(b.userTextIntact, true);
-    assert(tail.every((m) => msgs.includes(m)), 'the tail messages are the engine objects (handles kept)');
+    assert(tail.every((m) => msgs.includes(m) || (m.toolResults && m.handle === undefined)), 'the tail messages are the engine objects, results rebuilt without a handle');
   }
   const all = cmpCore.buildBrief(msgs, { briefTailTokens: 1e9 });
   assertEq(all.cutMessages, 0, 'a budget past the whole history condenses nothing');
+});
+
+// The engine writes the copy of a kept tool result that still has its handle with the parent of its pre-compaction
+// original; past 5 MB the resume loads from the boundary, misses that parent and drops the brief.
+test('compaction-core: no handed-back tool result keeps its engine handle — calls and plain messages keep theirs', () => {
+  const msgs = cmpSession();
+  const check = (list, label) => {
+    for (const m of list) if (m.toolResults && m.toolResults.length) assertEq(m.handle, undefined, `${label}: result ${m.toolResults[0].tool_use_id} handed back without a handle`);
+  };
+  for (const opts of [{ preserveRecentMessages: 3, briefTailTokens: 0 }, { briefTailTokens: 1 }, { briefTailTokens: 200 }]) {
+    const b = cmpCore.buildBrief(msgs, opts);
+    assert(b.cutMessages > 0, `the brief cuts (${JSON.stringify(opts)})`);
+    const tail = b.messages.slice(2);
+    assert(tail.some((m) => m.toolResults && m.toolResults.length), `the tail carries a tool result (${JSON.stringify(opts)})`);
+    check(b.messages, `brief ${JSON.stringify(opts)}`);
+    for (const m of tail.filter((x) => x.toolResults && x.toolResults.length)) {
+      const orig = msgs.find((o) => o.toolResults && o.toolResults[0].tool_use_id === m.toolResults[0].tool_use_id);
+      assertEq({ ...m }, (({ handle, ...r }) => (void handle, r))(orig), 'the result is rebuilt from its own fields, nothing else changed');
+    }
+    const calls = tail.filter((m) => m.toolUses.length);
+    assert(calls.length && calls.every((m) => msgs.includes(m)), 'the calls stay the engine objects (their thinking rides on the handle)');
+    assertEq(cmpCore.compactResultError(b.messages), null, 'still a result the engine accepts');
+  }
+  const p = cmpCore.planCompaction(msgs);
+  check(p.messages, 'pruned');
+  assert(p.messages[1] === msgs[1] && p.messages[0] === msgs[0], 'the pruned history keeps calls and user messages as engine objects');
+  assertEq(cmpCore.compactResultError(p.messages), null, 'the pruned history is still accepted');
+  assertEq(p.messages[6].toolResults, msgs[6].toolResults, 'an untouched result keeps its content');
 });
 
 function hugeTailSession(hugeAt) {
@@ -32001,7 +32029,7 @@ test('compaction-core.buildBrief: a huge result inside the tail window does not 
   assert(b.cutMessages > 0, 'something was condensed');
   assert(b.charsAfter < b.charsBefore / 10, `the 400k result went into the condensed part: ${b.charsAfter} of ${b.charsBefore}`);
   const last = msgs[msgs.length - 1];
-  assert(b.messages[b.messages.length - 1] === last, 'the newest message is still the engine object');
+  assertEq(b.messages[b.messages.length - 1], last, 'the newest message is still there, unchanged');
   assertEq(b.userTextIntact, true);
   const uses = new Set(); for (const m of b.messages.slice(2)) for (const u of m.toolUses || []) uses.add(u.tool_use_id);
   for (const m of b.messages.slice(2)) for (const r of m.toolResults || []) assert(uses.has(r.tool_use_id), `no orphan result ${r.tool_use_id}`);

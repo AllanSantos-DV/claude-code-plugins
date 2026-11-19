@@ -11,7 +11,7 @@
  *     stale tool results are truncated (a superseded read, a command that failed and
  *     later succeeded, an old large output), each leaving a note saying why. Messages
  *     left unchanged are returned as the very same objects, so the engine keeps them
- *     as its own (their `handle`).
+ *     as its own (their `handle`), except tool results (detachResult).
  *   - decideTiming: WHEN. Rewriting history re-bills the kept messages as a cache
  *     write on the next request. With a warm provider cache that is waste; once the
  *     cache has expired the next request pays the write anyway — so past the
@@ -76,6 +76,20 @@ function size(m) {
   for (const u of m.toolUses || []) n += JSON.stringify(u.input || {}).length;
   for (const r of m.toolResults || []) n += (r.text || '').length;
   return n;
+}
+
+/**
+ * A tool-result message handed back as a new one, without the engine's handle. The engine writes the copy of a kept
+ * result that still has its handle with the parent of its pre-compaction original, not the copy of its call: a
+ * transcript past 5 MB is loaded from the compaction boundary, that parent is missing, and the resume drops the brief
+ * and the start of the tail ("Earlier messages couldn't be loaded"). Rebuilt from its fields, the copy chains to the
+ * copy of its call. Calls keep their handle, which carries their thinking; images in a result are lost.
+ */
+function detachResult(m) {
+  if (!(m.toolResults && m.toolResults.length) || m.handle === undefined) return m;
+  const { handle: _engineHandle, ...rest } = m;
+  void _engineHandle;
+  return rest;
 }
 
 function note(reason, tool, input, cut) {
@@ -197,11 +211,8 @@ export function planCompaction(messages, options = {}) {
       changed = true;
       return { ...r, text: r.text.slice(0, o.truncateHeadChars) + note(reason, u.tool, u.input, cut) };
     });
-    if (!changed) return m;
-    const { handle: _engineHandle, ...rest } = m; // rebuilt: the engine builds it from its fields
-    void _engineHandle;
-    return { ...rest, toolResults: results };
-  });
+    return changed ? { ...m, toolResults: results } : m;
+  }).map(detachResult);
 
   const charsBefore = input.reduce((n, m) => n + size(m), 0); // the cut counts the copies dropped
   const charsAfter = out.reduce((n, m) => n + size(m), 0);
@@ -466,8 +477,8 @@ function briefArg(input) {
 /**
  * The curated transcript a cold compaction uses INSTEAD of the engine's summary call (chooseCompaction kind
  * 'brief'). Deterministic, no model call:
- *   - the first message and the newest ones stay as the very same objects: `briefTailTokens` worth of them when
- *     set (default 2000), else the newest `preserveRecentMessages`;
+ *   - the first message and the newest ones stay as the very same objects, tool results without their handle
+ *     (detachResult): `briefTailTokens` worth of them when set (default 2000), else the newest `preserveRecentMessages`;
  *   - everything between becomes ONE user message: every user message verbatim, assistant text cut to
  *     `briefAssistantChars`, each tool call one line (tool + file/command), failed results a short head;
  *     successful tool outputs are dropped — they are what MCP memory (ingested transcripts) recovers;
@@ -518,7 +529,7 @@ export function buildBrief(messages, options = {}) {
   const text = head + lines.join('\n');
   // toolUses is required on every returned message (compactResultError): the engine refuses the list without it and
   // runs its own summary instead.
-  const out = middle.length ? [list[0], { role: 'user', text, toolUses: [] }, ...list.slice(tailStart)] : list.slice();
+  const out = middle.length ? [list[0], { role: 'user', text, toolUses: [] }, ...list.slice(tailStart)].map(detachResult) : list.slice();
   const userTextIntact = middle.every((m) => m.role !== 'user' || !m.text || text.includes(`USER: ${m.text}`));
   const charsBefore = list.reduce((c, m) => c + size(m), 0);
   const charsAfter = out.reduce((c, m) => c + size(m), 0);
