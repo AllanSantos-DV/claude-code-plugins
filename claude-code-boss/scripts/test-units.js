@@ -21601,6 +21601,34 @@ test('stop-dispatcher.mergeBlocks: project-id-stop reason leads curation-stop', 
   assertEq(out.reason, 'P' + dispatcher.SEP + 'C');
 });
 
+/** Claude Code lists a Stop hook's `decision: "block"` (and a non-0/2 exit) as "Stop hook reported a problem"; additionalContext is feedback. */
+function claudeCodeShowsProblem(stdout) {
+  const o = JSON.parse(stdout);
+  return o.decision === 'block';
+}
+
+test('stop-dispatcher.forClaudeCode: a block reaches the model as Stop additionalContext naming the hook, never as decision:block; notices and empty stay as they were', () => {
+  const merged = dispatcher.withNotices(dispatcher.mergeBlocks([{ name: 'capture-dispatch', reason: '[BRAIN capture] window w1 is open' }]), ['N1']);
+  assertEq(merged.decision, 'block', 'the merged result keeps the CLI shape');
+  const out = dispatcher.forClaudeCode(merged);
+  assert(!('decision' in out) && !('reason' in out), 'no blocking fields');
+  assertEq(out.hookSpecificOutput.hookEventName, 'Stop');
+  const ctx = out.hookSpecificOutput.additionalContext;
+  assert(/^claude-code-boss end-of-turn hook \(scripts\/stop-dispatcher\.js\), a notice, not an error:\n/.test(ctx), 'first line names the hook: ' + ctx.slice(0, 120));
+  assert(ctx.endsWith('[BRAIN capture] window w1 is open'), 'the reason text is unchanged');
+  assertEq(out.systemMessage, 'N1', 'a user-only notice keeps its channel');
+  assertEq(dispatcher.forClaudeCode({}), {}, 'nothing to say → {}');
+  assertEq(dispatcher.forClaudeCode({ systemMessage: 'only' }), { systemMessage: 'only' }, 'notice only → untouched');
+});
+
+test('hook-tools hook_stop_dispatcher: the REAL tool reply for a blocking Stop is not a hook problem for Claude Code, and keeps the reason', async () => {
+  const { HOOKS } = require('./lib/hook-tools.js');
+  const reply = await HOOKS.hook_stop_dispatcher.call({ ...dispatcher, run: async () => ({ decision: 'block', reason: 'CAPTURE-WINDOW-w9' }) },{ hook_event_name: 'Stop' });
+  assert(!claudeCodeShowsProblem(reply), 'decision:block would be listed as "Stop hook reported a problem": ' + reply);
+  assert(JSON.parse(reply).hookSpecificOutput.additionalContext.includes('CAPTURE-WINDOW-w9'), 'the instruction still reaches the model');
+  assertEq(await HOOKS.hook_stop_dispatcher.call({ ...dispatcher, run: async () => ({}) }, {}), '{}', 'no detector fired → empty');
+});
+
 test('pretooluse-bash-dispatcher: exposes dispatch() and DEFAULT_PASS (abstain, never a blanket allow)', () => {
   const d = require('./pretooluse-bash-dispatcher.js');
   assertEq(typeof d.dispatch, 'function');

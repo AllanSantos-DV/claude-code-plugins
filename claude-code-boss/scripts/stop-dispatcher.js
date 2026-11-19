@@ -204,6 +204,23 @@ function withNotices(out, notices) {
   return Array.isArray(notices) && notices.length ? { ...out, systemMessage: notices.join('\n') } : out;
 }
 
+const FEEDBACK_ORIGIN = 'claude-code-boss end-of-turn hook (scripts/stop-dispatcher.js), a notice, not an error:';
+
+/**
+ * The Stop reply for Claude Code: a merged block becomes `hookSpecificOutput.additionalContext`,
+ * which keeps the turn going under the same loop protections (`stop_hook_active`, the
+ * consecutive-continuation cap) but is listed as hook feedback, where `decision: "block"` is
+ * listed as "Stop hook reported a problem". The first line names the hook.
+ *
+ * @param {{decision?:string, reason?:string, systemMessage?:string}} out  result of `run()`
+ * @returns {object}
+ */
+function forClaudeCode(out) {
+  if (!out || out.decision !== 'block') return out || {};
+  const { decision, reason, ...rest } = out;
+  return { ...rest, hookSpecificOutput: { hookEventName: 'Stop', additionalContext: `${FEEDBACK_ORIGIN}\n${reason}` } };
+}
+
 /**
  * Full Stop pass for one event: dispatch + telemetry + merge. Returns the hook
  * output object (`{decision:'block',reason}` or `{}`) without writing — main()
@@ -245,4 +262,4 @@ if (require.main === module) {
   });
 }
 
-module.exports = { run, dispatch, mergeBlocks, withNotices, rank, DETECTORS, PRIORITY, NO_ID_SKIP, SEP, getShadowRate };
+module.exports = { run, dispatch, mergeBlocks, withNotices, forClaudeCode, rank, DETECTORS, PRIORITY, NO_ID_SKIP, SEP, getShadowRate };
