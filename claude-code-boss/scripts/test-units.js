@@ -34892,7 +34892,30 @@ test('http-daemon /health: REAL daemon — the main-thread hook modules are load
     assertEq(h.warmup.failed, [], 'no module failed');
     for (const s of ['curation-guard.js', 'error-guard.js', 'session-practices.js', 'lib/graph-guard-core.js']) assert(h.warmup.loaded.includes(s), `${s} loaded at start`);
     assertEq(typeof h.warmup.ms, 'number');
+    assert(h.mainThread && h.mainThread.loopDelay && h.mainThread.gc && h.mainThread.longStalls, `main thread in /health: ${JSON.stringify(h.mainThread)}`);
   } finally { await d.shutdown(); }
+});
+
+test('main-thread-stats: a blocked main thread is counted and dated as a long stall, and garbage-collection pauses are counted', async () => {
+  const { createMainThreadStats } = await import(require('url').pathToFileURL(path.join(ROOT, 'servers', 'brain-server', 'lib', 'main-thread-stats.js')).href);
+  const m = createMainThreadStats();
+  try {
+    await new Promise((r) => setTimeout(r, 120));
+    const before = Date.now();
+    const until = before + 300;
+    while (Date.now() < until) { /* hold the thread like a synchronous call would */ }
+    let junk = [];
+    for (let i = 0; i < 200; i++) junk.push(new Array(10000).fill(i));
+    junk = null;
+    await new Promise((r) => setTimeout(r, 150));
+    const s = m.stats();
+    assert(s.longStalls.count >= 1, `stall counted: ${JSON.stringify(s.longStalls)}`);
+    const stall = s.longStalls.recent[s.longStalls.recent.length - 1];
+    assert(stall.ms >= 200, `stall length: ${stall.ms}`);
+    assert(Math.abs(Date.parse(stall.at) - before) < 150, `stall dated at its start: ${stall.at} vs ${new Date(before).toISOString()}`);
+    assert(s.loopDelay.maxMs >= 200, `histogram max: ${s.loopDelay.maxMs}`);
+    assert(s.gc.count >= 1, `gc pauses counted: ${JSON.stringify(s.gc)}`);
+  } finally { m.stop(); }
 });
 
 test('boss-summary.createRowReader: cache.turn rows are folded into per-day totals, never kept as rows, and days that left the window drop out', () => {

@@ -20,6 +20,7 @@ import { createBrainServer, createKbLockPool } from './mcp-server.js';
 import { createKbWorkerPool } from './kb-worker-client.js';
 import { createHookWorker } from './hook-worker-client.js';
 import { createEmbedWorker } from './embed-worker-client.js';
+import { createMainThreadStats } from './main-thread-stats.js';
 import { createRequire } from 'node:module';
 import path from 'node:path';
 import fs from 'node:fs';
@@ -80,6 +81,7 @@ export async function startHttpDaemon({ pluginRoot, dataDir, port, host = '127.0
   const inFlight = new Set();
   const idleWaiters = [];
   const startedAt = Date.now();
+  const mainThread = createMainThreadStats();
   let warmup = null;
   // Since Node 15 an unhandled rejection anywhere in this process kills it, and with it
   // the daemon every session depends on. Log it with its stack and count it in /health.
@@ -207,7 +209,7 @@ export async function startHttpDaemon({ pluginRoot, dataDir, port, host = '127.0
           ok: true, ...proof, pluginRoot, dataDir, version, pid: process.pid, port,
           // The doctor checks the daemon's real runtime: the hook that spawned it may have had another node on PATH.
           node: { version: process.version, execArgv: process.execArgv, nodeOptions: process.env.NODE_OPTIONS || '' },
-          sessions: sessions.size, hookWorker: hookWorker.stats(), readWorker: readWorker.stats(), hookLatency: hookLatencyStats(), warmup, unhandledRejections, startedAt, uptimeMs: Date.now() - startedAt,
+          sessions: sessions.size, hookWorker: hookWorker.stats(), readWorker: readWorker.stats(), hookLatency: hookLatencyStats(), mainThread: mainThread.stats(), warmup, unhandledRejections, startedAt, uptimeMs: Date.now() - startedAt,
         }));
         return;
       }
@@ -404,6 +406,7 @@ export async function startHttpDaemon({ pluginRoot, dataDir, port, host = '127.0
     _shuttingDown = true;
     setTimeout(() => {}, 2500).unref(); // fallback de tempo — o supervisor gerencia o ciclo de vida
     clearInterval(reaper);
+    mainThread.stop();
     process.off('unhandledRejection', onUnhandledRejection);
     // Stop listening first: the port frees at once, so the supervisor's swap goes on
     // starting the new daemon while this one finishes what it already accepted.
