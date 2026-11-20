@@ -125,11 +125,13 @@ async function run(event) {
 
     let curated = 0;
     let migration = null;
+    let unused = null;
     try {
       const { findProjectRoot, loadShellsConfig } = require('./shells-config.js');
       const root = findProjectRoot(cwd);
       curated = (loadShellsConfig(root).shells || []).length; // runs the one-time move out of the repo
       migration = require('./curation-paths.js').takeMigrationNotice(root);
+      if (curated > 0) unused = require('./lib/maintenance-notices.js').unusedScriptsNotice(DATA_DIR, { root });
     } catch (e) { void e; }
 
     const pending = pendingSkillsSummary(DATA_DIR);
@@ -141,7 +143,12 @@ async function run(event) {
       const dry = require('./lib/promotion-registry.js').takeDryRunNotice(DATA_DIR);
       if (dry) lines.push(dry);
     } catch (e) { console.error(`[curation-session] promotion notice: ${e.message}`); }
+    try {
+      const consolidated = require('./lib/maintenance-notices.js').takeConsolidationNotice(DATA_DIR);
+      if (consolidated) lines.push(consolidated);
+    } catch (e) { console.error(`[curation-session] consolidation notice: ${e.message}`); }
     if (migration) lines.push(...migrationLines(migration));
+    if (unused) lines.push(unused);
     if (oneHits > 0 || curated > 0) {
       lines.push(`[CURATION] This project tracks ${curated} curated script(s) and ${oneHits} one-hit command(s). Prefer existing curated scripts; mark genuine single-use commands with curation_mark_oneoff instead of re-curating.`);
     }

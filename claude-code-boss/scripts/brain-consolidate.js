@@ -130,6 +130,17 @@ if (require.main === module) {
       const stamp = require('path').join(require('../engine/lib/data-dir.js').dataDir(), '.runtime', 'brain-consolidate-last.json');
       require('./curation-session.js').unmarkConsolidated(stamp, project);
     }
+    if (apply && res.ok) {
+      try {
+        const metrics = require('../engine/lib/metrics-store.js');
+        const dataDir = require('../engine/lib/data-dir.js').dataDir();
+        const key = require('../engine/lib/metrics-project.js').metricsKeyFor(cwd);
+        require('./lib/maintenance-notices.js').recordConsolidation(dataDir, res, (name, payload) => {
+          if (!metrics.init({ project: key, dataDir })) throw new Error('metrics store unavailable');
+          metrics.recordMetric(name, payload, null);
+        });
+      } catch (err) { console.error(`[brain-consolidate] consolidation not recorded: ${err.message}`); }
+    }
     try { await store.close(); } catch (e) { void e; }
     try { await require('../engine/brain-backend.js').close(); } catch (e) { void e; }
     console.log(JSON.stringify({

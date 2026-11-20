@@ -36967,6 +36967,44 @@ test('backup-age.newestBackup + doctor.checkBackupAge: no backup, an old one and
   assertEq(doctor.checkBackupAge({}).status, 'ok');
 });
 
+const maintNotices = require('./lib/maintenance-notices.js');
+test('maintenance-notices: a consolidation that deleted something leaves a metric and a one-shot notice; an empty one leaves nothing', () => {
+  const dir = tempDir('ccb-consol-');
+  const events = [];
+  const rec = (name, payload) => events.push([name, payload]);
+  assertEq(maintNotices.recordConsolidation(dir, { project: 'p', groups: 0, merged: 0, deleted: 0 }, rec), false);
+  assertEq(maintNotices.takeConsolidationNotice(dir), null, 'nothing recorded');
+  assertEq(maintNotices.recordConsolidation(dir, { project: 'org/a', groups: 2, merged: 2, deleted: 3 }, rec), true);
+  assertEq(maintNotices.recordConsolidation(dir, { project: 'org/b', groups: 1, merged: 1, deleted: 1 }, rec), true);
+  assertEq(events.map((e) => e[0]), ['lesson.consolidated', 'lesson.consolidated']);
+  assertEq(events[0][1], { project: 'org/a', groups: 2, merged: 2, deleted: 3 });
+  const line = maintNotices.takeConsolidationNotice(dir);
+  assert(line.startsWith('[MEMORY]') && line.includes('merged 3 group(s)') && line.includes('removed 4 duplicate(s)') && line.includes('org/a, org/b'), line);
+  assertEq(maintNotices.takeConsolidationNotice(dir), null, 'shown once');
+  assertEq(maintNotices.recordConsolidation(dir, { project: 'org/a', groups: 1, merged: 1, deleted: 1 }, () => { throw new Error('metrics down'); }), true, 'a failed metric never loses the notice');
+  assert(maintNotices.takeConsolidationNotice(dir).includes('removed 1 duplicate(s)'));
+});
+
+test('maintenance-notices.unusedScriptsNotice: a weekly line naming never-run scripts, spent only when a line is shown', () => {
+  const dir = tempDir('ccb-unused-');
+  const now = Date.now();
+  const cand = (n) => Array.from({ length: n }, (_, i) => ({ id: `s${i + 1}`, script: `s${i + 1}.mjs`, ageDays: 40 }));
+  let result = { ok: true, candidates: [] };
+  const calls = [];
+  const prune = (a) => { calls.push(a); return result; };
+  const args = { root: dir, project: 'k', now, prune };
+  assertEq(maintNotices.unusedScriptsNotice(dir, args), null, 'no candidates: no line');
+  assertEq(calls.length, 1);
+  result = { ok: true, candidates: cand(5) };
+  const line = maintNotices.unusedScriptsNotice(dir, args);
+  assert(line.startsWith('[CURATION] 5 curated script(s) never ran in the last 30 days (s1, s2, s3 and 2 more)'), line);
+  assertEq(maintNotices.unusedScriptsNotice(dir, { ...args, now: now + 3 * 86400000 }), null, 'told once a week');
+  assertEq(calls.length, 2, 'the cooldown answers before any metrics read');
+  assert(maintNotices.unusedScriptsNotice(dir, { ...args, now: now + 8 * 86400000 }).startsWith('[CURATION] 5'), 'a week later it speaks again');
+  result = { ok: false, error: 'no shells config under x' };
+  assertEq(maintNotices.unusedScriptsNotice(dir, { ...args, project: 'other' }), null, 'a project with no curation is silent');
+});
+
 (async () => {
   // A suíte mexe em singletons de módulo, process.env e servidores HTTP locais.
   // Promise.all deixava esses testes disputarem o mesmo estado/event loop; em
