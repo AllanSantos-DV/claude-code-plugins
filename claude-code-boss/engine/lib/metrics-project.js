@@ -110,7 +110,9 @@ function markCarriedOver(Database, from, to, key) {
   const markerPath = path.join(path.dirname(from), 'adopted.json');
   let marker = { by: [], at: 0 };
   try { marker = JSON.parse(fs.readFileSync(markerPath, 'utf8')); } catch (err) { void err; }
-  if ((marker.by || []).includes(key)) return; // marked once per adopter: no db work on every hook process
+  // Both verdicts are recorded once per adopter: the join reads both whole tables (over a second on a big db),
+  // and it ran on the daemon's main thread on every restart and in every one-shot hook process.
+  if ((marker.by || []).includes(key) || (marker.none || []).includes(key)) return;
   const db = new Database(from);
   let upTo = null;
   try {
@@ -120,7 +122,10 @@ function markCarriedOver(Database, from, to, key) {
     upTo = r && Number.isFinite(r.t) ? r.t : null;
   } finally { db.close(); }
   if (upTo == null) {
+    // Final: the key db already exists and is only copied when absent, so it can never gain these rows later.
     console.error(`[metrics] "${key}" holds none of the legacy rows of ${path.basename(path.dirname(from))} — not a copy, the legacy db stays fully counted`);
+    marker.none = [...new Set([...(marker.none || []), key])];
+    fs.writeFileSync(markerPath, JSON.stringify(marker, null, 2));
     return;
   }
   marker.by = [...new Set([...(marker.by || []), key])];

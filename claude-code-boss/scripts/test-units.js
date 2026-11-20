@@ -5555,8 +5555,17 @@ test('metrics totals: a time-window read is not cut at 500 rows; history COPIED 
     const key2 = mp.metricsKeyForId(require('../engine/lib/project-id.js').tryResolveProjectId({ cwd: repo2 }));
     ms.init({ project: key2 }); ms.recordMetric('other.event', {}, 's'); ms.close();
     mp._resetAdopted();
-    mp.metricsKeyFor(repo2);
-    assertEq([fs.existsSync(path.join(base, legacy2, 'adopted.json')), shaped(legacy2)], [false, 1], 'no common row → not marked, the legacy history stays counted');
+    const errs = [];
+    const origErr = console.error;
+    console.error = (...a) => { errs.push(a.join(' ')); };
+    try {
+      mp.metricsKeyFor(repo2);
+      mp._resetAdopted(); // a new process, or the daemon after a restart
+      mp.metricsKeyFor(repo2);
+    } finally { console.error = origErr; }
+    const marker2 = JSON.parse(fs.readFileSync(path.join(base, legacy2, 'adopted.json'), 'utf8'));
+    assertEq([marker2.none, marker2.by, marker2.at, shaped(legacy2)], [[key2], [], 0, 1], 'no common row → recorded as checked with no floor, the legacy history stays counted');
+    assertEq(errs.filter((e) => /holds none of the legacy rows/.test(e)).length, 1, 'the whole-table join runs once, not again in the next process');
     const dash = fs.readFileSync(path.join(ROOT, 'scripts', 'dashboard.js'), 'utf8').replace(/\r\n/g, '\n'); // a CRLF checkout must split the same
     for (const fn of ['getCurationSummary', 'getValueSummary', 'getProfileImpact', 'getTuningRecommendations', 'getCompactionSummary']) {
       const body = (dash.split(`async function ${fn}(`)[1] || '').split('\nasync function ')[0];
