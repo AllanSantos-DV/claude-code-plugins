@@ -160,8 +160,16 @@ async function scan() {
   const kb = await loadScanEntries(project, [...new Set([...cfg.types, 'lesson', 'pattern'])]);
   const entries = kb.entries;
 
-  let candidates = entries.filter((e) => cfg.types.includes(e.type)
-    && (e.recurrence || 1) >= minRec && (e.confidence || 0) >= minConf);
+  let cites = [];
+  if (cfg.minCitedSessions > 0) {
+    try {
+      const key = require('../engine/lib/metrics-project.js').metricsKeyFor(projectRoot);
+      cites = require('../engine/lib/metrics-store.js').getEventLogIsolated(key, { eventName: 'retrieve.cited', sinceTs: 1 })
+        .map((r) => ({ entryId: r.payload && r.payload.entryId, project: key, sessionId: r.sessionId }));
+    } catch (err) { console.error(`[brain-promote] citations unreadable, scanning by recurrence only: ${err.message}`); }
+  }
+  let candidates = require('./lib/lesson-promotion.js').selectSkillCandidates(entries, cites,
+    { types: cfg.types, minRecurrence: minRec, minConfidence: minConf, minCitedSessions: cfg.minCitedSessions });
   if (kb.full) {
     candidates = await Promise.all(candidates.map(async (c) => {
       const f = await kb.full(c.id);

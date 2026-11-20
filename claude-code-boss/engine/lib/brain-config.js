@@ -168,11 +168,12 @@ function getCuration() {
  * Config: kb.skillPromotion, read through load() — shipped ⊕ the user override
  * (both readers used to read only the shipped file, so a user tweak was ignored —
  * BACKLOG Q44).
- * @returns {{enabled:boolean, minRecurrence:number, minConfidence:number, types:string[]}}
+ * @returns {{enabled:boolean, minRecurrence:number, minConfidence:number, minCitedSessions:number, types:string[]}}
+ *   minCitedSessions — a lesson cited in this many distinct sessions is drafted even below minRecurrence (0 = off)
  */
 function getSkillPromotion() {
   const sp = (load().kb && load().kb.skillPromotion) || {};
-  return { enabled: true, minRecurrence: 3, minConfidence: 0.8, types: ['lesson', 'pattern'], ...sp };
+  return { enabled: true, minRecurrence: 3, minConfidence: 0.8, minCitedSessions: 3, types: ['lesson', 'pattern'], ...sp };
 }
 
 /**

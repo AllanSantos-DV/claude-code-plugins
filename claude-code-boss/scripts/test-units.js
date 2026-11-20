@@ -36914,6 +36914,25 @@ test('session-summary: the notice names recall and citations, and a session with
   assertEq(Object.keys(again).length, 0, 'once per session');
 });
 
+const lessonPromotionSel = require('./lib/lesson-promotion.js');
+test('lesson-promotion.selectSkillCandidates: recurring or cited in enough distinct sessions, confident enough, of an allowed type', () => {
+  const entries = [
+    { id: 'rec', type: 'lesson', recurrence: 3, confidence: 0.9 },
+    { id: 'cited', type: 'lesson', recurrence: 1, confidence: 0.9 },
+    { id: 'cited-once', type: 'lesson', recurrence: 1, confidence: 0.9 },
+    { id: 'weak', type: 'lesson', recurrence: 1, confidence: 0.5 },
+    { id: 'other-type', type: 'reference', recurrence: 1, confidence: 0.9 },
+  ];
+  const cite = (entryId, sessionId) => ({ entryId, project: 'p', sessionId });
+  const cites = [cite('cited', 's1'), cite('cited', 's2'), cite('cited', 's3'), cite('cited', 's1'), cite('cited-once', 's1'), cite('cited-once', 's1'), cite('cited-once', 's1'), cite('weak', 's1'), cite('weak', 's2'), cite('weak', 's3'), cite('other-type', 's1'), cite('other-type', 's2'), cite('other-type', 's3')];
+  const cfg = { types: ['lesson', 'pattern'], minRecurrence: 3, minConfidence: 0.8, minCitedSessions: 3 };
+  const ids = (c) => lessonPromotionSel.selectSkillCandidates(entries, cites, c).map((e) => e.id);
+  assertEq(ids(cfg), ['rec', 'cited'], 'three distinct sessions, not three citations');
+  assertEq(ids({ ...cfg, minCitedSessions: 0 }), ['rec'], '0 switches the citation path off');
+  assertEq(ids({ ...cfg, minCitedSessions: 4 }), ['rec']);
+  assertEq(require('./../engine/lib/brain-config.js').getSkillPromotion().minCitedSessions, 3, 'the shipped default');
+});
+
 (async () => {
   // A suíte mexe em singletons de módulo, process.env e servidores HTTP locais.
   // Promise.all deixava esses testes disputarem o mesmo estado/event loop; em

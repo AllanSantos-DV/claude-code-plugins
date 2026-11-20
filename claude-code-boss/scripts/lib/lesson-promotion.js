@@ -225,4 +225,22 @@ async function prepareBatch(candidates, { maxPerRun, getFull, newId }) {
   return { accepted, rejected, deferred };
 }
 
-module.exports = { DEFAULTS, projectIdentity, planPromotions, buildUserEntry, prepareBatch, safeTags, citationIndex, registryBlocks, metricsKeyOfProject };
+/**
+ * Entries worth a skill draft: confident enough and either recurring (captured again and again) or cited in
+ * enough distinct sessions — a lesson captured once but used by many replies has proven itself the same way.
+ * @param {Array<{id:string,type:string,recurrence?:number,confidence?:number}>} entries
+ * @param {Array<{entryId,project,sessionId}>} cites  retrieve.cited events of the project
+ * @param {{types:string[], minRecurrence:number, minConfidence:number, minCitedSessions?:number}} cfg  minCitedSessions 0 = recurrence only
+ * @returns {Array}
+ */
+function selectSkillCandidates(entries, cites, cfg) {
+  const cited = cfg.minCitedSessions > 0 ? citationIndex(cites) : new Map();
+  return (entries || []).filter((e) => {
+    if (!cfg.types.includes(e.type) || (e.confidence || 0) < cfg.minConfidence) return false;
+    if ((e.recurrence || 1) >= cfg.minRecurrence) return true;
+    const ci = cited.get(e.id);
+    return !!ci && ci.sessions.size >= cfg.minCitedSessions;
+  });
+}
+
+module.exports = { DEFAULTS, projectIdentity, planPromotions, buildUserEntry, prepareBatch, safeTags, citationIndex, selectSkillCandidates, registryBlocks, metricsKeyOfProject };

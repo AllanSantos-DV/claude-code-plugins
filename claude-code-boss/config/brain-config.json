@@ -57,6 +57,7 @@
       "enabled": true,
       "minRecurrence": 3,
       "minConfidence": 0.8,
+      "minCitedSessions": 3,
       "types": ["lesson", "pattern"]
     },
     "promotion": {
