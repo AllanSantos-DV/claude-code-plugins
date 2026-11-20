@@ -21286,11 +21286,11 @@ test('doctor.runChecks + summarize: criticalFail flagged, counts add up', () => 
     hooksEvents: ['Stop'],
   };
   const results = doctor.runChecks(ctx);
-  assertEq(results.length, 26);
+  assertEq(results.length, 27);
   const s = doctor.summarize(results);
   assert(s.criticalFail, 'old node → criticalFail');
   assertEq(s.ok, false);
-  assertEq(s.counts.ok + s.counts.warn + s.counts.fail, 26);
+  assertEq(s.counts.ok + s.counts.warn + s.counts.fail, 27);
 });
 
 test('doctor.runChecks: all-healthy ctx → ok summary', () => {
