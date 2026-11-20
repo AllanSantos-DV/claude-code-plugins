@@ -88,6 +88,8 @@ class McpClient extends EventEmitter {
     // 'wait' (default: CLIs can afford the boot) or 'background' (the brain daemon — see _ensureDaemon).
     this.restartMode = opts.restartMode === 'background' ? 'background' : 'wait';
     this._kickLauncher = typeof opts.kickLauncher === 'function' ? opts.kickLauncher : null; // test seam
+    this.kickMarkerDir = typeof opts.kickMarkerDir === 'string' ? opts.kickMarkerDir : undefined;
+    this._now = typeof opts.now === 'function' ? opts.now : Date.now;
     this._runLauncher = typeof opts.runLauncher === 'function' ? opts.runLauncher : null; // test seam
     // One restart per outage: a later one only after the cooldown, so a daemon that cannot start is reported, not hammered.
     this.restartWaitMs = Number.isFinite(opts.restartWaitMs) ? opts.restartWaitMs : 5000;
@@ -145,6 +147,16 @@ class McpClient extends EventEmitter {
       // The brain daemon answers MCP tools inside a session: waiting for a full boot outlasted the
       // tool's timeout (BACKLOG Q59), so the wait is short: start the launcher detached, watch the
       // announcement for restartWaitMs, and answer with a clear, retryable error if it is not up.
+      const kickMarker = require('./lib/memory-server-kick.js');
+      const now = this._now();
+      const last = kickMarker.lastKickAt(this.kickMarkerDir);
+      if (kickMarker.inCooldown(this.kickMarkerDir, now)) {
+        if (await this._waitAnnounced(this.restartWaitMs)) return;
+        const err = new Error(`the memory server is not running — its launcher was already started ${Math.round((now - last) / 1000)} s ago and the server has not announced itself yet; retry in a few seconds`);
+        err.code = 'MEMORY_SERVER_RESTARTING';
+        throw err;
+      }
+      kickMarker.recordKick(this.kickMarkerDir, now);
       const kicked = (this._kickLauncher || require('../scripts/lib/mcp-bootstrap/launcher.js').kickLauncher)();
       if (kicked && await this._waitAnnounced(this.restartWaitMs)) return;
       const err = new Error(kicked

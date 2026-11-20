@@ -11079,7 +11079,7 @@ test('mcp-client: a brief restart is waited out with bounded probes — the refu
   let b = null, kicks = 0;
   try {
     rig.announce(a);
-    const c = new McpClient({ runDir: rig.runDir, timeout: 4000, restartMode: 'background', restartWaitMs: 0, kickLauncher: () => { kicks++; return false; } });
+    const c = new McpClient({ runDir: rig.runDir, timeout: 4000, restartMode: 'background', kickMarkerDir: tempDir('ccb-kick-'), restartWaitMs: 0, kickLauncher: () => { kicks++; return false; } });
     assertEq(c.refusedRetryDelaysMs, [250, 500, 1000], 'default backoff');
     await c.connect();
     await a.close();
@@ -25276,7 +25276,7 @@ test('KB gate: mcp-memory backend (handleRemoteKbTool) — cwd WITHOUT id refuse
 test('mcp-client restartMode (Q59): background = kick the launcher and fail FAST with a retryable error; wait = keep blocking (CLIs)', async () => {
   const McpClient = require('../engine/mcp-client.js');
   let kicks = 0;
-  const bg = new McpClient({ transport: 'http', serverUrl: '', runDir: tempDir('ccb-q59-'), restartMode: 'background', restartWaitMs: 0, kickLauncher: () => { kicks++; return true; } });
+  const bg = new McpClient({ transport: 'http', serverUrl: '', runDir: tempDir('ccb-q59-'), restartMode: 'background', kickMarkerDir: tempDir('ccb-kick-'), restartWaitMs: 0, kickLauncher: () => { kicks++; return true; } });
   bg._discoverDaemonUrl = () => 'http://127.0.0.1:1';
   bg._httpHealth = async () => false;
   const t0 = Date.now();
@@ -25285,17 +25285,40 @@ test('mcp-client restartMode (Q59): background = kick the launcher and fail FAST
   assertEq([err && err.code, kicks], ['MEMORY_SERVER_RESTARTING', 1], 'launcher kicked once, error says "retry in a few seconds"');
   assert(/started in the background and the server did not announce itself within 0 ms; retry/.test(err.message), err && err.message);
   assert(Date.now() - t0 < 1000, 'answers at once instead of waiting for the server to boot');
-  const noLauncher = new McpClient({ transport: 'http', restartMode: 'background', kickLauncher: () => false });
+  const noLauncher = new McpClient({ transport: 'http', restartMode: 'background', kickMarkerDir: tempDir('ccb-kick-'), kickLauncher: () => false });
   noLauncher._discoverDaemonUrl = () => 'http://127.0.0.1:1'; noLauncher._httpHealth = async () => false;
   let e2 = null; try { await noLauncher._ensureDaemon(); } catch (e) { e2 = e; }
   assert(/launcher was not found/.test(e2 && e2.message), 'no launcher → says so');
-  const up = new McpClient({ transport: 'http', restartMode: 'background', kickLauncher: () => { kicks++; return true; } });
+  const up = new McpClient({ transport: 'http', restartMode: 'background', kickMarkerDir: tempDir('ccb-kick-'), kickLauncher: () => { kicks++; return true; } });
   up._discoverDaemonUrl = () => 'http://127.0.0.1:1'; up._httpHealth = async () => true;
   await up._ensureDaemon();
   assertEq(kicks, 1, 'a healthy server is never kicked');
   assertEq(new McpClient({ transport: 'http' }).restartMode, 'wait', 'default stays wait (CLIs)');
   const src = fs.readFileSync(path.join(ROOT, 'servers', 'brain-server', 'index.js'), 'utf8');
   assert(/CCB_MCP_RESTART_MODE = process\.env\.CCB_MCP_RESTART_MODE \|\| 'background'/.test(src), 'the brain daemon runs in background mode');
+});
+
+test('mcp-client background restart: one launcher start per cooldown for every client and process, not one per client', async () => {
+  const McpClient = require('../engine/mcp-client.js');
+  const kick = require('../engine/lib/memory-server-kick.js');
+  const dir = tempDir('ccb-kick-shared-');
+  let kicks = 0;
+  const client = () => {
+    const c = new McpClient({ transport: 'http', serverUrl: '', runDir: tempDir('ccb-kick-run-'), restartMode: 'background', kickMarkerDir: dir, restartWaitMs: 0, kickLauncher: () => { kicks++; return true; } });
+    c._discoverDaemonUrl = () => 'http://127.0.0.1:1';
+    c._httpHealth = async () => false;
+    return c;
+  };
+  const errs = [];
+  for (let i = 0; i < 4; i++) { try { await client()._ensureDaemon(); } catch (e) { errs.push(e); } }
+  assertEq(kicks, 1, 'four clients (a hook process each, or the daemon serving four callers) start the launcher once');
+  assertEq(errs.map((e) => e.code), ['MEMORY_SERVER_RESTARTING', 'MEMORY_SERVER_RESTARTING', 'MEMORY_SERVER_RESTARTING', 'MEMORY_SERVER_RESTARTING'], 'each one answers with the retryable error');
+  assert(/already started \d+ s ago and the server has not announced itself yet/.test(errs[1].message), errs[1].message);
+  kick.recordKick(dir, Date.now() - kick.COOLDOWN_MS - 1);
+  try { await client()._ensureDaemon(); } catch (e) { void e; }
+  assertEq(kicks, 2, 'past the cooldown a server still down gets one new launcher start');
+  const ens = require('./brain-daemon-ensure.js');
+  assertEq(await ens.relaunchDeadMemoryServer({ dir, probeOnly: async () => false, ensureMemoryServer: async () => 'kicked' }), 'cooldown', 'the prompt-time relaunch reads the same marker');
 });
 
 /** Isolated mcp-memory announcement: a temp run dir the client reads instead of ~/.mcp-memory/run. */
@@ -25312,7 +25335,7 @@ test('mcp-client reconnect: a dropped daemon whose announcement moved to a new p
   const b = await startFakeDaemon();
   try {
     rig.announce(a);
-    const c = new McpClient({ runDir: rig.runDir, projectId: 'P1', timeout: 4000, restartCooldownMs: 0, kickLauncher: () => false, restartMode: 'background', restartWaitMs: 0 });
+    const c = new McpClient({ runDir: rig.runDir, projectId: 'P1', timeout: 4000, restartCooldownMs: 0, kickLauncher: () => false, restartMode: 'background', kickMarkerDir: tempDir('ccb-kick-'), restartWaitMs: 0 });
     const events = [];
     c.on('rediscovered', (e) => events.push(e));
     await c.connect();
@@ -25336,7 +25359,7 @@ test('mcp-client reconnect: an announced server that is not healthy is refused, 
   const a = await startFakeDaemon();
   try {
     rig.announce(a);
-    const c = new McpClient({ runDir: rig.runDir, timeout: 4000, kickLauncher: () => false, restartMode: 'background', restartWaitMs: 0 });
+    const c = new McpClient({ runDir: rig.runDir, timeout: 4000, kickLauncher: () => false, restartMode: 'background', kickMarkerDir: tempDir('ccb-kick-'), restartWaitMs: 0 });
     await c.connect();
     await a.close();
     rig.announce({ url: 'http://127.0.0.1:1', port: 1 });
@@ -25355,7 +25378,7 @@ test('mcp-client reconnect: daemon down then up — ONE launcher start, the anno
   try {
     rig.announce(a);
     const c = new McpClient({
-      runDir: rig.runDir, timeout: 4000, restartMode: 'background', restartWaitMs: 4000,
+      runDir: rig.runDir, timeout: 4000, restartMode: 'background', kickMarkerDir: tempDir('ccb-kick-'), restartWaitMs: 4000,
       kickLauncher: () => { kicks++; setTimeout(async () => { b = await startFakeDaemon(); rig.announce(b); }, 300); return true; },
     });
     await c.connect();
@@ -25374,7 +25397,7 @@ test('mcp-client reconnect: when the one restart fails the state is reported, an
   let kicks = 0;
   try {
     rig.announce(a);
-    const c = new McpClient({ runDir: rig.runDir, timeout: 4000, restartMode: 'background', restartWaitMs: 300, restartCooldownMs: 60000, kickLauncher: () => { kicks++; return true; } });
+    const c = new McpClient({ runDir: rig.runDir, timeout: 4000, restartMode: 'background', kickMarkerDir: tempDir('ccb-kick-'), restartWaitMs: 300, restartCooldownMs: 60000, kickLauncher: () => { kicks++; return true; } });
     await c.connect();
     await a.close();
     let e1 = null; try { await c.callTool('search_memory', { query: 'q' }); } catch (e) { e1 = e; }
@@ -25418,7 +25441,7 @@ test('mcp-client reconnect: concurrent calls share ONE rediscovery (single fligh
   const b = await startFakeDaemon();
   try {
     rig.announce(a);
-    const c = new McpClient({ runDir: rig.runDir, timeout: 4000, kickLauncher: () => false, restartMode: 'background', restartWaitMs: 0 });
+    const c = new McpClient({ runDir: rig.runDir, timeout: 4000, kickLauncher: () => false, restartMode: 'background', kickMarkerDir: tempDir('ccb-kick-'), restartWaitMs: 0 });
     let events = 0; c.on('rediscovered', () => { events++; });
     await c.connect();
     await a.close();

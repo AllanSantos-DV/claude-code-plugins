@@ -215,7 +215,7 @@ async function ensureMemoryServer(deps = {}) {
     verify = L.kickLauncherVerified();
     return true;
   });
-  const client = new Client({ restartMode: 'background', kickLauncher: kick });
+  const client = new Client({ restartMode: 'background', kickLauncher: kick, kickMarkerDir: deps.dir, now: deps.now ? () => deps.now : undefined });
   try {
     await client._ensureDaemon();
     return 'alive';
@@ -229,8 +229,8 @@ async function ensureMemoryServer(deps = {}) {
   }
 }
 
-const KICK_MARKER_COOLDOWN_MS = 120000;
-const kickMarker = (dir) => path.join(dir || dataDir(), '.runtime', 'memory-server-kick.json');
+const kickMarker = require('../engine/lib/memory-server-kick.js');
+const KICK_MARKER_COOLDOWN_MS = kickMarker.COOLDOWN_MS;
 
 /**
  * Mid-session relaunch of a memory server that died: asks its launcher to start it, once per
@@ -240,12 +240,8 @@ const kickMarker = (dir) => path.join(dir || dataDir(), '.runtime', 'memory-serv
  * @returns {Promise<'alive'|'kicked'|'cooldown'|'error'|'kicked-visible'>}
  */
 async function relaunchDeadMemoryServer(deps = {}) {
-  const file = kickMarker(deps.dir);
   const now = deps.now || Date.now();
-  let last = 0;
-  try { last = JSON.parse(fs.readFileSync(file, 'utf8')).at || 0; } catch (err) {
-    if (err.code !== 'ENOENT') console.error(`[brain-daemon-ensure] kick marker unreadable: ${err.message}`);
-  }
+  const last = kickMarker.lastKickAt(deps.dir);
   const probe = deps.probeOnly || (async () => {
     const Client = deps.McpClient || require('../engine/mcp-client.js');
     const c = new Client({ restartMode: 'background', kickLauncher: () => false });
@@ -253,14 +249,10 @@ async function relaunchDeadMemoryServer(deps = {}) {
     return !!(url && await c._httpHealth(url));
   });
   if (await probe()) {
-    if (last) try { fs.unlinkSync(file); } catch (err) { if (err.code !== 'ENOENT') console.error(`[brain-daemon-ensure] kick marker not removed: ${err.message}`); }
+    if (last) kickMarker.clearKick(deps.dir);
     return 'alive';
   }
-  if (last && now - last < KICK_MARKER_COOLDOWN_MS) return 'cooldown';
-  try {
-    fs.mkdirSync(path.dirname(file), { recursive: true });
-    fs.writeFileSync(file, JSON.stringify({ at: now }));
-  } catch (err) { console.error(`[brain-daemon-ensure] kick marker not written: ${err.message}`); }
+  if (kickMarker.inCooldown(deps.dir, now)) return 'cooldown';
   const outcome = await (deps.ensureMemoryServer || ensureMemoryServer)(deps);
   once.logDetail(`memory server was down at a prompt: launcher ${outcome}`, { base: deps.dir });
   return outcome;
