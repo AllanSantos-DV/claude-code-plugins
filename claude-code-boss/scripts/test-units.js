@@ -37043,7 +37043,8 @@ test('isolation: the whole run left the live brain daemon (lock, pid) untouched'
   assertEq(liveDaemonState(), LIVE_DAEMON_BEFORE, 'a test run stopped, restarted or rewrote the live daemon');
 });
 
-// ─── Runner ──────────────────────────────────────────────────────────────────const valueSummaryRecall = require('./lib/value-summary.js');
+// ─── Runner ──────────────────────────────────────────────────────────────────
+const valueSummaryRecall = require('./lib/value-summary.js');
 test('value-summary.recallSince: injected entries (chars 0 count none) and cited rows inside the window only', () => {
   const rows = [
     { eventName: 'retrieve.injected', ts: 100, payload: { count: 3, chars: 900 } },
