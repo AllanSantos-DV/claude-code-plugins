@@ -7764,7 +7764,7 @@ test('project-id: climb cap (8 levels) and the memory-off refusal marker (nags s
 
 test('project-id defaultGit: memoized per (cwd,args); an expired entry is served stale and refreshed async (daemon event loop is not re-blocked)', async () => {
   const pid = require(path.join(ROOT, 'engine', 'lib', 'project-id.js'));
-  pid._gitCache.clear();
+  pid._resetGitMemo({ skipDisk: true });
   const first = pid._defaultGit(['rev-parse', '--show-toplevel'], ROOT);
   assert(first && pid._gitCache.size === 1, 'first call runs git and stores the answer');
   const key = [...pid._gitCache.keys()][0];
@@ -7786,13 +7786,13 @@ test('project-id defaultGit: memoized per (cwd,args); an expired entry is served
   pid._gitCache.clear();
 });
 
-test('project-id defaultGit: a refresh killed at its timeout (loaded machine) keeps the previous answer; a git that answered "not a repo" replaces it', () => {
+test('project-id defaultGit: a refresh killed at its timeout (loaded machine) keeps the previous answer; a git that answered "not a repo" replaces it', async () => {
   const pid = require(path.join(ROOT, 'engine', 'lib', 'project-id.js'));
   const cp = require('child_process');
   const realExec = cp.execFile;
   const realErr = console.error;
   const logged = [];
-  pid._gitCache.clear();
+  pid._resetGitMemo({ skipDisk: true });
   const key = `C:\\repo\0rev-parse\0--show-toplevel`;
   const expired = () => pid._gitCache.set(key, { value: 'C:/repo', ts: Date.now() - pid.GIT_TTL_MS - 1 });
   let reply;
@@ -7802,16 +7802,51 @@ test('project-id defaultGit: a refresh killed at its timeout (loaded machine) ke
     expired();
     reply = [Object.assign(new Error('Command failed'), { killed: true, signal: 'SIGTERM' }), ''];
     assertEq(pid._defaultGit(['rev-parse', '--show-toplevel'], 'C:\\repo'), 'C:/repo');
+    await new Promise((r) => setImmediate(r));
     assertEq(pid._gitCache.get(key).value, 'C:/repo', 'a killed refresh is no answer: the previous one stays');
     assert(!pid._gitRefreshing.has(key) && logged.some((m) => /refresh did not finish \(SIGTERM\)/.test(m)), 'logged, and the next read may retry');
     reply = [null, 'C:/moved\n'];
     pid._defaultGit(['rev-parse', '--show-toplevel'], 'C:\\repo');
+    await new Promise((r) => setImmediate(r));
     assertEq(pid._gitCache.get(key).value, 'C:/moved', 'the retry stores the new answer');
     expired();
     reply = [Object.assign(new Error('not a git repository'), { code: 128 }), ''];
     pid._defaultGit(['rev-parse', '--show-toplevel'], 'C:\\repo');
+    await new Promise((r) => setImmediate(r));
     assertEq(pid._gitCache.get(key).value, null, 'git answered (exit 128): that answer replaces the old one');
-  } finally { cp.execFile = realExec; console.error = realErr; pid._gitCache.clear(); }
+  } finally { cp.execFile = realExec; console.error = realErr; pid._resetGitMemo({ skipDisk: true }); }
+});
+
+test('project-id defaultGit: the memo survives a restart on disk, so a restarted daemon serves the saved answer at once and refreshes it in the background instead of running git on its main thread', async () => {
+  const pid = require(path.join(ROOT, 'engine', 'lib', 'project-id.js'));
+  const cp = require('child_process');
+  const realExec = cp.execFile;
+  const file = path.join(tempDir('ccb-git-memo-'), 'git-memo.json');
+  const key = `C:\\saved-repo\0remote\0get-url\0origin`;
+  const refreshed = [];
+  try {
+    pid._resetGitMemo({ file });
+    pid._gitCache.set(key, { value: 'git@example.com:acme/saved.git', ts: Date.now() });
+    pid._flushGitMemo();
+    assertEq(JSON.parse(fs.readFileSync(file, 'utf8'))[key], 'git@example.com:acme/saved.git', 'the memo is written to disk');
+
+    pid._resetGitMemo({ file });
+    cp.execFile = (cmd, args, opts, cb) => { refreshed.push(args.join(' ')); setImmediate(() => cb(null, 'git@example.com:acme/saved.git\n')); return { unref() {} }; };
+    assertEq(pid._defaultGit(['remote', 'get-url', 'origin'], 'C:\\saved-repo'), 'git@example.com:acme/saved.git', 'a fresh process answers from the disk copy, without a synchronous git');
+    assertEq(refreshed, [], 'the refresh starts after the reply, not inside it');
+    await new Promise((r) => setImmediate(r));
+    assertEq(refreshed, ['remote get-url origin'], 'and starts one background refresh of the saved answer');
+    await new Promise((r) => setTimeout(r, 20));
+    assertEq(pid._gitRefreshing.size, 0, 'the refresh finished');
+
+    fs.writeFileSync(file, '{not json');
+    pid._resetGitMemo({ file });
+    const realErr = console.error;
+    const logged = [];
+    console.error = (m) => logged.push(String(m));
+    try { assertEq(pid._defaultGit(['remote', 'get-url', 'origin'], ''), null); pid._defaultGit(['x'], 'C:\\nowhere-' + Date.now()); } finally { console.error = realErr; }
+    assert(logged.some((m) => /git memo unreadable/.test(m)), `a corrupt disk copy is reported and ignored: ${logged.join(' | ')}`);
+  } finally { cp.execFile = realExec; pid._resetGitMemo({ skipDisk: true }); }
 });
 
 test('project-id legacy marker: READ-ONLY back-compat + migration nudge (never auto-writes .memory)', () => {

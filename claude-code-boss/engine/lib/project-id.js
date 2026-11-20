@@ -134,9 +134,49 @@ const GIT_CACHE_MAX = 500;
 const _gitCache = new Map();
 const _gitRefreshing = new Set();
 
+// The memo is also kept on disk: with memory only, every daemon restart (install, update, crash) made each
+// project's first hook call run git synchronously again and hold the shared main thread (1.9 s measured on a
+// resumed session). A value read back from disk counts as expired, so it is served and refreshed in the background.
+const GIT_FLUSH_MS = 1000;
+const gitMemo = { loaded: false, flushTimer: null, pathOverride: null };
+
+/** Where the git memo is kept: the data dir's .runtime folder (a test may point it elsewhere). */
+function gitMemoPath() {
+  return gitMemo.pathOverride || path.join(require('./data-dir.js').dataDir(), '.runtime', 'git-memo.json');
+}
+
+/** Read the disk copy once per process; its answers enter the memo as expired. */
+function loadGitMemo() {
+  if (gitMemo.loaded) return;
+  gitMemo.loaded = true;
+  let saved;
+  try {
+    saved = JSON.parse(fsDefault.readFileSync(gitMemoPath(), 'utf8'));
+  } catch (err) {
+    if (err.code !== 'ENOENT') console.error(`[project-id] git memo unreadable (${err.message}) — starting empty`);
+    return;
+  }
+  for (const [key, value] of Object.entries(saved || {})) {
+    if (!_gitCache.has(key) && (typeof value === 'string' || value === null)) _gitCache.set(key, { value, ts: 0 });
+  }
+}
+
+/** Write the whole memo to disk atomically (scheduled after a new or changed answer). */
+function flushGitMemo() {
+  gitMemo.flushTimer = null;
+  try {
+    const file = gitMemoPath();
+    fsDefault.mkdirSync(path.dirname(file), { recursive: true });
+    require('./atomic-write.js').writeJsonAtomic(file, Object.fromEntries([..._gitCache].map(([k, e]) => [k, e.value])));
+  } catch (err) {
+    console.error(`[project-id] git memo not saved: ${err.message}`);
+  }
+}
+
 /** Run git in `cwd`; return trimmed stdout or null (never throws). */
 function defaultGit(args, cwd) {
   if (!cwd || typeof cwd !== 'string') return null;
+  loadGitMemo();
   const key = cwd + '\0' + args.join('\0');
   const hit = _gitCache.get(key);
   if (hit) {
@@ -150,32 +190,52 @@ function defaultGit(args, cwd) {
 
 function storeGit(key, value) {
   if (_gitCache.size >= GIT_CACHE_MAX && !_gitCache.has(key)) _gitCache.clear();
+  const prev = _gitCache.get(key);
   _gitCache.set(key, { value, ts: Date.now() });
+  if ((!prev || prev.value !== value) && !gitMemo.flushTimer) {
+    gitMemo.flushTimer = setTimeout(flushGitMemo, GIT_FLUSH_MS);
+    gitMemo.flushTimer.unref();
+  }
+}
+
+/** Test-only: forget the memo; `file` points the disk copy elsewhere, `skipDisk` keeps it unread. */
+function _resetGitMemo({ file = null, skipDisk = false } = {}) {
+  if (gitMemo.flushTimer) clearTimeout(gitMemo.flushTimer);
+  gitMemo.flushTimer = null;
+  gitMemo.pathOverride = file;
+  gitMemo.loaded = skipDisk;
+  _gitCache.clear();
+  _gitRefreshing.clear();
 }
 
 const GIT_OPTS = { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'], timeout: 5000 };
 const gitOut = (out) => String(out).trim() || null;
 
-/** Background refresh of an expired memo entry (one in flight per key; never holds the process open). */
+/**
+ * Background refresh of an expired memo entry (one in flight per key; never holds the process open). Creating the
+ * process is synchronous on Windows (10-20 ms each), so it starts after the caller's reply, not inside it.
+ */
 function refreshGitAsync(key, args, cwd) {
   if (_gitRefreshing.has(key)) return;
   _gitRefreshing.add(key);
-  try {
-    const child = childProcess.execFile('git', args, { ...GIT_OPTS, cwd, windowsHide: true }, (err, stdout) => {
+  setImmediate(() => {
+    try {
+      const child = childProcess.execFile('git', args, { ...GIT_OPTS, cwd, windowsHide: true }, (err, stdout) => {
+        _gitRefreshing.delete(key);
+        // Killed at its timeout (a loaded machine) is no answer: keep the previous one and let the next read retry.
+        if (err && (err.killed || err.signal)) {
+          console.error(`[project-id] git ${args.join(' ')} refresh did not finish (${err.signal || 'killed'}) — keeping the previous answer`);
+          return;
+        }
+        // A failed refresh is still an answer (not a repo / no remote / git gone), as in runGitOnce.
+        storeGit(key, err ? null : gitOut(stdout));
+      });
+      child.unref();
+    } catch (err) {
       _gitRefreshing.delete(key);
-      // Killed at its timeout (a loaded machine) is no answer: keep the previous one and let the next read retry.
-      if (err && (err.killed || err.signal)) {
-        console.error(`[project-id] git ${args.join(' ')} refresh did not finish (${err.signal || 'killed'}) — keeping the previous answer`);
-        return;
-      }
-      // A failed refresh is still an answer (not a repo / no remote / git gone), as in runGitOnce.
-      storeGit(key, err ? null : gitOut(stdout));
-    });
-    child.unref();
-  } catch (err) {
-    _gitRefreshing.delete(key);
-    console.error(`[project-id] git refresh could not start (${err.message}) — keeping the previous answer`);
-  }
+      console.error(`[project-id] git refresh could not start (${err.message}) — keeping the previous answer`);
+    }
+  });
 }
 
 function runGitOnce(args, cwd) {
@@ -604,5 +664,5 @@ module.exports = {
   // ── Hierarchical ancestor-spine (F2) ──
   resolveProjectChain,
   // test-only: the daemon-side git memo
-  _defaultGit: defaultGit, _gitCache, _gitRefreshing, GIT_TTL_MS,
+  _defaultGit: defaultGit, _gitCache, _gitRefreshing, GIT_TTL_MS, _resetGitMemo, _flushGitMemo: flushGitMemo,
 };
