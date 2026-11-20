@@ -28654,16 +28654,23 @@ function makeFakeDaemon({ pluginRoot, port, pid = process.pid, dataDir, onHealth
   return { server, port, ready };
 }
 
-/** Aguarda uma porta efêmera livre (para o fake e o squat). */
-function waitFreePort() {
-  return new Promise((resolve, reject) => {
-    const s = http.createServer();
-    s.once('error', reject);
-    s.listen(0, '127.0.0.1', () => {
-      const port = s.address().port;
-      s.close(() => resolve(port));
+/**
+ * A free port for a fake, a squatter or a spawned daemon, checked by binding it. Drawn from 20000-29999, outside the
+ * OS dynamic range (49152+ on Windows): a port from listen(0) is also handed to outgoing connections of every process,
+ * and one took it in the second a spawned daemon needs to bind (EADDRINUSE under load).
+ * @returns {Promise<number>}
+ */
+async function waitFreePort() {
+  for (let i = 0; i < 50; i++) {
+    const port = 20000 + Math.floor(Math.random() * 10000);
+    const free = await new Promise((resolve) => {
+      const s = http.createServer();
+      s.once('error', () => resolve(false));
+      s.listen(port, '127.0.0.1', () => s.close(() => resolve(true)));
     });
-  });
+    if (free) return port;
+  }
+  throw new Error('waitFreePort: no free port in 20000-29999 after 50 tries');
 }
 
 test('brain daemon supervisor: stale owner (root removed) → swapDaemon → started', async () => {
