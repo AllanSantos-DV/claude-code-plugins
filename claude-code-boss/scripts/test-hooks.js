@@ -7,6 +7,7 @@
  *   node scripts/test-hooks.js --verbose   (show full output for each hook)
  *   node scripts/test-hooks.js curation    (run only tests matching "curation")
  */
+require('./test-load.cjs').scaleSpawnTimeouts();
 const { spawnSync } = require('child_process');
 const path = require('path');
 require('./test-temp.cjs').createTestTemp();

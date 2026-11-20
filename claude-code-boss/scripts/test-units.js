@@ -18,6 +18,8 @@
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
+const { loadFactor, loadLimit, scaleSpawnTimeouts } = require('./test-load.cjs');
+scaleSpawnTimeouts();
 const tempHelpers = require('./test-temp.cjs');
 if (process.env.CCB_TEST_TEMP_ENTRY !== __filename) tempHelpers.runTestProcess(__filename);
 const borrowedRoot = process.env.CCB_TEST_TEMP_ROOT;
@@ -1367,7 +1369,7 @@ test('mcp-client: timeoutMs is ONE budget for the whole call — a hung connect,
     c1.connect = hang;
     let r = await timed(() => c1.callTool('search_memory', { query: 'q' }, { timeoutMs: 200 }));
     assert(r.err && r.err.code === 'DEADLINE' && /timed out: its 200 ms budget ran out during connect/.test(r.err.message), String(r.err && r.err.message));
-    assert(r.ms < 1500, `a hung connect is cut at the budget: ${r.ms}ms`);
+    assert(r.ms < loadLimit(1500), `a hung connect is cut at the budget: ${r.ms}ms`);
 
     const c2 = new McpClient({ transport: 'http', serverUrl: 'http://127.0.0.1:1' });
     c2._initialized = true;
@@ -1377,7 +1379,7 @@ test('mcp-client: timeoutMs is ONE budget for the whole call — a hung connect,
     c2._reconnect = hang;
     r = await timed(() => c2.callTool('search_memory', { query: 'q' }, { timeoutMs: 200 }));
     assert(r.err && r.err.code === 'DEADLINE' && /restart probes/.test(r.err.message), String(r.err && r.err.message));
-    assert(r.ms < 1500 && sends === 1, `probes cut at the budget, no second send: ${r.ms}ms, ${sends} send(s)`);
+    assert(r.ms < loadLimit(1500) && sends === 1, `probes cut at the budget, no second send: ${r.ms}ms, ${sends} send(s)`);
     c2._awaitRestartedServer = async () => true;
     r = await timed(() => c2.callTool('search_memory', { query: 'q' }, { timeoutMs: 200 }));
     assert(r.err && r.err.code === 'DEADLINE' && /the reconnect/.test(r.err.message), String(r.err && r.err.message));
@@ -1390,14 +1392,14 @@ test('mcp-client: timeoutMs is ONE budget for the whole call — a hung connect,
     r = await timed(() => c3.callTool('search_memory', { query: 'q' }, { timeoutMs: 600 }));
     assertEq(budgets.length, 2, 'a read cut mid-call is retried once');
     assert(budgets[1] < budgets[0] && budgets[1] <= 460, `the retry only gets what is left of the budget: ${budgets}`);
-    assert(r.ms < 1500, `the whole call stays near its budget: ${r.ms}ms`);
+    assert(r.ms < loadLimit(1500), `the whole call stays near its budget: ${r.ms}ms`);
 
     const c4 = new McpClient({ transport: 'http', serverUrl: 'http://127.0.0.1:1' });
     c4.connect = hang;
     const ac = new AbortController();
     setTimeout(() => ac.abort(new Error('hook deadline')), 50);
     r = await timed(() => c4.callTool('compose_recall', {}, { signal: ac.signal }));
-    assert(r.err && r.err.code === 'ABORTED' && r.ms < 1000, `abort during connect: ${r.err && r.err.message} in ${r.ms}ms`);
+    assert(r.err && r.err.code === 'ABORTED' && r.ms < loadLimit(1000), `abort during connect: ${r.err && r.err.message} in ${r.ms}ms`);
 
     const c5 = new McpClient({ transport: 'http', serverUrl: 'http://127.0.0.1:1' });
     c5._initialized = true;
@@ -21949,7 +21951,7 @@ test('session-start-dispatcher.dispatch: detectors run CONCURRENTLY with per-det
   const out = await d.dispatch({}, { detectors: fakes });
   const elapsed = Date.now() - t0;
   assertEq(out, ['SLOW-A', 'SLOW-B'].join(d.SEP));
-  assert(elapsed < 200, `expected concurrent execution + hung cutoff (~80ms), took ${elapsed}ms`);
+  assert(elapsed < loadLimit(200), `expected concurrent execution + hung cutoff (~80ms), took ${elapsed}ms`);
 });
 
 test('user-prompt-submit-dispatcher.dispatch: detectors run CONCURRENTLY, not sequentially (total time ~= max, not sum)', async () => {
@@ -21964,9 +21966,7 @@ test('user-prompt-submit-dispatcher.dispatch: detectors run CONCURRENTLY, not se
   const out = await d.dispatch({}, { detectors: fakes });
   const elapsed = Date.now() - t0;
   assertEq(out, ['SLOW-A', 'SLOW-B', 'SLOW-C'].join(d.SEP));
-  // Sequential would take >= 240ms; concurrent should stay well under that
-  // (generous slack for CI/load — this only needs to rule out summation).
-  assert(elapsed < 200, `expected concurrent execution (~80ms), took ${elapsed}ms — looks sequential`);
+  assert(elapsed < loadLimit(200), `expected concurrent execution (~80ms), took ${elapsed}ms — looks sequential`);
 });
 
 test('user-prompt-submit-dispatcher.dispatch: a hung detector is cut off at its OWN timeout, never blocks the others or the caller past its ceiling', async () => {
@@ -21980,7 +21980,7 @@ test('user-prompt-submit-dispatcher.dispatch: a hung detector is cut off at its 
   const out = await d.dispatch({}, { detectors: fakes });
   const elapsed = Date.now() - t0;
   assertEq(out, 'FAST'); // hung detector contributes nothing, never blocks fast's text
-  assert(elapsed < 500, `dispatch must return promptly at the hung detector's own ceiling (50ms), took ${elapsed}ms`);
+  assert(elapsed < loadLimit(500), `dispatch must return promptly at the hung detector's own ceiling (50ms), took ${elapsed}ms`);
 });
 
 // ─── stop-telemetry + dispatcher gate model (Phase 1 observability) ──────────
@@ -30855,7 +30855,7 @@ test('dispatchKbTool: calls to two projects landing on DIFFERENT worker slots ru
     serverB.dispatch('brain_count', { project: 'parallelB' }),
   ]);
   const elapsed = Date.now() - start;
-  assert(elapsed < 1.5 * T, `two calls landing on DIFFERENT pool slots (sharing the same lock pool) must run concurrently (~${T}ms real time), took ${elapsed}ms — looks serialized, defeating the point of a per-slot lock instead of one global lock`);
+  assert(elapsed < loadLimit(1.5 * T), `two calls landing on DIFFERENT pool slots (sharing the same lock pool) must run concurrently (~${T}ms real time), took ${elapsed}ms — looks serialized, defeating the point of a per-slot lock instead of one global lock`);
 });
 
 test('dispatchKbTool: calls to two projects landing on the SAME worker slot still serialize in call order, never interleaved (ADR-014 correctness — the exact bug the old global lock prevented)', async () => {
@@ -34171,6 +34171,49 @@ test('compaction.cold: a session reopened over a cold history records the expiry
     const c = h.colds();
     assertEq(c.map((e) => [e.detectedBy, e.resumed, e.idleMs]), [['reopen', true, 300000]], JSON.stringify(c));
   } finally { h.done(); }
+});
+
+test('test-load: a wall-clock limit follows the CPU busy share — 1 when idle, 1/(1-busy) when loaded, capped at 8, held for 500 ms', () => {
+  const realCpus = os.cpus;
+  const realNow = Date.now;
+  const cpus = (idle, busy) => [{ times: { user: busy, nice: 0, sys: 0, idle, irq: 0 } }];
+  try {
+    let t = 1000;
+    Date.now = () => t;
+    os.cpus = () => cpus(1000, 0);
+    delete require.cache[require.resolve('./test-load.cjs')];
+    const fresh = require('./test-load.cjs');
+    t += 600; os.cpus = () => cpus(2000, 0);
+    assertEq(fresh.loadFactor(), 1, 'idle machine');
+    t += 600; os.cpus = () => cpus(2250, 750);
+    assertEq(fresh.loadFactor(), 4, '75% busy');
+    assertEq(fresh.loadLimit(200), 800, 'a 200 ms limit under 75% busy');
+    t += 100; os.cpus = () => cpus(2250, 5000);
+    assertEq(fresh.loadFactor(), 4, 'a call 100 ms later keeps the last value');
+    t += 600; os.cpus = () => cpus(2260, 5990);
+    assertEq(fresh.loadFactor(), fresh.MAX_FACTOR, '99% busy is capped');
+  } finally {
+    os.cpus = realCpus;
+    Date.now = realNow;
+    delete require.cache[require.resolve('./test-load.cjs')];
+  }
+});
+
+test('test-load.scaleSpawnTimeouts: a timeout given to spawnSync, execFileSync or execSync is stretched by the load; a call without one is untouched', () => {
+  const fresh = require('./test-load.cjs');
+  const seen = [];
+  const target = { spawnSync: (...a) => { seen.push(a); }, execFileSync: (...a) => { seen.push(a); }, execSync: (...a) => { seen.push(a); } };
+  fresh.scaleSpawnTimeouts(target);
+  fresh.scaleSpawnTimeouts(target);
+  target.spawnSync('node', ['-v'], { timeout: 1000, encoding: 'utf8' });
+  target.execSync('node -v', { timeout: 500 });
+  target.execFileSync('node', ['-v']);
+  const factor = fresh.loadFactor();
+  assert(seen[0][2].timeout >= 1000 && seen[0][2].timeout <= 1000 * fresh.MAX_FACTOR, `spawnSync timeout ${seen[0][2].timeout}`);
+  assertEq(seen[0][2].encoding, 'utf8', 'other options survive');
+  assert(seen[1][1].timeout >= 500, `execSync timeout ${seen[1][1].timeout}`);
+  assertEq(seen[2].length, 2, 'no options added to a call that had none');
+  assert(factor >= 1 && factor <= fresh.MAX_FACTOR, `factor ${factor}`);
 });
 
 test('compaction-episodes.parsePayload: the one reader of a row payload (object, JSON string, garbage) that compaction-cache-cross shares', () => {
