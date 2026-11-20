@@ -34173,6 +34173,14 @@ test('compaction.cold: a session reopened over a cold history records the expiry
   } finally { h.done(); }
 });
 
+test('dashboard/index.html: at phone width the tab strip wraps, so the last tab and the language switch stay visible', () => {
+  const html = fs.readFileSync(path.join(__dirname, '..', 'dashboard', 'index.html'), 'utf8');
+  const phone = /@media\(max-width:760px\)\{([\s\S]*?)\n\}/.exec(html);
+  assert(phone, 'phone media block not found');
+  assert(/#tabs\{[^}]*flex-wrap:wrap[^}]*overflow-x:visible/.test(phone[1]), 'the strip must wrap instead of scrolling');
+  assert(/#tabs #lang-toggle\{margin-left:auto\}/.test(phone[1]), 'the switches sit on their own row, to the right');
+});
+
 test('test-load: a wall-clock limit follows the CPU busy share — 1 when idle, 1/(1-busy) when loaded, capped at 8, held for 500 ms', () => {
   const realCpus = os.cpus;
   const realNow = Date.now;
