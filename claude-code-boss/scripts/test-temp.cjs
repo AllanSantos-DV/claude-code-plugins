@@ -1,7 +1,8 @@
 'use strict';
 
-// A suite owns one private TMP tree. Children inherit it, so all 366 existing
-// mkdtemp call sites stay isolated without sharing fixture names.
+// A suite owns one private TMP tree: a numbered slot inside ONE stable per-version folder under the
+// user's local cache, claimed by a pid lock and emptied when the run ends. A second run takes the same
+// slot again, so repeated runs add no new files. Children inherit the slot as TMP.
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
@@ -10,6 +11,69 @@ const { syncBuiltinESMExports } = require('node:module');
 const owners = new Set();
 const realSpawn = cp.spawn;
 let tracking = false;
+
+const VERSION_DIR = /^\d+\.\d+\.\d+/;
+
+/**
+ * The stable folder every test slot lives in: `<local cache>/claude-code-boss/test-cache/<version>/test-run`.
+ * The segment is not `cache`: the plugin reads `<plugins>/cache/<marketplace>/<plugin>/<version>` out of
+ * the paths it runs from, and every test path under a folder of that name would parse as a marketplace.
+ * @returns {string}
+ */
+function cacheDir() {
+  const local = process.env.LOCALAPPDATA ||
+    (process.platform === 'win32' ? null : (process.env.XDG_CACHE_HOME || path.join(os.homedir(), '.cache')));
+  if (!local) throw new Error('[test-temp] LOCALAPPDATA is not set: no stable folder for the test run');
+  return path.join(local, 'claude-code-boss', 'test-cache', require('../package.json').version, 'test-run');
+}
+
+/**
+ * Remove a path, waiting out the few hundred ms a Windows handle (an exiting process's cwd, the AV)
+ * can keep it busy; fails loud after 5 s.
+ * @param {string} target
+ */
+function removeRetry(target) {
+  const deadline = Date.now() + 5000;
+  for (;;) {
+    try { fs.rmSync(target, { recursive: true, force: true, maxRetries: 2, retryDelay: 25 }); return; } catch (err) {
+      if (!['EPERM', 'EBUSY', 'ENOTEMPTY'].includes(err.code) || Date.now() >= deadline) throw err;
+      Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 100);
+    }
+  }
+}
+
+/**
+ * Take the lowest slot whose pid lock is free (or left by a dead process), emptied.
+ * @param {string} base  the stable folder from `cacheDir()`
+ * @returns {string} the slot path
+ */
+function claimSlot(base) {
+  fs.mkdirSync(base, { recursive: true });
+  const versionsDir = path.dirname(path.dirname(base));
+  for (const name of fs.readdirSync(versionsDir)) {
+    if (!VERSION_DIR.test(name) || path.join(versionsDir, name, 'test-run') === base) continue;
+    removeRetry(path.join(versionsDir, name, 'test-run'));
+    const old = path.join(versionsDir, name);
+    if (fs.readdirSync(old).length === 0) fs.rmdirSync(old);
+  }
+  for (let n = 1; ; n++) {
+    const slot = path.join(base, 'slot-' + n);
+    const lock = slot + '.lock';
+    try { fs.writeFileSync(lock, String(process.pid), { flag: 'wx' }); } catch (err) {
+      if (err.code !== 'EEXIST') throw err;
+      const owner = Number(fs.readFileSync(lock, 'utf8')) || 0;
+      if (owner && !processGone(owner)) continue;
+      fs.rmSync(lock, { force: true });
+      try { fs.writeFileSync(lock, String(process.pid), { flag: 'wx' }); } catch (again) {
+        if (again.code === 'EEXIST') continue;
+        throw again;
+      }
+    }
+    fs.mkdirSync(slot, { recursive: true });
+    for (const name of fs.readdirSync(slot)) removeRetry(path.join(slot, name));
+    return slot;
+  }
+}
 
 function trackDaemonSpawns() {
   if (tracking) return;
@@ -51,9 +115,9 @@ function processGone(pid) {
 
 function createTestTemp({ borrowedRoot } = {}) {
   const initialCwd = process.cwd();
-  const base = borrowedRoot ? path.dirname(path.resolve(borrowedRoot)) : path.resolve(os.tmpdir());
-  const root = borrowedRoot ? path.resolve(borrowedRoot) : fs.mkdtempSync(path.join(base, 'ccb-test-run-' + process.pid + '-'));
-  if (borrowedRoot && (!/^ccb-test-run-\d+-[a-zA-Z0-9]+$/.test(path.basename(root)) || fs.lstatSync(root).isSymbolicLink())) {
+  const base = cacheDir();
+  const root = borrowedRoot ? path.resolve(borrowedRoot) : claimSlot(base);
+  if (borrowedRoot && (path.dirname(root) !== base || !/^slot-\d+$/.test(path.basename(root)) || fs.lstatSync(root).isSymbolicLink())) {
     throw new Error('invalid borrowed test temp root');
   }
   const saved = Object.fromEntries(['TMP', 'TEMP', 'TMPDIR'].map(k => [k, process.env[k]]));
@@ -72,16 +136,7 @@ function createTestTemp({ borrowedRoot } = {}) {
   trackDaemonSpawns();
   function remove(target) {
     if (!inside(target)) throw new Error('test cleanup escaped its owned tree');
-    // Windows refuses to remove a folder that is still some exiting process's cwd (or held by the
-    // AV) with EPERM/EBUSY; that lasts a few hundred ms. rmSync's own maxRetries does not cover it
-    // (Node 24 gives up at once on the root's EPERM), so retry here for up to 5 s, then fail loud.
-    const deadline = Date.now() + 5000;
-    for (;;) {
-      try { fs.rmSync(target, { recursive: true, force: true, maxRetries: 2, retryDelay: 25 }); return; } catch (err) {
-        if (!['EPERM', 'EBUSY', 'ENOTEMPTY'].includes(err.code) || Date.now() >= deadline) throw err;
-        Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 100);
-      }
-    }
+    removeRetry(target);
   }
   function stopOwnedDaemons(target) {
     for (const entry of daemons) {
@@ -115,16 +170,15 @@ function createTestTemp({ borrowedRoot } = {}) {
   }
   function cleanup() {
     if (closed) return;
-    if (path.dirname(root) !== base || (!borrowedRoot && !path.basename(root).startsWith('ccb-test-run-' + process.pid + '-'))) {
-      throw new Error('test cleanup root no longer belongs to this process');
-    }
+    if (path.dirname(root) !== base) throw new Error('test cleanup root no longer belongs to this process');
     try {
       stopOwnedDaemons(root);
       // The parent removes a borrowed tree only AFTER the child exits; Windows
       // then releases even a deliberately reloaded SQLite module's handles.
       if (!borrowedRoot) {
         if (inside(process.cwd())) process.chdir(initialCwd);
-        remove(root);
+        for (const name of fs.readdirSync(root)) remove(path.join(root, name));
+        fs.rmSync(root + '.lock', { force: true });
       }
     } catch (err) {
       console.error('[test-temp] cleanup failed (' + (err.code || err.message) + '): ' + root + '; ' + pending.size + ' deferred fixture(s); ' + (err.syscall || '') + ' ' + (err.path || ''));
@@ -141,7 +195,20 @@ function createTestTemp({ borrowedRoot } = {}) {
   process.once('exit', cleanup);
   process.once('SIGINT', () => { if (!process.listenerCount('SIGINT')) process.exit(130); });
   process.once('SIGTERM', () => { if (!process.listenerCount('SIGTERM')) process.exit(143); });
-  return { root, checkpoint, cleanupSince, cleanup };
+  const labelCount = new Map();
+  /**
+   * A fixture folder named by label and its order in the run, so the same run asks for the same names.
+   * @param {string} label
+   * @returns {string}
+   */
+  function dir(label) {
+    const n = (labelCount.get(label) || 0) + 1;
+    labelCount.set(label, n);
+    const target = path.join(root, label + n);
+    fs.mkdirSync(target);
+    return target;
+  }
+  return { root, checkpoint, cleanupSince, cleanup, dir };
 }
 
 function runTestProcess(file) {

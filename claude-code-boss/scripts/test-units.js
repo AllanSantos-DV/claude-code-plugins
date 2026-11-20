@@ -26,6 +26,7 @@ const borrowedRoot = process.env.CCB_TEST_TEMP_ROOT;
 delete process.env.CCB_TEST_TEMP_ENTRY;
 delete process.env.CCB_TEST_TEMP_ROOT;
 const TEST_TEMP = tempHelpers.createTestTemp({ borrowedRoot });
+const tempDir = (label) => TEST_TEMP.dir(label);
 
 const SCRIPTS = __dirname;
 const ROOT = path.resolve(SCRIPTS, '..');
@@ -55,7 +56,7 @@ process.env.CLAUDE_PLUGIN_ROOT = ROOT;
 
 
 // Isolate runtime artifacts.
-process.env.CLAUDE_PLUGIN_DATA = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-units-'));
+process.env.CLAUDE_PLUGIN_DATA = tempDir('ccb-units-');
 // v2.15.0: the STRICT resolver throws (blocks) when a cwd has no declared/legacy/git
 // scope. Many tests root work at CLAUDE_PLUGIN_DATA (a bare temp dir) and exercise
 // queue/offer/metrics behavior — NOT scope resolution — so seed a real declared
@@ -74,7 +75,7 @@ fs.writeFileSync(
 // into — and read back from — the developer's real ~/.claude/claude-code-boss,
 // hijacking a live session's backend choice. Set BOTH vars so os.homedir()
 // resolves here on every platform (Windows prefers USERPROFILE, POSIX HOME).
-process.env.USERPROFILE = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-units-home-'));
+process.env.USERPROFILE = tempDir('ccb-units-home-');
 process.env.HOME = process.env.USERPROFILE;
 // The curation migration MOVES a project's in-repo files: under this flag it refuses any project
 // outside the temp dir — a test walking up from a temp cwd reached the real user folder (and a
@@ -166,7 +167,7 @@ function assertEq(actual, expected, msg) {
 function withTempHome(fn) {
   const savedHome = process.env.HOME;
   const savedProfile = process.env.USERPROFILE;
-  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-home-'));
+  const home = tempDir('ccb-home-');
   process.env.HOME = home;
   process.env.USERPROFILE = home;
   try {
@@ -414,7 +415,7 @@ function withHooksConfigFile(obj, fn) {
   const savedData = process.env.CLAUDE_PLUGIN_DATA;
   const savedHome = process.env.HOME;
   const savedProfile = process.env.USERPROFILE;
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-hcfg-'));
+  const dir = tempDir('ccb-hcfg-');
   fs.mkdirSync(path.join(dir, 'config'), { recursive: true });
   fs.writeFileSync(path.join(dir, 'config', 'hooks-config.json'), JSON.stringify(obj));
   process.env.CLAUDE_PLUGIN_ROOT = dir;
@@ -525,7 +526,7 @@ test('hooks-config: GLOBAL user-config overrides shipped profile (update-safe)',
   withTempHome((home) => {
     const savedRoot = process.env.CLAUDE_PLUGIN_ROOT;
     const savedData = process.env.CLAUDE_PLUGIN_DATA;
-    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-hcfg-ovr-'));
+    const dir = tempDir('ccb-hcfg-ovr-');
     fs.mkdirSync(path.join(dir, 'config'), { recursive: true });
     // shipped says standard...
     fs.writeFileSync(path.join(dir, 'config', 'hooks-config.json'), JSON.stringify({ profile: 'standard' }));
@@ -554,7 +555,7 @@ test('hooks-config: saveProfile writes the GLOBAL override; invalid name throws'
   withTempHome((home) => {
     const savedRoot = process.env.CLAUDE_PLUGIN_ROOT;
     const savedData = process.env.CLAUDE_PLUGIN_DATA;
-    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-hcfg-save-'));
+    const dir = tempDir('ccb-hcfg-save-');
     fs.mkdirSync(path.join(dir, 'config'), { recursive: true });
     fs.writeFileSync(path.join(dir, 'config', 'hooks-config.json'), JSON.stringify({ profile: 'dev' }));
     process.env.CLAUDE_PLUGIN_ROOT = dir;
@@ -669,7 +670,7 @@ test('brain-backend: keyword path applies minScore threshold', async () => {
   delete require.cache[require.resolve('../engine/brain-graph.js')];
   delete require.cache[require.resolve('../engine/brain-embedder.js')];
   delete require.cache[require.resolve('../engine/brain-backend.js')];
-  process.env.CLAUDE_PLUGIN_DATA = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-bb-'));
+  process.env.CLAUDE_PLUGIN_DATA = tempDir('ccb-bb-');
 
   const backend = require('../engine/brain-backend.js');
   try {
@@ -734,7 +735,7 @@ test('brain-backend: keyword path applies minScore threshold', async () => {
 // concurrently — two in-process tests mutating the singleton + process.env race.
 // Run each brain scenario in an isolated child process (synchronous → no race).
 function runBrainScenario(script) {
-  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-brain-'));
+  const tmp = tempDir('ccb-brain-');
   const env = { ...process.env, CLAUDE_PLUGIN_DATA: tmp, CLAUDE_PLUGIN_ROOT: ROOT };
   const body = `const backend=require(${JSON.stringify(path.join(ENGINE, 'brain-backend.js'))});`
     + `const assert=(c,m)=>{if(!c){console.error('FAIL: '+m);process.exit(1)}};`
@@ -869,7 +870,7 @@ test('brain-server/index.js: DATA_DIR follows the pointer verdict, not just publ
   // Exercised here via the SAME publishAndFollow helper index.js now calls
   // (spawning the real index.js as a child is unnecessary — this is a pure
   // function of data-dir.js, and the daemon test below proves it wired in).
-  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-idx-ddir-'));
+  const home = tempDir('ccb-idx-ddir-');
   const dataBase = path.join(home, '.claude', 'plugins', 'data');
   const live = path.join(dataBase, 'claude-code-boss-inline');
   const stray = path.join(dataBase, 'claude-code-boss-mkt');
@@ -1131,7 +1132,7 @@ test('graph client auth: features.auth false sends no Authorization and never re
 
 test('graph client auth: a daemon found through the local registry is local — no features probe, no vault', async () => {
   const daemon = await startAuthDaemon({ auth: true });
-  const runDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-graph-run-'));
+  const runDir = tempDir('ccb-graph-run-');
   fs.writeFileSync(path.join(runDir, 'daemon.json'), JSON.stringify({ url: daemon.url }));
   let reads = 0;
   try {
@@ -1143,7 +1144,7 @@ test('graph client auth: a daemon found through the local registry is local — 
 test('scoped-rules-client auth: an explicit serverUrl is asked with the vault Bearer, and the local registry is never read', async () => {
   const client = require('./lib/scoped-rules-client.js');
   const daemon = await startAuthDaemon({ auth: true });
-  const runDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-sr-run-'));
+  const runDir = tempDir('ccb-sr-run-');
   try {
     client._resetDown();
     const r = await client.lookupScopedRules({ idPrefix: 'rule:' }, { serverUrl: daemon.url, runDir, loadToken: () => 'vault-token' });
@@ -1207,7 +1208,7 @@ test('mcp-client remote serverUrl: never reads the local registry nor starts or 
 
 test('mcp token vault: the token reaches the OS tool on stdin, never in argv, and round-trips', () => {
   const vault = require('../engine/lib/mcp-token-vault.js');
-  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-vault-'));
+  const home = tempDir('ccb-vault-');
   try {
     const calls = [];
     const exec = (cmd, args, input) => { calls.push({ cmd, args, input }); return /Unprotect/.test(args.join(' ')) ? 'sekret' : 'BLOB'; };
@@ -1227,7 +1228,7 @@ test('mcp token vault: the token reaches the OS tool on stdin, never in argv, an
 test('mcp token vault: a real Windows DPAPI round trip keeps no plain text on disk', () => {
   if (process.platform !== 'win32') return;
   const vault = require('../engine/lib/mcp-token-vault.js');
-  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-vault-real-'));
+  const home = tempDir('ccb-vault-real-');
   try {
     vault.saveToken(home, 'mcp-memory-token', 'plain-secret-123');
     assert(!fs.readFileSync(path.join(home, 'secrets', 'mcp-memory-token.dpapi'), 'utf8').includes('plain-secret-123'), 'blob is ciphertext');
@@ -1240,7 +1241,7 @@ test('mcp token vault: a real Windows DPAPI round trip keeps no plain text on di
 test('mcp-token CLI: set reads the token from stdin, status never prints it, delete removes it', () => {
   if (process.platform !== 'win32') return;
   const { run } = require('./mcp-token.js');
-  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-token-cli-'));
+  const home = tempDir('ccb-token-cli-');
   try {
     assertEq(run('status', { home }), 'no token stored');
     assert(/dpapi/.test(run('set', { home, readStdin: () => 'cli-secret-9\n' })));
@@ -1517,7 +1518,7 @@ test('mcp-auto-update: serverUrl remoto exige opt-in e nunca cai no restart loca
 
 test('mcp-auto-update: daemon autodiscovered remoto e identidade MCP errada são recusados', async () => {
   const updater = require('./lib/mcp-memory-auto-update.js');
-  const runDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-update-remote-registry-'));
+  const runDir = tempDir('ccb-update-remote-registry-');
   try {
     fs.writeFileSync(path.join(runDir, 'daemon.json'), JSON.stringify({ url: 'https://memory.example.com', port: 443 }));
     const skipped = await updater.runAutoUpdate({
@@ -1530,7 +1531,7 @@ test('mcp-auto-update: daemon autodiscovered remoto e identidade MCP errada são
     fs.rmSync(runDir, { recursive: true, force: true });
   }
 
-  const envRunDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-update-remote-env-registry-'));
+  const envRunDir = tempDir('ccb-update-remote-env-registry-');
   const savedRunDir = process.env.MCP_RUN_DIR;
   try {
     fs.writeFileSync(path.join(envRunDir, 'daemon.json'), JSON.stringify({ url: 'https://team-memory.example.com', port: 443 }));
@@ -1736,7 +1737,7 @@ test('mcp-daemon-restart: valida o processo, encerra e relança PELO INICIALIZAD
     restart.extractJarPath('"C:\\Program Files\\Java\\java.exe" -Xmx1g -jar "C:\\MCP Server\\mcp-memory-server-2.44.2.jar" --daemon'),
     'C:\\MCP Server\\mcp-memory-server-2.44.2.jar',
   );
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-update-restart-'));
+  const dir = tempDir('ccb-update-restart-');
   try {
     fs.writeFileSync(path.join(dir, 'daemon.json'), JSON.stringify({ pid: 1234, port: 9, url: 'http://127.0.0.1:9' }));
     const oldJar = path.join(dir, 'mcp-memory-server-2.44.2.jar'); const newJar = path.join(dir, 'mcp-memory-server-2.44.3.jar');
@@ -1766,7 +1767,7 @@ test('mcp-daemon-restart: valida o processo, encerra e relança PELO INICIALIZAD
 
 test('mcp-daemon-restart: promove somente JAR com SHA/version da release para o nome publicado', async () => {
   const restart = require('./lib/mcp-daemon-restart.js');
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-update-promote-'));
+  const dir = tempDir('ccb-update-promote-');
   try {
     const current = path.join(dir, 'mcp-memory-server-2.44.2.jar');
     const temp = path.join(dir, 'mcp-memory-server-update.jar.tmp');
@@ -1792,7 +1793,7 @@ test('mcp-daemon-restart: promove somente JAR com SHA/version da release para o 
 
 test('mcp-daemon-restart: falha de preparação ocorre antes de encerrar o daemon', async () => {
   const restart = require('./lib/mcp-daemon-restart.js');
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-update-prekill-'));
+  const dir = tempDir('ccb-update-prekill-');
   let killed = false;
   try {
     fs.writeFileSync(path.join(dir, 'daemon.json'), JSON.stringify({ pid: 1234, port: 9, url: 'http://127.0.0.1:9' }));
@@ -1839,7 +1840,7 @@ test('mcp-auto-update: health 503 ou versão com prefixo v não geram falso resu
 
 test('process-lock: ownership impede concorrência e release alheio', () => {
   const lock = require('../engine/lib/process-lock.js');
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-update-lock-'));
+  const dir = tempDir('ccb-update-lock-');
   const file = path.join(dir, 'update.lock');
   try {
     const first = lock.acquireFileLock(file);
@@ -1856,7 +1857,7 @@ test('process-lock: ownership impede concorrência e release alheio', () => {
 
 test('process-lock: reclaim sidecar serializa a recuperação de lock stale', () => {
   const lock = require('../engine/lib/process-lock.js');
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-update-reclaim-'));
+  const dir = tempDir('ccb-update-reclaim-');
   const file = path.join(dir, 'update.lock');
   try {
     fs.writeFileSync(file, JSON.stringify({ pid: 99999999, token: 'dead', createdAt: 1 }));
@@ -1892,7 +1893,7 @@ test('mcp-auto-update E2E: registry troca porta/versão e SessionStarts concorre
   const updater = require('./lib/mcp-memory-auto-update.js');
   const locks = require('../engine/lib/process-lock.js');
   const McpClient = require('../engine/mcp-client.js');
-  const runDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-update-run-'));
+  const runDir = tempDir('ccb-update-run-');
   const statePath = path.join(runDir, 'state.json');
   const lockPath = path.join(runDir, 'update.lock');
   const next = await startFakeDaemon({ version: '2.44.3', serverName: 'mcp-memory-server' });
@@ -2660,7 +2661,7 @@ const mcpHealth = require('./lib/mcp-health.js');
 
 test('mcp-health.probeHealth: backend mcp-memory conectado via daemon real (fake) e desconectado quando porta fechada', async () => {
   const http2 = require('http');
-  const runDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-mcphealth-rundir-'));
+  const runDir = tempDir('ccb-mcphealth-rundir-');
   const server = http2.createServer((req, res) => {
     if (req.method === 'GET' && req.url === '/health') {
       res.writeHead(200, { 'Content-Type': 'application/json' });
@@ -2703,7 +2704,7 @@ test('mcp-health.probeHealth: backend mcp-memory conectado via daemon real (fake
 
 test('mcp-health.probeHealth: mcp-memory restarted on a NEW port mid-probe → re-reads daemon.json and reports connected (BRAIN-STATUS false alarm)', async () => {
   const http2 = require('http');
-  const runDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-mcphealth-move-'));
+  const runDir = tempDir('ccb-mcphealth-move-');
   const server = http2.createServer((req, res) => { res.writeHead(200, { 'Content-Type': 'application/json' }); res.end(JSON.stringify({ status: 'healthy' })); });
   await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
   const dead = await new Promise((resolve) => { const t = http2.createServer(); t.listen(0, '127.0.0.1', () => { const p = t.address().port; t.close(() => resolve(p)); }); });
@@ -2725,7 +2726,7 @@ test('mcp-health.probeHealth: mcp-memory restarted on a NEW port mid-probe → r
 for (const [body, expected] of [[{ ok: true }, true], [{ status: 'healthy', version: '2.44.3' }, true], [{ version: '2.44.3' }, false], [{ ok: false, status: 'degraded' }, false]]) {
   test(`mcp-health.probeHealth: /health ${JSON.stringify(body)} → connected:${expected}`, async () => {
     const http2 = require('http');
-    const runDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-mcphealth-fmt-'));
+    const runDir = tempDir('ccb-mcphealth-fmt-');
     const server = http2.createServer((req, res) => {
       res.writeHead(200, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify(body));
@@ -2752,7 +2753,7 @@ const DEGRADED_RERANK = { status: 'degraded', version: '3.0.2', checks: { databa
 /** A fake mcp-memory answering `body` (a raw string is sent as is) on a free port; returns { config, close }. */
 async function fakeMcpMemory(body) {
   const http2 = require('http');
-  const runDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-mcphealth-state-'));
+  const runDir = tempDir('ccb-mcphealth-state-');
   const server = http2.createServer((req, res) => { res.writeHead(200, { 'Content-Type': 'application/json' }); res.end(typeof body === 'string' ? body : JSON.stringify(body)); });
   await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
   fs.writeFileSync(path.join(runDir, 'daemon.json'), JSON.stringify({ url: `http://127.0.0.1:${server.address().port}` }));
@@ -2787,7 +2788,7 @@ for (const [name, body, state, connected, reason] of [
 
 test('mcp-health.probeHealth: closed port → unreachable', async () => {
   const dead = await new Promise((resolve) => { const t = require('http').createServer(); t.listen(0, '127.0.0.1', () => { const p = t.address().port; t.close(() => resolve(p)); }); });
-  const runDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-mcphealth-dead-'));
+  const runDir = tempDir('ccb-mcphealth-dead-');
   try {
     fs.writeFileSync(path.join(runDir, 'daemon.json'), JSON.stringify({ url: `http://127.0.0.1:${dead}` }));
     const r = await mcpHealth.probeHealth({ backend: { type: 'mcp-memory', mcpMemory: { transport: 'http', runDir } } });
@@ -2804,7 +2805,7 @@ test('mcp-health.classifyHealth: a degraded answer without the essential checks 
 });
 
 test('brain-status.run: degraded is said once per session as degraded with the reason, again only when the state or reason changes, and anew after the record is reset', async () => {
-  const base = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-bstatus-once-'));
+  const base = tempDir('ccb-bstatus-once-');
   const bs = require('./brain-status.js');
   let answer = { mode: 'mcp-memory', connected: true, state: 'degraded', project: 'p', backend: 'mcp-memory', details: { reason: 'rerank failed: download do modelo falhou' } };
   const probe = async () => answer;
@@ -3220,7 +3221,7 @@ test('failure-journal: append + read roundtrip', () => {
 // ─── transcript-tail (G1: bounded reads, no whole-file readFileSync in Stop) ──
 const transcriptTail = require('./lib/transcript-tail.js');
 function _tailTmp(name, content) {
-  const d = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-tail-'));
+  const d = tempDir('ccb-tail-');
   const f = path.join(d, name);
   fs.writeFileSync(f, content);
   return f;
@@ -3378,7 +3379,7 @@ test('brain-store: recordCitation persists + bumps when SQLite available', async
   // pattern as the brain-backend test below, to avoid races on _db / _project).
   delete require.cache[require.resolve('../engine/brain-store.js')];
   const prevDataDir = process.env.CLAUDE_PLUGIN_DATA;
-  process.env.CLAUDE_PLUGIN_DATA = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-cite-'));
+  process.env.CLAUDE_PLUGIN_DATA = tempDir('ccb-cite-');
   const isolatedStore = require('../engine/brain-store.js');
   try {
     await isolatedStore.init({ project: 'ccb-units-citation' });
@@ -3407,7 +3408,7 @@ test('brain-store: recordCitation persists + bumps when SQLite available', async
 
 test('session-root: SessionStart records session_id → root; read back by id; unknown → ""; files older than 7 days pruned', () => {
   const sr = require('./lib/session-root.js');
-  const base = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-sroot-'));
+  const base = tempDir('ccb-sroot-');
   try {
     sr._resetMemo();
     assertEq(sr.sessionRootFor('s-1', { base }), '', 'unknown session → ""');
@@ -3425,7 +3426,7 @@ test('session-root: SessionStart records session_id → root; read back by id; u
 
 test('session-root: a record created while the folder mtime stays the same (a busy disk) still invalidates the root index', () => {
   const sr = require('./lib/session-root.js');
-  const base = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-sroot-tick-'));
+  const base = tempDir('ccb-sroot-tick-');
   try {
     sr._resetMemo();
     sr.recordSessionRoot('a', 'C:\\w\\p', { base, projectId: 'env/one' });
@@ -3444,7 +3445,7 @@ test('session-root: a record created while the folder mtime stays the same (a bu
 test('session-root: envProjectIdForRoot reads the records once per folder change (not every MCP call); new/rewritten/forgotten records invalidate it; SessionEnd forgets the session', () => {
   const sr = require('./lib/session-root.js');
   const sessionEnd = require('./session-end.js');
-  const base = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-sroot-idx-'));
+  const base = tempDir('ccb-sroot-idx-');
   const realRead = fs.readFileSync;
   let reads = 0;
   fs.readFileSync = function (p, ...rest) { if (String(p).includes('session-roots')) reads++; return realRead.call(this, p, ...rest); };
@@ -3490,9 +3491,9 @@ test('session-root: a daemon-served hook with project_dir "" (what Claude Code r
 test('session-root: the calling session\'s CCB_PROJECT_ID reaches what the daemon serves (record → hook env → MCP tools), never another session\'s', async () => {
   const sr = require('./lib/session-root.js');
   const { runHookInline, HOOKS } = require('./lib/hook-tools.js');
-  const base = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-sroot-id-'));
+  const base = tempDir('ccb-sroot-id-');
   HOOKS.hook_test_envid = { script: 'skill-metric.js', call: () => require('./lib/hook-context.js').hookEnv().CCB_PROJECT_ID || '<none>' };
-  const noId = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-envid-noid-'));
+  const noId = tempDir('ccb-envid-noid-');
   try {
     sr._resetMemo();
     // Record + read back; folder adoption only when every session there agrees.
@@ -3524,7 +3525,7 @@ test('O9: metrics scope without ctx.cwd follows the CALLING session root inside 
   const { _resolveProject } = require('../engine/lib/metrics.js');
   const { runWithHookEnv } = require('./lib/hook-context.js');
   const { metricsKeyFor } = require('../engine/lib/metrics-project.js');
-  const T = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-o9-')); // no git remote: the key is the folder name
+  const T = tempDir('ccb-o9-'); // no git remote: the key is the folder name
   const a = path.join(T, 'proj-a'); const b = path.join(T, 'session-b');
   fs.mkdirSync(path.join(b, 'sub'), { recursive: true }); fs.mkdirSync(a);
   try {
@@ -3539,7 +3540,7 @@ test('O9: metrics scope without ctx.cwd follows the CALLING session root inside 
 
 test('metrics key = the project ID (two same-named repos no longer share a metrics.db); the old basename db is carried over once', () => {
   const mp = require('../engine/lib/metrics-project.js');
-  const T = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-mkey-'));
+  const T = tempDir('ccb-mkey-');
   const mk = (dir, remote) => { fs.mkdirSync(dir, { recursive: true }); require('child_process').execFileSync('git', ['init', '-q'], { cwd: dir, windowsHide: true }); require('child_process').execFileSync('git', ['remote', 'add', 'origin', remote], { cwd: dir, windowsHide: true }); };
   const one = path.join(T, 'a', 'app'); const two = path.join(T, 'b', 'app'); // same folder name
   mk(one, 'https://github.com/org1/app.git'); mk(two, 'https://github.com/org2/app.git');
@@ -3574,7 +3575,7 @@ test('O1: retrieval-feedback records the citation in the KB scope the entry was 
   await store.save({ id, type: 'lesson', title, summary: 'S', content: { text: 'x' }, tags: [], confidence: 0.5 });
   const sid = `o1-sid-${Date.now()}`;
   journal.appendEntry(sid, { retrievalId: journal.newRetrievalId(), ts: Date.now(), sid, tool: 'UserPromptSubmit', project: scope, returnedIds: [id], returnedTitles: [title] });
-  const tdir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-o1-'));
+  const tdir = tempDir('ccb-o1-');
   const tpath = path.join(tdir, 't.jsonl');
   fs.writeFileSync(tpath, JSON.stringify({ type: 'assistant', message: { role: 'assistant', content: [{ type: 'text', text: 'Segui a lição: autorizou o escopo, grave o mesmo escopo persistido.' }] } }) + '\n');
   // cwd = a folder whose basename is NOT the scope (the old code wrote there).
@@ -3688,7 +3689,7 @@ test('active-research-state: recordFire bumps count + cooldown applies', () => {
 test('metrics-store: recordMetric inserts + getMetricsSummary aggregates', () => {
   delete require.cache[require.resolve('../engine/lib/metrics-store.js')];
   const prevDataDir = process.env.CLAUDE_PLUGIN_DATA;
-  process.env.CLAUDE_PLUGIN_DATA = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-metrics-'));
+  process.env.CLAUDE_PLUGIN_DATA = tempDir('ccb-metrics-');
   const isolated = require('../engine/lib/metrics-store.js');
   try {
     if (!isolated.init({ project: 'ccb-units-metrics' })) {
@@ -3714,7 +3715,7 @@ test('metrics-store: recordMetric inserts + getMetricsSummary aggregates', () =>
 test('metrics-store: hooks de projetos intercalados reusam a conexao de cada projeto (LRU de 8), cada linha cai no banco certo e close() solta todos', () => {
   delete require.cache[require.resolve('../engine/lib/metrics-store.js')];
   const prevDataDir = process.env.CLAUDE_PLUGIN_DATA;
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-ms-lru-'));
+  const dir = tempDir('ccb-ms-lru-');
   process.env.CLAUDE_PLUGIN_DATA = dir;
   const store = require('../engine/lib/metrics-store.js');
   try {
@@ -3744,7 +3745,7 @@ test('metrics-store: hooks de projetos intercalados reusam a conexao de cada pro
 test('P7 metrics-store.compactNoise: ruido bruto antigo vira 1 linha diaria por (dia, evento) e o total do painel de curadoria NAO muda', () => {
   delete require.cache[require.resolve('../engine/lib/metrics-store.js')];
   const prevDataDir = process.env.CLAUDE_PLUGIN_DATA;
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-p7-'));
+  const dir = tempDir('ccb-p7-');
   process.env.CLAUDE_PLUGIN_DATA = dir;
   const store = require('../engine/lib/metrics-store.js');
   const { summarizeCuration } = require('./lib/curation-metrics.js');
@@ -3783,7 +3784,7 @@ test('metrics-memo: um resultado so e reaproveitado enquanto os arquivos do proj
   const { createMemo, dbSignature, bucketTs } = require('./lib/metrics-memo.js');
   delete require.cache[require.resolve('../engine/lib/metrics-store.js')];
   const prevDataDir = process.env.CLAUDE_PLUGIN_DATA;
-  process.env.CLAUDE_PLUGIN_DATA = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-memo-'));
+  process.env.CLAUDE_PLUGIN_DATA = tempDir('ccb-memo-');
   const store = require('../engine/lib/metrics-store.js');
   try {
     if (!store.init({ project: 'memo-a' })) return; // no SQLite backend on this machine: nothing to read
@@ -3818,7 +3819,7 @@ test('metrics-memo: um resultado so e reaproveitado enquanto os arquivos do proj
 
 test('dashboard: os paineis da Home leem pelo memo — repetir a consulta nao reabre bancos, e uma escrita aparece no numero seguinte', () => {
   // Own process: requiring dashboard.js under a temp data dir would leave module state (data-dir pointer, configs) behind for the next tests.
-  const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-memo-dash-'));
+  const dataDir = tempDir('ccb-memo-dash-');
   const script = `
     const assert = require('assert');
     const store = require(process.argv[1] + '/../engine/lib/metrics-store.js');
@@ -3845,7 +3846,7 @@ test('dashboard: os paineis da Home leem pelo memo — repetir a consulta nao re
 });
 
 test('dashboard /api/metrics/outcome: the Home Results panel reads the same summary as outcome-report (captured/recurring lessons from the real store), and the page wires the panel', () => {
-  const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-outcome-dash-'));
+  const dataDir = tempDir('ccb-outcome-dash-');
   const script = `
     const assert = require('assert');
     const store = require(process.argv[1] + '/../engine/lib/metrics-store.js');
@@ -3915,7 +3916,7 @@ test('compaction-metrics.compactionTile: on/off, mechanical cut flag and the mea
 });
 
 test('dashboard scanServerKb: a project id the server refuses ("project_id igual ao diretório home…", isError text) is left out and logged — the rest of the list still comes', () => {
-  const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-kbscan-dash-'));
+  const dataDir = tempDir('ccb-kbscan-dash-');
   const script = `
     const assert = require('assert');
     const dash = require(process.argv[1] + '/dashboard.js');
@@ -3959,7 +3960,7 @@ test('dashboard scanServerKb: a project id the server refuses ("project_id igual
 });
 
 function runDashboardChild(body) {
-  const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-dash-child-'));
+  const dataDir = tempDir('ccb-dash-child-');
   const script = `const assert = require('assert'); const dash = require(process.argv[1] + '/dashboard.js'); (async () => { ${body}\nconsole.log('OK'); })().catch((e) => { console.error(e.stack); process.exit(1); });`;
   try {
     const r = require('child_process').spawnSync(process.execPath, ['-e', script, __dirname], { env: { ...process.env, CLAUDE_PLUGIN_DATA: dataDir }, encoding: 'utf8', windowsHide: true, timeout: 20000 });
@@ -4069,7 +4070,7 @@ test('dashboard Home: volta a Home mostra o que ja esta renderizado (sem apagar 
 
 test('session-journal.sweepStaleJournals: apaga journals velhos de qualquer prefixo/sessao, poupa os recentes e o que nao e journal, respeita o orcamento de tempo', () => {
   const { sweepStaleJournals } = require('./lib/session-journal.js');
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-sweep-'));
+  const dir = tempDir('ccb-sweep-');
   try {
     const NOW = 1_800_000_000_000;
     const mk = (name) => fs.writeFileSync(path.join(dir, name), '{}');
@@ -4088,8 +4089,8 @@ test('session-journal.sweepStaleJournals: apaga journals velhos de qualquer pref
 });
 
 test('verify-journal: sob o perfil standard (verify-nudge desligado) nada e gravado — ninguem drenaria — e sob dev grava', () => {
-  const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-vj-'));
-  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-vj-home-'));
+  const dataDir = tempDir('ccb-vj-');
+  const home = tempDir('ccb-vj-home-');
   const script = `
     const fs = require('fs'); const path = require('path');
     const root = process.argv[1];
@@ -4114,7 +4115,7 @@ test('verify-journal: sob o perfil standard (verify-nudge desligado) nada e grav
 });
 
 test('runtime-sweep: o detector do SessionStart esta registrado e varre journals velhos e o estado de sessao com mais de 7 dias', async () => {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-rs-'));
+  const dir = tempDir('ccb-rs-');
   try {
     const rs = require('./runtime-sweep.js');
     const old = new Date(Date.now() - 8 * 86400000);
@@ -4147,7 +4148,7 @@ test('P12 retrieval-feedback: no mcp-memory a citacao vai ao SERVIDOR (signal_me
   const store = require('../engine/brain-store.js');
   const journal = require('./lib/retrieval-journal.js');
   const sid = 'p12-' + Date.now();
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-p12-'));
+  const dir = tempDir('ccb-p12-');
   const tp = path.join(dir, 't.jsonl');
   fs.writeFileSync(tp, JSON.stringify({ type: 'assistant', message: { role: 'assistant', content: [{ type: 'text', text: 'Following the database migration ordering lesson, I ran them in sequence.' }] } }) + '\n');
   const orig = { peek: backend.peekMode, init: backend.init, sig: backend.signalHelpful, sinit: store.init, rc: store.recordCitation };
@@ -4192,7 +4193,7 @@ test('retrieve origins: an injected lesson is classified own / ancestor / other 
 test('metrics-store: recordMetric rejects invalid event names', () => {
   delete require.cache[require.resolve('../engine/lib/metrics-store.js')];
   const prevDataDir = process.env.CLAUDE_PLUGIN_DATA;
-  process.env.CLAUDE_PLUGIN_DATA = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-metrics-bad-'));
+  process.env.CLAUDE_PLUGIN_DATA = tempDir('ccb-metrics-bad-');
   const isolated = require('../engine/lib/metrics-store.js');
   try {
     if (!isolated.init({ project: 'ccb-units-metrics-bad' })) return;
@@ -4211,7 +4212,7 @@ test('metrics-store: recordMetric rejects invalid event names', () => {
 test('metrics-store: getEventLogIsolated reads another project\'s DB without touching the singleton', () => {
   delete require.cache[require.resolve('../engine/lib/metrics-store.js')];
   const prevDataDir = process.env.CLAUDE_PLUGIN_DATA;
-  process.env.CLAUDE_PLUGIN_DATA = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-metrics-iso-'));
+  process.env.CLAUDE_PLUGIN_DATA = tempDir('ccb-metrics-iso-');
   const isolated = require('../engine/lib/metrics-store.js');
   try {
     // Write a metric into '__user__' project's own DB.
@@ -4244,7 +4245,7 @@ test('metrics-store: getEventLogIsolated reads another project\'s DB without tou
 test('metrics-store: getEventLog filters + caps to 500', () => {
   delete require.cache[require.resolve('../engine/lib/metrics-store.js')];
   const prevDataDir = process.env.CLAUDE_PLUGIN_DATA;
-  process.env.CLAUDE_PLUGIN_DATA = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-metrics-log-'));
+  process.env.CLAUDE_PLUGIN_DATA = tempDir('ccb-metrics-log-');
   const isolated = require('../engine/lib/metrics-store.js');
   try {
     if (!isolated.init({ project: 'ccb-units-metrics-log' })) return;
@@ -4266,7 +4267,7 @@ test('metrics-store: getEventLog filters + caps to 500', () => {
 test('metrics-store: cleanupMetrics deletes rows older than cutoff', () => {
   delete require.cache[require.resolve('../engine/lib/metrics-store.js')];
   const prevDataDir = process.env.CLAUDE_PLUGIN_DATA;
-  process.env.CLAUDE_PLUGIN_DATA = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-metrics-cleanup-'));
+  process.env.CLAUDE_PLUGIN_DATA = tempDir('ccb-metrics-cleanup-');
   const isolated = require('../engine/lib/metrics-store.js');
   try {
     if (!isolated.init({ project: 'ccb-units-metrics-cleanup' })) return;
@@ -4440,9 +4441,7 @@ test('scope: mergeResults dedups by id (project wins) and sorts by score', () =>
 });
 
 test('scope: brain-store persists scope column and survives migration', async () => {
-  const fs = require('fs');
-  const os = require('os');
-  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'brain-scope-'));
+  const tmp = tempDir('brain-scope-');
   const prevDataDir = process.env.CLAUDE_PLUGIN_DATA;
   process.env.CLAUDE_PLUGIN_DATA = tmp;
   delete require.cache[require.resolve('../engine/brain-store.js')];
@@ -4544,7 +4543,7 @@ test('brain-health.brainServerDepsOk: aceita a dep resolvida pela RAIZ (sem past
   // O check antigo exigia a PASTA servers/brain-server/node_modules. Com a dep
   // hasteada p/ a raiz esse check vira falso negativo: acusa DOWN um MCP saudavel.
   if (!brainHealth.brainServerDepsOk) throw new Error('brainServerDepsOk nao exportado');
-  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-bsdeps-'));
+  const tmp = tempDir('ccb-bsdeps-');
   fs.mkdirSync(path.join(tmp, 'servers', 'brain-server'), { recursive: true });
   fs.writeFileSync(
     path.join(tmp, 'servers', 'brain-server', 'package.json'),
@@ -4566,7 +4565,7 @@ test('brain-health.brainServerDepsOk: dep ESM-only (sem condicao require) NAO vi
   // e ESM) funcione perfeitamente. Reportar DOWN af seria exatamente o defeito que
   // este hotfix combate: um alarme que mente.
   if (!brainHealth.brainServerDepsOk) throw new Error('brainServerDepsOk nao exportado');
-  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-bsesm-'));
+  const tmp = tempDir('ccb-bsesm-');
   fs.mkdirSync(path.join(tmp, 'servers', 'brain-server'), { recursive: true });
   fs.writeFileSync(
     path.join(tmp, 'servers', 'brain-server', 'package.json'),
@@ -4584,7 +4583,7 @@ test('brain-health.brainServerDepsOk: dep ESM-only (sem condicao require) NAO vi
 
 test('brain-health.brainServerDepsOk: dep REALMENTE ausente continua falhando alto', () => {
   if (!brainHealth.brainServerDepsOk) throw new Error('brainServerDepsOk nao exportado');
-  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-bsdeps-'));
+  const tmp = tempDir('ccb-bsdeps-');
   fs.mkdirSync(path.join(tmp, 'servers', 'brain-server'), { recursive: true });
   fs.writeFileSync(
     path.join(tmp, 'servers', 'brain-server', 'package.json'),
@@ -4597,14 +4596,14 @@ test('brain-health.brainServerDepsOk: dep REALMENTE ausente continua falhando al
 
 test('brain-health.countPendingDrafts: missing dir → 0', () => {
   if (!brainHealth.countPendingDrafts) return; // not exported yet
-  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-pending-'));
+  const tmp = tempDir('ccb-pending-');
   const r = brainHealth.countPendingDrafts(tmp);
   assertEq(r.count, 0);
 });
 
 test('brain-health.countPendingDrafts: counts only subdirs with SKILL.md', () => {
   if (!brainHealth.countPendingDrafts) return;
-  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-pending-'));
+  const tmp = tempDir('ccb-pending-');
   const staging = path.join(tmp, 'skills-pending');
   fs.mkdirSync(path.join(staging, 'a'), { recursive: true });
   fs.writeFileSync(path.join(staging, 'a', 'SKILL.md'), '# a');
@@ -4697,11 +4696,11 @@ test('research-followup.run: capture_lesson({type:research}) in __user__ scope s
   const prevDataDir = process.env.CLAUDE_PLUGIN_DATA;
   const prevHome = process.env.HOME;
   const prevProfile = process.env.USERPROFILE;
-  process.env.CLAUDE_PLUGIN_DATA = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-rf-xscope-'));
+  process.env.CLAUDE_PLUGIN_DATA = tempDir('ccb-rf-xscope-');
   // Isolate globalDir() so forcing the dev profile via the GLOBAL user-config can't
   // pollute the run-wide home. research-followup is dev-only now; force dev so run()
   // actually exercises suppression.
-  const rfHome = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-rf-xscope-home-'));
+  const rfHome = tempDir('ccb-rf-xscope-home-');
   process.env.HOME = rfHome;
   process.env.USERPROFILE = rfHome;
   const gp = path.join(rfHome, '.claude', 'claude-code-boss', 'hooks', 'user-config.json');
@@ -4746,10 +4745,10 @@ test('research-followup.run: no capture at all still nudges (regression guard)',
   const prevDataDir = process.env.CLAUDE_PLUGIN_DATA;
   const prevHome = process.env.HOME;
   const prevProfile = process.env.USERPROFILE;
-  process.env.CLAUDE_PLUGIN_DATA = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-rf-nocap-'));
+  process.env.CLAUDE_PLUGIN_DATA = tempDir('ccb-rf-nocap-');
   // Isolate globalDir() as above; research-followup is dev-only now, so force dev
   // (via the GLOBAL user-config) so run() emits the nudge.
-  const rfHome = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-rf-nocap-home-'));
+  const rfHome = tempDir('ccb-rf-nocap-home-');
   process.env.HOME = rfHome;
   process.env.USERPROFILE = rfHome;
   const gp = path.join(rfHome, '.claude', 'claude-code-boss', 'hooks', 'user-config.json');
@@ -4995,7 +4994,7 @@ test('brain_retrieve_context: a handler failure is recorded in recall-health (fa
 
 test('embed-worker shutdown: the op in flight (native init) finishes BEFORE terminate — terminating mid-init fast-failed the process (0xC0000409)', async () => {
   const { createEmbedWorker } = await import(require('url').pathToFileURL(path.join(ROOT, 'servers', 'brain-server', 'lib', 'embed-worker-client.js')).href);
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-ew-drain-'));
+  const dir = tempDir('ccb-ew-drain-');
   const marker = path.join(dir, 'init-finished').replace(/\\/g, '/');
   const wp = path.join(dir, 'slow-init-worker.cjs');
   fs.writeFileSync(wp, "const { parentPort } = require('worker_threads'); const fs = require('fs');\n"
@@ -5024,7 +5023,7 @@ test('embed-worker shutdown: the op in flight (native init) finishes BEFORE term
 
 test('G12 embed-worker: inference runs off the main thread (event loop stays free), a crash degrades to null and the worker respawns', async () => {
   const { createEmbedWorker } = await import(require('url').pathToFileURL(path.join(ROOT, 'servers', 'brain-server', 'lib', 'embed-worker-client.js')).href);
-  const fakeRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-embedw-'));
+  const fakeRoot = tempDir('ccb-embedw-');
   fs.mkdirSync(path.join(fakeRoot, 'engine'));
   fs.writeFileSync(path.join(fakeRoot, 'engine', 'brain-embedder.js'), [
     "let ready = false;",
@@ -5077,7 +5076,7 @@ test('G12 brain-embedder.setDelegate: every consumer is routed to the delegate; 
 
 test('embedder-guard: a native abort of the load test forces "none" for that key only; a JS error or a timeout forces nothing; a pass lifts it', async () => {
   const g = require('../engine/lib/embedder-guard.js');
-  const data = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-eguard-'));
+  const data = tempDir('ccb-eguard-');
   try {
     const ff = g.recordOutcome(data, { model: 'M' }, { ok: false, status: 0xC0000409, lastLine: 'loading model' });
     assert(ff.forced === 'none' && /0xC0000409/.test(ff.reason) && /loading model/.test(ff.reason), ff.reason);
@@ -5096,7 +5095,7 @@ test('embedder-guard: a native abort of the load test forces "none" for that key
 
 test('embedder-guard.ensureGuard: tests the local model once per key, before the daemon loads it; other providers and a missing model skip', async () => {
   const g = require('../engine/lib/embedder-guard.js');
-  const data = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-eguard-'));
+  const data = tempDir('ccb-eguard-');
   const cacheDir = path.join(data, 'models');
   try {
     let probes = 0;
@@ -5144,7 +5143,7 @@ test('brain-embedder: provider "none" (set, or forced by the load test) is ready
 
 test('embed-worker-client guard: the worker (and the model) is not loaded until the load test settles', async () => {
   const { createEmbedWorker } = await import(require('url').pathToFileURL(path.join(ROOT, 'servers', 'brain-server', 'lib', 'embed-worker-client.js')).href);
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-ew-guard-'));
+  const dir = tempDir('ccb-ew-guard-');
   const wp = path.join(dir, 'stamp-worker.cjs');
   fs.writeFileSync(wp, "const { parentPort } = require('worker_threads');\nparentPort.on('message', (m) => parentPort.postMessage({ id: m.id, ok: true, result: Date.now() }));\n");
   let settledAt = 0;
@@ -5159,7 +5158,7 @@ test('embed-worker-client guard: the worker (and the model) is not loaded until 
 });
 
 function fakeSkillManagerHome(answer, { exit = 0 } = {}) {
-  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-sm-'));
+  const home = tempDir('ccb-sm-');
   const cli = path.join(home, 'fake-cli.js');
   fs.writeFileSync(path.join(home, 'answer.json'), JSON.stringify(answer));
   fs.writeFileSync(cli, `const a = process.argv.slice(2); require('fs').writeFileSync(__dirname + '/argv.json', JSON.stringify(a)); process.stdout.write(require('fs').readFileSync(__dirname + '/answer.json', 'utf8')); process.exit(${exit});`);
@@ -5197,7 +5196,7 @@ test('doctor skill-manager: all active, a source it does not know, a Manager tha
   const active = fakeSkillManagerHome({ ok: true, owner: 'claude-code-boss', known: true, items: [{ id: 'claude-code-boss/skill/a', kind: 'skill', state: 'active', reason: null, pendingUpdate: null, approve: null }] });
   const unknown = fakeSkillManagerHome({ ok: true, owner: 'claude-code-boss', known: false, items: [] });
   const broken = fakeSkillManagerHome({ nope: true }, { exit: 3 });
-  const empty = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-sm-none-'));
+  const empty = tempDir('ccb-sm-none-');
   try {
     assertEq(doctor.checkSkillManager({ skillManager: { installed: true, ...sm.queryOwner('claude-code-boss', { home: active }) } }).status, 'ok');
     const u = doctor.checkSkillManager({ skillManager: { installed: true, ...sm.queryOwner('claude-code-boss', { home: unknown }) } });
@@ -5273,7 +5272,7 @@ test('curation: no model-facing message offers a raw escape (CCB_RAW=1, $env:CCB
 });
 
 test('curated-run: CCB_RAW in the environment never reaches the curated script', () => {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-rawenv-'));
+  const dir = tempDir('ccb-rawenv-');
   try {
     const s = path.join(dir, 'probe.mjs');
     fs.writeFileSync(s, "console.log(`raw=${process.env.CCB_RAW === undefined ? 'unset' : process.env.CCB_RAW} root=${process.env.CCB_PROJECT_ROOT}`);\n");
@@ -5304,7 +5303,7 @@ test('C2 curation-redirect: an alias that adds arguments to the base alias is ne
 test('curation home: the in-repo .vscode curation MOVES to the user folder (keyed by project) — untracked files leave the repo, tracked ones stay, backup + one-shot notice', () => {
   const cp = require('./curation-paths.js');
   const sc = require('./shells-config.js');
-  const proj = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-mig-'));
+  const proj = tempDir('ccb-mig-');
   try {
     const git = (...a) => require('child_process').execFileSync('git', a, { cwd: proj, stdio: 'ignore', windowsHide: true });
     git('init', '-q');
@@ -5354,7 +5353,7 @@ test('curation home: the in-repo .vscode curation MOVES to the user folder (keye
     assertEq(merged[3].script, `${H}/scripts/new.mjs`, 'an entry into .vscode/scripts maps to the home even when its file is missing (it kept the in-repo path)');
 
     // Same with NO .vscode/scripts dir at all (only the config): the entry still maps to the home.
-    const bare = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-mig-bare-'));
+    const bare = tempDir('ccb-mig-bare-');
     fs.writeFileSync(path.join(bare, 'package.json'), '{}');
     fs.mkdirSync(path.join(bare, '.vscode'));
     fs.writeFileSync(path.join(bare, '.vscode', 'shells.json'), JSON.stringify({ shells: [{ id: 'g', script: '.vscode/scripts/ghost.mjs', aliases: ['npm run g'] }] }));
@@ -5367,7 +5366,7 @@ test('curation home: the in-repo .vscode curation MOVES to the user folder (keye
 test('curation home: a legacy config that cannot be moved is still USED (no curation lost) and the failure is reported; a foreign shells.json is never touched', async () => {
   const cp = require('./curation-paths.js');
   const sc = require('./shells-config.js');
-  const proj = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-mig-bad-'));
+  const proj = tempDir('ccb-mig-bad-');
   try {
     fs.writeFileSync(path.join(proj, 'package.json'), '{}');
     fs.mkdirSync(path.join(proj, '.vscode'));
@@ -5391,7 +5390,7 @@ test('curation home: a legacy config that cannot be moved is still USED (no cura
     assertEq(sc.loadShellsConfig(proj).shells.map((s) => s.id), ['ok']);
     assertEq(fs.existsSync(path.join(proj, '.vscode', 'shells.json')), false, 'and the repo file left');
 
-    const other = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-mig-foreign-'));
+    const other = tempDir('ccb-mig-foreign-');
     fs.writeFileSync(path.join(other, 'package.json'), '{}');
     fs.writeFileSync(path.join(other, 'shells.json'), JSON.stringify({ terminals: ['bash'] })); // some other tool's file
     cp._resetConfigCache();
@@ -5404,7 +5403,7 @@ test('curation home: a legacy config that cannot be moved is still USED (no cura
 test('curation home: a git-TRACKED config is the team file, branch-scoped — read IN PLACE, never moved or merged into the shared home (branch aliases leaked into every branch)', () => {
   const cp = require('./curation-paths.js');
   const sc = require('./shells-config.js');
-  const proj = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-mig-tracked-'));
+  const proj = tempDir('ccb-mig-tracked-');
   try {
     const git = (...a) => require('child_process').execFileSync('git', a, { cwd: proj, stdio: 'ignore', windowsHide: true });
     git('init', '-q');
@@ -5431,7 +5430,7 @@ test('curation home: a git-TRACKED config is the team file, branch-scoped — re
 
 test('curation home: when git cannot tell what it tracks, NOTHING is moved or deleted (fail closed — it deleted versioned team files)', async () => {
   const cp = require('./curation-paths.js');
-  const proj = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-mig-gitfail-'));
+  const proj = tempDir('ccb-mig-gitfail-');
   try {
     fs.writeFileSync(path.join(proj, '.git'), 'gitdir: ./does-not-exist\n'); // a repo marker git cannot read
     fs.mkdirSync(path.join(proj, '.vscode', 'scripts'), { recursive: true });
@@ -5449,7 +5448,7 @@ test('curation home: when git cannot tell what it tracks, NOTHING is moved or de
 
 test('mcp-headers: a daemon that already answers is not ensured (the helper is one file read, so a restart under load cannot push it past the 10 s limit); a hung probe or a hung ensure still answers in time', async () => {
   const { headers } = require('./mcp-headers.js');
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-mcphdr-fast-'));
+  const dir = tempDir('ccb-mcphdr-fast-');
   const savedData = process.env.CLAUDE_PLUGIN_DATA;
   const savedTok = process.env.BRAIN_HTTP_TOKEN; delete process.env.BRAIN_HTTP_TOKEN;
   try {
@@ -5476,7 +5475,7 @@ test('mcp-headers: a daemon that already answers is not ensured (the helper is o
 
 test('mcp-launcher.kickLauncherVerified: a hidden launch that FAILS (VBScript off / blocked) falls back to the plain launch and says so — it reported "kicked" forever', async () => {
   const L = require('./lib/mcp-bootstrap/launcher.js');
-  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-kickv-'));
+  const home = tempDir('ccb-kickv-');
   const env = { USERPROFILE: home, HOME: home };
   fs.mkdirSync(path.dirname(L.launcherPath(env, 'win32')), { recursive: true });
   fs.writeFileSync(L.launcherPath(env, 'win32'), '');
@@ -5602,7 +5601,7 @@ test('raw-report: the redirect tells the script where to report its raw size; Po
 
   // End to end: guard rewrite (redirect carries the report id) → script appends → detect records rawChars + the same id.
   const metrics = require('../engine/lib/metrics.js');
-  const proj = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-rr-proj-'));
+  const proj = tempDir('ccb-rr-proj-');
   fs.writeFileSync(path.join(proj, 'package.json'), '{}');
   const home = require('./curation-paths.js').curationHome(proj);
   fs.mkdirSync(path.join(home, 'scripts'), { recursive: true });
@@ -5652,7 +5651,7 @@ test('curation summary: a measured run counts its EXACT savings (raw − shown);
 
 test('session-whitelist writes NOTHING for a folder without curation (SessionStart created a shells.json in every folder a session opened in)', async () => {
   const cp = require('./curation-paths.js');
-  const proj = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-wl-none-'));
+  const proj = tempDir('ccb-wl-none-');
   try {
     fs.writeFileSync(path.join(proj, 'package.json'), '{}');
     cp._resetConfigCache();
@@ -5739,8 +5738,8 @@ test('C1 curation-families: exploration / inline / task classes (compound = task
 
 test('C1 curation-families: Token Guard detected from a PostToolUse hook in user or project settings (cached by mtime)', () => {
   const fam = require('../engine/lib/curation-families.js');
-  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-tg-home-'));
-  const proj = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-tg-proj-'));
+  const home = tempDir('ccb-tg-home-');
+  const proj = tempDir('ccb-tg-proj-');
   try {
     fam._resetTokenGuardCache();
     assertEq(fam.tokenGuardActive({ projectRoot: proj, home }), false, 'no settings → inactive');
@@ -5765,7 +5764,7 @@ test('C1 curation-families: Token Guard detected from a PostToolUse hook in user
 
 test('audit: planShaping never wraps a command with its own pipe (SIGPIPE 141), a # comment / trailing \\ (syntax error), or a follow/interactive command', () => {
   const { planShaping } = require('./lib/curation-redirect.js');
-  const proj = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-shape-refuse-'));
+  const proj = tempDir('ccb-shape-refuse-');
   const d = { tokenGuardActive: () => false };
   try {
     for (const cmd of ['grep -rn a scripts | head -1', 'git log | head -5', 'cat big.txt | grep foo', 'ls -la #x', 'cat foo\\', 'tail -f app.log', 'tail -n 50 -F app.log', 'tail --follow app.log', 'less README.md', 'watch ls', 'vim x']) {
@@ -5779,7 +5778,7 @@ test('audit: planShaping never wraps a command with its own pipe (SIGPIPE 141), 
 
 test('audit: the wrapped command keeps its real exit code (no fake failures)', () => {
   const { planShaping } = require('./lib/curation-redirect.js');
-  const proj = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-shape-exit-'));
+  const proj = tempDir('ccb-shape-exit-');
   // The suite owns this fixture. An immediate rmSync races shell handle release
   // on Windows and can mask the command's actual assertion failure. The runner
   // cleans per test; final cleanup waits for the child to exit and still fails visibly.
@@ -5792,7 +5791,7 @@ test('audit: the wrapped command keeps its real exit code (no fake failures)', (
 });
 
 test('audit: shape-output STREAMS — the head is written before the input ends; the rest goes to the file', async () => {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-shape-stream-'));
+  const dir = tempDir('ccb-shape-stream-');
   try {
     const child = require('child_process').spawn(process.execPath, [path.join(SCRIPTS, 'shape-output.js'), '--family', 'cat'], { env: { ...process.env, CLAUDE_PLUGIN_DATA: dir }, windowsHide: true });
     let out = '';
@@ -5824,7 +5823,7 @@ test('audit: invocationFor refuses a script path that would break out of the quo
 test('shells-config: a shells.json edited mid-process is seen on the next call (daemon-lived cache keyed by the file stamp)', () => {
   const sc = require('./shells-config.js');
   const { planRedirect } = require('./lib/curation-redirect.js');
-  const proj = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-shells-stamp-'));
+  const proj = tempDir('ccb-shells-stamp-');
   const file = require('./curation-paths.js').getShellsConfigPath(proj); // the project's curation home
   try {
     sc._resetCache();
@@ -5844,7 +5843,7 @@ test('shells-config: a shells.json edited mid-process is seen on the next call (
 test('piped → refine: the same curated script filtered the same way twice asks ONCE to bake the filter in; never again for that pair; another filter counts apart', async () => {
   const detect = require('./curation-detect.js');
   const journal = require('./lib/turn-journal.js');
-  const proj = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-piped-refine-'));
+  const proj = tempDir('ccb-piped-refine-');
   fs.writeFileSync(path.join(proj, 'package.json'), '{}');
   const home = require('./curation-paths.js').curationHome(proj);
   fs.mkdirSync(path.join(home, 'scripts'), { recursive: true });
@@ -5877,7 +5876,7 @@ test('piped → refine: the same curated script filtered the same way twice asks
 
 test('register (EXTEND path): updating an existing id keeps omitted fields and may skip content; a new id still needs content', () => {
   const reg = require('./lib/shell-register.js');
-  const proj = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-reg-upsert-'));
+  const proj = tempDir('ccb-reg-upsert-');
   fs.writeFileSync(path.join(proj, 'package.json'), '{}');
   try {
     const first = reg.register({ cwd: proj, id: 'tests', scriptPath: '.vscode/scripts/tests.mjs', content: 'console.log("OK tests")\n', aliases: ['npm test'],
@@ -5918,7 +5917,7 @@ test('register (EXTEND path): updating an existing id keeps omitted fields and m
 test('piped → refine: a sub-agent run counts but never spends the single ask (the main agent still gets it)', async () => {
   const detect = require('./curation-detect.js');
   const journal = require('./lib/turn-journal.js');
-  const proj = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-piped-sub-'));
+  const proj = tempDir('ccb-piped-sub-');
   // A legacy in-repo curation: the first hook call moves it to the curation home.
   fs.mkdirSync(path.join(proj, '.vscode', 'scripts'), { recursive: true });
   fs.writeFileSync(path.join(proj, 'package.json'), '{}');
@@ -5939,7 +5938,7 @@ test('piped → refine: a sub-agent run counts but never spends the single ask (
 test('CCB_RAW=1 is no special case for curation-detect: the prefixed run counts like the plain command', async () => {
   const detect = require('./curation-detect.js');
   const journal = require('./lib/turn-journal.js');
-  const proj = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-rawrun-'));
+  const proj = tempDir('ccb-rawrun-');
   fs.writeFileSync(path.join(proj, 'package.json'), '{}');
   const sid = 'rawrun-' + Date.now();
   const noisy = Array.from({ length: 300 }, (_, i) => `line ${i}`).join('\n');
@@ -5955,7 +5954,7 @@ test('CCB_RAW=1 is no special case for curation-detect: the prefixed run counts 
 test('variant → alias: a recurring noisy uncovered VARIANT of a curated script is journaled as EXTEND (not CREATE, not REFINE)', async () => {
   const detect = require('./curation-detect.js');
   const journal = require('./lib/turn-journal.js');
-  const proj = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-variant-'));
+  const proj = tempDir('ccb-variant-');
   fs.mkdirSync(path.join(proj, '.vscode', 'scripts'), { recursive: true });
   fs.writeFileSync(path.join(proj, 'package.json'), '{}');
   fs.writeFileSync(path.join(proj, '.vscode', 'shells.json'), JSON.stringify({ shells: [{ id: 'tests', script: '.vscode/scripts/tests.mjs', aliases: ['npm test'] }] }));
@@ -5988,7 +5987,7 @@ test('curation-stop: bloqueio, desistencia e liberacao viram eventos (curation.s
   const stop = require('./curation-stop.js');
   const journal = require('./lib/turn-journal.js');
   const m = require('../engine/lib/metrics.js');
-  const proj = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-cstop-ev-'));
+  const proj = tempDir('ccb-cstop-ev-');
   fs.writeFileSync(path.join(proj, 'package.json'), '{}');
   const sid = 'cstop-ev-' + Date.now();
   const noisy = Array.from({ length: 300 }, (_, i) => `line ${i}`).join('\n');
@@ -6118,7 +6117,7 @@ test('/dashboard after an update: a dashboard of ANOTHER install is replaced (al
 
 test('C6 unwrapShaped: round-trips planShaping exactly; anything else → null', () => {
   const { planShaping, unwrapShaped } = require('./lib/curation-redirect.js');
-  const proj = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-unwrap-'));
+  const proj = tempDir('ccb-unwrap-');
   try {
     for (const cmd of ['cat big.txt', 'git log --oneline -50', 'grep -rn "a; b" src']) {
       const w = planShaping(cmd, proj, { tokenGuardActive: () => false });
@@ -6229,7 +6228,7 @@ test('limit-calibration: rate_limit blocks + transcript spend → units per 1% (
   tr[0].units = 1_000_000; // scattered windows (CV > 0.15) → default
   assertEq(lc.calibrate(blocks, tr).source, 'default', 'scatter → default');
   // transcripts: one block (twice, in a copied file) + one streamed plan message written twice; an API-route message is ignored
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'limcal-')); const proj = path.join(dir, 'p'); fs.mkdirSync(proj);
+  const dir = tempDir('limcal-'); const proj = path.join(dir, 'p'); fs.mkdirSync(proj);
   const blockLine = JSON.stringify({ type: 'assistant', error: 'rate_limit', isApiErrorMessage: true, timestamp: '2026-09-24T22:20:10.782Z', message: { id: 'x', content: [{ type: 'text', text: txt('10:20pm') }] } });
   const msg = (id, out, ts) => JSON.stringify({ type: 'assistant', timestamp: ts, message: { id, usage: { input_tokens: 10, output_tokens: out, cache_read_input_tokens: 100, cache_creation_input_tokens: 0 } } });
   fs.writeFileSync(path.join(proj, 'a.jsonl'), [blockLine, blockLine, msg('msg_01A', 1, '2026-09-24T21:00:00Z'), msg('msg_01A', 40, '2026-09-24T21:00:00Z'), msg('msg_vrtx_B', 99, '2026-09-24T21:10:00Z'), '{torn'].join('\n'));
@@ -6251,7 +6250,7 @@ test('limit-calibration: rate_limit blocks + transcript spend → units per 1% (
 test('C4 curation-guard: a pipe on the curated script is ALLOWED and measured (curation.piped) — not for another segment\'s pipe, not for reading the file', async () => {
   const metrics = require('../engine/lib/metrics.js');
   const guard = require('./curation-guard.js');
-  const proj = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-piped-'));
+  const proj = tempDir('ccb-piped-');
   fs.mkdirSync(path.join(proj, '.vscode', 'scripts'), { recursive: true });
   fs.writeFileSync(path.join(proj, 'package.json'), '{}');
   fs.writeFileSync(path.join(proj, '.vscode', 'shells.json'), JSON.stringify({ shells: [{ id: 'th', script: '.vscode/scripts/test-hooks.mjs', aliases: [] }] }));
@@ -7171,8 +7170,8 @@ function withUserConfig(obj, fn) {
   const savedData = process.env.CLAUDE_PLUGIN_DATA;
   const savedHome = process.env.HOME;
   const savedProfile = process.env.USERPROFILE;
-  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-usercfg-home-'));
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-usercfg-'));
+  const home = tempDir('ccb-usercfg-home-');
+  const dir = tempDir('ccb-usercfg-');
   process.env.HOME = home;
   process.env.USERPROFILE = home;
   process.env.CLAUDE_PLUGIN_DATA = dir;
@@ -7212,8 +7211,8 @@ test('brain-config.getContextExcludeTypes: non-array → []', () => {
 
 
 test('P9 brain-promote export: o rascunho sai da fila de revisao para a pasta pedida e o scan nunca mais o recria (antes o descarte voltava no proximo scan)', () => {
-  const data = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-p9-'));
-  const dest = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-p9-dest-'));
+  const data = tempDir('ccb-p9-');
+  const dest = tempDir('ccb-p9-dest-');
   try {
     const slug = 'some-recurring-lesson';
     fs.mkdirSync(path.join(data, 'skills-pending', slug), { recursive: true });
@@ -7464,7 +7463,7 @@ test('conversation-ingest.run: mcp-memory but ingestion OFF → no-op', async ()
 
 // Drives run() with a fake backend + clock over a real transcript file and state file.
 function _ingHarness() {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-ingest-'));
+  const dir = tempDir('ccb-ingest-');
   const h = {
     transcript: path.join(dir, 's.jsonl'),
     statePath: path.join(dir, 'ingest-state.json'),
@@ -7576,7 +7575,7 @@ test('conversation-ingest.run: transcript rewritten smaller → restarts from th
 test('conversation-ingest.run: folder with no stable project scope → said once per session, nothing sent', async () => {
   const h = _ingHarness();
   h.append([_ingL.user('u1', 'q1'), _ingL.asst('a1', 'r1')]);
-  const noScope = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-noscope-'));
+  const noScope = tempDir('ccb-noscope-');
   const r1 = await h.stop(noScope);
   assert(/\[INGEST\].*skipped for this project/.test(r1.notice || ''), JSON.stringify(r1));
   assertEq(JSON.stringify(await h.stop(noScope)), '{}', 'not repeated every Stop');
@@ -7647,7 +7646,7 @@ test('project-id: no cwd and no env → THROWS (strict: no default fallback)', (
 });
 
 // A real throwaway dir (the declared rung reads the REAL fs, so these can't use fakeFs).
-function pidTmpDir(pfx) { return fs.mkdtempSync(path.join(os.tmpdir(), pfx || 'ccb-pid-')); }
+function pidTmpDir(pfx) { return tempDir(pfx || 'ccb-pid-'); }
 
 test('project-id parity: 9 golden vectors (declared preserved + git-remote normalized)', () => {
   const pc = require('../engine/lib/project-config.js');
@@ -7722,7 +7721,7 @@ test('project identity notice: repeats on every prompt, explains the refusal mar
   assert(!/backend\.mcpMemory\.projectId/.test(n), 'no config note when no projectId is set');
   assert(/backend\.mcpMemory\.projectId` \("acme\/app"\)/.test(adv.buildNotice('C:/x', 'acme/app')), 'a config projectId is cited with its value');
   // As a prompt detector: notice for an id-less folder; nothing once the user refused.
-  const base = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-pidn-'));
+  const base = tempDir('ccb-pidn-');
   try {
     const text = await adv.run({ cwd: base, prompt: 'oi' }, { resolve: () => null });
     assert(typeof text === 'string' && /não tem project id/.test(text), 'id-less folder → notice');
@@ -8003,7 +8002,7 @@ test('pia.run: event without cwd → resolves process.cwd()', async () => {
 });
 
 test('project-identity-advisory main(): no-id cwd → SessionStart additionalContext naming the folder', () => {
-  const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-pia-main-'));
+  const cwd = tempDir('ccb-pia-main-');
   try {
     const env = { ...process.env };
     delete env.CCB_PROJECT_ID; delete env.CLAUDE_PROJECT_DIR;
@@ -8095,7 +8094,7 @@ test('brain-promote truncateDescription: cuts at word boundary, never mid-word',
 
 test('curation-session pendingSkillsSummary: counts staged drafts, null when empty', () => {
   const { pendingSkillsSummary } = require(path.join(SCRIPTS, 'curation-session.js'));
-  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-pending-skills-'));
+  const tmp = tempDir('ccb-pending-skills-');
   assert(pendingSkillsSummary(tmp) === null, 'no skills-pending dir yet -> null');
 
   const d1 = path.join(tmp, 'skills-pending', 'lesson-a');
@@ -8197,7 +8196,7 @@ test('R1 dashboard brain HTTP handlers sanitize project (traversal class closed 
 
 test('brain-projects: nested owner/repo and host/owner/repo KBs are listed (653); dot dirs and depth cap respected', () => {
   const { listBrainProjects, brainDbPath } = require('./lib/brain-projects.js');
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-bp-'));
+  const dir = tempDir('ccb-bp-');
   for (const id of ['flat', 'owner/repo', 'github.com/acme/widgets', '.hidden/x', 'a/b/c/d/e']) {
     fs.mkdirSync(path.dirname(brainDbPath(dir, id)), { recursive: true });
     fs.writeFileSync(brainDbPath(dir, id), '');
@@ -8426,7 +8425,7 @@ test('command-signature: `VAR=$(cat <<EOF)` never signs as a bare heredoc digest
 
 test('curation-guard.sweepInlineScripts: varre no maximo 1x a cada 10 min por pasta (era readdir+stat de ~400 arquivos em TODA reescrita, na fast lane)', () => {
   const cg = require('./curation-guard.js');
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-inline-sweep-'));
+  const dir = tempDir('ccb-inline-sweep-');
   try {
     const old = (Date.now() - 2 * 86400e3) / 1000;
     const mk = (n) => { const p = path.join(dir, n); fs.writeFileSync(p, 'x'); fs.utimesSync(p, old, old); return p; };
@@ -8444,7 +8443,7 @@ test('curation-guard.sweepInlineScripts: varre no maximo 1x a cada 10 min por pa
 
 test('log-rotate.appendRotating: o arquivo nunca passa do teto; gira para .1/.2 e descarta o mais velho (router.log chegou a 12,8 MB)', () => {
   const { appendRotating } = require('../engine/lib/log-rotate.js');
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-logrot-'));
+  const dir = tempDir('ccb-logrot-');
   try {
     const f = path.join(dir, 'sub', 'router.log');
     for (let i = 0; i < 100; i++) appendRotating(f, `line ${String(i).padStart(3, '0')} ${'x'.repeat(40)}`, { maxBytes: 500, keep: 2 });
@@ -8460,7 +8459,7 @@ test('log-rotate.appendRotating: o arquivo nunca passa do teto; gira para .1/.2 
 
 // ─── oneoff-store ─────────────────────────────────────────────────────────────
 const oneoff = require(path.join(SCRIPTS, 'lib', 'oneoff-store.js'));
-const freshDataDir = () => fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-oneoff-'));
+const freshDataDir = () => tempDir('ccb-oneoff-');
 
 test('oneoff-store: load drops keys the current signature cannot re-produce', () => {
   const dataDir = freshDataDir();
@@ -8511,7 +8510,7 @@ test('oneoff-store: load reaproveita o store ja lido enquanto o arquivo nao muda
 test('curation-detect: saida volumosa de EXPLORACAO nao cria entrada no store de one-off (nunca vira script; so inchava o store)', async () => {
   const detect = require('./curation-detect.js');
   const journal = require('./lib/turn-journal.js');
-  const proj = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-oo-explore-'));
+  const proj = tempDir('ccb-oo-explore-');
   fs.writeFileSync(path.join(proj, 'package.json'), '{}');
   const sid = 'oo-explore-' + Date.now();
   const noisy = Array.from({ length: 300 }, (_, i) => `line ${i}`).join('\n');
@@ -8663,7 +8662,7 @@ test('curation_mark_oneoff (FIX #9): handler response lists ALL batch signatures
   const mod = await import(url.pathToFileURL(path.join(R, 'servers', 'brain-server', 'lib', 'mcp-server.js')).href);
   const server = mod.createBrainServer({ pluginRoot: R, mode: 'stdio' });
   // Isolated project key: a fresh temp cwd with a .git marker (resolveProjectKey stops there).
-  const work = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-mark9-'));
+  const work = tempDir('ccb-mark9-');
   fs.mkdirSync(path.join(work, '.git'), { recursive: true });
   const res = await server.handleTool('curation_mark_oneoff', { sigs: ['npm run alpha', 'npm run beta'], cwd: work });
   const out = JSON.parse(res.content[0].text);
@@ -8732,7 +8731,7 @@ test('curation_mark_oneoff: 1-token sig accepted, 1-token alias still refused', 
   const R = process.env.CLAUDE_PLUGIN_ROOT;
   const mod = await import(url.pathToFileURL(path.join(R, 'servers', 'brain-server', 'lib', 'mcp-server.js')).href);
   const server = mod.createBrainServer({ pluginRoot: R, mode: 'stdio' });
-  const work = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-mark1tok-'));
+  const work = tempDir('ccb-mark1tok-');
   fs.mkdirSync(path.join(work, '.git'), { recursive: true });
   const ok = await server.handleTool('curation_mark_oneoff', { sigs: ['pytest'], cwd: work });
   assert(!ok.isError, `sig accepted, got ${ok.content[0].text}`);
@@ -8762,7 +8761,7 @@ test('oneoff-store: only a PROGRAM-NAME 1-token sig is ceiling-exempt', () => {
 
 // ─── policy-store (deterministic always-apply POLICY injection registry) ─────
 const polstore = require(path.join(ENGINE, 'lib', 'policy-store.js'));
-const freshPolDataDir = () => fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-polstore-'));
+const freshPolDataDir = () => tempDir('ccb-polstore-');
 
 test('policy-store: activate stores a REDACTED, capped record and list returns it for the project', () => {
   const dd = freshPolDataDir(); const now = 1_700_000_000_000;
@@ -9284,7 +9283,7 @@ test('curation-reconcile: no markings, no shells → everything stays pending (r
 // ─── shell-register (curation_register_shell backing module) ─────────────────
 const shellRegister = require(path.join(SCRIPTS, 'lib', 'shell-register.js'));
 const freshProjectRoot = () => {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-shellreg-'));
+  const dir = tempDir('ccb-shellreg-');
   fs.mkdirSync(path.join(dir, '.vscode'), { recursive: true });
   fs.writeFileSync(path.join(dir, '.vscode', 'shells.json'), JSON.stringify({ version: 1, shells: [] }, null, 2));
   return dir;
@@ -9308,7 +9307,7 @@ test('shell-register: creates script + entry when shells.json already has versio
 });
 
 test('shell-register: creates shells.json from scratch when missing', () => {
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-shellreg-'));
+  const root = tempDir('ccb-shellreg-');
   const res = shellRegister.register({
     id: 'foo', scriptPath: '.vscode/scripts/foo.mjs', content: 'console.log("OK  x (0ms)");\n',
     aliases: ['npm run foo'], cwd: root,
@@ -10261,7 +10260,7 @@ test('plugin-updater.planBackupPrune: keep newest N by NUMERIC ts (not lexical)'
 });
 
 function _updRoot() {
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-upd-root-'));
+  const root = tempDir('ccb-upd-root-');
   fs.writeFileSync(path.join(root, 'package.json'), JSON.stringify({ version: '1.0.0', repository: 'github.com/foo/bar' }));
   return root;
 }
@@ -10394,7 +10393,7 @@ test('plugin-updater.performUpdate: o registro installed_plugins.json e gravado 
 // ─── cache-prune: only the current plugin version stays in the cache ─────────
 const cachePrune = require('./lib/cache-prune.js');
 function _cacheWith(versions) {
-  const base = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-prune-')), 'cache', 'mkt', 'claude-code-boss');
+  const base = path.join(tempDir('ccb-prune-'), 'cache', 'mkt', 'claude-code-boss');
   for (const v of versions) {
     fs.mkdirSync(path.join(base, v, 'node_modules', 'dep'), { recursive: true });
     fs.writeFileSync(path.join(base, v, 'package.json'), JSON.stringify({ version: v }));
@@ -10456,7 +10455,7 @@ test('cache-prune: the running session root and the live daemon root are kept', 
 test('cache-prune: current install not verified (not recorded / outside the cache / missing / no package.json) → NOTHING is deleted', async () => {
   const base = _cacheWith(['3.1.0', '3.2.0']);
   fs.rmSync(path.join(base, '3.2.0', 'package.json'));
-  const outside = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-prune-out-'));
+  const outside = tempDir('ccb-prune-out-');
   fs.writeFileSync(path.join(outside, 'package.json'), '{}');
   for (const current of [null, path.join(base, '9.9.9'), path.join(base, '3.2.0'), outside, path.join(base, '3.1.0', 'node_modules')]) {
     const r = await cachePrune.pruneOldVersions({ cacheBase: base, current });
@@ -10477,7 +10476,7 @@ test('cache-prune: a dir that cannot be removed is reported, the others still go
 });
 
 test('cache-prune.daemonRoot: reads the live daemon root from the lock in the data dir', () => {
-  const data = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-prune-data-'));
+  const data = tempDir('ccb-prune-data-');
   assertEq(cachePrune.daemonRoot(data), null);
   fs.writeFileSync(path.join(data, 'brain-http.lock.json'), JSON.stringify({ pluginRoot: 'C:\\x\\3.1.0' }));
   assertEq(cachePrune.daemonRoot(data), 'C:\\x\\3.1.0');
@@ -10555,7 +10554,7 @@ test('plugin-updater.performUpdate: a failure AFTER the copy (before the registr
 
 test('session-root: records the plugin dir each session loaded; livePluginRoots lists non-expired ones; SessionEnd forgets; a prompt touch keeps a long session alive', () => {
   const sr = require('./lib/session-root.js');
-  const base = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-sroot-live-'));
+  const base = tempDir('ccb-sroot-live-');
   try {
     sr._resetMemo();
     assertEq(sr.livePluginRoots({ base }), [], 'no records → none');
@@ -10581,7 +10580,7 @@ test('session-root: records the plugin dir each session loaded; livePluginRoots 
 
 test('session-root.livePluginRoots: a record last touched before the machine booted no longer protects its dir (sessions that died in a reboot); one touched after boot does', () => {
   const sr = require('./lib/session-root.js');
-  const base = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-sroot-boot-'));
+  const base = tempDir('ccb-sroot-boot-');
   try {
     sr._resetMemo();
     sr.recordSessionRoot('before-boot', 'C:\\w\\p', { base, pluginRoot: 'C:\\cache\\3.1.0' });
@@ -10626,7 +10625,7 @@ test('open-session protection is wired: SessionStart records CLAUDE_PLUGIN_ROOT,
 
 test('session-root.healMissingPluginRoots: a live session whose plugin dir vanished gets a junction to the current install; outside the cache or with no verified install nothing is created; the prune unlinks it and leaves the install', async () => {
   const sr = require('./lib/session-root.js');
-  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-heal-'));
+  const tmp = tempDir('ccb-heal-');
   const cacheBase = path.join(tmp, 'cache');
   const current = path.join(cacheBase, '3.9.0');
   fs.mkdirSync(current, { recursive: true });
@@ -10668,8 +10667,8 @@ test('policy-glob-inject: a glob policy is injected once per session; a compact 
   const { execFileSync } = require('child_process');
   const store = require('../engine/lib/policy-store.js');
   const gi = require('./lib/glob-injected.js');
-  const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-gi-proj-'));
-  const data = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-gi-data-'));
+  const cwd = tempDir('ccb-gi-proj-');
+  const data = tempDir('ccb-gi-data-');
   try {
     store.activate(data, { text: 'flag leftover console.log', projectId: path.basename(cwd), globs: ['src/**'] });
     const edit = (sid, file = 'src/app.ts') => {
@@ -10723,7 +10722,7 @@ function fakeScopedLookup(rules) {
 
 test('scope-rules: rules come from the memory server for the touched scope, once per scope, again only after compact/clear, journaled append-only with ids, reason and size', async () => {
   const sr = require('./lib/scope-rules.js');
-  const base = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-sr-'));
+  const base = tempDir('ccb-sr-');
   const root = path.join(base, 'proj');
   const { calls, lookup } = fakeScopedLookup([
     { id: 'rule:sempre:fail-loud', text: 'Sem fallback silencioso.' },
@@ -10780,7 +10779,7 @@ test('scope-rules: a Read that switches on a new kind delivers its rules in the 
   const hook = require('./scope-rules-hook.js');
   const sr = require('./lib/scope-rules.js');
   const { runWithHookEnv } = require('./lib/hook-context.js');
-  const base = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-sr-touch-'));
+  const base = tempDir('ccb-sr-touch-');
   const root = path.join(base, 'proj');
   const { calls, lookup } = fakeScopedLookup([
     { id: 'rule:codigo:sem-cerimonia', text: 'Sem cerimonia.' },
@@ -10824,7 +10823,7 @@ test('scope-rules: a Read that switches on a new kind delivers its rules in the 
 test('scope-rules: an unknown rule id fails loud (visible, signed with the hook origin, journaled), once per session; valid rules still arrive', async () => {
   const sr = require('./lib/scope-rules.js');
   const owner = require('./lib/hook-owner.js');
-  const base = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-sr-bad-'));
+  const base = tempDir('ccb-sr-bad-');
   const { lookup } = fakeScopedLookup([
     { id: 'rule:sempre:ok', text: 'vale' },
     { id: 'rule:cobol:x', text: 'tipo sem gatilho' },
@@ -10851,7 +10850,7 @@ test('scope-rules: an unknown rule id fails loud (visible, signed with the hook 
 
 test('scope-rules: a lookup failure is shown once, signed, and retried on the next prompt; the set cap defers the rest to the next prompt', async () => {
   const sr = require('./lib/scope-rules.js');
-  const base = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-sr-down-'));
+  const base = tempDir('ccb-sr-down-');
   const down = async () => { throw Object.assign(new Error('the memory server refused every try (4)'), { code: 'MEMORY_SERVER_DOWN' }); };
   const { lookup, calls } = fakeScopedLookup([
     { id: 'rule:sempre:a', text: 'a'.repeat(60) },
@@ -10998,7 +10997,7 @@ test('scoped-rules-client: ECONNREFUSED is retried a bounded number of times, re
 
 test('brain-port: the clients read the port from the running daemon\'s run file on every call, and no client carries a port of its own', async () => {
   const { brainPort } = require('./lib/brain-port.js');
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-brain-port-'));
+  const dir = tempDir('ccb-brain-port-');
   const lock = (o) => fs.writeFileSync(path.join(dir, 'brain-http.lock.json'), typeof o === 'string' ? o : JSON.stringify(o));
   const errs = []; const origErr = console.error; console.error = (m) => errs.push(String(m));
   try {
@@ -11128,7 +11127,7 @@ test('scope-rules: the hook is declared, served by the daemon with the origin in
 
 test('notice-once: a failure is shown once per owner; repeats are silent but fully logged; a different failure or a recovery shows again', () => {
   const no = require('./lib/notice-once.js');
-  const base = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-notice-'));
+  const base = tempDir('ccb-notice-');
   try {
     const n = (sig, text = 'fora do ar') => no.notice({ key: 'k', signature: sig, text, detail: `cause ${sig}`, base });
     assertEq(n('a'), 'fora do ar', 'first sight is shown');
@@ -11148,7 +11147,7 @@ test('notice-once: a failure is shown once per owner; repeats are silent but ful
 test('notice-once: the detail log rotates at its size cap, so a long outage logging every prompt never grows it without bound', () => {
   const no = require('./lib/notice-once.js');
   const { DEFAULT_MAX_BYTES } = require('../engine/lib/log-rotate.js');
-  const base = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-notice-cap-'));
+  const base = tempDir('ccb-notice-cap-');
   try {
     fs.writeFileSync(no.logFile(base), 'x'.repeat(DEFAULT_MAX_BYTES));
     no.notice({ key: 'k', signature: 'a', text: 'fora do ar', detail: 'cause a', base });
@@ -11160,7 +11159,7 @@ test('notice-once: the detail log rotates at its size cap, so a long outage logg
 
 test('brain-daemon-ensure: a daemon that cannot be ensured gives ONE plain line across prompts; the notice returns after a recovery; the cause stays in the log', async () => {
   const ensure = require('./brain-daemon-ensure.js');
-  const data = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-ensure-once-'));
+  const data = tempDir('ccb-ensure-once-');
   try {
     const deps = (ensureDaemon) => ({ root: ROOT, data, runSetupInBackground: () => false, ensureDaemon });
     const bad = async () => ({ status: 'error', error: 'EADDRINUSE 38217' });
@@ -11372,7 +11371,7 @@ test('S4 dashboard.countEntriesInDb: caches by db+wal mtime (WAL-safe) + cache d
 const routerEnsure = require('./model-router-ensure.js');
 
 test('model-router-ensure.cleanupGlobalEnv: com o selo, nenhum spawn de PowerShell (eram ~450 ms em todo SessionStart); sem selo, uma passada limpa grava o selo', () => {
-  const d = fs.mkdtempSync(path.join(os.tmpdir(), 'mre-seal-'));
+  const d = tempDir('mre-seal-');
   try {
     const seal = path.join(d, 'legacy-env-clean.json');
     fs.writeFileSync(seal, '{}');
@@ -12312,7 +12311,7 @@ test('pages-publish: o workflow publica por branch (sem artefato, sem GITHUB_TOK
 
 test('pages-publish.checkSite: site valido passa; sem pagina, versao velha ou link simbolico falham alto', async () => {
   const { checkSite, PagesError } = await loadPagesPublish();
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-pp-'));
+  const dir = tempDir('ccb-pp-');
   try {
     checkSite(ppSite(dir), '3.11.0');
     nassert.throws(() => checkSite(path.join(dir, 'nada'), '3.11.0'), (e) => e instanceof PagesError && /nothing to publish/.test(e.message));
@@ -12325,7 +12324,7 @@ test('pages-publish.checkSite: site valido passa; sem pagina, versao velha ou li
 
 test('pages-publish.publish: commit orfao com so o site + .nojekyll (sem .token-guard/.source-hash), forca so em gh-pages, remoto SSH exige a chave', async () => {
   const { publish } = await loadPagesPublish();
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-pp-'));
+  const dir = tempDir('ccb-pp-');
   const sh = (args, cwd) => require('child_process').spawnSync('git', args, { cwd, encoding: 'utf8', windowsHide: true });
   try {
     // publish() checks the page against the REAL package.json version, so the fixture must follow it (a hardcoded vX.Y.Z broke on every bump).
@@ -12348,7 +12347,7 @@ test('pages-publish.publish: commit orfao com so o site + .nojekyll (sem .token-
 // Runs in a child process: fetch's sockets inside the suite's own process abort it at exit on Windows (libuv
 // "UV_HANDLE_CLOSING"), which has nothing to do with the code under test.
 test('pages-publish.verify: passa quando a URL publica mostra a versao e o index publicado; falha alto quando nao mostra', () => {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-pp-'));
+  const dir = tempDir('ccb-pp-');
   try {
     const site = ppSite(dir);
     const probe = path.join(dir, 'probe.mjs');
@@ -12508,14 +12507,13 @@ test('FASE-E: hasNonZeroDelta + snapshotTenants — contrato puro do rollover po
 test('FASE-E e2e: POST /v1/messages/count_tokens responde (sem hang por TDZ)', async () => {
   const net = require('net');
   const { spawn } = require('child_process');
-  const osMod = require('os');
   const fsMod = require('fs');
   const pathMod = require('path');
   const port = await new Promise((resolve) => {
     const s = net.createServer();
     s.listen(0, '127.0.0.1', () => { const p = s.address().port; s.close(() => resolve(p)); });
   });
-  const tmp = fsMod.mkdtempSync(pathMod.join(osMod.tmpdir(), 'ccb-faseE-'));
+  const tmp = tempDir('ccb-faseE-');
   // Hermetic upstream: the child used to open REAL connections to api.anthropic.com
   // with a fake key (count_tokens, catalog warm-up, both /v1/messages). Pin it to a
   // local fake and assert the traffic landed there.
@@ -12636,7 +12634,7 @@ test('FASE-F dashboard.js: update com whitelist estrita + delete com backup obri
 
 test('FASE-F store round-trip: save→get→update fields→save→delete (operações exatas dos handlers)', async () => {
   const savedEnv = process.env.CLAUDE_PLUGIN_DATA;
-  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-faseF-'));
+  const tmp = tempDir('ccb-faseF-');
   process.env.CLAUDE_PLUGIN_DATA = tmp;
   let store;
   try {
@@ -12701,7 +12699,7 @@ test('FASE-G dashboard.js: rotas do wizard + brain/health wireadas (API + UI + h
 
 test('FASE-G mcp-wizard: reset limpa estado persistido; getState devolve idle (round-trip no arquivo)', () => {
   const saved = process.env.CLAUDE_PLUGIN_DATA;
-  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-wiz-'));
+  const tmp = tempDir('ccb-wiz-');
   try {
     process.env.CLAUDE_PLUGIN_DATA = tmp;
     delete require.cache[require.resolve('./lib/mcp-wizard.js')];
@@ -12759,7 +12757,7 @@ test('mcp-wizard.ensureJar: hash bate → verified; hash não bate → mismatch 
     // check ran and passed → status message may honestly say "verified".
     {
       mockNextDownload();
-      const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-ensurejar-'));
+      const tmpDir = tempDir('ccb-ensurejar-');
       const jarPath = path.join(tmpDir, 'x.jar');
       emit.calls = [];
       await mcpWizard.ensureJar(jarPath, { downloadUrl: 'https://example.test/x.jar', expectedSha256: correctHash }, emit);
@@ -12773,7 +12771,7 @@ test('mcp-wizard.ensureJar: hash bate → verified; hash não bate → mismatch 
     // deve jogar erro E remover o arquivo (nunca deixar um JAR não-confiável no disco).
     {
       mockNextDownload();
-      const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-ensurejar-'));
+      const tmpDir = tempDir('ccb-ensurejar-');
       const jarPath = path.join(tmpDir, 'x.jar');
       let threw = null;
       try {
@@ -12788,7 +12786,7 @@ test('mcp-wizard.ensureJar: hash bate → verified; hash não bate → mismatch 
     // explicitamente — este é exatamente o gap fail-loud fechado nesta rodada.
     {
       mockNextDownload();
-      const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-ensurejar-'));
+      const tmpDir = tempDir('ccb-ensurejar-');
       const jarPath = path.join(tmpDir, 'x.jar');
       emit.calls = [];
       await mcpWizard.ensureJar(jarPath, { downloadUrl: 'https://example.test/x.jar', expectedSha256: '' }, emit);
@@ -12805,7 +12803,7 @@ test('mcp-wizard.ensureJar: hash bate → verified; hash não bate → mismatch 
 
 test('FASE-G brain-status: relatório segue o contrato {mode, connected, project, backend, details, latency}', async () => {
   const saved = process.env.CLAUDE_PLUGIN_DATA;
-  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-bstatus-'));
+  const tmp = tempDir('ccb-bstatus-');
   const { execFileSync } = require('child_process');
   try {
     const out = execFileSync(process.execPath, [path.join(SCRIPTS, 'brain-status.js')], {
@@ -12850,7 +12848,6 @@ test('FASE-E e2e integrado: requests com X-CCB-Tenant isolam byTenant e agregam 
   const net = require('net');
   const httpMod = require('http');
   const { spawn } = require('child_process');
-  const osMod = require('os');
   const fsMod = require('fs');
   const pathMod = require('path');
 
@@ -12869,7 +12866,7 @@ test('FASE-E e2e integrado: requests com X-CCB-Tenant isolam byTenant e agregam 
     const s = net.createServer();
     s.listen(0, '127.0.0.1', () => { const p = s.address().port; s.close(() => resolve(p)); });
   });
-  const tmp = fsMod.mkdtempSync(pathMod.join(osMod.tmpdir(), 'ccb-faseE-int-'));
+  const tmp = tempDir('ccb-faseE-int-');
   // sticky-tier: único modo que roda metricsRoute (contagem total/downgrades por
   // tenant). Classificador falha fast offline → pin usa o tier do modelo escolhido.
   fsMod.writeFileSync(pathMod.join(tmp, 'ucfg.json'),
@@ -13020,7 +13017,7 @@ test('FIX1 routerTokenMatches: true só na igualdade exata; guarda tamanho; vazi
 });
 
 test('FIX1 ensureRouterToken: gera 64-hex e REUSA entre chamadas (idempotente, read-or-create)', () => {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-tok-'));
+  const dir = tempDir('ccb-tok-');
   const t1 = routerServer.ensureRouterToken(dir);
   assert(/^[0-9a-f]{64}$/.test(t1), 'token deve ser 32 bytes em hex'); // NÃO checamos mode (Windows mapeia só read-only)
   const t2 = routerServer.ensureRouterToken(dir);
@@ -16843,11 +16840,11 @@ test('dashboard.fetchByokModelIds: só headers do BYOK; has_more → truncated; 
   const savedProfile = process.env.USERPROFILE;
   const savedData = process.env.CLAUDE_PLUGIN_DATA;
   const savedKey = process.env.ANTHROPIC_API_KEY;
-  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-home-'));
+  const home = tempDir('ccb-home-');
   try {
     process.env.HOME = home;
     process.env.USERPROFILE = home;
-    process.env.CLAUDE_PLUGIN_DATA = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-dash-models-'));
+    process.env.CLAUDE_PLUGIN_DATA = tempDir('ccb-dash-models-');
     process.env.ANTHROPIC_API_KEY = 'sk-subscription-fixture';
     delete require.cache[require.resolve('./dashboard.js')];
     const dash = require('./dashboard.js');
@@ -17470,7 +17467,7 @@ test('byok BUG DE CAMPO: count_tokens tem que ir ao MESMO destino que /v1/messag
     + `try{${script}}catch(e){console.error(e&&e.stack||e);process.exit(1)}`;
   try {
     require('child_process').execFileSync(process.execPath, ['-e', body], {
-      env: { ...process.env, CLAUDE_PLUGIN_DATA: fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-ct-')) },
+      env: { ...process.env, CLAUDE_PLUGIN_DATA: tempDir('ccb-ct-') },
       stdio: ['ignore', 'pipe', 'pipe'], timeout: 30000,
     });
   } catch (e) {
@@ -17645,7 +17642,7 @@ test('byok on-limit BUG DE CAMPO 2: count_tokens/catalogo ficavam presos na Anth
     + `try{${script}}catch(e){console.error(e&&e.stack||e);process.exit(1)}`;
   try {
     require('child_process').execFileSync(process.execPath, ['-e', bodyScript], {
-      env: { ...process.env, CLAUDE_PLUGIN_DATA: fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-ct-cd-')) },
+      env: { ...process.env, CLAUDE_PLUGIN_DATA: tempDir('ccb-ct-cd-') },
       stdio: ['ignore', 'pipe', 'pipe'], timeout: 30000,
     });
   } catch (e) {
@@ -17695,7 +17692,7 @@ test('gateway alternativo NAO arma o disjuntor da Anthropic (achado da auditoria
     + `try{${script}}catch(e){console.error(e&&e.stack||e);process.exit(1)}`;
   try {
     require('child_process').execFileSync(process.execPath, ['-e', bodyScript], {
-      env: { ...process.env, CLAUDE_PLUGIN_DATA: fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-gw-cd-')) },
+      env: { ...process.env, CLAUDE_PLUGIN_DATA: tempDir('ccb-gw-cd-') },
       stdio: ['ignore', 'pipe', 'pipe'], timeout: 30000,
     });
   } catch (e) {
@@ -17813,7 +17810,7 @@ test('byok INTEGRACAO: o token da assinatura NAO chega ao endpoint (prova ponta 
     + `try{${script}}catch(e){console.error(e&&e.stack||e);process.exit(1)}`;
   try {
     require('child_process').execFileSync(process.execPath, ['-e', body], {
-      env: { ...process.env, CLAUDE_PLUGIN_DATA: fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-byok-')) },
+      env: { ...process.env, CLAUDE_PLUGIN_DATA: tempDir('ccb-byok-') },
       stdio: ['ignore', 'pipe', 'pipe'], timeout: 30000,
     });
   } catch (e) {
@@ -18235,7 +18232,7 @@ test('decideStickyModel: classify falha (null) + modelo desconhecido → passthr
 // ─── verify-journal: roundtrip (D2) ──────────────────────────────────────────
 test('verify-journal: append edit+cmd, read chronological, clear (D2)', () => withDevProfile(() => {
   const saved = process.env.CLAUDE_PLUGIN_DATA;
-  process.env.CLAUDE_PLUGIN_DATA = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-vj-'));
+  process.env.CLAUDE_PLUGIN_DATA = tempDir('ccb-vj-');
   // Re-require with the fresh DATA_DIR baked into module scope.
   delete require.cache[require.resolve('./lib/verify-journal.js')];
   const vj = require('./lib/verify-journal.js');
@@ -18341,7 +18338,7 @@ test('self-review-retrieve.applyGate: entries without score pass (keyword fallba
 });
 
 test('self-review-retrieve.readDaemonPort/Token: absent → null', () => {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-sr-nolock-'));
+  const dir = tempDir('ccb-sr-nolock-');
   assertEq(srRetrieve.readDaemonPort(dir), null);
   const savedTok = process.env.BRAIN_HTTP_TOKEN; delete process.env.BRAIN_HTTP_TOKEN;
   assertEq(srRetrieve.readDaemonToken(dir), null);
@@ -18385,7 +18382,7 @@ function startFakeBrainHttp({ results = [], toolError = false } = {}) {
 
 test('self-review-retrieve.retrieveViaDaemon: token handshake + brain_search parse', async () => {
   const daemon = await startFakeBrainHttp({ results: [{ id: 'x', title: 'past bug', type: 'lesson', score: 0.8, recurrence: 2 }] });
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-sr-daemon-'));
+  const dir = tempDir('ccb-sr-daemon-');
   fs.writeFileSync(path.join(dir, 'brain-http.lock.json'), JSON.stringify({ port: daemon.port }));
   fs.writeFileSync(path.join(dir, 'brain-http.token'), 'tok');
   const savedTok = process.env.BRAIN_HTTP_TOKEN; delete process.env.BRAIN_HTTP_TOKEN;
@@ -18404,7 +18401,7 @@ test('self-review-retrieve.retrieveViaDaemon: token handshake + brain_search par
 });
 
 test('self-review-retrieve.retrieveViaDaemon: no lock/token → null (fall back)', async () => {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-sr-nodaemon-'));
+  const dir = tempDir('ccb-sr-nodaemon-');
   const savedTok = process.env.BRAIN_HTTP_TOKEN; delete process.env.BRAIN_HTTP_TOKEN;
   try {
     assertEq(await srRetrieve.retrieveViaDaemon('q', { dataDir: dir, project: 'p', topK: 2 }), null);
@@ -18413,7 +18410,7 @@ test('self-review-retrieve.retrieveViaDaemon: no lock/token → null (fall back)
 
 test('self-review-retrieve.retrieveViaDaemon: tool-level error (isError) → null (fall back)', async () => {
   const daemon = await startFakeBrainHttp({ toolError: true });
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-sr-toolerr-'));
+  const dir = tempDir('ccb-sr-toolerr-');
   fs.writeFileSync(path.join(dir, 'brain-http.lock.json'), JSON.stringify({ port: daemon.port }));
   fs.writeFileSync(path.join(dir, 'brain-http.token'), 'tok');
   const savedTok = process.env.BRAIN_HTTP_TOKEN; delete process.env.BRAIN_HTTP_TOKEN;
@@ -18429,7 +18426,7 @@ test('self-review-retrieve.retrieveViaDaemon: tool-level error (isError) → nul
 });
 
 test('self-review-retrieve.retrieveViaDaemon: REAL daemon — sessions do not accumulate (G3)', async () => {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-sr-real-'));
+  const dir = tempDir('ccb-sr-real-');
   const { startHttpDaemon } = await import(require('url').pathToFileURL(path.join(ROOT, 'servers', 'brain-server', 'lib', 'http-daemon.js')).href);
   const d = await startHttpDaemon({ pluginRoot: ROOT, dataDir: dir, port: 0 });
   const savedTok = process.env.BRAIN_HTTP_TOKEN; delete process.env.BRAIN_HTTP_TOKEN;
@@ -18444,7 +18441,7 @@ test('self-review-retrieve.retrieveViaDaemon: REAL daemon — sessions do not ac
 });
 
 test('http-daemon: rejeicao sem tratamento NAO derruba o daemon de todas as sessoes; fica contada no /health e o handler sai no shutdown', async () => {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-unhandled-'));
+  const dir = tempDir('ccb-unhandled-');
   const { startHttpDaemon } = await import(require('url').pathToFileURL(path.join(ROOT, 'servers', 'brain-server', 'lib', 'http-daemon.js')).href);
   const before = process.listenerCount('unhandledRejection');
   const d = await startHttpDaemon({ pluginRoot: ROOT, dataDir: dir, port: 0 });
@@ -18463,7 +18460,7 @@ test('http-daemon: rejeicao sem tratamento NAO derruba o daemon de todas as sess
 });
 
 test('http-daemon: hook_* tools are NOT in tools/list (model never sees them) but stay callable by name for mcp_tool hooks', async () => {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-hidehooks-'));
+  const dir = tempDir('ccb-hidehooks-');
   const { startHttpDaemon } = await import(require('url').pathToFileURL(path.join(ROOT, 'servers', 'brain-server', 'lib', 'http-daemon.js')).href);
   const d = await startHttpDaemon({ pluginRoot: ROOT, dataDir: dir, port: 0 });
   const url = `http://127.0.0.1:${d.httpServer.address().port}/mcp`;
@@ -18523,7 +18520,7 @@ test('http-daemon: hook_* tools are NOT in tools/list (model never sees them) bu
 });
 
 test('http-daemon: the open SSE stream (GET) gets periodic keepalive comments, so an idle client never times it out', async () => {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-ssealive-'));
+  const dir = tempDir('ccb-ssealive-');
   const savedTok = process.env.BRAIN_HTTP_TOKEN; delete process.env.BRAIN_HTTP_TOKEN;
   const { startHttpDaemon } = await import(require('url').pathToFileURL(path.join(ROOT, 'servers', 'brain-server', 'lib', 'http-daemon.js')).href);
   const d = await startHttpDaemon({ pluginRoot: ROOT, dataDir: dir, port: 0, sseKeepaliveMs: 150 });
@@ -18552,7 +18549,7 @@ test('http-daemon: the open SSE stream (GET) gets periodic keepalive comments, s
 });
 
 test('http-daemon shutdown: frees the port at once but answers the requests already in flight (no "Connection closed")', async () => {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-drain-'));
+  const dir = tempDir('ccb-drain-');
   const { startHttpDaemon } = await import(require('url').pathToFileURL(path.join(ROOT, 'servers', 'brain-server', 'lib', 'http-daemon.js')).href);
   const d = await startHttpDaemon({ pluginRoot: ROOT, dataDir: dir, port: 0, shutdownDrainMs: 5000 });
   const port = d.httpServer.address().port;
@@ -18591,7 +18588,7 @@ test('http-daemon shutdown: frees the port at once but answers the requests alre
 });
 
 test('brain-status: reports the folder\'s real project id (not the folder name / "default") and never sets CCB_PROJECT_ID in the dispatcher process', async () => {
-  const base = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-bstatus-'));
+  const base = tempDir('ccb-bstatus-');
   const saved = { HOME: process.env.HOME, USERPROFILE: process.env.USERPROFILE, CCB: process.env.CCB_PROJECT_ID };
   try {
     const home = path.join(base, 'home'); fs.mkdirSync(home);
@@ -18617,7 +18614,7 @@ test('brain-status: reports the folder\'s real project id (not the folder name /
 
 test('mcp-launcher (native-java ADR-023 contract): one JSON line → url; exit 1 → the [FATAL] reason, no fallback; garbage refused; not installed → missing; X.Y.Z-only jar choice; launcher needs server 2.45.5+', async () => {
   const L = require('./lib/mcp-bootstrap/launcher.js');
-  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-launcher-'));
+  const home = tempDir('ccb-launcher-');
   try {
     const env = { USERPROFILE: home, HOME: home };
     assert((await L.runLauncher({ env })).missing, 'no launcher file → missing (nothing started)');
@@ -18650,7 +18647,7 @@ test('mcp-launcher (native-java ADR-023 contract): one JSON line → url; exit 1
 test('brain-daemon-ensure: deps faltando = setup em background e NADA de spawn do daemon (ele morria na importacao: ERR_MODULE_NOT_FOUND, 2026-10-14)', async () => {
   const ens = require('./brain-daemon-ensure.js');
   let spawned = 0;
-  const data = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-ensure-setup-'));
+  const data = tempDir('ccb-ensure-setup-');
   const out = await ens.run({ hook_event_name: 'UserPromptSubmit' }, {
     root: ROOT, data, runSetupInBackground: () => true,
     ensureDaemon: async () => { spawned++; return { status: 'started' }; },
@@ -18708,7 +18705,7 @@ test('SessionStart with the memory server UP spawns NOTHING (headless `claude -p
 
 test('brain-daemon-ensure.UserPromptSubmit: a memory server that died mid-session is relaunched once per failure, found at run time in the registry (isolated daemon and port)', async () => {
   const ens = require('./brain-daemon-ensure.js');
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-relaunch-'));
+  const dir = tempDir('ccb-relaunch-');
   const runDir = path.join(dir, 'run');
   fs.mkdirSync(runDir);
   const writeRegistry = (port) => fs.writeFileSync(path.join(runDir, 'daemon.json'), JSON.stringify({ url: `http://127.0.0.1:${port}`, port }));
@@ -18762,7 +18759,7 @@ test('mcp-launcher.kickLauncher on Windows goes through wscript + run-hidden.vbs
   const vbs = fs.readFileSync(L.RUN_HIDDEN_VBS, 'utf8');
   assert(/\.Run\s+"""" & WScript\.Arguments\(0\) & """", 0, False/.test(vbs), 'window style 0 (hidden), no wait');
   assert(/^[\x00-\x7F]*$/.test(vbs), 'ASCII only: wscript reads the file in the ANSI code page');
-  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-kick-'));
+  const home = tempDir('ccb-kick-');
   try {
     const env = { USERPROFILE: home, HOME: home };
     fs.mkdirSync(path.dirname(L.launcherPath(env, 'win32')), { recursive: true });
@@ -18779,7 +18776,7 @@ test('mcp-wizard.downloadServerJar: the CPU build under its exact X.Y.Z name in 
   const resolverPath = require.resolve('./lib/mcp-bootstrap/release-resolver.js');
   const real = require(resolverPath);
   const https = require('https'); const realGet = https.get; const { PassThrough } = require('stream');
-  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-dlsrv-'));
+  const home = tempDir('ccb-dlsrv-');
   const payload = Buffer.from('PK fake'); const sha = require('crypto').createHash('sha256').update(payload).digest('hex');
   let asked = null;
   try {
@@ -18816,7 +18813,7 @@ test('mcp-bootstrap: MANIFEST.json is current (edit a shared file → run "node 
   const upstreamFile = path.join(dir, sync.MANIFEST);
   const here = await sync.check({ dir });
   assert(here.ok, `upstream manifest is stale: ${here.problems.join(' | ')}`);
-  const base = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-bootsync-'));
+  const base = tempDir('ccb-bootsync-');
   try {
     const copy = path.join(base, 'mcp-bootstrap');
     fs.cpSync(dir, copy, { recursive: true });
@@ -18892,8 +18889,8 @@ test('engine: ENGINE-MANIFEST.json esta atual e o fechamento de require de cada 
 });
 
 test('engine: dataDir por parametro — metrics-store, brain-store, recall-health e scope-search gravam/leem no dir passado pela chamada, sem setDataDir', async () => {
-  const a = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-host-a-'));
-  const b = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-host-b-'));
+  const a = tempDir('ccb-host-a-');
+  const b = tempDir('ccb-host-b-');
   const ms = require('../engine/lib/metrics-store.js');
   const store = require('../engine/brain-store.js');
   try {
@@ -18932,7 +18929,7 @@ test('engine: host-env — project-id/metrics leem o env da chamada sem exigir o
   const src = (f) => fs.readFileSync(path.join(ROOT, 'engine', 'lib', f), 'utf8');
   for (const f of ['project-id.js', 'metrics.js', 'metrics-project.js']) assert(!/hook-context/.test(src(f).replace(/^\s*(\/\/|\*).*$/gm, '')), `${f} requires hook-context`);
   const hc = require('./lib/hook-context.js');
-  const repo = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-hostenv-'));
+  const repo = tempDir('ccb-hostenv-');
   try {
     hc.runWithHookEnv({ CLAUDE_PROJECT_DIR: repo }, () => assertEq(he.hostEnv().CLAUDE_PROJECT_DIR, repo, 'the adapter view reaches the engine'));
     const metrics = require('../engine/lib/metrics.js');
@@ -18947,7 +18944,7 @@ test('engine: host-env — project-id/metrics leem o env da chamada sem exigir o
 
 test('engine: data-dir.setDataDir — um host que nao e o Claude Code passa o proprio data dir e nenhuma resolucao do CC roda', () => {
   const dd = require('../engine/lib/data-dir.js');
-  const host = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-host-'));
+  const host = tempDir('ccb-host-');
   try {
     dd.setDataDir(host);
     assertEq(dd.dataDir(), path.resolve(host));
@@ -18960,7 +18957,7 @@ test('engine: data-dir.setDataDir — um host que nao e o Claude Code passa o pr
 
 test('engine: sync.js --manifest (vendorizacao generalizada) — copia nova em dia; arquivo editado, ausente ou atras do upstream e apontado; CRLF nao conta', async () => {
   const sync = require('./lib/mcp-bootstrap/sync.js');
-  const base = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-engsync-'));
+  const base = tempDir('ccb-engsync-');
   try {
     const up = path.join(base, 'up'); const copy = path.join(base, 'copy');
     for (const d of [up, copy]) { fs.mkdirSync(path.join(d, 'a', 'b'), { recursive: true }); fs.writeFileSync(path.join(d, 'a', 'b', 'x.js'), 'x\n'); fs.writeFileSync(path.join(d, 'y.js'), 'y\n'); }
@@ -19052,7 +19049,7 @@ test('mcp-client: a daemon that is down is brought back by the LAUNCHER (never j
 });
 
 test('http-daemon: the idle reaper never takes a session whose SSE stream is open (it did after 30 min → next prompt\'s mcp_tool hooks failed "Connection closed"); idle after the stream closes → reaped', async () => {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-reaper-'));
+  const dir = tempDir('ccb-reaper-');
   const savedTok = process.env.BRAIN_HTTP_TOKEN; delete process.env.BRAIN_HTTP_TOKEN;
   const { startHttpDaemon } = await import(require('url').pathToFileURL(path.join(ROOT, 'servers', 'brain-server', 'lib', 'http-daemon.js')).href);
   const d = await startHttpDaemon({ pluginRoot: ROOT, dataDir: dir, port: 0, sseKeepaliveMs: 100, sessionIdleMs: 300, reapIntervalMs: 50 });
@@ -19086,7 +19083,7 @@ test('http-daemon: the idle reaper never takes a session whose SSE stream is ope
 });
 
 test('http-daemon /mcp requires the local token (headersHelper): none/wrong → 401, foreign Origin → 403 even with it, right token → MCP works', async () => {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-mcptok-'));
+  const dir = tempDir('ccb-mcptok-');
   const savedTok = process.env.BRAIN_HTTP_TOKEN; delete process.env.BRAIN_HTTP_TOKEN;
   const { startHttpDaemon } = await import(require('url').pathToFileURL(path.join(ROOT, 'servers', 'brain-server', 'lib', 'http-daemon.js')).href);
   const d = await startHttpDaemon({ pluginRoot: ROOT, dataDir: dir, port: 0 });
@@ -19108,7 +19105,7 @@ test('http-daemon /mcp requires the local token (headersHelper): none/wrong → 
 
 test('mcp-headers (headersHelper): prints the daemon token of the plugin data dir; ensure runs first and a slow one never holds the client', async () => {
   const { headers } = require('./mcp-headers.js');
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-mcphdr-'));
+  const dir = tempDir('ccb-mcphdr-');
   const savedData = process.env.CLAUDE_PLUGIN_DATA;
   const savedTok = process.env.BRAIN_HTTP_TOKEN; delete process.env.BRAIN_HTTP_TOKEN;
   try {
@@ -19136,7 +19133,7 @@ test('mcp-headers (headersHelper): prints the daemon token of the plugin data di
 
 test('mcp-headers launcher: answers from the CURRENT install when the plugin dir the session pinned is gone; fails loud when no install exists', () => {
   const cp = require('child_process');
-  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-launcher-'));
+  const tmp = tempDir('ccb-launcher-');
   const cfg = path.join(tmp, 'claude');
   const cacheBase = path.join(cfg, 'plugins', 'cache', 'mkt', 'claude-code-boss');
   const current = path.join(cacheBase, '9.9.9');
@@ -19164,7 +19161,7 @@ test('mcp-headers launcher: answers from the CURRENT install when the plugin dir
 
 test('mcp-launcher: installLauncher copies the launcher into the data dir, is idempotent and repairs a stale copy', () => {
   const { installLauncher, LAUNCHER_NAME } = require('./lib/mcp-launcher.js');
-  const dir = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-instl-')), 'data');
+  const dir = path.join(tempDir('ccb-instl-'), 'data');
   try {
     const a = installLauncher(dir);
     assertEq(a.installed, true);
@@ -19177,7 +19174,7 @@ test('mcp-launcher: installLauncher copies the launcher into the data dir, is id
 
 test('daemon token: a pinned BRAIN_HTTP_TOKEN is synced to the token file (the headersHelper never sees that var); plugin.json wires the helper', async () => {
   const { ensureToken, tokenFile } = await import(require('url').pathToFileURL(path.join(ROOT, 'servers', 'brain-server', 'lib', 'daemon-common.js')).href);
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-pintok-'));
+  const dir = tempDir('ccb-pintok-');
   const savedTok = process.env.BRAIN_HTTP_TOKEN;
   try {
     fs.writeFileSync(tokenFile(dir), 'old-file-token');
@@ -19195,7 +19192,7 @@ test('daemon token: a pinned BRAIN_HTTP_TOKEN is synced to the token file (the h
 });
 
 test('http-daemon: unknown mcp-session-id → 404 (client re-initializes); no id + non-initialize → 400 (G16)', async () => {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-404-'));
+  const dir = tempDir('ccb-404-');
   const { startHttpDaemon } = await import(require('url').pathToFileURL(path.join(ROOT, 'servers', 'brain-server', 'lib', 'http-daemon.js')).href);
   const d = await startHttpDaemon({ pluginRoot: ROOT, dataDir: dir, port: 0 });
   try {
@@ -19219,7 +19216,7 @@ test('http-daemon: unknown mcp-session-id → 404 (client re-initializes); no id
 
 test('session-counter: per-session cadence, TTL prune, size cap (cross-session leak fix)', () => {
   const sc = require('./lib/session-counter.js');
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-sc-'));
+  const dir = tempDir('ccb-sc-');
   const file = path.join(dir, '.runtime', 'c.json');
   const t0 = 1_000_000;
   assertEq(sc.tick(file, 'A', t0), 1);
@@ -19337,7 +19334,7 @@ test('self-review.run: edits + retrieved lesson → block, journals, dedups next
 }));
 
 test('self-review.run: busca a memoria pelo ID do projeto da pasta (nao pelo nome) e manda o cwd; pasta sem id = memoria off, nem busca', () => withDevProfile(async () => {
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'sr-id-'));
+  const root = tempDir('sr-id-');
   const named = path.join(root, 'claude-code'); // folder name != project id
   const bare = path.join(root, 'no-id');
   try {
@@ -19455,7 +19452,7 @@ test('session-summary.buildNotice: [SESSION] header + singular/plural', () => {
 });
 
 test('session-summary.run: counts lessons since stamp, fires once (cap), disabled→{}', async () => {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-ss-'));
+  const dir = tempDir('ccb-ss-');
   fs.mkdirSync(path.join(dir, '.runtime'), { recursive: true });
   const sid = 'sssid';
   const cwd = path.join(os.tmpdir(), 'ssproj');
@@ -19487,7 +19484,7 @@ test('session-summary.run: counts lessons since stamp, fires once (cap), disable
 });
 
 test('session-summary.run: missing start stamp → counts nothing (no all-time report)', async () => {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-ss-nostamp-'));
+  const dir = tempDir('ccb-ss-nostamp-');
   fs.mkdirSync(path.join(dir, '.runtime'), { recursive: true });
   const fakeMetricsStore = {
     init: () => true,
@@ -19531,7 +19528,7 @@ test('doctor.findDataDirCandidates: real fragmentation shape (sibling dirs by pr
   // claude-code-boss-<marketplace>) — NOT nested under a marketplace folder.
   // A prior version scanned .../plugins/<mkt>/claude-code-boss and NEVER found
   // the real fragmentation (caught live by smoke/doctor.mjs).
-  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-doctor-frag-'));
+  const home = tempDir('ccb-doctor-frag-');
   const dataBase = path.join(home, '.claude', 'plugins', 'data');
   const dirs = ['claude-code-boss', 'claude-code-boss-inline', 'claude-code-boss-allansantos-plugins'];
   for (const d of dirs) {
@@ -19563,7 +19560,7 @@ test('data-dir: a VALID env dir yields to the heavier live folder named by the p
   // Consolidation can never repair this: it only absorbs POPULATED siblings.
   // NOTE: kept SYNC on purpose — it mutates process.env, and this runner runs
   // async tests concurrently (an async version would race sibling tests).
-  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-ddir-split-'));
+  const home = tempDir('ccb-ddir-split-');
   const dataBase = path.join(home, '.claude', 'plugins', 'data');
   const live = path.join(dataBase, 'claude-code-boss-inline');
   const stray = path.join(dataBase, 'claude-code-boss-allansantos-plugins');
@@ -19717,7 +19714,7 @@ test('doctor stale-daemon-lock fixer apaga so o lock informado', () => {
 // ── fixed-cost audit (lib/fixed-cost.js), doctor integration, first run ────────────────────────────────
 
 const fixedCost = require('./lib/fixed-cost.js');
-const fcTmp = (p) => fs.mkdtempSync(path.join(os.tmpdir(), `ccb-fc-${p}-`));
+const fcTmp = (p) => tempDir(`ccb-fc-${p}-`);
 const fcWrite = (file, text) => { fs.mkdirSync(path.dirname(file), { recursive: true }); fs.writeFileSync(file, typeof text === 'string' ? text : JSON.stringify(text)); };
 const fcLine = (o) => JSON.stringify(o) + '\n';
 
@@ -20556,7 +20553,7 @@ test('setup-map: folder with no project id → memory OFF is a visible (non-opti
 
 test('graph client: a probe from a SUBFOLDER asks the daemon about the PROJECT root (no ROOT_CONFLICT against the mapped root)', () => {
   const G = require('./lib/graph/client.js');
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-graph-root-'));
+  const root = tempDir('ccb-graph-root-');
   fs.mkdirSync(path.join(root, '.memory'));
   fs.writeFileSync(path.join(root, '.memory', 'project.json'), JSON.stringify({ metadata: { defaults: { project_id: 'acme/app' } } }));
   require('child_process').spawnSync('git', ['init', '-q'], { cwd: root, stdio: 'ignore' }); // the git toplevel anchors the marker whatever HOME the run uses
@@ -20728,7 +20725,7 @@ test('dashboard curadoria: /api/curation/projects lista as homes de curadoria co
   const call = async (fn, url) => { let status = 200; let body = null; await fn({}, { writeHead: (c) => { status = c; }, end: (t) => { body = JSON.parse(t); } }, new URL('http://x' + url)); return { status, body }; };
   // withTempHome is synchronous (it restores HOME at the first await), so this async test isolates HOME itself.
   const saved = [process.env.HOME, process.env.USERPROFILE];
-  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-home-'));
+  const home = tempDir('ccb-home-');
   process.env.HOME = home; process.env.USERPROFILE = home;
   try {
     const cur = path.join(home, '.claude', 'claude-code-boss', 'curation');
@@ -20849,7 +20846,7 @@ test('hooks-config.saveFixedCost + dashboard /api/doctor/config: o usuario liga/
     assertEq((await call(dash.saveDoctorConfig, Readable.from([JSON.stringify({})]))).status, 400, 'vazio: 400');
     // The first-run hook honours it: autoFix off → nothing is applied and the notice does not claim anything was switched off.
     const firstRun = require('./doctor-first-run.js');
-    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-fr-cfg-'));
+    const dir = tempDir('ccb-fr-cfg-');
     let applied = 0;
     const fakeDoctor = { gatherContext: async () => ({ fixedCost: null }), runChecks: () => [{ id: 'fixed-cost', label: 'F', status: 'warn', detail: 'd', fix: 'f', autofix: 'fixed-cost' }], FIXERS: { 'fixed-cost': () => { applied++; return 'x'; } }, applyFixes: () => { applied++; return []; } };
     hc.saveFixedCost({ autoFix: false });
@@ -20892,7 +20889,7 @@ test('context-bundle.parseSmartHits: code/test/doc com caminho, faixa de linhas 
 
 test('context-bundle.buildBundle: junta Smart Tool + mapas + memoria em uma chamada; cada fonte que falha aparece em notes; indice velho e dito; o orcamento corta pela cauda', async () => {
   const cb = require('./lib/context-bundle.js');
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-ctxb-'));
+  const root = tempDir('ccb-ctxb-');
   try {
     const lines = (n) => Array.from({ length: n }, (_, i) => `line ${i + 1} doctor first run`).join('\n');
     fcWrite(path.join(root, 'claude-code-boss/scripts/doctor.js'), lines(800));
@@ -21520,7 +21517,7 @@ test('P3: os 8 detectores que nunca rodaram no standard (todos com teste) ficam 
     assertEq(telem.gateState(name, 'standard', gettersFor('standard')).enabled, false, `${name} off in standard`);
   }
   // Smoke: each detector's run() on a minimal real Stop event answers (no throw) within the per-detector ceiling.
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-p3-'));
+  const dir = tempDir('ccb-p3-');
   const tp = path.join(dir, 't.jsonl');
   fs.writeFileSync(tp, JSON.stringify({ type: 'user', message: { role: 'user', content: 'oi' } }) + '\n');
   try {
@@ -21729,7 +21726,7 @@ test('G7: the dispatcher CLI exits on its own after answering (model-router-ensu
   // Fully isolated: the real dispatcher runs brain-daemon-ensure + model-router-ensure,
   // and with the inherited env they swapped the developer's REAL daemon on 38217 and
   // probed the real router/settings. No global state may be touched by a unit test.
-  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-g7-home-'));
+  const home = tempDir('ccb-g7-home-');
   const env = {
     ...process.env, HOME: home, USERPROFILE: home, CLAUDE_CONFIG_DIR: path.join(home, '.claude'),
     CCB_ISOLATED: '1', BRAIN_HTTP_AUTOSTART: '0', BRAIN_HTTP_PORT: '1',
@@ -21750,7 +21747,7 @@ test('G7: the dispatcher CLI exits on its own after answering (model-router-ensu
 });
 
 test('user-prompt-submit-dispatcher.userNotices: "auto-update on", "plugin updated" and "version available" reach the visible line, once each', () => {
-  const base = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-upsnotice-'));
+  const base = tempDir('ccb-upsnotice-');
   const keys = ['HOME', 'USERPROFILE', 'CLAUDE_PLUGIN_ROOT', 'CLAUDE_PLUGIN_DATA', 'CLAUDE_CODE_BOSS_AUTO_UPDATE', 'DISABLE_UPDATES', 'DISABLE_AUTOUPDATER', 'CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC', 'FORCE_AUTOUPDATE_PLUGINS'];
   const saved = Object.fromEntries(keys.map((k) => [k, process.env[k]]));
   try {
@@ -21912,7 +21909,7 @@ test('mcp-server.withRecallBudget: devolve o que chegou a tempo, corta o que pas
 
 test('brain-daemon-ensure: o auto-update em segundo plano deixa a falha como aviso que o proximo prompt toma uma vez; no SessionStart o run() pula o update quando pedido', async () => {
   const bde = require('./brain-daemon-ensure.js');
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-bde-notice-'));
+  const dir = tempDir('ccb-bde-notice-');
   assertEq(bde.takeAutoUpdateNotice({ dir }), null);
   await bde.runAutoUpdateInBackground({ hook_event_name: 'SessionStart' }, { dir, loadConfig: () => ({}), runAutoUpdate: async () => ({ status: 'current' }) });
   assertEq(bde.takeAutoUpdateNotice({ dir }), null, 'success leaves nothing to tell');
@@ -22203,7 +22200,7 @@ test('data-dir: honors a real CLAUDE_PLUGIN_DATA value AND publishes the active 
   // hooks (SessionStart etc.) can follow the SAME live folder instead of forking.
   withTempHome((home) => {
     const saved = process.env.CLAUDE_PLUGIN_DATA;
-    const real = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-dd-real-'));
+    const real = tempDir('ccb-dd-real-');
     try {
       process.env.CLAUDE_PLUGIN_DATA = real;
       assertEq(dataDirLib.dataDir(), real);
@@ -22217,7 +22214,7 @@ test('data-dir: honors a real CLAUDE_PLUGIN_DATA value AND publishes the active 
 test('data-dir: an already-published pointer is NOT rewritten on every dataDir() call (hot path in the daemon)', () => {
   withTempHome((home) => {
     const saved = process.env.CLAUDE_PLUGIN_DATA;
-    const real = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-dd-same-'));
+    const real = tempDir('ccb-dd-same-');
     const ptr = path.join(home, '.claude', 'claude-code-boss', 'active-data-dir.json');
     try {
       process.env.CLAUDE_PLUGIN_DATA = real;
@@ -22230,7 +22227,7 @@ test('data-dir: an already-published pointer is NOT rewritten on every dataDir()
       assertEq(renames, 0, 'no atomic rewrite when the pointer already names this dir');
       assertEq(fs.readFileSync(ptr, 'utf8'), before, 'pointer untouched');
       // A DIFFERENT dir still publishes (the write path itself is intact).
-      const other = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-dd-other-'));
+      const other = tempDir('ccb-dd-other-');
       process.env.CLAUDE_PLUGIN_DATA = other;
       assertEq(dataDirLib.dataDir(), other);
       assertEq(dataDirLib.readActivePointer(), other);
@@ -22243,7 +22240,7 @@ test('data-dir: FOLLOWS the published pointer when env is absent', () => {
   // env-aware process (brain-server / a guarded hook) previously published.
   withTempHome(() => {
     const saved = process.env.CLAUDE_PLUGIN_DATA;
-    const live = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-dd-live-'));
+    const live = tempDir('ccb-dd-live-');
     try {
       delete process.env.CLAUDE_PLUGIN_DATA;
       dataDirLib.writeActivePointer(live);
@@ -22333,7 +22330,7 @@ test('data-dir: pointer helpers round-trip; readActivePointer null for missing/c
     // missing pointer file → null
     assertEq(dataDirLib.readActivePointer(), null);
     // round-trip a real, existing dir
-    const real = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-ptr-'));
+    const real = tempDir('ccb-ptr-');
     dataDirLib.writeActivePointer(real);
     assertEq(dataDirLib.readActivePointer(), real);
     // stale dir (recorded but since deleted) self-heals → null
@@ -22348,8 +22345,8 @@ test('data-dir: pointer helpers round-trip; readActivePointer null for missing/c
 
 test('data-dir: writeActivePointer does NOT regress from a heavier live folder to a lighter stray (anti apparent-loss)', () => {
   withTempHome(() => {
-    const A = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-wA-'));
-    const B = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-wB-'));
+    const A = tempDir('ccb-wA-');
+    const B = tempDir('ccb-wB-');
     fs.mkdirSync(path.join(A, 'brain', 'proj'), { recursive: true });
     fs.mkdirSync(path.join(B, 'brain', 'proj'), { recursive: true });
     // A = the rich, live KB (big brain.db); B = a near-empty stray identity.
@@ -22374,7 +22371,7 @@ test('brain-config: reads the per-user override from the GLOBAL path (not per-da
   // dir it resolved — so the override lives at globalDir()/user-config.json.
   withTempHome(() => {
     const saved = process.env.CLAUDE_PLUGIN_DATA;
-    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-ucp-'));
+    const dir = tempDir('ccb-ucp-');
     try {
       process.env.CLAUDE_PLUGIN_DATA = dir;
       const gp = path.join(dataDirLib.globalDir(), 'user-config.json');
@@ -22391,7 +22388,7 @@ test('brain-config: backfills a legacy per-data-dir user-config up to the global
   // copied up to globalDir() the first time load() runs with no global override.
   withTempHome(() => {
     const saved = process.env.CLAUDE_PLUGIN_DATA;
-    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-bf-'));
+    const dir = tempDir('ccb-bf-');
     try {
       process.env.CLAUDE_PLUGIN_DATA = dir;
       const legacy = path.join(dir, 'brain', 'user-config.json');
@@ -22411,7 +22408,7 @@ test('brain-config: backfill NEVER overwrites an existing global override', () =
   // An already-migrated global choice must win; a stale legacy file cannot clobber it.
   withTempHome(() => {
     const saved = process.env.CLAUDE_PLUGIN_DATA;
-    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-bf2-'));
+    const dir = tempDir('ccb-bf2-');
     try {
       process.env.CLAUDE_PLUGIN_DATA = dir;
       const gp = path.join(dataDirLib.globalDir(), 'user-config.json');
@@ -22442,7 +22439,7 @@ test('hooks-config: backfills a legacy per-data-dir user-config up to the global
   // copied up to globalDir()/hooks the first time load() runs with no global override.
   withTempHome(() => {
     const saved = process.env.CLAUDE_PLUGIN_DATA;
-    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-hbf-'));
+    const dir = tempDir('ccb-hbf-');
     try {
       process.env.CLAUDE_PLUGIN_DATA = dir;
       const legacy = path.join(dir, 'hooks', 'user-config.json');
@@ -22462,7 +22459,7 @@ test('hooks-config: backfill NEVER overwrites an existing global override', () =
   // An already-migrated global choice must win; a stale legacy file cannot clobber it.
   withTempHome(() => {
     const saved = process.env.CLAUDE_PLUGIN_DATA;
-    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-hbf2-'));
+    const dir = tempDir('ccb-hbf2-');
     try {
       process.env.CLAUDE_PLUGIN_DATA = dir;
       const gp = path.join(dataDirLib.globalDir(), 'hooks', 'user-config.json');
@@ -22484,7 +22481,7 @@ test('router-config-path: routerUserConfigPath is under globalDir()/model-router
       path.join(dataDirLib.globalDir(), 'model-router', 'user-config.json'));
     // runtime state stays per-folder — legacy path is under the resolved data dir.
     const saved = process.env.CLAUDE_PLUGIN_DATA;
-    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-rlegacy-'));
+    const dir = tempDir('ccb-rlegacy-');
     try {
       process.env.CLAUDE_PLUGIN_DATA = dir;
       assertEq(routerCfgPath.legacyRouterUserConfigPath(),
@@ -22498,7 +22495,7 @@ test('router-config-path: backfills a legacy user-config up to the global path o
   // to globalDir()/model-router exactly once, and the global key file is owner-only.
   withTempHome(() => {
     const saved = process.env.CLAUDE_PLUGIN_DATA;
-    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-rbf-'));
+    const dir = tempDir('ccb-rbf-');
     try {
       process.env.CLAUDE_PLUGIN_DATA = dir;
       const legacy = path.join(dir, 'model-router', 'user-config.json');
@@ -22523,7 +22520,7 @@ test('router-config-path: backfills a legacy user-config up to the global path o
 test('dashboard.writeRouterOverride writes the GLOBAL router config and preserves an untouched key', () => {
   withTempHome(() => {
     const saved = process.env.CLAUDE_PLUGIN_DATA;
-    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-dash-rw-'));
+    const dir = tempDir('ccb-dash-rw-');
     try {
       process.env.CLAUDE_PLUGIN_DATA = dir;
       const gp = path.join(dataDirLib.globalDir(), 'model-router', 'user-config.json');
@@ -22550,7 +22547,7 @@ test('dashboard.writeRouterOverride writes the GLOBAL router config and preserve
 test('dashboard.writeRouterOverride: BYOK persiste url/modo/headers e PRESERVA os headers ao trocar so o modo', () => {
   withTempHome(() => {
     const saved = process.env.CLAUDE_PLUGIN_DATA;
-    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-dash-byok-'));
+    const dir = tempDir('ccb-dash-byok-');
     try {
       process.env.CLAUDE_PLUGIN_DATA = dir;
       const gp = path.join(dataDirLib.globalDir(), 'model-router', 'user-config.json');
@@ -22592,7 +22589,7 @@ test('dashboard.writeRouterOverride: BYOK persiste url/modo/headers e PRESERVA o
 test('dashboard.writeRouterOverride: BYOK modelMap/modelInjection persistem, preservam, limpam e validam', () => {
   withTempHome(() => {
     const saved = process.env.CLAUDE_PLUGIN_DATA;
-    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-dash-map-'));
+    const dir = tempDir('ccb-dash-map-');
     try {
       process.env.CLAUDE_PLUGIN_DATA = dir;
       const gp = path.join(dataDirLib.globalDir(), 'model-router', 'user-config.json');
@@ -22674,7 +22671,7 @@ test('dashboard.writeRouterOverride: BYOK modelMap/modelInjection persistem, pre
 test('dashboard: byok.openaiCompat grava só o que difere do default, preserva, limpa e valida', () => {
   withTempHome(() => {
     const saved = process.env.CLAUDE_PLUGIN_DATA;
-    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-dash-compat-'));
+    const dir = tempDir('ccb-dash-compat-');
     try {
       process.env.CLAUDE_PLUGIN_DATA = dir;
       const gp = path.join(dataDirLib.globalDir(), 'model-router', 'user-config.json');
@@ -22776,7 +22773,7 @@ test('dashboard: byok.openaiCompat grava só o que difere do default, preserva, 
 test('dashboard: modelMap gravado como LISTA aparece na UI; gravado inválido falha dizendo que veio do arquivo', () => {
   withTempHome(() => {
     const saved = process.env.CLAUDE_PLUGIN_DATA;
-    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-dash-maparr-'));
+    const dir = tempDir('ccb-dash-maparr-');
     try {
       process.env.CLAUDE_PLUGIN_DATA = dir;
       const gp = path.join(dataDirLib.globalDir(), 'model-router', 'user-config.json');
@@ -22896,8 +22893,8 @@ test('dashboard: modelMap gravado como LISTA aparece na UI; gravado inválido fa
 test('dashboard: config BYOK inválida no arquivo não derruba status/modo, mas GET config e catálogo falham explícitos', async () => {
   const saved = process.env.CLAUDE_PLUGIN_DATA;
   const savedHome = { HOME: process.env.HOME, USERPROFILE: process.env.USERPROFILE };
-  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-dash-cfgerr-home-'));
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-dash-cfgerr-'));
+  const home = tempDir('ccb-dash-cfgerr-home-');
+  const dir = tempDir('ccb-dash-cfgerr-');
   const hits = [];
   const server = http.createServer((req, res) => { hits.push(req.url); res.writeHead(200); res.end('{"data":[]}'); });
   const port = await _listen0(server);
@@ -22959,7 +22956,7 @@ test('dashboard UI: loadRouterConfig trata resposta de erro e trava o save (não
 test('dashboard.writeRouterOverride: custom upstream persiste protocolo/endpoints/alias e preserva campos ausentes', () => {
   withTempHome(() => {
     const saved = process.env.CLAUDE_PLUGIN_DATA;
-    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-dash-upstream-'));
+    const dir = tempDir('ccb-dash-upstream-');
     try {
       process.env.CLAUDE_PLUGIN_DATA = dir;
       const gp = path.join(dataDirLib.globalDir(), 'model-router', 'user-config.json');
@@ -23005,7 +23002,7 @@ test('dashboard.resolveRouterFlags: user-config vence env e env vence shipped po
     const savedProtocol = process.env.ROUTER_UPSTREAM_WIRE_PROTOCOL;
     const savedModels = process.env.ROUTER_UPSTREAM_MODELS_URL;
     const savedGenerate = process.env.ROUTER_UPSTREAM_GENERATE_URL;
-    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-dash-upstream-env-'));
+    const dir = tempDir('ccb-dash-upstream-env-');
     try {
       process.env.CLAUDE_PLUGIN_DATA = dir;
       process.env.ROUTER_UPSTREAM_WIRE_PROTOCOL = 'openai';
@@ -23054,7 +23051,7 @@ test('dashboard UI: custom upstream expõe protocolo, alias e URLs por operaçã
 
 test('curation-paths: config do monorepo vence marcador package.json da subpasta; marcador local vence ancestral alheio', () => {
   const curationPaths = require('./curation-paths.js');
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-curation-root-'));
+  const root = tempDir('ccb-curation-root-');
   try {
     const monorepo = path.join(root, 'repo');
     const pkg = path.join(monorepo, 'packages', 'api');
@@ -23116,7 +23113,7 @@ test('byok.formatHeaderLines: ida e volta preserva o mapa (round-trip)', () => {
 test('dashboard.resolveRouterFlags: expoe o byok EFETIVO (shipped + override)', () => {
   withTempHome(() => {
     const saved = process.env.CLAUDE_PLUGIN_DATA;
-    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-dash-byokflags-'));
+    const dir = tempDir('ccb-dash-byokflags-');
     try {
       process.env.CLAUDE_PLUGIN_DATA = dir;
       delete require.cache[require.resolve('./dashboard.js')];
@@ -23138,7 +23135,7 @@ test('dashboard.resolveRouterFlags: expoe o byok EFETIVO (shipped + override)', 
 test('dashboard.writeRouterOverride: fixedEndpoint é PRESERVADO ao trocar só outro campo do BYOK (preserve-on-absent)', () => {
   withTempHome(() => {
     const saved = process.env.CLAUDE_PLUGIN_DATA;
-    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-dash-byokfixed-'));
+    const dir = tempDir('ccb-dash-byokfixed-');
     try {
       process.env.CLAUDE_PLUGIN_DATA = dir;
       const gp = path.join(dataDirLib.globalDir(), 'model-router', 'user-config.json');
@@ -23175,7 +23172,7 @@ test('dashboard.writeRouterOverride: fixedEndpoint é PRESERVADO ao trocar só o
 test('dashboard.resolveRouterFlags: fixedEndpoint flui do override, shipped=false não vaza por cima', () => {
   withTempHome(() => {
     const saved = process.env.CLAUDE_PLUGIN_DATA;
-    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-dash-byokfixedflags-'));
+    const dir = tempDir('ccb-dash-byokfixedflags-');
     try {
       process.env.CLAUDE_PLUGIN_DATA = dir;
       delete require.cache[require.resolve('./dashboard.js')];
@@ -23198,7 +23195,7 @@ test('dashboard.resolveRouterFlags: fixedEndpoint flui do override, shipped=fals
 test('dashboard.writeRouterOverride: fixedTimeoutMs/rotatingTimeoutMs/logLatency são gravados e PRESERVADOS ao trocar outro campo (preserve-on-absent)', () => {
   withTempHome(() => {
     const saved = process.env.CLAUDE_PLUGIN_DATA;
-    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-dash-byoktimeouts-'));
+    const dir = tempDir('ccb-dash-byoktimeouts-');
     try {
       process.env.CLAUDE_PLUGIN_DATA = dir;
       const gp = path.join(dataDirLib.globalDir(), 'model-router', 'user-config.json');
@@ -23233,7 +23230,7 @@ test('dashboard.writeRouterOverride: fixedTimeoutMs/rotatingTimeoutMs/logLatency
 test('dashboard.writeRouterOverride: valor inválido de timeout (negativo/string) normaliza pra undefined, não grava lixo', () => {
   withTempHome(() => {
     const saved = process.env.CLAUDE_PLUGIN_DATA;
-    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-dash-byoktimeoutsbad-'));
+    const dir = tempDir('ccb-dash-byoktimeoutsbad-');
     try {
       process.env.CLAUDE_PLUGIN_DATA = dir;
       const gp = path.join(dataDirLib.globalDir(), 'model-router', 'user-config.json');
@@ -23255,7 +23252,7 @@ test('dashboard.writeRouterOverride: valor inválido de timeout (negativo/string
 test('dashboard.writeRouterOverride: null explícito LIMPA fixedTimeoutMs/rotatingTimeoutMs já persistidos (não é só "ausente preserva")', () => {
   withTempHome(() => {
     const saved = process.env.CLAUDE_PLUGIN_DATA;
-    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-dash-byoktimeoutsclear-'));
+    const dir = tempDir('ccb-dash-byoktimeoutsclear-');
     try {
       process.env.CLAUDE_PLUGIN_DATA = dir;
       const gp = path.join(dataDirLib.globalDir(), 'model-router', 'user-config.json');
@@ -23287,7 +23284,7 @@ test('dashboard.writeRouterOverride: null explícito LIMPA fixedTimeoutMs/rotati
 test('dashboard.resolveRouterFlags: fixedTimeoutMs/rotatingTimeoutMs/logLatency fluem do override, shipped=null/false não vaza por cima', () => {
   withTempHome(() => {
     const saved = process.env.CLAUDE_PLUGIN_DATA;
-    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-dash-byoktimeoutsflags-'));
+    const dir = tempDir('ccb-dash-byoktimeoutsflags-');
     try {
       process.env.CLAUDE_PLUGIN_DATA = dir;
       delete require.cache[require.resolve('./dashboard.js')];
@@ -23320,7 +23317,7 @@ test('dashboard.resolveRouterFlags: fixedTimeoutMs/rotatingTimeoutMs/logLatency 
 test('dashboard.getRouterConfig: byokSafe serializa 0 como 0 (não null) e ausente como null', () => {
   withTempHome(() => {
     const saved = process.env.CLAUDE_PLUGIN_DATA;
-    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-dash-getrouterconfig-'));
+    const dir = tempDir('ccb-dash-getrouterconfig-');
     try {
       process.env.CLAUDE_PLUGIN_DATA = dir;
       delete require.cache[require.resolve('./dashboard.js')];
@@ -23361,7 +23358,7 @@ test('dashboard.getRouterConfig: byokSafe serializa 0 como 0 (não null) e ausen
 test('dashboard.getRouterConfig: byok.classifyRemote/byok.enabled/byok.mode/byok.fixedEndpoint e enabled top-level refletem o override', () => {
   withTempHome(() => {
     const saved = process.env.CLAUDE_PLUGIN_DATA;
-    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-dash-getrouterconfig-oldfields-'));
+    const dir = tempDir('ccb-dash-getrouterconfig-oldfields-');
     try {
       process.env.CLAUDE_PLUGIN_DATA = dir;
       delete require.cache[require.resolve('./dashboard.js')];
@@ -23475,7 +23472,7 @@ test('dashboard/index.html applyRouter(): timeout BYOK inválido (não-finito ou
 test('dashboard.resolveRouterFlags: rotatingTimeoutMs:0 (sem limite) sobrevive com fixedEndpoint:false', () => {
   withTempHome(() => {
     const saved = process.env.CLAUDE_PLUGIN_DATA;
-    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-dash-byokrotzero-'));
+    const dir = tempDir('ccb-dash-byokrotzero-');
     try {
       process.env.CLAUDE_PLUGIN_DATA = dir;
       delete require.cache[require.resolve('./dashboard.js')];
@@ -23496,7 +23493,7 @@ test('dashboard.resolveRouterFlags: rotatingTimeoutMs:0 (sem limite) sobrevive c
 test('dashboard.writeRouterOverride: logLatency com valor não-booleano vira false, não grava lixo', () => {
   withTempHome(() => {
     const saved = process.env.CLAUDE_PLUGIN_DATA;
-    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-dash-byokloglatencybad-'));
+    const dir = tempDir('ccb-dash-byokloglatencybad-');
     try {
       process.env.CLAUDE_PLUGIN_DATA = dir;
       const gp = path.join(dataDirLib.globalDir(), 'model-router', 'user-config.json');
@@ -23519,7 +23516,7 @@ test('capture-dispatch: _captureConfig honors the GLOBAL brain kb.capture overri
   // override), not a stale legacy DATA_DIR/brain/user-config.json.
   withTempHome(() => {
     const saved = process.env.CLAUDE_PLUGIN_DATA;
-    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-capcfg-'));
+    const dir = tempDir('ccb-capcfg-');
     try {
       process.env.CLAUDE_PLUGIN_DATA = dir;
       const gp = path.join(dataDirLib.globalDir(), 'user-config.json');
@@ -23538,14 +23535,14 @@ test('capture-dispatch: _captureConfig honors the GLOBAL brain kb.capture overri
 const atomicLib = require('../engine/lib/atomic-write.js');
 
 test('atomic-write: writeJsonAtomic roundtrips through a real file', () => {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-atomic-'));
+  const dir = tempDir('ccb-atomic-');
   const f = path.join(dir, 'state.json');
   atomicLib.writeJsonAtomic(f, { a: 1, b: [2, 3] });
   assertEq(JSON.parse(fs.readFileSync(f, 'utf-8')), { a: 1, b: [2, 3] });
 });
 
 test('atomic-write: creates missing parent dirs', () => {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-atomic-'));
+  const dir = tempDir('ccb-atomic-');
   const f = path.join(dir, 'nested', 'deep', 'state.json');
   atomicLib.writeJsonAtomic(f, { ok: true });
   assert(fs.existsSync(f), 'nested file must exist');
@@ -23555,7 +23552,7 @@ test('atomic-write: leaves the destination UNTOUCHED when rename fails (no trunc
   // TEETH: the whole point of temp+rename. If the write is interrupted at the
   // commit step, a concurrent reader must still see the OLD content — never a
   // half-written destination. A naive writeFileSync(dest) would truncate it.
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-atomic-'));
+  const dir = tempDir('ccb-atomic-');
   const f = path.join(dir, 'state.json');
   fs.writeFileSync(f, JSON.stringify({ version: 'OLD' }));
   const io = {
@@ -23584,7 +23581,7 @@ test('atomic-write: temp path is unique per call (concurrent writers do not coll
 });
 
 test('atomic-write: success leaves no temp sibling behind', () => {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-atomic-'));
+  const dir = tempDir('ccb-atomic-');
   const f = path.join(dir, 'state.json');
   atomicLib.writeJsonAtomic(f, { n: 1 });
   atomicLib.writeJsonAtomic(f, { n: 2 });
@@ -23723,7 +23720,7 @@ test('reuso-04: nenhum script de producao deriva projeto de basename(cwd) — a 
 
 test('json-file (reuso-06): readJsonLoud — ausente e null calado, corrompido e null DITO; readJsonSafe tambem passa a dizer; leitores duplicados usam o canonico', () => {
   const { readJsonLoud, readJsonSafe } = require('../engine/lib/json-file.js');
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-jsonf-'));
+  const dir = tempDir('ccb-jsonf-');
   const errs = []; const orig = console.error; console.error = (m) => errs.push(String(m));
   try {
     assertEq(readJsonLoud(path.join(dir, 'none.json'), 'x'), null);
@@ -23787,7 +23784,7 @@ test('atomic-write: retries a transient rename failure (EPERM) instead of droppi
   // concurrent writer/reader holds the destination (MoveFileEx sharing violation).
   // Without a retry, swallow-catch stores silently DROP the update. writeFileAtomic
   // must retry transient rename errors and eventually commit.
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-atomic-'));
+  const dir = tempDir('ccb-atomic-');
   const f = path.join(dir, 'state.json');
   let calls = 0;
   const io = {
@@ -23806,7 +23803,7 @@ test('atomic-write: retries a transient rename failure (EPERM) instead of droppi
 });
 
 test('atomic-write: the temp file is fsynced before the rename, and the descriptor is closed even when the flush fails', () => {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-atomic-'));
+  const dir = tempDir('ccb-atomic-');
   const f = path.join(dir, 'state.json');
   const { fsyncSync, renameSync, closeSync } = fs;
   const order = [];
@@ -23832,7 +23829,7 @@ test('atomic-write: the temp file is fsynced before the rename, and the descript
 });
 
 test('atomic-write: a NON-transient rename error is NOT retried (fails fast, dest untouched)', () => {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-atomic-'));
+  const dir = tempDir('ccb-atomic-');
   const f = path.join(dir, 'state.json');
   fs.writeFileSync(f, JSON.stringify({ v: 'OLD' }));
   let calls = 0;
@@ -24751,7 +24748,7 @@ test('capture bridge: the REAL capture_ack MCP tool writes the marker the queue 
   const server = mod.createBrainServer({ pluginRoot: process.env.CLAUDE_PLUGIN_ROOT, mode: 'stdio' });
   assert(typeof server.handleTool === 'function', 'server exposes the tool dispatcher seam');
   const prevData = process.env.CLAUDE_PLUGIN_DATA;
-  const myData = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-bridge-'));
+  const myData = tempDir('ccb-bridge-');
   process.env.CLAUDE_PLUGIN_DATA = myData;
   try {
     const project = 'cq-bridge-' + Date.now(); const sid = 'cqbr-' + Date.now();
@@ -24963,7 +24960,7 @@ test('brain-health (auditoria 3.1.0): vectors from another embedder dimension ar
   assert(Db, 'sqlite available in the suite');
   const file = path.join(require('../engine/lib/data-dir.js').globalDir(), 'user-config.json');
   const prev = fs.existsSync(file) ? fs.readFileSync(file, 'utf8') : null;
-  const data = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-dim-'));
+  const data = tempDir('ccb-dim-');
   fs.mkdirSync(path.join(data, 'brain', 'p1'), { recursive: true });
   const db = new Db(path.join(data, 'brain', 'p1', 'brain.db'));
   db.exec('CREATE TABLE embeddings (entry_id TEXT PRIMARY KEY, vector BLOB, dimensions INTEGER, model TEXT)');
@@ -24975,7 +24972,7 @@ test('brain-health (auditoria 3.1.0): vectors from another embedder dimension ar
     bc.save({ ...bc.load(), embedder: { provider: 'ollama', model: 'nomic-embed-text', dimensions: 768 } }, { expectedVersion: version });
     bc._resetCache();
     assertEq(bh.embedderDimMismatch(data), { count: 2, dims: 768 }, 'the 384-dim vectors no longer match a 768-dim embedder');
-    assertEq(bh.embedderDimMismatch(fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-dim-empty-'))), null, 'no local KB → nothing to say');
+    assertEq(bh.embedderDimMismatch(tempDir('ccb-dim-empty-')), null, 'no local KB → nothing to say');
   } finally {
     if (prev == null) { try { fs.unlinkSync(file); } catch (err) { void err; } } else fs.writeFileSync(file, prev);
     bc._resetCache();
@@ -24989,7 +24986,7 @@ test('brain-health: the embedder dimension check skips shards untouched since it
   const Db = require('../engine/lib/sqlite-compat.js').loadSqlite();
   assert(Db, 'sqlite available in the suite');
   const dims = (emb.getModel(), emb.getDimensions());
-  const data = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-dim-stamp-'));
+  const data = tempDir('ccb-dim-stamp-');
   const shard = (name) => {
     const dir = path.join(data, 'brain', name);
     fs.mkdirSync(dir, { recursive: true });
@@ -25139,7 +25136,7 @@ function _withoutEnvProjectId(fn) {
 }
 
 test('KB gate: capture_lesson/brain_store/brain_search with a cwd WITHOUT project id → isError NO_PROJECT_ID, nothing touched', _withoutEnvProjectId(async () => {
-  const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-noid-'));
+  const cwd = tempDir('ccb-noid-');
   try {
     assertEq(projectId.tryResolveProjectId({ cwd }), null, 'precondition: temp dir has no id');
     const kbProjects = []; const saved = [];
@@ -25161,7 +25158,7 @@ test('KB gate: capture_lesson/brain_store/brain_search with a cwd WITHOUT projec
 }));
 
 test('KB gate: cwd WITH .memory/project.json → its id wins over an explicit (invented) project', _withoutEnvProjectId(async () => {
-  const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-hasid-'));
+  const cwd = tempDir('ccb-hasid-');
   try {
     fs.mkdirSync(path.join(cwd, '.memory'));
     fs.writeFileSync(path.join(cwd, '.memory', 'project.json'), JSON.stringify({ version: '1', metadata: { defaults: { project_id: 'owner/gated-repo' } } }));
@@ -25184,7 +25181,7 @@ test('KB gate: no cwd → explicit project still honored (legacy callers unchang
 }));
 
 test('KB gate: brain_retrieve_context with a cwd WITHOUT project id → empty even with an explicit project; retrieve never runs', _withoutEnvProjectId(async () => {
-  const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-noid-rc-'));
+  const cwd = tempDir('ccb-noid-rc-');
   try {
     assertEq(projectId.tryResolveProjectId({ cwd }), null, 'precondition: temp dir has no id');
     const touched = [];
@@ -25201,7 +25198,7 @@ test('KB gate: brain_retrieve_context with a cwd WITHOUT project id → empty ev
 }));
 
 test('KB gate: mcp-memory backend (handleRemoteKbTool) — cwd WITHOUT id refused before any daemon contact', _withoutEnvProjectId(async () => {
-  const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-noid-remote-'));
+  const cwd = tempDir('ccb-noid-remote-');
   const backend = require('../engine/brain-backend.js');
   try {
     const url = require('url');
@@ -25222,7 +25219,7 @@ test('KB gate: mcp-memory backend (handleRemoteKbTool) — cwd WITHOUT id refuse
 test('mcp-client restartMode (Q59): background = kick the launcher and fail FAST with a retryable error; wait = keep blocking (CLIs)', async () => {
   const McpClient = require('../engine/mcp-client.js');
   let kicks = 0;
-  const bg = new McpClient({ transport: 'http', serverUrl: '', runDir: fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-q59-')), restartMode: 'background', restartWaitMs: 0, kickLauncher: () => { kicks++; return true; } });
+  const bg = new McpClient({ transport: 'http', serverUrl: '', runDir: tempDir('ccb-q59-'), restartMode: 'background', restartWaitMs: 0, kickLauncher: () => { kicks++; return true; } });
   bg._discoverDaemonUrl = () => 'http://127.0.0.1:1';
   bg._httpHealth = async () => false;
   const t0 = Date.now();
@@ -25246,7 +25243,7 @@ test('mcp-client restartMode (Q59): background = kick the launcher and fail FAST
 
 /** Isolated mcp-memory announcement: a temp run dir the client reads instead of ~/.mcp-memory/run. */
 function reconnectRig() {
-  const runDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-reconn-'));
+  const runDir = tempDir('ccb-reconn-');
   const announce = (d) => fs.writeFileSync(path.join(runDir, 'daemon.json'), JSON.stringify({ url: d.url, port: d.port, pid: process.pid, version: '9.9.9' }));
   return { runDir, announce, clear: () => fs.rmSync(runDir, { recursive: true, force: true }) };
 }
@@ -25408,7 +25405,7 @@ test('dashboard server mode (Q58): status, project list, listing and skills pane
 
 test('weekly consolidation stamp (Q57): per project — one project running does not consume the week for the others', () => {
   const cs = require('./curation-session.js');
-  const stamp = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-q57-')), 'brain-consolidate-last.json');
+  const stamp = path.join(tempDir('ccb-q57-'), 'brain-consolidate-last.json');
   const now = 10_000_000_000;
   assertEq(cs.consolidationDue(stamp, 'owner/a', now), true, 'no stamp → due');
   cs.markConsolidated(stamp, 'owner/a', now);
@@ -25509,7 +25506,7 @@ test('brain-consolidate (Q54): on mcp-memory it consolidates the SERVER — dry-
 });
 
 test('mcp-memory capture_lesson (Q53): admission dedup on the server — an equivalent capture MERGES (recurrence++), a different type never does', _withoutEnvProjectId(async () => {
-  const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-q53-dedup-'));
+  const cwd = tempDir('ccb-q53-dedup-');
   fs.mkdirSync(path.join(cwd, '.memory'));
   fs.writeFileSync(path.join(cwd, '.memory', 'project.json'), JSON.stringify({ version: '1', metadata: { defaults: { project_id: 'owner/q53' } } }));
   const backend = require('../engine/brain-backend.js');
@@ -25549,7 +25546,7 @@ test('brain-backend (Q53): server entries normalize to the local shape — recur
 });
 
 test('brain-promote scan (Q53): on mcp-memory it reads the SERVER by the strict project id — drafts the recurring lesson and writes the checklist', _withoutEnvProjectId(async () => {
-  const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-q53-scan-'));
+  const cwd = tempDir('ccb-q53-scan-');
   fs.mkdirSync(path.join(cwd, '.memory'));
   fs.writeFileSync(path.join(cwd, '.memory', 'project.json'), JSON.stringify({ version: '1', metadata: { defaults: { project_id: 'owner/q53scan' } } }));
   const backend = require('../engine/brain-backend.js');
@@ -25585,7 +25582,7 @@ test('brain-promote scan (Q53): on mcp-memory it reads the SERVER by the strict 
 }));
 
 test('mcp-memory backend: scope routes to __user__ like the local path (writes sanitized + secrets refused; search scope → project_id list)', _withoutEnvProjectId(async () => {
-  const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-remote-scope-'));
+  const cwd = tempDir('ccb-remote-scope-');
   fs.mkdirSync(path.join(cwd, '.memory'));
   fs.writeFileSync(path.join(cwd, '.memory', 'project.json'), JSON.stringify({ version: '1', metadata: { defaults: { project_id: 'owner/scoped' } } }));
   const backend = require('../engine/brain-backend.js');
@@ -25622,7 +25619,7 @@ test('mcp-memory backend: scope routes to __user__ like the local path (writes s
 }));
 
 test('KB gate (http daemon): the lock slot follows the cwd id, and the daemon\'s inherited CCB_PROJECT_ID is ignored', async () => {
-  const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-http-id-'));
+  const cwd = tempDir('ccb-http-id-');
   const prev = process.env.CCB_PROJECT_ID;
   process.env.CCB_PROJECT_ID = 'spawning-session-id'; // env the shared daemon inherited
   try {
@@ -25884,7 +25881,7 @@ test('U1: command-signature.workSegments — cd/echo/assign/heredoc-write are no
 
 // ─── U2/U10: error-guard policy P8 — session transcript, effective dir, edit lifts ───
 function _sfTranscript() {
-  const tp = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-sf-')), 't.jsonl');
+  const tp = path.join(tempDir('ccb-sf-'), 't.jsonl');
   fs.writeFileSync(tp, '');
   let n = 0;
   const add = (o) => fs.appendFileSync(tp, JSON.stringify(o) + '\n');
@@ -25997,7 +25994,7 @@ test('doctor: claude-compat and subagent-contexts — silent when not measured, 
 
 test('lesson promotion: the weekly stamp is claimed atomically, a second apply is refused while one runs, and the manual bulk reclassify no longer copies files/source/project-naming tags', async () => {
   const preg = require('./lib/promotion-registry.js');
-  const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-promo-claim-'));
+  const dataDir = tempDir('ccb-promo-claim-');
   try {
     const now = Date.now();
     assertEq(preg.claimPromotionRun(dataDir, now, 7), true, 'first caller owns the run');
@@ -26508,7 +26505,7 @@ function _adjMakeFiles(work, n, ext, body) {
 
 test('adjudication-store: save + list roundtrip, newest first, project-scoped + policyId filter', () => {
   const adj = require('./lib/adjudication-store.js');
-  const dd = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-adjs-'));
+  const dd = tempDir('ccb-adjs-');
   const mkRec = (policyId, ts, problem) => ({ policyId, manifestHash: 'abcdef01', ts, counts: { legit: 1, problem, uncertain: 0, injectionSuspected: 0, total: 1 + problem }, coverage: { sampled: 1 + problem, eligible: 10 }, provenance: { scannerVersion: 'sv', promptVersion: 'pv' } });
   assert(adj.saveDisposition(dd, 'projA', mkRec('p1', 1000, 0)), 'save 1 ok');
   assert(adj.saveDisposition(dd, 'projA', mkRec('p1', 2000, 1)), 'save 2 ok');
@@ -26522,7 +26519,7 @@ test('adjudication-store: save + list roundtrip, newest first, project-scoped + 
 
 test('adjudication-store: normalizeRecord drops snippets/unknown keys (only tally/coverage/provenance persisted)', () => {
   const adj = require('./lib/adjudication-store.js');
-  const dd = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-adjs-'));
+  const dd = tempDir('ccb-adjs-');
   adj.saveDisposition(dd, 'projX', { policyId: 'p', manifestHash: 'deadbe', ts: 5, counts: { legit: 0, problem: 1, uncertain: 0, injectionSuspected: 0, total: 1 }, coverage: { sampled: 1, eligible: 1 }, provenance: { scannerVersion: 's', promptVersion: 'p' }, occurrences: [{ context: 'SECRET_CODE()' }], snippet: 'SECRET_CODE()', activationId: 'act1' });
   const [rec] = adj.listDispositions(dd, 'projX');
   assert(!JSON.stringify(rec).includes('SECRET_CODE'), 'no snippet/context survives persistence');
@@ -26533,7 +26530,7 @@ test('adjudication-store: normalizeRecord drops snippets/unknown keys (only tall
 
 test('adjudication-store: load returns empty shape on a corrupt registry (never throws)', () => {
   const adj = require('./lib/adjudication-store.js');
-  const dd = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-adjs-'));
+  const dd = tempDir('ccb-adjs-');
   const p = adj.dispositionsPath(dd, 'projC');
   fs.mkdirSync(path.dirname(p), { recursive: true });
   fs.writeFileSync(p, '{ this is not json');
@@ -26544,7 +26541,7 @@ test('policy_adjudication_prepare: deterministic sampling capped at 25 (+ honest
   const server = await _adjImportServer();
   const policyStore = require('../engine/lib/policy-store.js');
   const { dataDir } = require('../engine/lib/data-dir.js');
-  const work = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-adjw-'));
+  const work = tempDir('ccb-adjw-');
   const project = 'adj-det-' + Date.now();
   try {
     _adjMakeFiles(work, 30, 'ts', (i) => `// f${i}\nfunction g${i}(){\n  console.log('x${i}');\n}\n`);
@@ -26569,7 +26566,7 @@ test('policy_adjudication_prepare: glob-only policy (no literal) samples one occ
   const server = await _adjImportServer();
   const policyStore = require('../engine/lib/policy-store.js');
   const { dataDir } = require('../engine/lib/data-dir.js');
-  const work = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-adjw-'));
+  const work = tempDir('ccb-adjw-');
   const project = 'adj-file-' + Date.now();
   try {
     _adjMakeFiles(work, 4, 'md', (i) => `# doc ${i}\n\nbody ${i}\n`);
@@ -26605,7 +26602,7 @@ test('policy_adjudication_record: honest disposition (kind/disclaimer, no FP-rat
   const policyStore = require('../engine/lib/policy-store.js');
   const adjStore = require('./lib/adjudication-store.js');
   const { dataDir } = require('../engine/lib/data-dir.js');
-  const work = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-adjw-'));
+  const work = tempDir('ccb-adjw-');
   const project = 'adj-rec-' + Date.now();
   try {
     _adjMakeFiles(work, 3, 'ts', (i) => `// f${i}\nconsole.log('secretword${i}');\n`);
@@ -26636,7 +26633,7 @@ test('policy_adjudication_record: CONSUMES the bundle (deleted after record); a 
   const server = await _adjImportServer();
   const policyStore = require('../engine/lib/policy-store.js');
   const { dataDir } = require('../engine/lib/data-dir.js');
-  const work = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-adjw-'));
+  const work = tempDir('ccb-adjw-');
   const project = 'adj-consume-' + Date.now();
   try {
     _adjMakeFiles(work, 2, 'ts', (i) => `console.log('c${i}');\n`);
@@ -26665,7 +26662,7 @@ test('policy_adjudication_record: rejects unknown, duplicate, missing, and bad-l
   const policyStore = require('../engine/lib/policy-store.js');
   const adjStore = require('./lib/adjudication-store.js');
   const { dataDir } = require('../engine/lib/data-dir.js');
-  const work = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-adjw-'));
+  const work = tempDir('ccb-adjw-');
   const project = 'adj-val-' + Date.now();
   try {
     _adjMakeFiles(work, 3, 'ts', (i) => `console.log('a${i}');\n`);
@@ -26692,7 +26689,7 @@ test('policy_adjudication_prepare/record: never mutate the policy (no activate/d
   const server = await _adjImportServer();
   const policyStore = require('../engine/lib/policy-store.js');
   const { dataDir } = require('../engine/lib/data-dir.js');
-  const work = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-adjw-'));
+  const work = tempDir('ccb-adjw-');
   const project = 'adj-nomut-' + Date.now();
   try {
     _adjMakeFiles(work, 2, 'ts', (i) => `console.log('z${i}');\n`);
@@ -26743,7 +26740,7 @@ test('adjudication assets: agent + command markdown have valid frontmatter', () 
 
 test('trigger-evidence-store: append/list/purge roundtrip — newest first, project-scoped, activationId filter', () => {
   const te = require('./lib/trigger-evidence-store.js');
-  const dd = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-te-'));
+  const dd = tempDir('ccb-te-');
   const mk = (eventId, activationId, ts) => ({ eventId, activationId, sourceHash: 'sh', file: 'src/a.ts', addedSnippet: 'x', ts });
   assert(te.appendEvidence(dd, 'teA', mk('e1', 'act1', 1000), { ttlDays: 0 }), 'append 1 ok');
   assert(te.appendEvidence(dd, 'teA', mk('e2', 'act1', 3000), { ttlDays: 0 }), 'append 2 ok');
@@ -26762,7 +26759,7 @@ test('trigger-evidence-store: append/list/purge roundtrip — newest first, proj
 
 test('trigger-evidence-store: TTL purge-on-write drops records older than ttlDays', () => {
   const te = require('./lib/trigger-evidence-store.js');
-  const dd = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-te-'));
+  const dd = tempDir('ccb-te-');
   const now = Date.now();
   const DAY = 86400000;
   // Seed an OLD record (10 days ago); it is written as-is on its own append…
@@ -26777,7 +26774,7 @@ test('trigger-evidence-store: TTL purge-on-write drops records older than ttlDay
 
 test('trigger-evidence-store: caps the queue to the newest maxPerProject on write', () => {
   const te = require('./lib/trigger-evidence-store.js');
-  const dd = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-te-'));
+  const dd = tempDir('ccb-te-');
   for (let i = 1; i <= 6; i++) {
     te.appendEvidence(dd, 'teCap', { eventId: 'e' + i, activationId: 'a', sourceHash: 's', file: 'f.ts', addedSnippet: 'x', ts: 1000 + i }, { maxPerProject: 3, ttlDays: 0 });
   }
@@ -26805,7 +26802,7 @@ test('trigger-evidence-store: normalizeRecord redacts+caps the snippet and strip
 
 test('trigger-evidence-store: load returns empty shape on a corrupt queue (never throws)', () => {
   const te = require('./lib/trigger-evidence-store.js');
-  const dd = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-te-'));
+  const dd = tempDir('ccb-te-');
   const p = te.queuePath(dd, 'teCorrupt');
   fs.mkdirSync(path.dirname(p), { recursive: true });
   fs.writeFileSync(p, '{ not valid json');
@@ -26816,7 +26813,7 @@ test('trigger-evidence-store: load returns empty shape on a corrupt queue (never
 
 test('trigger-evidence-store: purge by olderThanTs removes only strictly-older records', () => {
   const te = require('./lib/trigger-evidence-store.js');
-  const dd = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-te-'));
+  const dd = tempDir('ccb-te-');
   te.appendEvidence(dd, 'teAge', { eventId: 'old', activationId: 'a', sourceHash: 's', file: 'f.ts', addedSnippet: 'x', ts: 1000 }, { ttlDays: 0 });
   te.appendEvidence(dd, 'teAge', { eventId: 'new', activationId: 'a', sourceHash: 's', file: 'f.ts', addedSnippet: 'x', ts: 5000 }, { ttlDays: 0 });
   assertEq(te.purgeEvidence(dd, 'teAge', { olderThanTs: 3000 }), 1, 'one record older than the cutoff removed');
@@ -26934,7 +26931,7 @@ test('policy_adjudication_record: dispositionKind override forces the triggers k
   const server = await _adjImportServer();
   const policyStore = require('../engine/lib/policy-store.js');
   const { dataDir } = require('../engine/lib/data-dir.js');
-  const work = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-adjw-'));
+  const work = tempDir('ccb-adjw-');
   const project = 'tev-ovr-' + Date.now();
   try {
     _adjMakeFiles(work, 2, 'ts', (i) => `console.log('o${i}');\n`);
@@ -27133,7 +27130,7 @@ test('self-update-plan: PURE — no filesystem/store side effects (frozen inputs
 
 test('revision-ledger: append/list roundtrip — newest first, project-scoped, policyId filter', () => {
   const led = require('./lib/revision-ledger.js');
-  const dd = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-led-'));
+  const dd = tempDir('ccb-led-');
   assertEq(led.listRevisions(dd, 'projA'), [], 'empty on a fresh project (never throws)');
   assert(led.appendRevision(dd, 'projA', { ts: 1000, policyId: 'p1', action: 'demote-to-advisory', beforeSourceHash: 'a', afterSourceHash: 'b', beforeActivationId: 'act1', afterActivationId: null, note: 'n' }), 'append 1');
   assert(led.appendRevision(dd, 'projA', { ts: 3000, policyId: 'p1', action: 'demote-to-advisory', beforeSourceHash: 'c', afterSourceHash: 'd' }), 'append 2');
@@ -27147,7 +27144,7 @@ test('revision-ledger: append/list roundtrip — newest first, project-scoped, p
 
 test('revision-ledger: normalizeEntry keeps ONLY transition metadata (NO snippets/globs/text/unknown keys)', () => {
   const led = require('./lib/revision-ledger.js');
-  const dd = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-led-'));
+  const dd = tempDir('ccb-led-');
   led.appendRevision(dd, 'projX', { ts: 5, policyId: 'p', action: 'demote-to-advisory', beforeSourceHash: 'a', afterSourceHash: 'b', beforeActivationId: 'act', afterActivationId: null, note: 'ok', snippet: 'SECRET_CODE()', globs: ['src/**'], text: 'leaky text', extra: 1 });
   const [rec] = led.listRevisions(dd, 'projX');
   const raw = JSON.stringify(rec);
@@ -27158,7 +27155,7 @@ test('revision-ledger: normalizeEntry keeps ONLY transition metadata (NO snippet
 
 test('revision-ledger: note is length-capped; never-throws on a corrupt ledger (empty shape)', () => {
   const led = require('./lib/revision-ledger.js');
-  const dd = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-led-'));
+  const dd = tempDir('ccb-led-');
   led.appendRevision(dd, 'projC', { policyId: 'p', action: 'demote-to-advisory', note: 'x'.repeat(5000) });
   assert(led.listRevisions(dd, 'projC')[0].note.length <= led.MAX_NOTE_CHARS, 'note capped to MAX_NOTE_CHARS');
   // Corrupt the file → load returns the empty shape, list never throws.
@@ -27338,17 +27335,17 @@ function seqStatus(states) {
 }
 
 test('graph/daemon: readRegistry missing → null', () => {
-  const d = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-graph-'));
+  const d = tempDir('ccb-graph-');
   assertEq(graphDaemon.readRegistry(d), null);
 });
 test('graph/daemon: readRegistry valid → info.url', () => {
-  const d = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-graph-'));
+  const d = tempDir('ccb-graph-');
   fs.writeFileSync(path.join(d, 'daemon.json'), JSON.stringify({ url: 'http://127.0.0.1:9', port: 9 }));
   const info = graphDaemon.readRegistry(d);
   assert(info && info.url === 'http://127.0.0.1:9', 'url parsed');
 });
 test('graph/daemon: readRegistry corrupt → null', () => {
-  const d = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-graph-'));
+  const d = tempDir('ccb-graph-');
   fs.writeFileSync(path.join(d, 'daemon.json'), '{not json');
   assertEq(graphDaemon.readRegistry(d), null);
 });
@@ -27495,7 +27492,7 @@ test('graph/tools: ROOT_CONFLICT reports both roots', async () => {
 // else discover via the configured runDir's daemon.json.
 test('graph/daemon: makeResolver prefers explicit serverUrl (same server, no registry read)', async () => {
   // A runDir that announces a DIFFERENT url — it must be ignored when serverUrl is set.
-  const otherDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-graphres-'));
+  const otherDir = tempDir('ccb-graphres-');
   fs.writeFileSync(path.join(otherDir, 'daemon.json'), JSON.stringify({ url: 'http://from-registry:9', port: 9 }));
   const seen = [];
   const fetchImpl = async (u) => { seen.push(String(u)); return { status: 200 }; };
@@ -27505,7 +27502,7 @@ test('graph/daemon: makeResolver prefers explicit serverUrl (same server, no reg
   assert(seen.every((u) => !u.includes('from-registry')), 'the registry url was NOT consulted');
 });
 test('graph/daemon: makeResolver falls back to runDir daemon.json when no serverUrl', async () => {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-graphres-'));
+  const dir = tempDir('ccb-graphres-');
   fs.writeFileSync(path.join(dir, 'daemon.json'), JSON.stringify({ url: 'http://from-registry:9', port: 9 }));
   const seen = [];
   const fetchImpl = async (u) => { seen.push(String(u)); return { status: 200 }; };
@@ -27978,7 +27975,7 @@ test('graph/dispatch: mcp-memory + unreachable daemon fails open (offline guidan
 
   test('consolidate-datadirs: backup retention prunes only backups > 30 days AND beyond the newest 5 (O12: 39 dirs / 2.4 GB piled up)', () => {
     const { pruneBackups } = CONS._test;
-    const base = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-prune-'));
+    const base = tempDir('ccb-prune-');
     const DAY = 24 * 60 * 60 * 1000; const NOW = Date.now();
     const ages = { a: 1, b: 2, c: 3, d: 40, e: 50, f: 60, g: 70, h: 80 }; // days
     for (const [k, days] of Object.entries(ages)) {
@@ -27991,7 +27988,7 @@ test('graph/dispatch: mcp-memory + unreachable daemon fails open (offline guidan
     assertEq(deleted, ['_boss-backup-f', '_boss-backup-g', '_boss-backup-h'], 'old AND beyond the newest 5');
     assertEq(fs.readdirSync(base).sort(), ['_boss-backup-a', '_boss-backup-b', '_boss-backup-c', '_boss-backup-d', '_boss-backup-e', 'claude-code-boss']);
     // Recent ones are never pruned, even beyond the newest 5.
-    const base2 = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-prune2-'));
+    const base2 = tempDir('ccb-prune2-');
     for (let i = 0; i < 8; i++) fs.mkdirSync(path.join(base2, `_boss-backup-r${i}`));
     assertEq(pruneBackups({ fsx: fs, backupBase: base2, now: () => Date.now() }), [], 'nothing older than 30 days → nothing pruned');
     fs.rmSync(base, { recursive: true, force: true }); fs.rmSync(base2, { recursive: true, force: true });
@@ -28254,7 +28251,7 @@ test('graph-guard: advisories point to smart_search and never suggest a path/glo
 });
 
 test('graph-guard: readiness cache TTL round-trip (state+nodes); stale/corrupt → null', () => {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-ggcache-'));
+  const dir = tempDir('ccb-ggcache-');
   const file = path.join(dir, 'graph-ready-x.json');
   ggCore.writeReadyCache(file, 'ready', 1834, 1000);
   const c = ggCore.readReadyCache(file, 5000, 2000);
@@ -28267,7 +28264,7 @@ test('graph-guard: readiness cache TTL round-trip (state+nodes); stale/corrupt �
 });
 
 test('graph-guard ladder: READY (with nodes) → advise once with reason, identical retry passes', async () => {
-  const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-ggladder-'));
+  const dataDir = tempDir('ccb-ggladder-');
   const args = {
     kind: 'native-grep', raw: 'Grep resolveProjectId', pattern: 'resolveProjectId',
     projectRoot: 'C:/proj', sid: 'sid-1', dataDir,
@@ -28283,7 +28280,7 @@ test('graph-guard ladder: READY (with nodes) → advise once with reason, identi
 });
 
 test('graph-guard ladder: advise-once is PER-REPO — the SAME broad search in a DIFFERENT repo advises again (no cross-repo stamp bleed)', async () => {
-  const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-ggxrepo-'));
+  const dataDir = tempDir('ccb-ggxrepo-');
   const base = {
     kind: 'native-grep', raw: 'Grep sharedSymbol', pattern: 'sharedSymbol',
     sid: 'sid-xrepo', dataDir, cfg: { cacheTtlMs: 60000 },
@@ -28301,7 +28298,7 @@ test('graph-guard ladder: advise-once is PER-REPO — the SAME broad search in a
 });
 
 test('graph-guard ladder: not_indexed → ADVISE-once with the index-now redirect; retry passes (economics: one-time index vs per-query walk)', async () => {
-  const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-ggni-'));
+  const dataDir = tempDir('ccb-ggni-');
   let probes = 0;
   const args = {
     kind: 'bash', raw: 'rg foo', pattern: 'foo', projectRoot: 'C:/proj', sid: 's', dataDir,
@@ -28317,7 +28314,7 @@ test('graph-guard ladder: not_indexed → ADVISE-once with the index-now redirec
 });
 
 test('graph-guard ladder: READY but 0 nodes → allow (repo has no graph-supported code; redirect would be a lie)', async () => {
-  const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-ggzero-'));
+  const dataDir = tempDir('ccb-ggzero-');
   let probes = 0;
   const args = {
     kind: 'native-grep', raw: 'Grep x', pattern: 'x', projectRoot: 'C:/mdonly', sid: 's', dataDir,
@@ -28330,7 +28327,7 @@ test('graph-guard ladder: READY but 0 nodes → allow (repo has no graph-support
 
 test('graph-guard ladder: offline/indexing/probe-throw → plain allow (fail-open), and failure state is CACHED', async () => {
   for (const behavior of ['offline', 'indexing', 'throw']) {
-    const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), `ccb-ggfo-${behavior}-`));
+    const dataDir = tempDir(`ccb-ggfo-${behavior}-`);
     let probes = 0;
     const probe = async () => {
       probes++;
@@ -28348,7 +28345,7 @@ test('graph-guard ladder: offline/indexing/probe-throw → plain allow (fail-ope
 });
 
 test('graph-guard ladder: a bare-string probe result still works (back-compat)', async () => {
-  const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-ggbc-'));
+  const dataDir = tempDir('ccb-ggbc-');
   const args = {
     kind: 'native-grep', raw: 'Grep y', pattern: 'y', projectRoot: 'C:/bc', sid: 's', dataDir,
     cfg: { cacheTtlMs: 60000 }, probe: async () => 'not_indexed', // legacy shape → nodes defaults 0
@@ -28357,7 +28354,7 @@ test('graph-guard ladder: a bare-string probe result still works (back-compat)',
 });
 
 test('graph-warm: cooldown round-trip — within window blocks, expired/absent allows', () => {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-ggwarm-'));
+  const dir = tempDir('ccb-ggwarm-');
   const file = ggCore.warmStampPath(dir, 'C:/proj');
   assertEq(ggCore.isWarmOnCooldown(file, 60000, 1000), false, 'absent stamp → not on cooldown');
   ggCore.stampWarm(file, 1000);
@@ -28368,7 +28365,7 @@ test('graph-warm: cooldown round-trip — within window blocks, expired/absent a
 });
 
 test('graph-warm: per-project stamp keys are distinct (one root on cooldown never gates another)', () => {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-ggwarm2-'));
+  const dir = tempDir('ccb-ggwarm2-');
   const a = ggCore.warmStampPath(dir, 'C:/projA');
   const b = ggCore.warmStampPath(dir, 'C:/projB');
   assert(a !== b, 'different roots → different stamp files');
@@ -28589,8 +28586,8 @@ function waitFreePort() {
 
 test('brain daemon supervisor: stale owner (root removed) → swapDaemon → started', async () => {
   const { ensureDaemon } = await import(SUPERVISOR_URL);
-  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-stale-'));
-  const tmpHome = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-stale-home-'));
+  const tmp = tempDir('ccb-stale-');
+  const tmpHome = tempDir('ccb-stale-home-');
   const oldRoot = path.join(tmp, 'install-A');
   fs.mkdirSync(path.join(oldRoot, 'servers', 'brain-server'), { recursive: true });
   fs.writeFileSync(path.join(oldRoot, 'servers', 'brain-server', 'index.js'), '// old');
@@ -28618,8 +28615,8 @@ test('brain daemon supervisor: stale owner (root removed) → swapDaemon → sta
  *  `ownerVersion`; ensureDaemon runs as install B at `ourVersion`. */
 async function runUpgradeCase(ownerVersion, ourVersion, { otherData = false, ready } = {}) {
   const { ensureDaemon } = await import(SUPERVISOR_URL);
-  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-upgrade-'));
-  const tmpHome = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-upgrade-home-'));
+  const tmp = tempDir('ccb-upgrade-');
+  const tmpHome = tempDir('ccb-upgrade-home-');
   const oldRoot = path.join(tmp, 'install-A');
   fs.mkdirSync(path.join(oldRoot, 'servers', 'brain-server'), { recursive: true });
   fs.writeFileSync(path.join(oldRoot, 'servers', 'brain-server', 'index.js'), '// old');
@@ -28672,8 +28669,8 @@ test('brain daemon supervisor: NEWER owner from another install → shared (neve
 
 test('brain daemon supervisor: legacy daemon on old port → exileLegacyDaemon → started', async () => {
   const { ensureDaemon } = await import(SUPERVISOR_URL);
-  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-legacy-'));
-  const tmpHome = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-legacy-home-'));
+  const tmp = tempDir('ccb-legacy-');
+  const tmpHome = tempDir('ccb-legacy-home-');
   const newRoot = path.join(tmp, 'install-B');
   fs.mkdirSync(path.join(newRoot, 'servers', 'brain-server'), { recursive: true });
   fs.writeFileSync(path.join(newRoot, 'servers', 'brain-server', 'index.js'), '// new');
@@ -28700,7 +28697,7 @@ test('brain daemon supervisor: legacy daemon on old port → exileLegacyDaemon �
 
 test('brain daemon supervisor: port squat (non-brain HTTP) → error, squat untouched', async () => {
   const { ensureDaemon } = await import(SUPERVISOR_URL);
-  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-squat-'));
+  const tmp = tempDir('ccb-squat-');
   const dataDir = path.join(tmp, 'data');
   fs.mkdirSync(dataDir, { recursive: true });
   const squat = http.createServer((req, res) => {
@@ -28725,8 +28722,8 @@ test('brain daemon supervisor: port squat (non-brain HTTP) → error, squat unto
 
 test('brain daemon supervisor: port blocked (listen EACCES) → error carries the real cause + netsh hint', async () => {
   const { ensureDaemon, spawnLogFile } = await import(SUPERVISOR_URL);
-  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-eacces-'));
-  const tmpHome = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-eacces-home-'));
+  const tmp = tempDir('ccb-eacces-');
+  const tmpHome = tempDir('ccb-eacces-home-');
   const dataDir = path.join(tmp, 'data');
   fs.mkdirSync(dataDir, { recursive: true });
   // Reproduce a Windows excludedportrange deterministically on any OS: the
@@ -28753,8 +28750,8 @@ test('brain daemon supervisor: port blocked (listen EACCES) → error carries th
 
 test('brain daemon supervisor: spawned child serving ANOTHER dataDir → error AND the child is stopped (G17)', async () => {
   const { ensureDaemon } = await import(SUPERVISOR_URL);
-  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-g17-'));
-  const tmpHome = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-g17-home-'));
+  const tmp = tempDir('ccb-g17-');
+  const tmpHome = tempDir('ccb-g17-home-');
   const dataDir = path.join(tmp, 'data');
   const otherData = path.join(tmp, 'other-data');
   fs.mkdirSync(dataDir, { recursive: true });
@@ -28784,7 +28781,7 @@ test('brain daemon supervisor: spawned child serving ANOTHER dataDir → error A
 
 test('brain daemon supervisor: env null/non-object → no TypeError, still probes', async () => {
   const { ensureDaemon } = await import(SUPERVISOR_URL);
-  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-envnull-'));
+  const tmp = tempDir('ccb-envnull-');
   const dataDir = path.join(tmp, 'data');
   fs.mkdirSync(dataDir, { recursive: true });
   const p = await waitFreePort();
@@ -28817,7 +28814,7 @@ test('brain daemon supervisor: our daemon slow past 600ms under load → current
   // de 600ms (mutex de KB do servidor ocupado com outras sessões). probeHot()
   // deve dar uma segunda chance antes de declarar squat.
   const { ensureDaemon } = await import(SUPERVISOR_URL);
-  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-slowhealth-'));
+  const tmp = tempDir('ccb-slowhealth-');
   const dataDir = path.join(tmp, 'data');
   fs.mkdirSync(dataDir, { recursive: true });
   const p = await waitFreePort();
@@ -28832,7 +28829,7 @@ test('brain daemon supervisor: our daemon slow past 600ms under load → current
 
 test('brain daemon supervisor: numeric BRAIN_HTTP_PORT → no TypeError', async () => {
   const { ensureDaemon } = await import(SUPERVISOR_URL);
-  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-numport-'));
+  const tmp = tempDir('ccb-numport-');
   const dataDir = path.join(tmp, 'data');
   fs.mkdirSync(dataDir, { recursive: true });
   const p = await waitFreePort();
@@ -28860,8 +28857,8 @@ test('brain daemon supervisor: BRAIN_HTTP_AUTOSTART 0 → disabled', async () =>
 
 test('brain daemon supervisor: HOME/USERPROFILE inherited by spawnDaemon', async () => {
   const { ensureDaemon } = await import(SUPERVISOR_URL);
-  const tmpHome = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-home-env-'));
-  const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-data-env-'));
+  const tmpHome = tempDir('ccb-home-env-');
+  const dataDir = tempDir('ccb-data-env-');
   const p = await waitFreePort();
   const res = await ensureDaemon({ pluginRoot: ROOT, dataDir, env: { BRAIN_HTTP_PORT: String(p), HOME: tmpHome, USERPROFILE: tmpHome } });
   assertEq(res.status, 'started', `expected started, got ${res.status} (${res.error || ''})`);
@@ -28896,10 +28893,10 @@ test('mcp-server createBrainServer({mode:"http"}): CCB_PROJECT_ID is never honor
 
 test('mcp-server http (727): a session bound to its MCP roots resolves calls without cwd to its folder and refuses a mismatched explicit project', async () => {
   const { createBrainServer } = await import(pathToFileURL(path.join(ROOT, 'servers', 'brain-server', 'lib', 'mcp-server.js')).href);
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-bind-'));
+  const root = tempDir('ccb-bind-');
   fs.mkdirSync(path.join(root, '.memory'), { recursive: true });
   fs.writeFileSync(path.join(root, '.memory', 'project.json'), JSON.stringify({ metadata: { defaults: { project_id: 'bind/me' } } }));
-  const noId = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-bind-noid-'));
+  const noId = tempDir('ccb-bind-noid-');
   try {
     const server = createBrainServer({ pluginRoot: ROOT, mode: 'http' });
     // Unbound (roots not fetched yet / client without roots): previous behavior.
@@ -28963,7 +28960,7 @@ test('slow-hook alert: orcamento ABSOLUTO por evento alem da fracao do prazo (o 
 
 test('slow-hook alert: once per hook per 6 h per daemon pid; the BRAIN-HEALTH check only judges the daemon serving THIS install', async () => {
   const alert = require('./lib/hook-latency-alert.js');
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-slowhook-'));
+  const dir = tempDir('ccb-slowhook-');
   const stampFile = path.join(dir, 'hook-latency-alert.json');
   const health = (pid) => ({ pid, pluginRoot: ROOT, hookLatency: { hook_curation_guard: { calls: 40, queued: 0, expired: 2, p95Ms: 6900 } } });
   const deadlines = { hook_curation_guard: 7000 };
@@ -29018,7 +29015,7 @@ test('value digest: real metrics → shown once a day per project; silent (and s
   const vd = require('./value-digest.js');
   const ms = require('../engine/lib/metrics-store.js');
   const { runWithHookEnv } = require('./lib/hook-context.js');
-  const base = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-digest-'));
+  const base = tempDir('ccb-digest-');
   const active = path.join(base, 'digest-active-' + Date.now()); fs.mkdirSync(active);
   const idle = path.join(base, 'digest-idle-' + Date.now()); fs.mkdirSync(idle);
   try {
@@ -29053,7 +29050,7 @@ test('dashboard: every inline <script> of index.html compiles (one syntax error 
 
 test('prune never-used: no candidates without a history covering the window; old unused + dangling are candidates; young and used are not', () => {
   const { pruneCandidates } = require('./lib/shells-prune.js');
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-prune-'));
+  const root = tempDir('ccb-prune-');
   fs.mkdirSync(path.join(root, '.vscode', 'scripts'), { recursive: true });
   const old = (Date.now() - 90 * 86400_000) / 1000;
   for (const n of ['a', 'b', 'c']) fs.writeFileSync(path.join(root, '.vscode', 'scripts', `${n}.mjs`), 'x');
@@ -29099,7 +29096,7 @@ test('prune never-used: a 2.x-era curation.flagged does NOT count as usage histo
 
 test('prune never-used: apply removes only current candidates (non-candidates refused, loud), keeps a backup and human-readable JSON', () => {
   const { pruneShells } = require('./lib/shells-prune.js');
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-prune-apply-'));
+  const root = tempDir('ccb-prune-apply-');
   const file = require('./curation-paths.js').getShellsConfigPath(root); // the project's curation home
   fs.mkdirSync(path.dirname(file), { recursive: true });
   const orig = JSON.stringify({ shells: [{ id: 'A', script: 'scripts/a.mjs', aliases: ['npm run a'] }, { id: 'B', script: 'scripts/b.mjs', aliases: ['npm run b'] }], whitelist: ['git'] });
@@ -29128,7 +29125,7 @@ test('prune never-used: apply removes only current candidates (non-candidates re
 
 test('prune never-used: real metrics usage (exact, no row cap) + the MCP tool lists by default and prunes only with apply', async () => {
   const ms = require('../engine/lib/metrics-store.js');
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-prune-tool-'));
+  const root = tempDir('ccb-prune-tool-');
   const project = path.basename(root);
   try {
     ms.close(); ms.init({ project });
@@ -29159,7 +29156,7 @@ test('prune never-used: real metrics usage (exact, no row cap) + the MCP tool li
 
 test('curation_prune_unused: shells.json in a SUBFOLDER of the session reads the session root\'s usage metrics (the key lib/metrics.js writes)', async () => {
   const ms = require('../engine/lib/metrics-store.js');
-  const sess = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-prune-nested-'));
+  const sess = tempDir('ccb-prune-nested-');
   const app = path.join(sess, 'app');
   try {
     ms.close(); ms.init({ project: path.basename(sess) });
@@ -29174,7 +29171,7 @@ test('curation_prune_unused: shells.json in a SUBFOLDER of the session reads the
     const r = JSON.parse((await server.dispatch('curation_prune_unused', { cwd: app, days: 30 })).content[0].text);
     assert(r.historyFromTs && !/since never/.test(r.reason || ''), `usage read from the session root key, not basename(app): ${JSON.stringify(r)}`);
     // A shells root OUTSIDE the session keeps its own basename (its metrics, not the session's).
-    const other = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-prune-other-'));
+    const other = tempDir('ccb-prune-other-');
     try {
       ms.close(); ms.init({ project: path.basename(other) });
       ms.recordMetric('curation.used', { scriptId: 'X' }, 's');
@@ -29208,7 +29205,7 @@ test('dashboard getting-started card: shown only while the install has no activi
 
 test('welcome: shown once per machine (O_EXCL claim, concurrent-safe), never to a synthetic prompt; the dispatcher sends it as systemMessage', async () => {
   const { takeWelcome, markerPath } = require('./lib/welcome.js');
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-welcome-'));
+  const dir = tempDir('ccb-welcome-');
   try {
     assertEq(takeWelcome({ prompt: '<task-notification>done</task-notification>', dir }), null, 'sub-agent notification never greeted');
     assert(!fs.existsSync(markerPath(dir)), 'and it does not consume the one showing');
@@ -29216,12 +29213,12 @@ test('welcome: shown once per machine (O_EXCL claim, concurrent-safe), never to 
     assert(/claude-code-boss está ativo/.test(first) && /\/dashboard/.test(first) && /\/boss-profile/.test(first), first);
     assertEq(takeWelcome({ prompt: 'oi', dir }), null, 'second prompt: nothing');
     // two sessions racing: exactly one wins
-    const d2 = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-welcome2-'));
+    const d2 = tempDir('ccb-welcome2-');
     const wins = [takeWelcome({ prompt: 'a', dir: d2 }), takeWelcome({ prompt: 'b', dir: d2 })].filter(Boolean).length;
     assertEq(wins, 1, 'one showing per machine');
     fs.rmSync(d2, { recursive: true, force: true });
     // end to end through the real hook process, with an isolated HOME
-    const home = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-welcome-home-'));
+    const home = tempDir('ccb-welcome-home-');
     const run = () => require('child_process').spawnSync(process.execPath, [path.join(SCRIPTS, 'user-prompt-submit-dispatcher.js')], { input: JSON.stringify({ hook_event_name: 'UserPromptSubmit', prompt: 'olá', session_id: 'w1', cwd: process.env.CLAUDE_PLUGIN_DATA }), encoding: 'utf8', timeout: 60000, env: { ...process.env, HOME: home, USERPROFILE: home, BRAIN_HTTP_AUTOSTART: '0' } });
     const o1 = JSON.parse(run().stdout || '{}');
     assert(/claude-code-boss está ativo/.test(o1.systemMessage || ''), `first prompt shows the welcome: ${JSON.stringify(o1).slice(0, 300)}`);
@@ -29257,7 +29254,7 @@ test('setup-tools: backend_status/setup guide the agent (Java missing → exact 
 test('backup: streamed round trip to another install — WAL-safe SQLite snapshot while a connection is open, a 64 MB remote snapshot, no models/.runtime/tokens/router key; corrupt or unsafe archives refused before touching anything', async () => {
   const { createBackup, extractBackup, applyStaged, writeTarGz } = require('./lib/backup.js');
   const Database = require('../engine/lib/sqlite-compat.js').loadSqlite();
-  const base = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-backup-'));
+  const base = tempDir('ccb-backup-');
   let live = null;
   try {
     const A = { dataDir: path.join(base, 'a', 'data'), globalDir: path.join(base, 'a', 'global') };
@@ -29319,7 +29316,7 @@ test('backup: streamed round trip to another install — WAL-safe SQLite snapsho
 
 test('backup-remote: the memory-server part follows docs/BACKUP-CONTRACT.md — "not included" with the reason when the server lacks the tools or the export fails/times out (never taking the local backup down), verified snapshot FILE when it works', async () => {
   const { exportRemote, importRemote } = require('./lib/backup-remote.js');
-  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-bkremote-'));
+  const tmpDir = tempDir('ccb-bkremote-');
   try {
     const calls = [];
     const fakeClient = (tools, onCall) => class { constructor() { this._availableTools = tools.map((name) => ({ name })); } async connect() {} close() {} async callTool(n, a) { calls.push(n); return { text: JSON.stringify(await onCall(n, a)) }; } };
@@ -29349,7 +29346,7 @@ test('backup-remote: the memory-server part follows docs/BACKUP-CONTRACT.md — 
 
 test('dashboard backup e2e: create (background job) + download on install A, streamed upload + restore job on install B through the real dashboard (pre-restore safety copy kept)', async () => {
   const Database = require('../engine/lib/sqlite-compat.js').loadSqlite();
-  const base = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-dashbk-'));
+  const base = tempDir('ccb-dashbk-');
   const kids = [];
   const start = (name) => new Promise((resolve, reject) => {
     const home = path.join(base, name, 'home'); const data = path.join(base, name, 'data');
@@ -29413,7 +29410,7 @@ test('project identity notice: the agent investigates and asks "new or existing 
 
 test('brain-config: a long-lived process sees a save made by ANOTHER process (cache keyed on the user override mtime/size)', () => {
   const bc = require('../engine/lib/brain-config.js');
-  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-bc-'));
+  const home = tempDir('ccb-bc-');
   const saved = { HOME: process.env.HOME, USERPROFILE: process.env.USERPROFILE };
   try {
     process.env.HOME = home; process.env.USERPROFILE = home;
@@ -29448,7 +29445,7 @@ test('mcp-wizard: never starts the jar itself (launcher only, ADR-023) and finds
   const w = require('./lib/mcp-wizard.js');
   assert(!('spawnDaemon' in w) && !('daemonArgs' in w), 'no direct jar spawn exported');
   assert(!/--daemon'|'--transport'/.test(fs.readFileSync(path.join(SCRIPTS, 'lib', 'mcp-wizard.js'), 'utf8')), 'no java -jar --daemon/--transport left in the wizard');
-  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-java-'));
+  const tmp = tempDir('ccb-java-');
   try {
     const j8 = path.join(tmp, 'jre8', 'bin', 'java'); const j21 = path.join(tmp, 'temurin21', 'bin', 'java');
     for (const f of [j8, j21]) { fs.mkdirSync(path.dirname(f), { recursive: true }); fs.writeFileSync(f, ''); }
@@ -29464,7 +29461,7 @@ test('mcp-wizard: never starts the jar itself (launcher only, ADR-023) and finds
 
 test('marketplace auto-update: turned on once when nobody chose (known_marketplaces + declared settings entry), user\'s explicit choice kept, user told once; inline installs untouched', () => {
   const m = require('./lib/marketplace-autoupdate.js');
-  const base = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-autoupd-'));
+  const base = tempDir('ccb-autoupd-');
   try {
     const cfg = path.join(base, 'claude'); const markerDir = path.join(base, 'global');
     const env = { CLAUDE_CONFIG_DIR: cfg };
@@ -29534,8 +29531,8 @@ test('update-notice: no version notice builds a GitHub link — the source holds
   const src = fs.readFileSync(path.join(__dirname, 'lib', 'update-notice.js'), 'utf8');
   assert(!/github\.com|\/releases\b|\/blob\//i.test(src.replace(/^\s*(\/\/|\*|\/\*).*$/gm, '')), 'update-notice.js (code, comments aside) names no GitHub URL');
   assertEq(u.PAGES_URL, 'https://allansantos-dv.github.io/claude-code-plugins/claude-code-boss/');
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-un-'));
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-unr-'));
+  const dir = tempDir('ccb-un-');
+  const root = tempDir('ccb-unr-');
   try {
     fs.writeFileSync(path.join(root, 'package.json'), JSON.stringify({ version: '3.5.0' }));
     fs.writeFileSync(path.join(dir, u.STATE), JSON.stringify({ seenVersion: '3.4.0', latest: '3.6.0' }));
@@ -29567,7 +29564,7 @@ test('links a person follows: no plugin homepage and no dashboard link points at
 test('update-notice: "version available" cached 6h and told once per version; "plugin updated" told once; first run silent; env opt-out stops switch-on and check', async () => {
   const u = require('./lib/update-notice.js');
   const m = require('./lib/marketplace-autoupdate.js');
-  const base = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-updnotice-'));
+  const base = tempDir('ccb-updnotice-');
   try {
     const root = path.join(base, 'plugin'); const dir = path.join(base, 'global');
     const E = fakeMarketplace(base, { version: '9.9.9' });
@@ -29661,7 +29658,7 @@ test('update-notice: "version available" cached 6h and told once per version; "p
 
 test('update-notice: the "available" notice gives `marketplace update` before `plugin update`; a local marketplace clone that stays behind or is unreadable is told once, never silent', () => {
   const u = require('./lib/update-notice.js');
-  const base = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-unstale-'));
+  const base = tempDir('ccb-unstale-');
   try {
     const root = path.join(base, 'claude', 'plugins', 'cache', 'mkt-x', 'claude-code-boss', '3.4.0');
     fs.mkdirSync(root, { recursive: true });
@@ -29728,7 +29725,7 @@ test('hook-prefix: every stderr line carries [claude-code-boss:<hook>] once; exi
 
 test('hook-owner: a failure names the origin the hook DECLARES (--hook-origin / [hook-origin=]); undeclared says so; never "dono"/"provável"; told once', () => {
   const ho = require('./lib/hook-owner.js');
-  const base = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-hookowner-'));
+  const base = tempDir('ccb-hookowner-');
   try {
     const rec = (uuid, a) => JSON.stringify({ type: 'attachment', uuid, attachment: a });
     const tp = path.join(base, 't.jsonl');
@@ -29890,7 +29887,7 @@ test('setup-tools: user-given server address is used as-is (no Java/download), a
 
 test('setup-tools: project_set names an id-less folder, refuses a taken name unless link:true, refuses a folder that already has an id', async () => {
   const { createSetupTools } = require('./lib/setup-tools.js');
-  const base = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-projset-'));
+  const base = tempDir('ccb-projset-');
   try {
     const mk = (n) => { const d = path.join(base, n); fs.mkdirSync(d); return d; };
     let remote = ['loja-online'];
@@ -29924,7 +29921,7 @@ test('setup-tools: project_set names an id-less folder, refuses a taken name unl
 
 test('dashboard Brain tab: project identity save writes .memory/project.json (project_set writer), never the legacy .claude-boss-project', async () => {
   const { Readable } = require('stream');
-  const base = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-dashpid-'));
+  const base = tempDir('ccb-dashpid-');
   const savedData = process.env.CLAUDE_PLUGIN_DATA;
   try {
     process.env.CLAUDE_PLUGIN_DATA = fs.mkdtempSync(path.join(base, 'data-'));
@@ -29987,7 +29984,7 @@ test('dashboard Brain tab: project identity save writes .memory/project.json (pr
 
 test('mcp-link: a session Claude Code gave up on is reported (user + agent) once the daemon is healthy; reconnected/other sessions/no logs are not', async () => {
   const { linkState, linkNotice, cwdSlug, LOG_DIR } = require('./lib/mcp-link.js');
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-mcplink-'));
+  const root = tempDir('ccb-mcplink-');
   const cwd = 'C:\\Users\\x\\Projetos\\cerne';
   assertEq(cwdSlug(cwd), 'C--Users-x-Projetos-cerne', 'Claude Code project slug');
   const dir = path.join(root, cwdSlug(cwd), LOG_DIR);
@@ -30019,7 +30016,7 @@ test('mcp-link: a session Claude Code gave up on is reported (user + agent) once
     // End to end through the real hook process: Claude Code's cache root pointed at the fixture, a /health stub as the daemon.
     const srv = http.createServer((req, res) => { res.writeHead(req.url === '/health' ? 200 : 404); res.end('{"ok":true}'); });
     await new Promise((r) => srv.listen(0, '127.0.0.1', r));
-    const home = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-mcplink-home-'));
+    const home = tempDir('ccb-mcplink-home-');
     fs.writeFileSync(path.join(home, 'brain-http.lock.json'), JSON.stringify({ port: srv.address().port }));
     try {
       const cache = process.platform === 'win32' ? { LOCALAPPDATA: path.join(root, 'la') } : { XDG_CACHE_HOME: path.join(root, 'xdg') };
@@ -30047,7 +30044,7 @@ test('mcp-link: a session Claude Code gave up on is reported (user + agent) once
 
 test('plugin setup self-heal: re-runs in background when the brain-server deps are missing (not only the root node_modules); one setup at a time', async () => {
   const { runSetupInBackground } = require('./brain-daemon-ensure.js');
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-setup-'));
+  const root = tempDir('ccb-setup-');
   try {
     fs.mkdirSync(path.join(root, 'node_modules'), { recursive: true });
     fs.mkdirSync(path.join(root, 'servers', 'brain-server'), { recursive: true });
@@ -30074,7 +30071,7 @@ test('plugin setup self-heal: re-runs in background when the brain-server deps a
 
 test('secret-file: ensureSecret creates once (bytes → hex), reuses after; empty/absent → null; 0600 on POSIX', () => {
   const { readSecret, ensureSecret } = require('./lib/secret-file.js');
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-secret-'));
+  const dir = tempDir('ccb-secret-');
   try {
     const f = path.join(dir, 'sub', 'tok');
     assertEq(readSecret(f), null, 'absent → null');
@@ -30110,7 +30107,7 @@ test('session-journal: per-sid files (no "foo"/"foobar" collision), same-ms orde
 test('cooldown-stamp: absent → off; stamped → on until ms elapses; settleWithin tells ok/timeout/error apart', async () => {
   const { onCooldown, stamp } = require('./lib/cooldown-stamp.js');
   const { settleWithin } = require('../engine/lib/settle-within.js');
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-cool-'));
+  const dir = tempDir('ccb-cool-');
   try {
     const p = path.join(dir, 'sub', 'x.json');
     assertEq(onCooldown(p, 1000), false, 'absent → not on cooldown');
@@ -30151,7 +30148,7 @@ test('config-merge: deepMerge (objects recurse, arrays/scalars replace, base unt
   assertEq(deepMerge(base, { a: { c: [9] }, e: 2 }), { a: { b: 1, c: [9] }, d: 1, e: 2 });
   assertEq(base, { a: { b: 1, c: [1, 2] }, d: 1 }, 'base not mutated');
   assertEq(deepMerge(base, null), base, 'non-object override → copy of base');
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-stamp-'));
+  const dir = tempDir('ccb-stamp-');
   try {
     const f = path.join(dir, 'x.json');
     const s0 = filesStamp(f, path.join(dir, 'none.json'));
@@ -30198,7 +30195,7 @@ test('dashboard /api/plugin/update: one update at a time (a 2nd click while one 
 
 test('curation_prune_unused: le o uso pela chave de metricas do PROJETO (id), nao pelo nome da pasta nem pela 1a sessao do daemon', async () => {
   const sp = require('./lib/shells-prune.js');
-  const repo = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-prune-key-'));
+  const repo = tempDir('ccb-prune-key-');
   fs.mkdirSync(path.join(repo, '.git'));
   fs.mkdirSync(path.join(repo, '.memory'));
   fs.writeFileSync(path.join(repo, '.memory', 'project.json'), JSON.stringify({ metadata: { defaults: { project_id: 'own/prune-repo' } } }));
@@ -30218,7 +30215,7 @@ test('curation_prune_unused: le o uso pela chave de metricas do PROJETO (id), na
 
 test('dashboard prune (no session known): metrics key = nearest folder up to the repo top that has a metrics db', () => {
   const { metricsProjectFor } = require('./lib/shells-prune.js');
-  const repo = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-mpf-'));
+  const repo = tempDir('ccb-mpf-');
   const app = path.join(repo, 'packages', 'app');
   fs.mkdirSync(app, { recursive: true });
   fs.mkdirSync(path.join(repo, '.git'));
@@ -30233,7 +30230,7 @@ test('dashboard prune (no session known): metrics key = nearest folder up to the
 
 test('shared daemon: tools acting on "this project" never fall back to the daemon\'s process.cwd() (mark_oneoff, register_shell, graph, policy)', async () => {
   const oneoff = require('./lib/oneoff-store.js');
-  const sess = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-callercwd-'));
+  const sess = tempDir('ccb-callercwd-');
   fs.mkdirSync(path.join(sess, '.git'));
   try {
     const { createBrainServer } = await import(pathToFileURL(path.join(ROOT, 'servers', 'brain-server', 'lib', 'mcp-server.js')).href);
@@ -30276,7 +30273,7 @@ test('daemon-supervisor spawnDaemon: never forwards CCB_PROJECT_ID from the spaw
 
 test('brain daemon supervisor: same pluginRoot but different dataDir → error, not current', async () => {
   const { ensureDaemon } = await import(SUPERVISOR_URL);
-  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-samedir-'));
+  const tmp = tempDir('ccb-samedir-');
   const otherDataDir = path.join(tmp, 'other-data');
   fs.mkdirSync(otherDataDir, { recursive: true });
   const p = await waitFreePort();
@@ -30291,7 +30288,7 @@ test('brain daemon supervisor: same pluginRoot but different dataDir → error, 
 
 test('brain daemon supervisor: foreign daemon with same pid but different identity → no kill', async () => {
   const { ensureDaemon } = await import(SUPERVISOR_URL);
-  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-foreignpid-'));
+  const tmp = tempDir('ccb-foreignpid-');
   const oldRoot = path.join(tmp, 'install-A');
   fs.mkdirSync(path.join(oldRoot, 'servers', 'brain-server'), { recursive: true });
   fs.writeFileSync(path.join(oldRoot, 'servers', 'brain-server', 'index.js'), '// old');
@@ -30324,7 +30321,7 @@ test('brain daemon supervisor: foreign daemon with same pid but different identi
 test('brain daemon supervisor: lock with mismatched dataDir → no exile', async () => {
   const { ensureDaemon } = await import(SUPERVISOR_URL);
   const { lockFile } = await import(COMMON_URL);
-  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-lock-'));
+  const tmp = tempDir('ccb-lock-');
   const dataDir = path.join(tmp, 'data');
   fs.mkdirSync(dataDir, { recursive: true });
   const oldRoot = path.join(tmp, 'install-A');
@@ -30350,7 +30347,7 @@ test('brain daemon supervisor: lock with mismatched dataDir → no exile', async
 
 test('brain daemon supervisor: samePluginData canonicalizes BOTH sides (C1)', async () => {
   const { samePluginData } = await import(SUPERVISOR_URL);
-  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-canon-'));
+  const tmp = tempDir('ccb-canon-');
   const dataDir = path.join(tmp, 'data');
   fs.mkdirSync(dataDir, { recursive: true });
   const slashSpelled = process.platform === 'win32' ? dataDir.split(path.sep).join('/') : dataDir.replace(/\//g, path.sep);
@@ -30371,7 +30368,7 @@ test('brain daemon supervisor: sameIdentity requires identical port + pid (L1)',
 
 test('brain daemon supervisor: lockMatchesHealth canonicalizes the HEALTH dataDir too (C1)', async () => {
   const { lockMatchesHealth } = await import(SUPERVISOR_URL);
-  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-lockmatch-'));
+  const tmp = tempDir('ccb-lockmatch-');
   const dataDir = path.join(tmp, 'data');
   fs.mkdirSync(dataDir, { recursive: true });
   const slashSpelled = process.platform === 'win32' ? dataDir.split(path.sep).join('/') : dataDir.replace(/\//g, path.sep);
@@ -30383,7 +30380,7 @@ test('brain daemon supervisor: lockMatchesHealth canonicalizes the HEALTH dataDi
 
 test('brain daemon supervisor: a session still on an OLD install spawns the newest installed version (not its own old dir); orphaned versions skipped; equal versions keep their own', async () => {
   const { newestInstalledRoot } = await import(SUPERVISOR_URL);
-  const base = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-newest-'));
+  const base = tempDir('ccb-newest-');
   try {
     const plug = path.join(base, 'plugins', 'cache', 'mkt', 'claude-code-boss');
     const mk = (dir, version, orphaned) => {
@@ -30408,7 +30405,7 @@ test('brain daemon supervisor: a session still on an OLD install spawns the newe
 
 test('install-ready: a root is ready only with no live setup mark, its node_modules and the brain-server deps resolving', () => {
   const ready = require('./lib/install-ready.js');
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-ready-'));
+  const root = tempDir('ccb-ready-');
   try {
     fs.mkdirSync(path.join(root, 'servers', 'brain-server'), { recursive: true });
     fs.writeFileSync(path.join(root, 'servers', 'brain-server', 'package.json'), JSON.stringify({ dependencies: {} }));
@@ -30433,7 +30430,7 @@ test('install-ready: a root is ready only with no live setup mark, its node_modu
 
 test('install-ready: a mark left by a setup that died mid-install keeps the root not ready (interrupted, not running)', () => {
   const ready = require('./lib/install-ready.js');
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-interrupted-'));
+  const root = tempDir('ccb-interrupted-');
   try {
     fs.mkdirSync(path.join(root, 'servers', 'brain-server'), { recursive: true });
     fs.writeFileSync(path.join(root, 'servers', 'brain-server', 'package.json'), JSON.stringify({ dependencies: {} }));
@@ -30451,7 +30448,7 @@ test('install-ready: a mark left by a setup that died mid-install keeps the root
 
 test('plugin-setup setupSteps: a node_modules folder whose deps do not resolve, or an interrupted setup, reinstalls; a killed npm leaves the setup unfinished', async () => {
   const { setupSteps } = require('./plugin-setup.js');
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-setupsteps-'));
+  const root = tempDir('ccb-setupsteps-');
   try {
     const bsDir = path.join(root, 'servers', 'brain-server');
     fs.mkdirSync(bsDir, { recursive: true });
@@ -30482,7 +30479,7 @@ test('plugin-setup setupSteps: a node_modules folder whose deps do not resolve, 
 test('brain daemon supervisor: a newer install still in its setup (or without its deps) is never the one spawned', async () => {
   const { newestInstalledRoot } = await import(SUPERVISOR_URL);
   const ready = require('./lib/install-ready.js');
-  const base = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-halfnew-'));
+  const base = tempDir('ccb-halfnew-');
   try {
     const plug = path.join(base, 'plugins', 'cache', 'mkt', 'claude-code-boss');
     const mk = (dir, version, { deps = true } = {}) => {
@@ -30518,7 +30515,7 @@ test('brain daemon supervisor: an upgrade whose install is not ready keeps the r
 test('brain-daemon-ensure.runSetupInBackground: a setup already running in this root → "installing", no second process', () => {
   const { runSetupInBackground } = require('./brain-daemon-ensure.js');
   const ready = require('./lib/install-ready.js');
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-setuprun-'));
+  const root = tempDir('ccb-setuprun-');
   try {
     fs.mkdirSync(path.join(root, 'node_modules'), { recursive: true });
     fs.mkdirSync(path.join(root, 'servers', 'brain-server'), { recursive: true });
@@ -30536,7 +30533,7 @@ test('brain-daemon-ensure.runSetupInBackground: a setup already running in this 
 
 test('brain daemon supervisor: spawn mutex — live lock blocks, release frees, stale lock stolen (H1)', async () => {
   const { acquireSpawnLock, releaseSpawnLock, spawnLockDir } = await import(SUPERVISOR_URL);
-  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-mutex-'));
+  const tmp = tempDir('ccb-mutex-');
   const dataDir = path.join(tmp, 'data');
   fs.mkdirSync(dataDir, { recursive: true });
   assert(acquireSpawnLock(dataDir), 'first acquire wins');
@@ -30558,7 +30555,7 @@ test('brain daemon supervisor: spawn mutex — live lock blocks, release frees, 
 
 test('brain daemon supervisor: health WITHOUT a numeric port is a squat, not a daemon (L2)', async () => {
   const { ensureDaemon } = await import(SUPERVISOR_URL);
-  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-noport-'));
+  const tmp = tempDir('ccb-noport-');
   const dataDir = path.join(tmp, 'data');
   fs.mkdirSync(dataDir, { recursive: true });
   const squat = http.createServer((req, res) => {
@@ -30619,7 +30616,7 @@ test('kb-worker-client: a bare await with ZERO keepalive of its own does not exi
   // settle()), este script filho terminaria (exit 0, sem "OK" no stdout) ANTES
   // da resposta do worker chegar — reproduzindo exatamente a armadilha descrita
   // no BACKLOG.md.
-  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-kbw-noleak-'));
+  const tmp = tempDir('ccb-kbw-noleak-');
   const scriptPath = path.join(tmp, 'probe.mjs');
   const project = 'kbw-noleak-' + Date.now();
   fs.writeFileSync(scriptPath, `
@@ -31625,7 +31622,7 @@ test('plugin-updater.killStale: so casa modulos da PASTA DE CACHE do plugin, nao
   test('G9: curation-paths.findProjectRoot memoizes the walk-up per cwd; reset clears it', () => {
     const cp = require('./curation-paths.js');
     cp._resetConfigCache();
-    const deep = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-g9-root-'));
+    const deep = tempDir('ccb-g9-root-');
     fs.writeFileSync(path.join(deep, 'package.json'), '{}');
     const sub = path.join(deep, 'a', 'b'); fs.mkdirSync(sub, { recursive: true });
     assertEq(cp.findProjectRoot(sub), deep);
@@ -31642,7 +31639,7 @@ test('plugin-updater.killStale: so casa modulos da PASTA DE CACHE do plugin, nao
 
   test('curation-paths.findProjectRoot never adopts the HOME folder (a stray ~/.vscode/shells.json, seen in the field)', () => {
     const cp = require('./curation-paths.js');
-    const home = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-homeroot-'));
+    const home = tempDir('ccb-homeroot-');
     fs.mkdirSync(path.join(home, '.vscode'), { recursive: true });
     fs.writeFileSync(path.join(home, '.vscode', 'shells.json'), '{"shells":[]}');
     const sub = path.join(home, 'Desktop', 'scratch'); fs.mkdirSync(sub, { recursive: true });
@@ -31769,7 +31766,7 @@ test('plugin-updater.killStale: so casa modulos da PASTA DE CACHE do plugin, nao
   });
 
   test('audit: a job that never settles no longer wedges the heavy lane — a deadline after stallMs of silence recycles the worker', async () => {
-    const wp = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-stuck-')), 'stuck-worker.cjs');
+    const wp = path.join(tempDir('ccb-stuck-'), 'stuck-worker.cjs');
     fs.writeFileSync(wp, "const { parentPort } = require('worker_threads');\n"
       + "parentPort.on('message', (m) => { if (m.name === 'hang') return; parentPort.postMessage({ id: m.id, ok: true, text: 'ok:' + m.name }); });\n");
     // The silence is measured on this clock, moved by the test: a loaded machine's late timers cannot change the count.
@@ -31798,7 +31795,7 @@ test('plugin-updater.killStale: so casa modulos da PASTA DE CACHE do plugin, nao
   });
 
   test('plataforma-09: um worker que passa do teto de heap morre sozinho e o proximo hook roda num worker novo; kb, hook e embed nascem com o teto', async () => {
-    const wp = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-leak-')), 'leak-worker.cjs');
+    const wp = path.join(tempDir('ccb-leak-'), 'leak-worker.cjs');
     fs.writeFileSync(wp, "const { parentPort } = require('worker_threads');\n"
       + "const keep = [];\n"
       + "parentPort.on('message', (m) => { if (m.name === 'leak') { for (;;) keep.push(new Array(1e5).fill({ x: keep.length })); } parentPort.postMessage({ id: m.id, ok: true, text: 'ok:' + m.name }); });\n");
@@ -31818,7 +31815,7 @@ test('plugin-updater.killStale: so casa modulos da PASTA DE CACHE do plugin, nao
   });
 
   test('audit: deadlines interleaved with progress do NOT recycle a busy-but-healthy worker', async () => {
-    const wp = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-busy-')), 'busy-worker.cjs');
+    const wp = path.join(tempDir('ccb-busy-'), 'busy-worker.cjs');
     fs.writeFileSync(wp, "const { parentPort } = require('worker_threads');\n"
       + "parentPort.on('message', (m) => { if (m.name === 'hang') return; parentPort.postMessage({ id: m.id, ok: true, text: 'ok' }); });\n");
     let clock = 0;
@@ -31844,7 +31841,7 @@ test('plugin-updater.killStale: so casa modulos da PASTA DE CACHE do plugin, nao
   // slow job expired 3 times, the "stuck" worker was terminated (exit code 1), the unrelated hook in flight failed with
   // it, and the cold worker that replaced it was slower still.
   test('hook-worker: a SLOW worker (a job longer than the deadlines queued behind it) is not recycled — the polls expire at their deadline, the job in flight finishes', async () => {
-    const wp = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-slow-')), 'slow-worker.cjs');
+    const wp = path.join(tempDir('ccb-slow-'), 'slow-worker.cjs');
     fs.writeFileSync(wp, "const { parentPort } = require('worker_threads');\n"
       + "const q = []; let busy = false;\n"
       + "const pump = () => { if (busy || !q.length) return; busy = true; const m = q.shift();\n"
@@ -31871,7 +31868,7 @@ test('plugin-updater.killStale: so casa modulos da PASTA DE CACHE do plugin, nao
   });
 
   test('hook-worker: a worker that EXITS with code 1 mid-hook → the hook answers its fail-open at once (within the deadline) and the next hook runs on a fresh worker', async () => {
-    const wp = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-exit1-')), 'exit-worker.cjs');
+    const wp = path.join(tempDir('ccb-exit1-'), 'exit-worker.cjs');
     fs.writeFileSync(wp, "const { parentPort } = require('worker_threads');\n"
       + "parentPort.on('message', (m) => { if (m.name === 'hook_test_exit') process.exit(1); parentPort.postMessage({ id: m.id, ok: true, text: '{}' }); });\n");
     HOOK_SPECS.hook_test_exit = { lane: 'heavy', script: 'skill-metric.js', call: async () => '{}' };
@@ -32175,7 +32172,7 @@ test('compaction hook: with folderTtl off the session still leaves its folder on
 const ENGINE_IDLE_OFF = () => ({ active: false, mode: 'off', known: true, reason: 'pinned off for the test' });
 
 function folderTtlSandbox() {
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-folder-ttl-'));
+  const root = tempDir('ccb-folder-ttl-');
   const state = path.join(root, 'state.json');
   const local = (dir) => path.join(dir, '.claude', 'settings.local.json');
   const read = (dir) => (fs.existsSync(local(dir)) ? JSON.parse(fs.readFileSync(local(dir), 'utf8')) : null);
@@ -32308,7 +32305,7 @@ test('folder-ttl.excludeFromGit: a file we create inside a git repo goes to info
 
 test('engine-flags.idleCompaction: on only for a remote mode that compacts; off for settings/env switches; an unreadable cache is "unknown", never a guess', () => {
   const ef = require('./lib/engine-flags.js');
-  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-flags-'));
+  const home = tempDir('ccb-flags-');
   try {
     fs.mkdirSync(path.join(home, '.claude'));
     const cache = (mode) => fs.writeFileSync(path.join(home, '.claude.json'), JSON.stringify({ cachedGrowthBookFeatures: { tengu_sunny_locket: mode === undefined ? undefined : { mode } } }));
@@ -32632,7 +32629,7 @@ test('phase-restart core: notice only past the threshold, warm, after a committe
 async function phaseGateRun({ config, tokens, messages, coldMs = 0, prompts = 1 }) {
   const cmp = await import(require('url').pathToFileURL(path.join(ROOT, 'hooks', 'compaction.mjs')).href);
   const hooks = collectModuleHooks(cmp.register);
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-phase-gate-'));
+  const dir = tempDir('ccb-phase-gate-');
   fs.writeFileSync(path.join(dir, 'brain-http.token'), 'tok');
   fs.writeFileSync(path.join(dir, 'brain-http.lock.json'), JSON.stringify({ port: 1 }));
   const calls = { messages: 0, toasts: [], events: [], logs: [], downstream: [] };
@@ -32722,7 +32719,7 @@ test('phase-restart-measure: series flags person prompts after a commit; a heavy
 
 test('phase-restart-measure: reads the transcripts READ-ONLY (bytes and mtime unchanged), only top-level files in the window, sub-agent folders skipped', () => {
   const m = require('./lib/phase-restart-measure.js');
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-phase-root-'));
+  const root = tempDir('ccb-phase-root-');
   try {
     const proj = path.join(root, 'C--proj');
     fs.mkdirSync(path.join(proj, 'sid1', 'subagents'), { recursive: true });
@@ -32749,7 +32746,7 @@ test('dashboard PUT /api/compaction/config {phaseRestart:true}: runs the measure
   const cfgFile = hc.userConfigPath();
   const prevCfg = fs.existsSync(cfgFile) ? fs.readFileSync(cfgFile, 'utf8') : null;
   const prevDir = process.env.CLAUDE_CONFIG_DIR;
-  const cfgDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-phase-cfg-'));
+  const cfgDir = tempDir('ccb-phase-cfg-');
   const proj = path.join(cfgDir, 'projects', 'C--proj');
   fs.mkdirSync(proj, { recursive: true });
   process.env.CLAUDE_CONFIG_DIR = cfgDir;
@@ -32994,7 +32991,7 @@ function cmpTranscript(dir, rows) {
 
 test('compaction-event.readNewApiCalls: one entry per API call since the last one seen; synthetic re-written copies skipped; afterCompaction from the boundary', () => {
   const ce = require('./compaction-event.js');
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-cmp-tr-'));
+  const dir = tempDir('ccb-cmp-tr-');
   const call = (id, usage, extra = {}) => ({ type: 'assistant', ...extra, message: { id, model: 'm', usage } });
   const real = (w) => ({ input_tokens: 2, cache_read_input_tokens: 900, cache_creation_input_tokens: w, cache_creation: { ephemeral_5m_input_tokens: w, ephemeral_1h_input_tokens: 0 } });
   const zeroCopy = { input_tokens: 0, output_tokens: 0, cache_read_input_tokens: 0, cache_creation_input_tokens: 0, cache_creation: { ephemeral_5m_input_tokens: 29227 } };
@@ -33012,7 +33009,7 @@ test('compaction-event.readNewApiCalls: one entry per API call since the last on
   assertEq(all.map((c) => c.afterCompaction), [true, false], 'only the first real call after the boundary');
   assertEq(ce.readNewApiCalls(f, 'm4'), [], 'nothing new since the last call seen');
   assertEq(ce.readNewApiCalls(f, null).map((c) => [c.id, c.afterCompaction]), [['m3', true], ['m4', false]], 'first observation of a process: every call since the last boundary (a resumed session compacted before its first prompt)');
-  const noB = cmpTranscript(fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-cmp-nb-')), [call('n1', real(5)), call('n2', real(6))]);
+  const noB = cmpTranscript(tempDir('ccb-cmp-nb-'), [call('n1', real(5)), call('n2', real(6))]);
   assertEq(ce.readNewApiCalls(noB, null).map((c) => c.id), ['n2'], 'no boundary: the latest call only');
   assertEq(ce.readNewApiCalls(f, 'gone-out-of-window').map((c) => c.id), ['m4'], 'since not in the tail: latest only (never a flood)');
   const info = {};
@@ -33027,7 +33024,7 @@ test('compaction-event.readNewApiCalls: one entry per API call since the last on
 
 test('compaction-event.readNewApiCalls: a long turn — the boundary MBs before the turn end is still seen (window widens to the last call seen)', () => {
   const ce = require('./compaction-event.js');
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-cmp-long-'));
+  const dir = tempDir('ccb-cmp-long-');
   const call = (id, w) => ({ type: 'assistant', message: { id, model: 'm', usage: { input_tokens: 2, cache_read_input_tokens: 900, cache_creation_input_tokens: w } } });
   const bulk = (kb) => ({ type: 'user', message: { content: 'x'.repeat(kb * 1024) } });
   // Shape measured live (orchestrador 562fa86f): boundary 352–744 KB before the first call after it, 1–8 MB before the turn end.
@@ -33047,7 +33044,7 @@ async function withCmpStore(fn) {
   const mods = ['../engine/lib/metrics-store.js', '../engine/lib/metrics.js', './compaction-event.js'];
   for (const m of mods) delete require.cache[require.resolve(m)];
   const prev = process.env.CLAUDE_PLUGIN_DATA;
-  process.env.CLAUDE_PLUGIN_DATA = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-cmp-store-'));
+  process.env.CLAUDE_PLUGIN_DATA = tempDir('ccb-cmp-store-');
   try {
     const store = require('../engine/lib/metrics-store.js');
     if (!store.init({ project: 'ccb-cmp-probe' })) return; // no SQLite backend here: nothing to assert
@@ -33062,7 +33059,7 @@ async function withCmpStore(fn) {
 
 test('compaction-event.run: trail events land in the metrics store; turn records cache.turn and replies the window this host proved', async () => {
   await withCmpStore(async (ce, store) => {
-    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-cmp-proj-'));
+    const dir = tempDir('ccb-cmp-proj-');
     const base = { session_id: 'sid-cmp', cwd: dir };
     assertEq(await ce.run({ ...base, payload: { kind: 'run', trigger: 'manual', outcome: 'pruned', charsCut: 10 } }), {});
     assertEq(await ce.run({ ...base, payload: { kind: 'cold', detectedBy: 'timer', answerAt: 1, idleMs: 3601000, ttlMs: 3600000 } }), {});
@@ -33104,7 +33101,7 @@ const PRE_SWITCH_CALL = { input_tokens: 3, output_tokens: 900, cache_read_input_
 
 test('compaction-event.run turn: a hit that WRITES at 5m proves a 5 min window (the folder-TTL sessions are all hits on the 1h system prefix)', async () => {
   await withCmpStore(async (ce) => {
-    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-cmp-hit5m-'));
+    const dir = tempDir('ccb-cmp-hit5m-');
     const f = cmpTranscript(dir, [{ type: 'assistant', message: { id: 'msg-h', model: 'm1', usage: POST_SWITCH_CALL } }]);
     const reply = await ce.run({ session_id: 'sid-h', cwd: dir, transcript_path: f, payload: { kind: 'turn', host: 'gw.local', auth: 'api-key' } });
     assertEq(reply.observed.cacheState, 'hit');
@@ -33118,7 +33115,7 @@ test('compaction-event.run turn: a hit that WRITES at 5m proves a 5 min window (
 async function folderCutRun(ce, { gated }) {
   const cmp = await import(require('url').pathToFileURL(path.join(ROOT, 'hooks', 'compaction.mjs')).href);
   const hooks = collectModuleHooks(cmp.register);
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-folder-cut-'));
+  const dir = tempDir('ccb-folder-cut-');
   fs.writeFileSync(path.join(dir, 'brain-http.token'), 'tok');
   fs.writeFileSync(path.join(dir, 'brain-http.lock.json'), JSON.stringify({ port: 1 }));
   const transcript = path.join(dir, 'session.jsonl');
@@ -33195,7 +33192,7 @@ async function folderCutRun(ce, { gated }) {
 async function heartbeatNotices({ withTranscript, beats, folderAnswer, anyAnswer, transport, extraEnv = {}, breakdown = { rawMaxTokens: 1000000, autoCompactThreshold: 967000 } }) {
   const cmp = await import(require('url').pathToFileURL(path.join(ROOT, 'hooks', 'compaction.mjs')).href);
   const hooks = collectModuleHooks(cmp.register);
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-heartbeat-'));
+  const dir = tempDir('ccb-heartbeat-');
   fs.writeFileSync(path.join(dir, 'brain-http.token'), 'tok');
   const realFetch = transport ? transport(dir) : null;
   fs.writeFileSync(path.join(dir, 'brain-http.lock.json'), JSON.stringify({ port: realFetch ? realFetch.port : 1 }));
@@ -33424,7 +33421,7 @@ test('compaction hook: a turn-end re-check armed by the 1h window is re-armed by
 async function settledAfterCutRun(ce, { lateCall, after, floorFactor }) {
   const cmp = await import(require('url').pathToFileURL(path.join(ROOT, 'hooks', 'compaction.mjs')).href);
   const hooks = collectModuleHooks(cmp.register);
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-settled-'));
+  const dir = tempDir('ccb-settled-');
   fs.writeFileSync(path.join(dir, 'brain-http.token'), 'tok');
   fs.writeFileSync(path.join(dir, 'brain-http.lock.json'), JSON.stringify({ port: 1 }));
   const transcript = path.join(dir, 'session.jsonl');
@@ -33526,7 +33523,7 @@ const REOPEN_CALL = { input_tokens: 4, output_tokens: 600, cache_read_input_toke
 async function reopenedRun(ce, o) {
   const cmp = await import(require('url').pathToFileURL(path.join(ROOT, 'hooks', 'compaction.mjs')).href);
   const hooks = collectModuleHooks(cmp.register);
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-reopen-'));
+  const dir = tempDir('ccb-reopen-');
   fs.writeFileSync(path.join(dir, 'brain-http.token'), 'tok');
   fs.writeFileSync(path.join(dir, 'brain-http.lock.json'), JSON.stringify({ port: 1 }));
   const now = Date.now();
@@ -33691,7 +33688,7 @@ test('compaction hook, reopened session: the first folder report carries the rea
 // A session whose person's prompt the gate holds for the cut: opened warm, idle past the cache window, then the prompt.
 async function heldPromptRun(ce, { failHeld = false, dieBeforeResend = false } = {}) {
   const cmp = await import(require('url').pathToFileURL(path.join(ROOT, 'hooks', 'compaction.mjs')).href);
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-held-'));
+  const dir = tempDir('ccb-held-');
   fs.writeFileSync(path.join(dir, 'brain-http.token'), 'tok');
   fs.writeFileSync(path.join(dir, 'brain-http.lock.json'), JSON.stringify({ port: 1 }));
   const now0 = Date.now();
@@ -33793,7 +33790,7 @@ test('compaction hook: a person\'s prompt WITH attachments over a cold cache goe
   await withCmpStore(async (ce) => {
     const cmp = await import(require('url').pathToFileURL(path.join(ROOT, 'hooks', 'compaction.mjs')).href);
     const hooks = collectModuleHooks(cmp.register);
-    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-attach-'));
+    const dir = tempDir('ccb-attach-');
     fs.writeFileSync(path.join(dir, 'brain-http.token'), 'tok');
     fs.writeFileSync(path.join(dir, 'brain-http.lock.json'), JSON.stringify({ port: 1 }));
     let now = Date.now();
@@ -33854,7 +33851,7 @@ test('compaction hook: a session that never idles is cut at the end of a turn pa
   for (const [warmCeilingTokens, expected] of [[200000, 1], [0, 0]]) {
     await withCmpStore(async (ce) => {
       const hooks = collectModuleHooks(cmp.register);
-      const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-warmceil-'));
+      const dir = tempDir('ccb-warmceil-');
       fs.writeFileSync(path.join(dir, 'brain-http.token'), 'tok');
       fs.writeFileSync(path.join(dir, 'brain-http.lock.json'), JSON.stringify({ port: 1 }));
       const now = Date.now();
@@ -33957,7 +33954,7 @@ async function engineCompactRun({ messages, trigger = 'auto', coldMs = 2 * 36000
   const cmp = await import(require('url').pathToFileURL(path.join(ROOT, 'hooks', 'compaction.mjs')).href);
   const reg = {};
   cmp.register((event, fn) => { reg[event] = { fn }; return { catch(c) { reg[event].catch = c; return this; } }; });
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-engine-compact-'));
+  const dir = tempDir('ccb-engine-compact-');
   fs.writeFileSync(path.join(dir, 'brain-http.token'), 'tok');
   fs.writeFileSync(path.join(dir, 'brain-http.lock.json'), JSON.stringify({ port: 1 }));
   const out = { summaries: 0, events: [], logs: [], toasts: [], refused: null, result: null };
@@ -34030,7 +34027,7 @@ test('compaction hook: a cut the engine refuses anyway is recorded as the engine
   const cmp = await import(require('url').pathToFileURL(path.join(ROOT, 'hooks', 'compaction.mjs')).href);
   const reg = {};
   cmp.register((event, fn) => { reg[event] = { fn }; return { catch(c) { reg[event].catch = c; return this; } }; });
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-engine-refuse-'));
+  const dir = tempDir('ccb-engine-refuse-');
   try {
     fs.writeFileSync(path.join(dir, 'brain-http.token'), 'tok');
     fs.writeFileSync(path.join(dir, 'brain-http.lock.json'), JSON.stringify({ port: 1 }));
@@ -34088,7 +34085,7 @@ async function cmpColdHarness({ tokens = 300000 } = {}) {
   const cmp = await import(require('url').pathToFileURL(path.join(ROOT, 'hooks', 'compaction.mjs')).href);
   const reg = {};
   cmp.register((event, fn) => { reg[event] = { fn }; return { catch(c) { reg[event].catch = c; return this; } }; });
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-cold-'));
+  const dir = tempDir('ccb-cold-');
   fs.writeFileSync(path.join(dir, 'brain-http.token'), 'tok');
   fs.writeFileSync(path.join(dir, 'brain-http.lock.json'), JSON.stringify({ port: 1 }));
   const h = { reg, dir, now: 1_000_000_000, timers: [], events: [], logs: [] };
@@ -34309,7 +34306,7 @@ test('brain daemon: the folder sweep runs on a timer inside the daemon (the sing
 
 test('runtime-sweep: a held-prompt copy nobody came back for is removed after the state TTL, a young one stays', () => {
   const { sweepSessionState } = require('./runtime-sweep.js');
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-rt-held-'));
+  const dir = tempDir('ccb-rt-held-');
   try {
     const old = path.join(dir, 'held-prompt-a.json'); const young = path.join(dir, 'held-prompt-b.json'); const other = path.join(dir, 'unrelated.json');
     for (const f of [old, young, other]) fs.writeFileSync(f, '{}');
@@ -34321,7 +34318,7 @@ test('runtime-sweep: a held-prompt copy nobody came back for is removed after th
 
 test('runtime-sweep: read-burst state left by a session that never reached SessionEnd goes after the state TTL, a young one stays', () => {
   const { sweepSessionState } = require('./runtime-sweep.js');
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-rt-rb-'));
+  const dir = tempDir('ccb-rt-rb-');
   try {
     const sub = path.join(dir, 'read-burst'); fs.mkdirSync(sub);
     const old = path.join(sub, 'S1-main.json'); const young = path.join(sub, 'S2-main.json'); const tmp = path.join(sub, 'S3-main.json.tmp');
@@ -34340,7 +34337,7 @@ test('compaction hook, open session idle > 1h after a PERSON\'s turn: the cold c
   await withCmpStore(async (ce) => {
     const cmp = await import(require('url').pathToFileURL(path.join(ROOT, 'hooks', 'compaction.mjs')).href);
     const hooks = collectModuleHooks(cmp.register);
-    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-open-idle-'));
+    const dir = tempDir('ccb-open-idle-');
     fs.writeFileSync(path.join(dir, 'brain-http.token'), 'tok');
     fs.writeFileSync(path.join(dir, 'brain-http.lock.json'), JSON.stringify({ port: 1 }));
     let now = Date.now();
@@ -34438,7 +34435,7 @@ test('compaction hook: hello reports the module version; a session older than th
 test('compaction-event hello: records the module version (null = a module from before it was sent) and answers the installed one', async () => {
   await withCmpStore(async (ce, store) => {
     const pkgVersion = require('../package.json').version;
-    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-cmp-hello-'));
+    const dir = tempDir('ccb-cmp-hello-');
     const hello = (sid, extra) => ce.run({ session_id: sid, cwd: dir, payload: { kind: 'hello', host: 'h', auth: 'a', ...extra } });
     assertEq((await hello('sid-new', { moduleVersion: pkgVersion })).installedVersion, pkgVersion);
     await hello('sid-old', {});
@@ -34459,7 +34456,7 @@ test('build-id.buildIdOf: a versioned cache folder names the build (two builds o
 
 test('compaction-event hello: records the full build next to the module version, and the build tells two builds of one version apart', async () => {
   await withCmpStore(async (ce, store) => {
-    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-cmp-build-'));
+    const dir = tempDir('ccb-cmp-build-');
     await ce.run({ session_id: 'sid-build', cwd: dir, payload: { kind: 'hello', host: 'h', auth: 'a', moduleVersion: require('../package.json').version } });
     const row = store().getEventLog({ eventName: 'compaction.session' }).find((r) => r.sessionId === 'sid-build').payload;
     assertEq(row.installedBuild, require('./lib/build-id.js').buildIdOf(path.resolve(__dirname, '..'), require('../package.json').version));
@@ -34519,7 +34516,7 @@ test('hook_compaction_event: daemon transport (payload arrives as an object, bad
   assert(tools.definitions.some((d) => d.name === 'hook_compaction_event'), 'tool listed');
   assert(tools.definitions[0].inputSchema.properties.payload, 'payload field in the schema');
   await withCmpStore(async () => {
-    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-cmp-ht-'));
+    const dir = tempDir('ccb-cmp-ht-');
     const out = await ht.runHookInline(ROOT, 'hook_compaction_event', { session_id: 'sid-ht', cwd: dir, payload: JSON.stringify({ kind: 'gate', action: 'wait', reason: 'cache-warm' }) });
     assertEq(out, '{}');
     const bad = await ht.runHookInline(ROOT, 'hook_compaction_event', { session_id: 'sid-ht', cwd: dir, payload: '{"x":1}' });
@@ -34545,7 +34542,7 @@ test('hook_compaction_event: daemon transport (payload arrives as an object, bad
 });
 
 test('http-daemon POST /hook/compaction-event: REAL daemon — token-gated like /mcp; a module reaches hook_compaction_event end to end', async () => {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-cmp-route-'));
+  const dir = tempDir('ccb-cmp-route-');
   const { startHttpDaemon } = await import(require('url').pathToFileURL(path.join(ROOT, 'servers', 'brain-server', 'lib', 'http-daemon.js')).href);
   const savedTok = process.env.BRAIN_HTTP_TOKEN; delete process.env.BRAIN_HTTP_TOKEN;
   const d = await startHttpDaemon({ pluginRoot: ROOT, dataDir: dir, port: 0 });
@@ -34668,7 +34665,7 @@ test('boss-summary.summarizeBoss: 30-day savings like the Curation panel, per-se
 
 test('http-daemon GET /hook/boss-summary: REAL daemon — token-gated, one cached computation for every session, each session gets its own figure and no other session id', async () => {
   seedBossMetrics('sid-boss-A');
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-boss-route-'));
+  const dir = tempDir('ccb-boss-route-');
   const { startHttpDaemon } = await import(require('url').pathToFileURL(path.join(ROOT, 'servers', 'brain-server', 'lib', 'http-daemon.js')).href);
   const savedTok = process.env.BRAIN_HTTP_TOKEN; delete process.env.BRAIN_HTTP_TOKEN;
   const d = await startHttpDaemon({ pluginRoot: ROOT, dataDir: dir, port: 0 });
@@ -34699,7 +34696,7 @@ test('http-daemon GET /hook/boss-summary: REAL daemon — token-gated, one cache
 
 test('http-daemon GET /hook/boss-summary: REAL daemon — the read runs in its own worker, so a slow first read never queues a Stop or PostToolUse hook', async () => {
   seedBossMetrics('sid-boss-A');
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-boss-readworker-'));
+  const dir = tempDir('ccb-boss-readworker-');
   const { startHttpDaemon } = await import(require('url').pathToFileURL(path.join(ROOT, 'servers', 'brain-server', 'lib', 'http-daemon.js')).href);
   const savedTok = process.env.BRAIN_HTTP_TOKEN; delete process.env.BRAIN_HTTP_TOKEN;
   const d = await startHttpDaemon({ pluginRoot: ROOT, dataDir: dir, port: 0 });
@@ -34793,7 +34790,7 @@ test('http-daemon moduleReadRefusal: a summary still warming is the silent fail-
 
 test('http-daemon GET /hook/boss-summary: a computation slower than the reply answers fail-open, goes on into the cache and is no expired hook', async () => {
   seedBossMetrics('sid-boss-slow');
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-boss-slow-'));
+  const dir = tempDir('ccb-boss-slow-');
   const { startHttpDaemon } = await import(require('url').pathToFileURL(path.join(ROOT, 'servers', 'brain-server', 'lib', 'http-daemon.js')).href);
   const { isDaemonDegraded } = await import(require('url').pathToFileURL(path.join(ROOT, 'scripts', 'lib', 'module-daemon.mjs')).href);
   const savedTok = process.env.BRAIN_HTTP_TOKEN; delete process.env.BRAIN_HTTP_TOKEN;
@@ -34842,7 +34839,7 @@ test('hooks module: every $.env.get/$.env.set names a string literal (the engine
 
 test('boss.mjs: REAL daemon end to end — /boss and the band show the session cost, its Token Guard savings and the Brain; polls >= 5 s from the first draw', async () => {
   seedBossMetrics('sid-boss-mod');
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-boss-mod-'));
+  const dir = tempDir('ccb-boss-mod-');
   const { startHttpDaemon } = await import(require('url').pathToFileURL(path.join(ROOT, 'servers', 'brain-server', 'lib', 'http-daemon.js')).href);
   const savedTok = process.env.BRAIN_HTTP_TOKEN; delete process.env.BRAIN_HTTP_TOKEN;
   const d = await startHttpDaemon({ pluginRoot: ROOT, dataDir: dir, port: 0 });
@@ -34888,7 +34885,7 @@ test('boss.mjs: Desktop (SDK session, isInteractive false) gets /boss, and the b
   const start = findHook(hooks, 'session.start', { isInteractive: false });
   assert(start, 'session.start also for SDK-hosted sessions (the Desktop)');
   const summary = JSON.stringify({ tokenGuard: { days: 30, savedTokens: 10, sessionTokens: 0 }, brain: { connected: true } });
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-boss-desk-'));
+  const dir = tempDir('ccb-boss-desk-');
   fs.writeFileSync(path.join(dir, 'brain-http.token'), 'tok');
   fs.writeFileSync(path.join(dir, 'brain-http.lock.json'), JSON.stringify({ port: 1 }));
   const desk = fakeBoss$({ sessionId: 'sid-desk', env: { CLAUDE_PLUGIN_DATA: dir }, fetchImpl: async (url) => {
@@ -34920,7 +34917,7 @@ test('boss.mjs: Desktop (SDK session, isInteractive false) gets /boss, and the b
 
 test('boss.mjs: daemon down → the band says so (logged once, not per poll); a reply of {} (switched off in the dashboard) → no band at all', async () => {
   const boss = await import(require('url').pathToFileURL(path.join(ROOT, 'hooks', 'boss.mjs')).href);
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-boss-down-'));
+  const dir = tempDir('ccb-boss-down-');
   fs.writeFileSync(path.join(dir, 'brain-http.token'), 'tok');
   fs.writeFileSync(path.join(dir, 'brain-http.lock.json'), JSON.stringify({ port: 1 }));
   const env = { CLAUDE_PLUGIN_DATA: dir };
@@ -34953,7 +34950,7 @@ const notLegacyHandshake = (line) => !/\/health challenge/.test(line);
 
 test('boss.mjs: a daemon restarting under a poll (refused, then back on a new port) is reached inside the same read — run file re-read, nothing shown or logged', async () => {
   const boss = await import(require('url').pathToFileURL(path.join(ROOT, 'hooks', 'boss.mjs')).href);
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-boss-restart-'));
+  const dir = tempDir('ccb-boss-restart-');
   fs.writeFileSync(path.join(dir, 'brain-http.token'), 'tok');
   const lock = path.join(dir, 'brain-http.lock.json');
   fs.writeFileSync(lock, JSON.stringify({ port: 1 }));
@@ -34973,7 +34970,7 @@ test('boss.mjs: a daemon restarting under a poll (refused, then back on a new po
 
 test('boss.mjs: after an outage ends the notice goes away and the next outage is logged again', async () => {
   const boss = await import(require('url').pathToFileURL(path.join(ROOT, 'hooks', 'boss.mjs')).href);
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-boss-outage-'));
+  const dir = tempDir('ccb-boss-outage-');
   fs.writeFileSync(path.join(dir, 'brain-http.token'), 'tok');
   fs.writeFileSync(path.join(dir, 'brain-http.lock.json'), JSON.stringify({ port: 1 }));
   let up = false;
@@ -34995,7 +34992,7 @@ test('boss.mjs: after an outage ends the notice goes away and the next outage is
 
 test('boss.mjs: a daemon that fail-opens the summary (503: deadline missed / worker exited with code 1) shows the person nothing — the band keeps its last numbers', async () => {
   const boss = await import(require('url').pathToFileURL(path.join(ROOT, 'hooks', 'boss.mjs')).href);
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-boss-degraded-'));
+  const dir = tempDir('ccb-boss-degraded-');
   fs.writeFileSync(path.join(dir, 'brain-http.token'), 'tok');
   fs.writeFileSync(path.join(dir, 'brain-http.lock.json'), JSON.stringify({ port: 1 }));
   const good = JSON.stringify({ tokenGuard: { days: 30, savedTokens: 10, sessionTokens: 0 }, brain: { connected: true } });
@@ -35025,7 +35022,7 @@ test('boss.mjs: a daemon that fail-opens the summary (503: deadline missed / wor
 // for the figures of the session before the clear.
 test('boss.mjs: each read asks for the CURRENT session id — after /clear the band follows the new session', async () => {
   const boss = await import(require('url').pathToFileURL(path.join(ROOT, 'hooks', 'boss.mjs')).href);
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-boss-clear-'));
+  const dir = tempDir('ccb-boss-clear-');
   fs.writeFileSync(path.join(dir, 'brain-http.token'), 'tok');
   fs.writeFileSync(path.join(dir, 'brain-http.lock.json'), JSON.stringify({ port: 1 }));
   const asked = [];
@@ -35154,7 +35151,7 @@ test('shell-escape: /tmp/ path in python/node warns (native Windows resolves it 
 
 test('shell-escape: rewritten command runs and prints exactly what the intended script prints', () => {
   const { spawnSync } = require('child_process');
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-se-'));
+  const dir = tempDir('ccb-se-');
   const body = String.raw`const re = /\bfoo\b/; console.log("it's", re.test('a foo b'), 'C:\\Users\\x', "a\\\\b".length);` + '\n';
   const p = require('../engine/lib/shell-escape.js').planEscapeFix("node <<'EOF'\n" + body + 'EOF', { dir: dir.replace(/\\/g, '/') });
   for (const f of p.files) fs.writeFileSync(path.join(dir, f.name), f.content, 'utf8');
@@ -35312,9 +35309,9 @@ test('powershell-compat: lintBash picks the edition from the executable and igno
 });
 
 test('powershell-compat: toolEdition follows pwsh on PATH', () => {
-  const fs = require('fs'), os = require('os'), path = require('path');
-  const bare = fs.mkdtempSync(path.join(os.tmpdir(), 'ps-path-'));
-  const withPwsh = fs.mkdtempSync(path.join(os.tmpdir(), 'ps-path-'));
+  const fs = require('fs'), path = require('path');
+  const bare = tempDir('ps-path-');
+  const withPwsh = tempDir('ps-path-');
   try {
     fs.writeFileSync(path.join(withPwsh, process.platform === 'win32' ? 'pwsh.exe' : 'pwsh'), '');
     assertEq(psc.toolEdition({ PATH: bare }), '5.1', 'no pwsh');
@@ -35370,7 +35367,7 @@ test('PowerShell curation: a raw command with a curated script is redirected, co
   const hc = require('./lib/hooks-config.js');
   const pg = require('./powershell-guard.js');
   const cg = require('./curation-guard.js');
-  const proj = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-ps-cur-'));
+  const proj = tempDir('ccb-ps-cur-');
   fs.writeFileSync(path.join(proj, 'package.json'), '{}');
   const home = require('./curation-paths.js').curationHome(proj);
   fs.mkdirSync(path.join(home, 'scripts'), { recursive: true });
@@ -35481,7 +35478,7 @@ test('PowerShell curation: invocationFor(ps) is a single quoted native call — 
   assertEq(cr.parse(['--root=/p', '--report=/r', 's.mjs', '--root=keep', 'x']), { env: { CCB_PROJECT_ROOT: '/p', CCB_RAW_REPORT: '/r' }, script: 's.mjs', args: ['--root=keep', 'x'] }, 'only the flags before the script are the launcher\'s');
   assertEq(cr.commandFor('x.sh', []), null);
 
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-curated-run-'));
+  const dir = tempDir('ccb-curated-run-');
   try {
     const s = path.join(dir, 's.mjs');
     fs.writeFileSync(s, 'console.log([process.env.CCB_PROJECT_ROOT, process.env.CCB_RAW_REPORT, process.argv.slice(2).join("|")].join(";"));\nprocess.exit(5);\n');
@@ -35520,7 +35517,7 @@ test('file-format-guard: formatOf classifies EOL/BOM and skips binary/UTF-16', (
 test('file-format-guard: Write over a CRLF / BOM file is repaired on disk with no agent action (Pre captures, Post restores)', () => {
   const fs = require('fs'), os = require('os'), path = require('path');
   const ffg = require('./file-format-guard.js');
-  const d = fs.mkdtempSync(path.join(os.tmpdir(), 'ffg-'));
+  const d = tempDir('ffg-');
   const ev = (hook_event_name, file) => ({ hook_event_name, tool_name: 'Write', tool_input: { file_path: file }, session_id: 'ffg-s', cwd: d });
   const write = (name, before, after) => {
     const file = path.join(d, name);
@@ -35564,7 +35561,7 @@ test('file-format-guard: hooks.json / daemon tool / config wiring', () => {
 const crashEv = require('./lib/crash-evidence.js');
 function deadPid() { return require('child_process').spawnSync(process.execPath, ['-e', ''], { windowsHide: true }).pid; }
 function crashDir(lock) {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-crash-'));
+  const dir = tempDir('ccb-crash-');
   if (lock) fs.writeFileSync(path.join(dir, 'brain-http.lock.json'), JSON.stringify(lock));
   return dir;
 }
@@ -35705,7 +35702,7 @@ test('doctor.checkCrashes: crash ANTES do listen (sem lock, so o report do Node 
 });
 
 test('doctor.gatherCrashes: lista os reports recentes de crash-reports/ e ignora os velhos', () => {
-  const d = fs.mkdtempSync(path.join(os.tmpdir(), 'doc-cr-'));
+  const d = tempDir('doc-cr-');
   try {
     const dir = path.join(d, 'crash-reports');
     fs.mkdirSync(dir);
@@ -35731,7 +35728,7 @@ test('doctor.checkCrashes: recent records → warn with the advice and the evide
 test('brain-daemon-ensure: a recorded crash becomes a visible [BRAIN-CRASH] notice, also when the respawn worked', async () => {
   const ensure = require('./brain-daemon-ensure.js');
   const crash = { pid: 7, version: '3.7.0', detectedAt: new Date().toISOString(), logFile: '/d/brain-crash.log' };
-  const data = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-ensure-crash-'));
+  const data = tempDir('ccb-ensure-crash-');
   const text = await ensure.run({ hook_event_name: 'UserPromptSubmit' }, {
     root: ROOT, data, runSetupInBackground: () => false,
     ensureDaemon: async () => ({ status: 'started', crash }),
@@ -35747,8 +35744,8 @@ test('brain-daemon-ensure: a recorded crash becomes a visible [BRAIN-CRASH] noti
 
 test('brain daemon supervisor: a dead daemon\'s lock on a free port is recorded before the respawn', async () => {
   const { ensureDaemon } = await import(SUPERVISOR_URL);
-  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-crashsup-'));
-  const tmpHome = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-crashsup-home-'));
+  const tmp = tempDir('ccb-crashsup-');
+  const tmpHome = tempDir('ccb-crashsup-home-');
   const dataDir = path.join(tmp, 'data');
   fs.mkdirSync(dataDir, { recursive: true });
   const p = await waitFreePort();
@@ -35821,8 +35818,8 @@ test('brain daemon supervisor: with an unsupported default Node the daemon is st
   const env = withNodeOnPath({ Path: 'C:\\n25' }, { switched: true, execPath: path.join('C:\\n24', 'node.exe') });
   assert(env.Path.startsWith(path.dirname(path.join('C:\\n24', 'node.exe')) + path.delimiter), env.Path);
   assertEq(withNodeOnPath({ PATH: '/x' }, { switched: false, execPath: '/y/node' }).PATH, '/x', 'not switched: untouched');
-  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-nodepick-'));
-  const tmpHome = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-nodepick-home-'));
+  const tmp = tempDir('ccb-nodepick-');
+  const tmpHome = tempDir('ccb-nodepick-home-');
   const dataDir = path.join(tmp, 'data');
   fs.mkdirSync(dataDir, { recursive: true });
   const p = await waitFreePort();
@@ -35883,7 +35880,7 @@ test('doctor.checkNativeDeps: node:sqlite, napi, onnxruntime binding and sharp f
 test('doctor-advisory: a NODE_OPTIONS flag the daemon would inherit reaches the SessionStart notice', async () => {
   const adv = require('./doctor-advisory.js');
   const saved = { o: process.env.NODE_OPTIONS, d: process.env.CLAUDE_PLUGIN_DATA, r: process.env.CLAUDE_PLUGIN_ROOT };
-  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-adv-node-'));
+  const tmp = tempDir('ccb-adv-node-');
   process.env.NODE_OPTIONS = '--max-old-space-size=512';
   process.env.CLAUDE_PLUGIN_DATA = tmp;
   process.env.CLAUDE_PLUGIN_ROOT = ROOT;
@@ -36007,7 +36004,7 @@ test('economy compareGroups: too few sessions → ok:false with the reason, neve
 
 test('economy-report CLI: reads a transcript folder, splits by Boss hooks, saves one record per session', () => {
   const { spawnSync } = require('child_process');
-  const cfg = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-eco-'));
+  const cfg = tempDir('ccb-eco-');
   const dir = path.join(cfg, 'projects', 'p'); fs.mkdirSync(dir, { recursive: true });
   const data = path.join(cfg, 'data'); fs.mkdirSync(data);
   for (let i = 0; i < 10; i++) {
@@ -36036,7 +36033,7 @@ test('compat-check: a binary missing one name is reported (exit 1, the name list
   const deps = cc.dependencies();
   assert(deps.some((d) => d.kind === 'hook-event' && d.name === 'PreToolUse') && deps.some((d) => d.kind === 'mod-api' && d.name === 'session.compact') && deps.some((d) => d.kind === 'env' && d.name === 'CLAUDE_CODE_PROMPT_CACHE_TTL'), 'collects hook events, module API and engine env names from the source');
   assert(!deps.some((d) => d.name.startsWith('CLAUDE_CODE_BOSS_')), 'the plugin\'s own switches are not engine names');
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-compat-'));
+  const dir = tempDir('ccb-compat-');
   const fake = path.join(dir, 'claude.exe');
   fs.writeFileSync(fake, deps.filter((d) => d.name !== 'session.compact').map((d) => d.name).join('\n'));
   const r = spawnSync(process.execPath, [path.join(__dirname, 'compat-check.js'), '--bin', fake], { encoding: 'utf8' });
@@ -36127,7 +36124,7 @@ test('outcome-metrics: maturity orders a project\'s sessions by start, buckets 1
 
 test('outcome-report CLI: reads every project of an explicit data dir and prints the loops (--json parses, a bad --since fails loud, the real store is never touched)', () => {
   const { spawnSync } = require('child_process');
-  const data = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-outcome-'));
+  const data = tempDir('ccb-outcome-');
   const iso = require('../engine/lib/metrics-store.js');
   try {
     // An explicit dataDir on every call: nothing depends on (or can leak into) the machine's real store.
@@ -36261,7 +36258,7 @@ test('lesson-promotion: the user entry copies title/summary/detail only, scrubbe
 test('lesson-promote: scan writes nothing; apply copies once (originals untouched) and records everything; a second apply is idempotent; undo deletes the copy; a reverted lesson is not promoted again', async () => {
   const lp = require('./lesson-promote.js');
   const registry = require('./lib/promotion-registry.js');
-  const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-promo-'));
+  const dataDir = tempDir('ccb-promo-');
   try {
     const store = { 'org/alpha': [], 'org/beta': [], 'org/gamma': [], __user__: [] };
     const doc = (id, project, title, extra = {}) => ({ id, project, title, summary: `sum ${title}`, type: 'lesson', recurrence: 1, confidence: 0.8, created_at: '2026-10-01', tags: [], bossWritten: true, content: { detail: `detail ${title}` }, ...extra });
@@ -36319,7 +36316,7 @@ test('lesson-promote: scan writes nothing; apply copies once (originals untouche
 test('lesson-promote: a secret rejects the lesson and is recorded; a failed registry write takes the copy back; the weekly run honours enabled/mode/backend and leaves the one-line notice', async () => {
   const lp = require('./lesson-promote.js');
   const registry = require('./lib/promotion-registry.js');
-  const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-promo-'));
+  const dataDir = tempDir('ccb-promo-');
   try {
     const mkDoc = (id, title, detail) => ({ id, title, summary: `sum ${title}`, type: 'lesson', recurrence: 1, confidence: 0.9, created_at: '2026-10-01', tags: [], bossWritten: true, content: { detail } });
     const store = { 'org/alpha': [mkDoc('a1', 'one', 'password is sk-abcdefghijklmnopqrstuvwxyz0123'), mkDoc('a2', 'two', 'fine')], 'org/beta': [mkDoc('b1', 'one', 'x'), mkDoc('b2', 'two', 'y')], __user__: [] };
@@ -36374,7 +36371,7 @@ test('lesson-promote: a secret rejects the lesson and is recorded; a failed regi
 });
 
 test('promotion-registry: three processes writing at once lose no promotion (the registry read-modify-write is locked)', async () => {
-  const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-reg-lock-'));
+  const dataDir = tempDir('ccb-reg-lock-');
   const regPath = path.join(__dirname, 'lib', 'promotion-registry.js');
   const child = (tag) => new Promise((resolve) => {
     const code = `const r=require(${JSON.stringify(regPath)});for(let i=0;i<15;i++)r.addPromotion(${JSON.stringify(dataDir)},{id:${JSON.stringify(tag)}+i,status:'active'});`;
@@ -36394,7 +36391,7 @@ test('promotion-registry: three processes writing at once lose no promotion (the
 
 test('promotion-registry: a lock held by a live process fails loud instead of writing over it; a dead owner\'s lock is reclaimed', () => {
   const registry = require('./lib/promotion-registry.js');
-  const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-reg-lock2-'));
+  const dataDir = tempDir('ccb-reg-lock2-');
   const lockPath = path.join(dataDir, 'promotions', 'registry.lock');
   fs.mkdirSync(path.dirname(lockPath), { recursive: true });
   const dead = require('child_process').spawnSync(process.execPath, ['-e', '0']).pid;
@@ -36413,7 +36410,7 @@ test('promotion-registry: a lock held by a live process fails loud instead of wr
 
 test('daemon supervisor swap: a /health claim without the daemon\'s own lock gets neither the token nor a signal', async () => {
   const { ensureDaemon } = await import(SUPERVISOR_URL);
-  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-impostor-'));
+  const tmp = tempDir('ccb-impostor-');
   const dataDir = path.join(tmp, 'data');
   fs.mkdirSync(dataDir, { recursive: true });
   const oldRoot = path.join(tmp, 'install-A');
@@ -36437,7 +36434,7 @@ test('daemon supervisor swap: a /health claim without the daemon\'s own lock get
 
 test('promotion-registry: the weekly stamp, the notice leaves out reverted promotions, a corrupt registry fails loud', () => {
   const registry = require('./lib/promotion-registry.js');
-  const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-promo-'));
+  const dataDir = tempDir('ccb-promo-');
   try {
     const DAY = 86400000;
     assert(registry.promotionDue(dataDir, 1000, 7), 'no stamp: due');
@@ -36574,7 +36571,7 @@ test('boss-summary.createRowReader: the 2nd call with no new events does not re-
 });
 
 test('metrics-store.getEventLogIsolated: sinceId returns only rows written after that id', () => {
-  const dd = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-since-id-'));
+  const dd = tempDir('ccb-since-id-');
   const ms = require('../engine/lib/metrics-store.js');
   try {
     assert(ms.init({ project: 'pid', dataDir: dd }));
@@ -36595,7 +36592,7 @@ test('retrieve.injected carries the injected entryIds (capped at 20), readers of
   const store = require('../engine/brain-store.js');
   const journal = require('./lib/retrieval-journal.js');
   const sid = 'inj-ids-' + Date.now();
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-inj-ids-'));
+  const dir = tempDir('ccb-inj-ids-');
   const tp = path.join(dir, 't.jsonl');
   fs.writeFileSync(tp, JSON.stringify({ type: 'assistant', message: { role: 'assistant', content: [{ type: 'text', text: 'Following the database migration ordering lesson.' }] } }) + '\n');
   const orig = { fire: metrics.fire, peek: backend.peekMode, init: backend.init, sig: backend.signalHelpful, sinit: store.init, rc: store.recordCitation };
@@ -36639,7 +36636,7 @@ test('retrieve.injected carries the injected entryIds (capped at 20), readers of
 // ─── backlog 26/10: lesson-promote vector cache ──────────────────────────────────────────────────────────────
 test('lesson-promote gather: vectors are cached per entryId + text hash in <dataDir>/promotions — the 2nd run does not call the embedder for unchanged text, an edited lesson or another model re-embeds', async () => {
   const lp = require('./lesson-promote.js');
-  const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-promo-cache-'));
+  const dataDir = tempDir('ccb-promo-cache-');
   try {
     const store = {
       'org/alpha': [{ id: 'a1', title: 'one', summary: 's1', type: 'lesson', bossWritten: true }, { id: 'a2', title: 'two', summary: 's2', type: 'lesson', bossWritten: true }],
@@ -36671,7 +36668,7 @@ test('lesson-promote gather: vectors are cached per entryId + text hash in <data
 
 // ─── backlog 26/10: HMAC challenge on the daemon's /health ───────────────────────────────────────────────────
 test('module-daemon: /health HMAC challenge — the real daemon proves the token, an impostor that repeats the dataDir without the token is rejected, an old daemon (no proof) is accepted WITH an explicit warning', async () => {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-health-hmac-'));
+  const dir = tempDir('ccb-health-hmac-');
   const url = require('url');
   const nodeCrypto = require('crypto');
   const { daemon, hmacSha256Hex } = await import(url.pathToFileURL(path.join(ROOT, 'scripts', 'lib', 'module-daemon.mjs')).href);
@@ -36882,8 +36879,7 @@ test('isolation: the whole run left the live brain daemon (lock, pid) untouched'
   assertEq(liveDaemonState(), LIVE_DAEMON_BEFORE, 'a test run stopped, restarted or rewrote the live daemon');
 });
 
-// ─── Runner ──────────────────────────────────────────────────────────────────
-(async () => {
+// ─── Runner ──────────────────────────────────────────────────────────────────(async () => {
   // A suíte mexe em singletons de módulo, process.env e servidores HTTP locais.
   // Promise.all deixava esses testes disputarem o mesmo estado/event loop; em
   // Windows isso foi medido como timeouts falsos em /v1/models e handshake do

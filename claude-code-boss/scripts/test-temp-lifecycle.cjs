@@ -16,15 +16,15 @@ test('success, explicit failure and uncaught failure all remove owned temp files
     const r = child(body);
     assert.equal(r.status, expected, r.stderr);
     const root = r.stdout.trim();
-    assert.ok(root.includes('ccb-test-run-'));
-    assert.equal(fs.existsSync(root), false, root);
+    assert.match(path.basename(root), /^slot-\d+$/);
+    assert.deepEqual(fs.readdirSync(root), [], root);
   }
 });
 test('per-test cleanup removes only newly created fixtures, preserves suite state', () => {
   const t = createTestTemp();
   const persisted = path.join(t.root, 'shared'); fs.mkdirSync(persisted);
   const before = t.checkpoint();
-  const transient = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-fixture-'));
+  const transient = t.dir('ccb-fixture-');
   fs.writeFileSync(path.join(transient, 'x'), 'x');
   t.cleanupSince(before);
   assert.equal(fs.existsSync(transient), false);
@@ -43,13 +43,25 @@ test('concurrent suites own different trees and one finishing preserves the othe
     }
     assert.notEqual(children[0].root, children[1].root);
     children[0].stdin.end('stop'); await children[0].done;
-    assert.equal(fs.existsSync(children[0].root), false);
+    assert.deepEqual(fs.readdirSync(children[0].root), [], children[0].root);
     assert.equal(fs.readFileSync(path.join(children[1].root,'owned'),'utf8'),'keep');
     children[1].stdin.end('stop'); await children[1].done;
-    assert.equal(fs.existsSync(children[1].root), false);
+    assert.deepEqual(fs.readdirSync(children[1].root), [], children[1].root);
   } finally {
     for (const c of children) if (c.exitCode === null) { c.stdin.end('stop'); await c.done; }
   }
+});
+test('a second run takes the same slot again and leaves the stable folder with no new entry', () => {
+  const stable = path.dirname(suite.root);
+  const entries = () => fs.readdirSync(stable).sort();
+  const first = child('');
+  assert.equal(first.status, 0, first.stderr);
+  const afterFirst = entries();
+  const second = child('');
+  assert.equal(second.status, 0, second.stderr);
+  assert.equal(second.stdout.trim(), first.stdout.trim(), 'the same slot');
+  assert.deepEqual(entries(), afterFirst, 'zero new entries after the second run');
+  assert.ok(stable.includes(path.join('claude-code-boss', 'test-cache', require('../package.json').version, 'test-run')));
 });
 test('junction/symlink target and another application directory survive cleanup', () => {
   const outside = fs.mkdtempSync(path.join(suite.root, 'outside-'));
@@ -101,8 +113,8 @@ test('parent removal waits out a handle that outlives the suite process for a mo
   const r=spawnSync(process.execPath,[file],{encoding:'utf8',env:process.env,windowsHide:true});
   assert.equal(r.status,0,r.stderr);
   const root=r.stdout.trim();
-  assert.ok(root.includes('ccb-test-run-'));
-  assert.equal(fs.existsSync(root),false,root);
+  assert.match(path.basename(root), /^slot-\d+$/);
+  assert.deepEqual(fs.readdirSync(root), [], root);
 });
 
 test('parent removes borrowed tree after a child exits with an open SQLite handle and preserves failure status', () => {
@@ -112,7 +124,7 @@ test('parent removes borrowed tree after a child exits with an open SQLite handl
     const r=spawnSync(process.execPath,[file],{encoding:'utf8',env:process.env,windowsHide:true});
     assert.equal(r.status,expected,r.stderr);
     const root=r.stdout.trim();
-    assert.ok(root.includes('ccb-test-run-'));
-    assert.equal(fs.existsSync(root),false,root);
+    assert.match(path.basename(root), /^slot-\d+$/);
+    assert.deepEqual(fs.readdirSync(root), [], root);
   }
 });
