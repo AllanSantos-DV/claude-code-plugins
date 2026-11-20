@@ -6428,14 +6428,18 @@ test('mcp-client: AbortSignal cancela a requisicao HTTP de verdade (o servidor v
   const McpClient = require('../engine/mcp-client.js');
   const http = require('http');
   let requests = 0; let closed = 0;
-  const srv = http.createServer((req, res) => { requests++; req.on('close', () => { if (!res.writableEnded) closed++; }); });
+  const ac = new AbortController();
+  // Abort once the server holds the request: a fixed delay lost the race on a loaded machine (0 requests seen).
+  const srv = http.createServer((req, res) => {
+    requests++;
+    req.on('close', () => { if (!res.writableEnded) closed++; });
+    setImmediate(() => ac.abort(new Error('compose timed out after 50ms')));
+  });
   await new Promise((r) => srv.listen(0, '127.0.0.1', r));
   try {
     const c = new McpClient({ timeout: 60000 });
     c._resolvedUrl = `http://127.0.0.1:${srv.address().port}`;
     c._initialized = true;
-    const ac = new AbortController();
-    setTimeout(() => ac.abort(new Error('compose timed out after 50ms')), 50);
     const t0 = Date.now();
     let err = null;
     try { await c.callTool('compose_recall', { query: 'x' }, { signal: ac.signal }); } catch (e) { err = e; }
