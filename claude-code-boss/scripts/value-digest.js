@@ -44,12 +44,10 @@ function bottleneck(s) {
   return null;
 }
 
-/** Pure: the compaction and cache sentence, or null when the window had neither. */
+/** Pure: the compaction and cache sentence (the same wording as the /boss row), or null when the window had neither. */
 function compactionSentence(c) {
-  if (!c || (!c.cuts && !c.cacheTurns)) return null;
-  const cuts = c.cuts ? `${c.cuts} compactações${c.measured ? ` (${fmtTokens(c.tokensCut)} tokens cortados em ${c.measured} medidas)` : ''}` : 'nenhuma compactação';
-  const cache = c.hitPct != null ? `cache com ${String(c.hitPct).replace('.', ',')}% de acerto em ${c.cacheTurns} chamadas` : 'cache sem leitura';
-  return `Compactação e cache nos últimos ${WINDOW_DAYS} dias: ${cuts}, ${cache}.`;
+  const row = require('./lib/boss-band.mjs').compactionRow(c);
+  return row ? `Compactação e cache nos últimos ${WINDOW_DAYS} dias: ${row}.` : null;
 }
 
 /** Pure: the read-burst sentence, or null when no bundle was delivered in the window. */

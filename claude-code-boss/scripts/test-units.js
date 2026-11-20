@@ -34986,7 +34986,7 @@ test('value digest: compaction, cache and read-burst sentences join the line, an
   const vd = require('./value-digest.js');
   const { summarizeCuration } = require('./lib/curation-metrics.js');
   const line = vd.formatDigest(summarizeCuration([]), { compaction: { cuts: 3, measured: 2, tokensCut: 250000, cacheTurns: 120, hitPct: 93.4 }, readBurst: { delivered: 4, closed: 3, readAfter: 20, hits: 5, hitRate: 0.25 } });
-  assertEq(line, '[BOSS] Compactação e cache nos últimos 7 dias: 3 compactações (~250k tokens cortados em 2 medidas), cache com 93,4% de acerto em 120 chamadas. Contexto pronto das rajadas de leitura: 4 entregas, 5 dos 20 arquivos lidos depois estavam no pacote (25%). Detalhes: /dashboard → Curation & guards.');
+  assertEq(line, '[BOSS] Compactação e cache nos últimos 7 dias: 3 compactações (250 mil tokens cortados em 2 medidas); cache 93,4% de acerto em 120 chamadas. Contexto pronto das rajadas de leitura: 4 entregas, 5 dos 20 arquivos lidos depois estavam no pacote (25%). Detalhes: /dashboard → Curation & guards.');
   assertEq(vd.formatDigest(summarizeCuration([]), { compaction: { cuts: 0, cacheTurns: 0 }, readBurst: { delivered: 0, closed: 0 } }), null, 'nothing in any of the three → silent');
   assertEq(vd.readBurstSentence({ delivered: 1, closed: 0, readAfter: 0, hits: 0, hitRate: null }), 'Contexto pronto das rajadas de leitura: 1 entregas, nenhum arquivo lido depois da entrega ainda.');
 
@@ -35009,7 +35009,7 @@ test('value digest: compaction, cache and read-burst sentences join the line, an
     JSON.stringify({ at: new Date().toISOString(), event: 'closed', session: 'another-project-session', readAfter: 100, hits: 100 }),
   ].join('\n') + '\n');
   const shown = await runWithHookEnv({ CLAUDE_PROJECT_DIR: proj }, () => vd.run({}, { now: Date.now() }));
-  assert(/1 compactações, cache com 80% de acerto em 1 chamadas/.test(shown || ''), `compaction and cache: ${shown}`);
+  assert(/1 compactações; cache 80% de acerto em 1 chamadas/.test(shown || ''), `compaction and cache: ${shown}`);
   assert(/1 dos 4 arquivos lidos depois estavam no pacote \(25%\)/.test(shown || ''), `only this project's sessions count: ${shown}`);
 });
 
