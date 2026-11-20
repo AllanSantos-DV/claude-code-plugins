@@ -12,7 +12,7 @@
     "engine/brain-index.js": "68a2745982756d0db0a144d22891d21ad69ef106231de8c5e8e65341da8027b8",
     "engine/brain-store.js": "403c8db4f6ba68c40cf8d1cef7d9a865fa778f1a528640514cad27cf6d8a0f73",
     "engine/lib/atomic-write.js": "7ffaa3a06173855ade24ed2e0b633406ed481c3d6176be70797f4be96007d5f0",
-    "engine/lib/brain-config.js": "d2713032dc6f9a6bc48656bac7cae97c65202c96a8abe2ca0e2f5d4d3b50a4ff",
+    "engine/lib/brain-config.js": "66e12b53b984114ffe0dc3375c7b669e0640a146f6a40d878ff4c6def2b14571",
     "engine/lib/command-signature.js": "25bc28e9c3a90512a8af98cd444502eaf967cec79b977000405319b8ba6f96d6",
     "engine/lib/config-merge.js": "33561b03262009f2bd5cda829d7d35649b3bf22b4f23d53ed5f7cb71df87779f",
     "engine/lib/crash-report-flags.js": "f00babebb5e5a32d28550f40c29cf200cc36d44cb7b10a359af8ef4f46002efe",
