@@ -69,7 +69,7 @@
     ],
     "PostToolUse": [
       {
-        "matcher": "Bash|PowerShell|Skill|Write|Edit|MultiEdit|NotebookEdit|Read|Grep|Glob|LS|mcp__smart-tool__smart_search|mcp__smart-tool__smart_search_result|mcp__smart-tool__smart_scout",
+        "matcher": "Bash|PowerShell",
         "hooks": [
           {
             "type": "mcp_tool",
@@ -83,6 +83,28 @@
               "tool_name": "${tool_name}",
               "tool_input": "${tool_input}",
               "tool_response": "${tool_response}",
+              "agent_id": "${agent_id}",
+              "agent_type": "${agent_type}",
+              "project_dir": "${CLAUDE_PROJECT_DIR}"
+            },
+            "timeout": 6
+          }
+        ]
+      },
+      {
+        "matcher": "Skill|Write|Edit|MultiEdit|NotebookEdit|Read|Grep|Glob|LS|mcp__smart-tool__smart_search|mcp__smart-tool__smart_search_result|mcp__smart-tool__smart_scout",
+        "hooks": [
+          {
+            "type": "mcp_tool",
+            "server": "plugin:claude-code-boss:brain-server",
+            "tool": "hook_posttooluse_dispatcher",
+            "input": {
+              "hook_event_name": "${hook_event_name}",
+              "session_id": "${session_id}",
+              "cwd": "${cwd}",
+              "transcript_path": "${transcript_path}",
+              "tool_name": "${tool_name}",
+              "tool_input": "${tool_input}",
               "agent_id": "${agent_id}",
               "agent_type": "${agent_type}",
               "project_dir": "${CLAUDE_PROJECT_DIR}"

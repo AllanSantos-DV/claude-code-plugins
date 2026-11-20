@@ -11177,7 +11177,7 @@ test('scope-rules: the hook is declared, served by the daemon with the origin in
   assertEq(ups.length, 1, 'UserPromptSubmit carries one hook_scope_rules entry');
   const { routesFor: scopeRoutes } = require('./lib/hook-routes.js');
   assert(['Read', 'Edit'].every((t) => scopeRoutes('PostToolUse', t).some((r) => r.tool === 'hook_scope_rules')), 'PostToolUse routes Read and Edit to hook_scope_rules');
-  assert(new RegExp('^(?:' + hooks.PostToolUse[0].matcher + ')$').test('Read'), 'and the one PostToolUse entry reaches them');
+  assert(hooks.PostToolUse.some((g) => new RegExp('^(?:' + g.matcher + ')$').test('Read')), 'and a PostToolUse entry reaches them');
   const ht = require('./lib/hook-tools.js');
   const spec = ht.HOOKS.hook_scope_rules;
   // mcp_tool hooks have no command line to carry --hook-origin: every one declares it in its degraded text.
@@ -18564,6 +18564,37 @@ test('http-daemon: rejeicao sem tratamento NAO derruba o daemon de todas as sess
   assertEq(process.listenerCount('unhandledRejection'), before, 'handler removed on shutdown');
 });
 
+test('http-daemon: a hook call over the body limit gets a notice as its tool result (no raw error); another oversized call gets a 413 naming the sizes; every POST answer closes its connection', async () => {
+  const dir = tempDir('ccb-bigbody-');
+  const daemonMod = await import(require('url').pathToFileURL(path.join(ROOT, 'servers', 'brain-server', 'lib', 'http-daemon.js')).href);
+  const d = await daemonMod.startHttpDaemon({ pluginRoot: ROOT, dataDir: dir, port: 0 });
+  const url = `http://127.0.0.1:${d.httpServer.address().port}/mcp`;
+  const H = { 'Content-Type': 'application/json', Accept: 'application/json, text/event-stream', Authorization: `Bearer ${fs.readFileSync(path.join(dir, 'brain-http.token'), 'utf8').trim()}` };
+  const post = async (body, sid) => {
+    const r = await fetch(url, { method: 'POST', headers: sid ? { ...H, 'mcp-session-id': sid } : H, body: JSON.stringify(body) });
+    const text = await r.text();
+    return { r, json: text ? JSON.parse(text) : null };
+  };
+  try {
+    const init = await post({ jsonrpc: '2.0', id: 1, method: 'initialize', params: { protocolVersion: '2025-06-18', capabilities: {}, clientInfo: { name: 't', version: '1' } } });
+    const sid = init.r.headers.get('mcp-session-id');
+    assertEq(init.r.headers.get('connection'), 'close', 'a POST answer closes its connection (Bun reuses idle sockets past the hint)');
+    await post({ jsonrpc: '2.0', method: 'notifications/initialized' }, sid);
+    const originalFile = 'x'.repeat(2.5 * 1024 * 1024);
+    const hook = await post({ jsonrpc: '2.0', id: 7, method: 'tools/call', params: { name: 'hook_posttooluse_dispatcher', arguments: { hook_event_name: 'PostToolUse', tool_name: 'Edit', tool_input: { file_path: 'a.js' }, tool_response: { originalFile } } } }, sid);
+    assertEq(hook.r.status, 200, 'the hook call is answered, not refused');
+    assertEq(hook.json.id, 7);
+    const out = JSON.parse(hook.json.result.content[0].text);
+    assert(/^\[hook-origin=claude-code-boss\] hook hook_posttooluse_dispatcher skipped this call: its input was 2\.5 MB, over the 1\.0 MB/.test(out.systemMessage), out.systemMessage);
+    const other = await post({ jsonrpc: '2.0', id: 8, method: 'tools/call', params: { name: 'brain_store', arguments: { content: originalFile } } }, sid);
+    assertEq(other.r.status, 413);
+    assert(/2\.5 MB over the 1\.0 MB limit/.test(other.json.error.message), other.json.error.message);
+    const small = await post({ jsonrpc: '2.0', id: 9, method: 'tools/call', params: { name: 'hook_posttooluse_dispatcher', arguments: { hook_event_name: 'PostToolUse', tool_name: 'Edit', tool_input: { file_path: 'a.js' } } } }, sid);
+    assertEq(small.r.status, 200, 'a normal hook call still runs');
+    assert(!/skipped this call/.test(JSON.stringify(small.json)), 'and is not skipped');
+  } finally { await d.shutdown(); }
+});
+
 test('http-daemon: hook_* tools are NOT in tools/list (model never sees them) but stay callable by name for mcp_tool hooks', async () => {
   const dir = tempDir('ccb-hidehooks-');
   const { startHttpDaemon } = await import(require('url').pathToFileURL(path.join(ROOT, 'servers', 'brain-server', 'lib', 'http-daemon.js')).href);
@@ -19493,8 +19524,9 @@ test('skill-metric.run: chamada da ferramenta Skill grava skill.invoked com o no
 
 test('hooks.json: PostToolUse matcher Skill -> hook_skill_metric com tool_name e tool_input', () => {
   const hj = JSON.parse(fs.readFileSync(path.join(ROOT, 'hooks', 'hooks.json'), 'utf8')).hooks;
-  const h = hj.PostToolUse[0].hooks[0];
-  assert(new RegExp('^(?:' + hj.PostToolUse[0].matcher + ')$').test('Skill'), 'o despachante recebe a ferramenta Skill');
+  const g = hj.PostToolUse.find((x) => new RegExp('^(?:' + x.matcher + ')$').test('Skill'));
+  assert(g, 'o despachante recebe a ferramenta Skill');
+  const h = g.hooks[0];
   assert(require('./lib/hook-routes.js').routesFor('PostToolUse', 'Skill').some((r) => r.tool === 'hook_skill_metric'), 'e a roteia para hook_skill_metric');
   assert(h.input.tool_name === '${tool_name}' && h.input.tool_input === '${tool_input}', 'o despachante recebe tool_name/tool_input');
 });
@@ -31611,7 +31643,8 @@ test('plugin-updater.killStale: so casa modulos da PASTA DE CACHE do plugin, nao
     const routedTools = Object.values(ROUTES_G).flat().map(r => r.tool);
     assertEq([...new Set([...hookEntries.map(h => h.tool), ...routedTools])].sort(), [...hookTools.names].filter(n => !moduleCalled.includes(n)).sort());
     for (const [dispatcher, event] of Object.entries(DISPATCHERS_G)) {
-      assertEq(hookEntries.filter(h => h.tool === dispatcher).length, 1, event + ': exactly one hooks.json entry for ' + dispatcher);
+      // PostToolUse has two: the tools whose tool_response is read, and the rest without it.
+      assertEq(hookEntries.filter(h => h.tool === dispatcher).length, event === 'PostToolUse' ? 2 : 1, event + ': hooks.json entries for ' + dispatcher);
     }
     // The entry (hooks.json "modules", one per plugin) imports one file per feature from hooks/.
     const modulesSrc = fs.readdirSync(path.join(ROOT, 'hooks')).filter(f => f.endsWith('.mjs')).map(f => fs.readFileSync(path.join(ROOT, 'hooks', f), 'utf8')).join('\n');
@@ -31664,15 +31697,20 @@ test('plugin-updater.killStale: so casa modulos da PASTA DE CACHE do plugin, nao
       assertEq(routesFor(event, tool).map(r => r.tool).sort(), [...expected].sort(), `${event} ${tool}`);
     }
     const hooks = JSON.parse(fs.readFileSync(path.join(ROOT, 'hooks', 'hooks.json'), 'utf8')).hooks;
-    for (const event of ['PreToolUse', 'PostToolUse']) {
-      assertEq(hooks[event].length, 1, `${event}: one group`);
-      assertEq(hooks[event][0].matcher, unionMatcher(event));
-      assertEq(hooks[event][0].hooks.length, 1, `${event}: one call per event`);
-    }
-    assert(READ_BURST_TOOLS.every(t => new RegExp('^(?:' + hooks.PostToolUse[0].matcher + ')$').test(t)), 'every read-burst tool still reaches the dispatcher');
+    assertEq(hooks.PreToolUse.length, 1, 'PreToolUse: one group');
+    assertEq(hooks.PreToolUse[0].matcher, unionMatcher('PreToolUse'));
+    const { postToolUseMatchers } = require('./lib/hook-routes.js');
+    const pm = postToolUseMatchers();
+    assertEq(hooks.PostToolUse.map((g) => g.matcher), [pm.withResponse, pm.withoutResponse], 'PostToolUse: the tool_response group, then the rest');
+    assertEq([...pm.withResponse.split('|'), ...pm.withoutResponse.split('|')].sort(), unionMatcher('PostToolUse').split('|').sort(), 'together they cover every routed tool once');
+    for (const g of [...hooks.PreToolUse, ...hooks.PostToolUse]) assertEq(g.hooks.length, 1, `${g.matcher}: one call per tool`);
+    const postGroup = (t) => hooks.PostToolUse.find((g) => new RegExp('^(?:' + g.matcher + ')$').test(t));
+    assert(READ_BURST_TOOLS.every((t) => postGroup(t)), 'every read-burst tool still reaches the dispatcher');
     assertEq(hooks.PreToolUse[0].hooks[0].tool, 'hook_pretooluse_dispatcher');
-    assertEq(hooks.PostToolUse[0].hooks[0].tool, 'hook_posttooluse_dispatcher');
-    assert(hooks.PreToolUse[0].hooks[0].timeout <= 6 && hooks.PostToolUse[0].hooks[0].timeout <= 6, 'a guard that hangs costs a few seconds, not the old 8-10');
+    assert(hooks.PostToolUse.every((g) => g.hooks[0].tool === 'hook_posttooluse_dispatcher'), 'both groups call the one dispatcher');
+    assertEq(postGroup('Bash').hooks[0].input.tool_response, '${tool_response}', 'Bash gets its output, which curation reads');
+    for (const t of ['Edit', 'Write', 'MultiEdit', 'NotebookEdit', 'Read']) assert(!('tool_response' in postGroup(t).hooks[0].input), `${t}: no tool_response (an Edit's carries the whole original file)`);
+    assert([hooks.PreToolUse[0], ...hooks.PostToolUse].every((g) => g.hooks[0].timeout <= 6), 'a guard that hangs costs a few seconds, not the old 8-10');
   });
 
   test('hook-merge: deny vence ask vence allow, contextos e mensagens somam, updatedInput some quando a chamada e negada', () => {
@@ -35944,7 +35982,7 @@ test('file-format-guard: hooks.json / daemon tool / config wiring', () => {
   const uses = (ev) => ROUTES[ev].filter((r) => r.tool === 'hook_file_format_guard').map((r) => r.matcher);
   assertEq(uses('PreToolUse'), ['Write']);
   assertEq(uses('PostToolUse'), ['Write']);
-  assert(hooks.PreToolUse.length === 1 && hooks.PostToolUse.length === 1, 'reached through the one dispatcher entry per event');
+  assert(hooks.PreToolUse.length === 1 && hooks.PostToolUse.every((g) => g.hooks[0].tool === 'hook_posttooluse_dispatcher'), 'reached through the dispatcher entries');
   assert(require('./lib/hook-tools.js').HOOKS.hook_file_format_guard, 'registered');
   const c = require('./lib/hooks-config.js').getFileFormatGuard();
   assertEq(c, { enabled: true });

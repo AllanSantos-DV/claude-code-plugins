@@ -31,6 +31,8 @@ const SESSION_IDLE_MS = 30 * 60 * 1000; // reap sessions idle > 30 min
 const SSE_KEEPALIVE_MS = Number(process.env.CCB_SSE_KEEPALIVE_MS) || 30_000;
 
 const MAX_BODY_BYTES = 1024 * 1024; // 1MB
+// An /mcp call past MAX_BODY_BYTES is still read up to here, so a hook call gets a notice instead of a raw error.
+const MCP_BODY_READ_MAX = 64 * 1024 * 1024;
 const MAX_SESSIONS = 50; // limite de sessões simultâneas para evitar exaustão de FDs
 // Under the Stop hook's 29s worker deadline: a hook already running when a swap or a
 // backend switch shuts the daemon down gets its answer instead of "Connection closed".
@@ -56,16 +58,46 @@ export function moduleReadRefusal(name, value) {
   return '';
 }
 
-async function readJsonBody(req) {
+/**
+ * Read and parse a JSON request body.
+ * @param {import('node:http').IncomingMessage} req
+ * @param {number} max  bytes past which reading stops with "request body too large"
+ * @returns {Promise<{body:any, bytes:number}>}  body undefined when empty or not JSON
+ */
+async function readBody(req, max) {
   const chunks = [];
   let total = 0;
   for await (const chunk of req) {
     total += chunk.length;
-    if (total > MAX_BODY_BYTES) throw new Error('request body too large');
+    if (total > max) throw new Error('request body too large');
     chunks.push(chunk);
   }
-  if (chunks.length === 0) return undefined;
-  try { return JSON.parse(Buffer.concat(chunks).toString('utf8')); } catch (e) { void e; return undefined; }
+  if (chunks.length === 0) return { body: undefined, bytes: 0 };
+  try { return { body: JSON.parse(Buffer.concat(chunks).toString('utf8')), bytes: total }; } catch (e) { void e; return { body: undefined, bytes: total }; }
+}
+
+/** @returns {Promise<any>} the parsed body of a request held to MAX_BODY_BYTES */
+async function readJsonBody(req) {
+  return (await readBody(req, MAX_BODY_BYTES)).body;
+}
+
+/**
+ * The answer to an /mcp call whose body is over MAX_BODY_BYTES. A hook tool call gets a normal tool
+ * result carrying a systemMessage, so the user sees one notice and the action goes on; anything
+ * else gets a 413 that names the size and the limit.
+ * @param {object|undefined} body  the parsed JSON-RPC request
+ * @param {number} bytes  its size
+ * @returns {{status:number, payload:object}}
+ */
+export function oversizedMcpReply(body, bytes) {
+  const mb = (n) => (n / (1024 * 1024)).toFixed(1);
+  const id = (body && body.id) ?? null;
+  const name = body && body.method === 'tools/call' && body.params && body.params.name;
+  if (typeof name === 'string' && name.startsWith('hook_')) {
+    const systemMessage = `[hook-origin=claude-code-boss] hook ${name} skipped this call: its input was ${mb(bytes)} MB, over the ${mb(MAX_BODY_BYTES)} MB the daemon reads.`;
+    return { status: 200, payload: { jsonrpc: '2.0', id, result: { content: [{ type: 'text', text: JSON.stringify({ systemMessage }) }] } } };
+  }
+  return { status: 413, payload: { jsonrpc: '2.0', id, error: { code: -32600, message: `[hook-origin=claude-code-boss] request of ${mb(bytes)} MB over the ${mb(MAX_BODY_BYTES)} MB limit` } } };
 }
 
 /**
@@ -197,7 +229,8 @@ export async function startHttpDaemon({ pluginRoot, dataDir, port, host = '127.0
         inFlight.add(res);
         res.once('close', () => { inFlight.delete(res); if (inFlight.size === 0) idleWaiters.splice(0).forEach((r) => r()); });
       }
-      if (_shuttingDown) res.setHeader('Connection', 'close');
+      // Bun fetch reuses idle sockets past the Keep-Alive hint (ECONNRESET at the close): one connection per POST.
+      if (_shuttingDown || req.method === 'POST') res.setHeader('Connection', 'close');
 
       // Health — the supervisor reads pluginRoot here to decide stale-vs-current.
       if (req.method === 'GET' && url === HEALTH_PATH) {
@@ -299,7 +332,14 @@ export async function startHttpDaemon({ pluginRoot, dataDir, port, host = '127.0
 
       const sessionId = req.headers['mcp-session-id'];
       const existing = sessionId ? sessions.get(sessionId) : null;
-      const body = req.method === 'POST' ? await readJsonBody(req) : undefined;
+      const { body, bytes } = req.method === 'POST' ? await readBody(req, MCP_BODY_READ_MAX) : { body: undefined, bytes: 0 };
+      if (bytes > MAX_BODY_BYTES) {
+        const { status, payload } = oversizedMcpReply(body, bytes);
+        console.error(`[brain-http] /mcp body of ${bytes} bytes over ${MAX_BODY_BYTES}: ${status === 200 ? 'hook call answered with a notice' : '413'}`);
+        res.writeHead(status, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify(payload));
+        return;
+      }
 
       if (existing) {
         existing.lastSeen = Date.now();
