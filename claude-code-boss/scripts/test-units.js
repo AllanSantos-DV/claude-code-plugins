@@ -35694,6 +35694,9 @@ test('powershell-guard: PowerShell tool — 5.1 chains rewritten (ask/allow), 7 
 test('PowerShell curation: a raw command with a curated script is redirected, composed with the 5.1 chain fix into ONE updatedInput; plain/unsafe/unknown commands, CCB_RAW, denyUnknown and the permission posture behave like Bash', async () => {
   const sc = require('./shells-config.js');
   const hc = require('./lib/hooks-config.js');
+  // Other tests evict hooks-config from the require cache; a guard loaded before that keeps the old
+  // instance and never sees the getters patched below (masked on Windows by the win32 default).
+  for (const m of ['./powershell-guard.js', './curation-guard.js']) delete require.cache[require.resolve(m)];
   const pg = require('./powershell-guard.js');
   const cg = require('./curation-guard.js');
   const proj = tempDir('ccb-ps-cur-');
