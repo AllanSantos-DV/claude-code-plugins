@@ -1,3 +1,7 @@
+## Gate de lint da 3.17.0 (2026-11-20)
+
+- [x] **Achado e corrigido na hora — o eslint do gate (`--max-warnings=0`) falhava com 3 avisos de variável sem uso** (`scripts/stop-dispatcher.js` `forClaudeCode`: `decision` só servia para sair do `...rest`, agora `_decision`; `scripts/test-units.js`: `loadFactor` importado e não usado, e `repairRig`/`transcriptFixture`, sobras dos testes da ferramenta de reparo de transcrito que saiu do plugin). Visto na suíte de fechamento da 3.17.0. Prova: eslint sai 0, unidades 2051/0, hooks 140/0.
+
 ## Avisos do Stop do Boss sem "Stop hook reported a problem" (2026-11-19)
 
 - [x] **Achado e corrigido — a janela de captura, a curadoria, o lembrete arquitetural e o aviso de memória desligada chegavam como `decision: "block"`** (`scripts/stop-dispatcher.js` `forClaudeCode`, `scripts/lib/hook-tools.js` `hook_stop_dispatcher`): o Claude Code 2.1.327 lista o bloqueio como erro de hook. Agora o mesmo texto vai em `hookSpecificOutput.additionalContext` do Stop, com a primeira linha nomeando o hook; o turno continua sob `stop_hook_active` e o limite de continuações. Testes: `stop-dispatcher.forClaudeCode…` e `hook-tools hook_stop_dispatcher: the REAL tool reply…` (falhavam, passam). Prova real: sessão escondida numa pasta sem id de projeto no build instalado, com `hookErrors: []` e o aviso em `hookAdditionalContext`.

@@ -217,7 +217,7 @@ const FEEDBACK_ORIGIN = 'claude-code-boss end-of-turn hook (scripts/stop-dispatc
  */
 function forClaudeCode(out) {
   if (!out || out.decision !== 'block') return out || {};
-  const { decision, reason, ...rest } = out;
+  const { decision: _decision, reason, ...rest } = out;
   return { ...rest, hookSpecificOutput: { hookEventName: 'Stop', additionalContext: `${FEEDBACK_ORIGIN}\n${reason}` } };
 }
 

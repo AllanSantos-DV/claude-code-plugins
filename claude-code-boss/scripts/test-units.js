@@ -18,7 +18,7 @@
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
-const { loadFactor, loadLimit, scaleSpawnTimeouts } = require('./test-load.cjs');
+const { loadLimit, scaleSpawnTimeouts } = require('./test-load.cjs');
 scaleSpawnTimeouts();
 const tempHelpers = require('./test-temp.cjs');
 if (process.env.CCB_TEST_TEMP_ENTRY !== __filename) tempHelpers.runTestProcess(__filename);
@@ -34466,38 +34466,6 @@ test('compaction-event hello: records the full build next to the module version,
     assert(typeof row.installedBuild === 'string' && row.installedBuild.startsWith(row.installedVersion), `build ${row.installedBuild} starts with the version ${row.installedVersion}`);
   });
 });
-
-// A compaction cut handed the engine tool results that Claude Code copied with the pre-cut parent; this repairs the
-// transcripts already written that way, and never touches a row that is not such a copy.
-function transcriptFixture() {
-  const row = (o) => JSON.stringify(o);
-  const sys = (uuid, parentUuid, subtype) => row({ type: 'system', subtype, uuid, parentUuid, sessionId: 's' });
-  const asst = (uuid, parentUuid, mid, ...ids) => row({ type: 'assistant', uuid, parentUuid, sessionId: 's', message: { id: mid, content: ids.map((id) => ({ type: 'tool_use', id, name: 'Read', input: {} })) } });
-  const res = (uuid, parentUuid, id, src) => row({ type: 'user', uuid, parentUuid, sessionId: 's', ...(src ? { sourceToolAssistantUUID: src } : {}), message: { content: [{ type: 'tool_result', tool_use_id: id, content: 'x' }] } });
-  const text = (uuid, parentUuid, t) => row({ type: 'user', uuid, parentUuid, sessionId: 's', message: { content: t } });
-  return [
-    text('u0', null, 'start'), asst('a0', 'u0', 'm0', 't0'), res('r0', 'a0', 't0', 'a0'),
-    asst('a1', 'r0', 'm1', 't1', 't2'), res('r1', 'a1', 't1', 'a1'), res('r2', 'r1', 't2', 'a1'),
-    sys('b1', null, 'compact_boundary'), text('brief', 'b1', '[Compaction brief: x]'),
-    asst('a1c', 'brief', 'm1', 't1', 't2'),                       // the copy keeps both calls of one response in one row
-    res('r1c', 'a1', 't1', 'a1'),                                  // crossing: parent and source are the pre-cut original
-    res('r2c', 'r1c', 't2', 'a1'),                                 // parent is a kept copy: fine
-    asst('a9', 'r2c', 'm9', 't9'),
-    res('rf', 'a1', 't3', 'a1'),                                   // crossing, its call is not in the copy: found by the response id
-    res('r9', 'a0', 't8', 'a0'),                                   // crossing, no copy of that call or response: reported, not guessed
-    text('q', 'r0', 'Another Claude session sent a message'),      // crossing, NOT a tool result: left alone
-    '',
-  ];
-}
-
-function repairRig() {
-  const base = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-repair-'));
-  const root = path.join(base, 'projects'); const sessionsDir = path.join(base, 'sessions'); const backupRoot = path.join(base, 'data', 'transcript-repair');
-  fs.mkdirSync(path.join(root, 'proj'), { recursive: true }); fs.mkdirSync(sessionsDir, { recursive: true });
-  const old = new Date(Date.now() - 3600e3);
-  const put = (id, content = transcriptFixture().join('\n')) => { const f = path.join(root, 'proj', `${id}.jsonl`); fs.writeFileSync(f, content); fs.utimesSync(f, old, old); return f; };
-  return { base, root, sessionsDir, backupRoot, put };
-}
 
 test('compaction-core.planCompaction: a tool result among the newest messages is also handed back without its handle', () => {
   const msgs = cmpSession();
