@@ -18555,7 +18555,9 @@ test('http-daemon shutdown: frees the port at once but answers the requests alre
   const port = d.httpServer.address().port;
   const tok = fs.readFileSync(path.join(dir, 'brain-http.token'), 'utf8').trim();
   try {
-    // A request whose body is still arriving when shutdown starts.
+    // A request whose body is still arriving when shutdown starts. The daemon counts it as in flight from its
+    // request event (headers parsed), not from the TCP accept, so the wait is on that event.
+    const accepted = new Promise((r) => d.httpServer.once('request', () => r()));
     const pending = new Promise((resolve) => {
       const req = http.request({ host: '127.0.0.1', port, path: '/mcp', method: 'POST', headers: { 'Content-Type': 'application/json', Accept: 'application/json, text/event-stream', Authorization: `Bearer ${tok}`, 'mcp-session-id': 'gone-session' } }, (res) => {
         let b = ''; res.on('data', (c) => { b += c; }); res.on('end', () => resolve({ status: res.statusCode, body: b, conn: res.headers.connection }));
@@ -18565,10 +18567,10 @@ test('http-daemon shutdown: frees the port at once but answers the requests alre
       d.__finish = () => req.end('"method":"tools/list","params":{}}');
     });
     const deadline = Date.now() + 10000;
-    while (await new Promise((r) => d.httpServer.getConnections((e, n) => r(n))) < 1) {
-      assert(Date.now() < deadline, 'the in-flight request reached the server');
-      await new Promise((r) => setTimeout(r, 10));
-    }
+    let acceptTimer;
+    const reached = await Promise.race([accepted.then(() => true), new Promise((r) => { acceptTimer = setTimeout(() => r(false), 10000); })]);
+    clearTimeout(acceptTimer);
+    assert(reached, 'the in-flight request reached the server');
     const down = d.shutdown();
     let refused = null;
     while (!refused && Date.now() < deadline) {
