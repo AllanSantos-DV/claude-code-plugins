@@ -5688,7 +5688,7 @@ test('passthrough redirect: a script that forwards its argv takes EVERY variant 
 
 test('passthrough redirect: a script that serves several subcommands of one program (commandTokens) receives the subcommand, with its usual options', () => {
   const { planRedirect } = require('./lib/curation-redirect.js');
-  const R = path.resolve(os.tmpdir(), 'ccb-pass-sub-repo');
+  const R = path.resolve(TEST_TEMP.root, 'ccb-pass-sub-repo');
   const H = require('./curation-paths.js').curationHome(R).replace(/\\/g, '/');
   const inv = `CCB_PROJECT_ROOT="${R.replace(/\\/g, '/')}" node "${H}/scripts/git-commit.mjs"`;
   const shells = [{ id: 'git-commit', script: 'scripts/git-commit.mjs', aliases: ['git add', 'git commit'], passthrough: true, commandTokens: 1 }];
@@ -21002,7 +21002,7 @@ test('context-bundle.registeredRoot: o projeto registrado mais fundo que contem 
 
 test('context-bundle: a Smart Tool answer with notes after the JSON resolves to the registered project, never to the folder asked (searching that folder registers a stray project); an answer without a root fails loud', async () => {
   const cb = require('./lib/context-bundle.js');
-  const P = path.join(os.tmpdir(), 'ccb-rr-note');
+  const P = path.join(TEST_TEMP.root, 'ccb-rr-note');
   const note = '\nProject has 23 errors in its agent setup (hook_unknown_server). This note is for you; fix one only when the user asks.';
   const status = async (dir) => `${JSON.stringify({ project: { root: path.join(P, 'claude-code-boss'), name: 'a "quoted" } name' }, resolved_from: dir }, null, 2)}${note}`;
   const r = await cb.registeredRoot({ projectDir: P, reads: ['claude-code-boss/engine/lib/log-rotate.js', 'claude-code-boss/scripts/runtime-sweep.js'], status });
@@ -37073,9 +37073,9 @@ test('session-summary: the notice names recall and citations, and a session with
       'retrieve.cited': [{ eventName, ts: start + 6, payload: { entryId: 'x' } }, { eventName, ts: start + 7, payload: { entryId: 'y' } }],
     }[eventName] || []),
   };
-  const r = await sessionSummary.run({ hook_event_name: 'Stop', session_id: 'rc', cwd: path.join(os.tmpdir(), 'rcproj') }, { dataDir: dir, metricsStore: store });
+  const r = await sessionSummary.run({ hook_event_name: 'Stop', session_id: 'rc', cwd: path.join(TEST_TEMP.root, 'rcproj') }, { dataDir: dir, metricsStore: store });
   assertEq(r.notice, '[SESSION] Recalled 5 memories, 2 cited in replies this session — the Brain is learning.');
-  const again = await sessionSummary.run({ hook_event_name: 'Stop', session_id: 'rc', cwd: path.join(os.tmpdir(), 'rcproj') }, { dataDir: dir, metricsStore: store });
+  const again = await sessionSummary.run({ hook_event_name: 'Stop', session_id: 'rc', cwd: path.join(TEST_TEMP.root, 'rcproj') }, { dataDir: dir, metricsStore: store });
   assertEq(Object.keys(again).length, 0, 'once per session');
 });
 
