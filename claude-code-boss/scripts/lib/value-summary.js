@@ -121,4 +121,16 @@ function countLessonsSince(rows, { sinceTs = 0, project = null } = {}) {
   return n;
 }
 
-module.exports = { summarize, countLessonsSince, weekKey, injectedCount, CHARS_PER_TOKEN };
+/**
+ * What the memory did for a session window: entries put in prompts (`retrieve.injected`) and entries a reply
+ * used (`retrieve.cited`), for rows with ts >= sinceTs.
+ * @param {Array} rows  rows of both event names
+ * @param {{sinceTs:number}} opts
+ * @returns {{injected:number, cited:number}}
+ */
+function recallSince(rows, { sinceTs = 0 } = {}) {
+  const inWindow = (name) => (rows || []).filter((r) => r && r.eventName === name && _num(r.ts) >= sinceTs);
+  return { injected: injectedCount(inWindow('retrieve.injected')), cited: inWindow('retrieve.cited').length };
+}
+
+module.exports = { summarize, countLessonsSince, recallSince, weekKey, injectedCount, CHARS_PER_TOKEN };

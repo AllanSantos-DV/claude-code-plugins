@@ -3,8 +3,9 @@
  * session-summary.js — Stop detector (U2, "value made visible").
  *
  * Once per session (counter cap, like auto-continue-stop), when the session has
- * captured at least one lesson, show the user a single positive one-liner:
- *   "[SESSION] Captured N lesson(s) this session — the Brain is learning."
+ * captured a lesson or the memory was recalled into a prompt, show the user a single
+ * positive one-liner:
+ *   "[SESSION] Captured N lesson(s), recalled M memories, K cited in replies this session — the Brain is learning."
  *
  * It is a NOTICE (Stop `systemMessage`, shown to the user), never a block: a block
  * makes the host run one more model turn over the whole context — measured at
@@ -22,7 +23,7 @@ const { writeFileAtomic } = require('../engine/lib/atomic-write.js');
 const path = require('path');
 
 const hooksCfg = require('./lib/hooks-config.js');
-const { countLessonsSince } = require('./lib/value-summary.js');
+const { countLessonsSince, recallSince } = require('./lib/value-summary.js');
 
 function dataDir() {
   return require('../engine/lib/data-dir.js').dataDir();
@@ -43,18 +44,34 @@ function counterPath(dir, sid) {
 // A corrupt stamp was swallowed as "absent"; now it is said.
 const readJson = (p) => require('../engine/lib/json-file.js').readJsonLoud(p, 'session-summary');
 
-function buildNotice(n) {
-  const s = n === 1 ? '' : 's';
-  return `[SESSION] Captured ${n} lesson${s} this session — the Brain is learning.`;
+/**
+ * @param {number} n  lessons captured this session
+ * @param {{injected?:number, cited?:number}} [recall]  memories recalled into prompts / used by replies
+ * @returns {string}
+ */
+function buildNotice(n, recall = {}) {
+  const { injected = 0, cited = 0 } = recall;
+  if (!injected && !cited) {
+    const s = n === 1 ? '' : 's';
+    return `[SESSION] Captured ${n} lesson${s} this session — the Brain is learning.`;
+  }
+  const parts = [];
+  if (n > 0) parts.push(`captured ${n} lesson${n === 1 ? '' : 's'}`);
+  if (injected > 0) parts.push(`recalled ${injected} ${injected === 1 ? 'memory' : 'memories'}`);
+  if (cited > 0) parts.push(`${cited} cited in replies`);
+  const text = parts.join(', ');
+  return `[SESSION] ${text[0].toUpperCase()}${text.slice(1)} this session — the Brain is learning.`;
 }
 
-/** Read this project's lesson.captured rows. Fail-open to []. */
-function readLessons(metricsStore, project) {
+/** Read this project's rows of one event name. Fail-open to []. */
+function readEvents(metricsStore, project, eventName) {
   try {
     if (!metricsStore.init({ project })) return [];
-    return metricsStore.getEventLog({ eventName: 'lesson.captured', limit: 500 });
+    return metricsStore.getEventLog({ eventName, limit: 500 });
   } catch (err) { console.error(`[session-summary] read(${project}): ${err.message}`); return []; }
 }
+
+const readLessons = (metricsStore, project) => readEvents(metricsStore, project, 'lesson.captured');
 
 async function run(event, deps = {}) {
   const ev = event || {};
@@ -83,14 +100,18 @@ async function run(event, deps = {}) {
   const userRows = project === '__user__' ? [] : readLessons(metricsStore, '__user__');
   const n = countLessonsSince(projRows, { sinceTs, project })
     + countLessonsSince(userRows, { sinceTs });
-  if (n <= 0) return {};
+  const recall = recallSince(
+    [...readEvents(metricsStore, project, 'retrieve.injected'), ...readEvents(metricsStore, project, 'retrieve.cited')],
+    { sinceTs },
+  );
+  if (n <= 0 && !recall.injected && !recall.cited) return {};
 
   try {
     fs.mkdirSync(path.dirname(cFile), { recursive: true });
-    writeFileAtomic(cFile, JSON.stringify({ firedAt: Date.now(), count: n }));
+    writeFileAtomic(cFile, JSON.stringify({ firedAt: Date.now(), count: n, ...recall }));
   } catch (err) { console.error(`[session-summary] counter write failed: ${err.message}`); }
 
-  return { notice: buildNotice(n) };
+  return { notice: buildNotice(n, recall) };
 }
 
 if (require.main === module) {

@@ -36879,7 +36879,42 @@ test('isolation: the whole run left the live brain daemon (lock, pid) untouched'
   assertEq(liveDaemonState(), LIVE_DAEMON_BEFORE, 'a test run stopped, restarted or rewrote the live daemon');
 });
 
-// ─── Runner ──────────────────────────────────────────────────────────────────(async () => {
+// ─── Runner ──────────────────────────────────────────────────────────────────const valueSummaryRecall = require('./lib/value-summary.js');
+test('value-summary.recallSince: injected entries (chars 0 count none) and cited rows inside the window only', () => {
+  const rows = [
+    { eventName: 'retrieve.injected', ts: 100, payload: { count: 3, chars: 900 } },
+    { eventName: 'retrieve.injected', ts: 110, payload: { count: 2, chars: 0 } },
+    { eventName: 'retrieve.injected', ts: 10, payload: { count: 9, chars: 500 } },
+    { eventName: 'retrieve.cited', ts: 120, payload: { entryId: 'a' } },
+    { eventName: 'retrieve.cited', ts: 5, payload: { entryId: 'b' } },
+    { eventName: 'lesson.captured', ts: 130, payload: {} },
+  ];
+  assertEq(valueSummaryRecall.recallSince(rows, { sinceTs: 50 }), { injected: 3, cited: 1 });
+  assertEq(valueSummaryRecall.recallSince([], { sinceTs: 0 }), { injected: 0, cited: 0 });
+});
+
+test('session-summary: the notice names recall and citations, and a session with recall but no capture still gets one', async () => {
+  assert(sessionSummary.buildNotice(2, { injected: 1, cited: 1 }).includes('Captured 2 lessons, recalled 1 memory, 1 cited in replies this session'), 'all three parts');
+  assert(sessionSummary.buildNotice(0, { injected: 4, cited: 0 }).startsWith('[SESSION] Recalled 4 memories this session'), 'recall only');
+  assertEq(sessionSummary.buildNotice(1), '[SESSION] Captured 1 lesson this session — the Brain is learning.', 'no recall keeps the original line');
+  const dir = tempDir('ccb-ss-recall-');
+  fs.mkdirSync(path.join(dir, '.runtime'), { recursive: true });
+  const start = Date.now() - 1000;
+  fs.writeFileSync(path.join(dir, '.runtime', 'session-start-rc.json'), JSON.stringify({ ts: start, project: 'rcproj' }));
+  const store = {
+    init: () => true,
+    getEventLog: ({ eventName }) => ({
+      'retrieve.injected': [{ eventName, ts: start + 5, payload: { count: 5, chars: 400 } }],
+      'retrieve.cited': [{ eventName, ts: start + 6, payload: { entryId: 'x' } }, { eventName, ts: start + 7, payload: { entryId: 'y' } }],
+    }[eventName] || []),
+  };
+  const r = await sessionSummary.run({ hook_event_name: 'Stop', session_id: 'rc', cwd: path.join(os.tmpdir(), 'rcproj') }, { dataDir: dir, metricsStore: store });
+  assertEq(r.notice, '[SESSION] Recalled 5 memories, 2 cited in replies this session — the Brain is learning.');
+  const again = await sessionSummary.run({ hook_event_name: 'Stop', session_id: 'rc', cwd: path.join(os.tmpdir(), 'rcproj') }, { dataDir: dir, metricsStore: store });
+  assertEq(Object.keys(again).length, 0, 'once per session');
+});
+
+(async () => {
   // A suíte mexe em singletons de módulo, process.env e servidores HTTP locais.
   // Promise.all deixava esses testes disputarem o mesmo estado/event loop; em
   // Windows isso foi medido como timeouts falsos em /v1/models e handshake do
