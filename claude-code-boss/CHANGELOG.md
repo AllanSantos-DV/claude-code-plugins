@@ -1,5 +1,10 @@
 # Changelog
 
+## [Unreleased]
+
+### Fixed
+- **A atualização pelo próprio plugin extrai o ZIP no Windows mesmo quando o PowerShell 7 está no PSModulePath** (`scripts/lib/plugin-updater.js` `unzip`): herdado de um pwsh, esse caminho fazia o Windows PowerShell 5.1 carregar o `Expand-Archive` do 7, que falha ("sobrecarga para ExtractToDirectory") e mesmo assim sai com status 0 — nada era extraído e a atualização parava em "package.json ausente na raiz". Agora o `tar.exe` do sistema extrai primeiro; o `Expand-Archive` fica de reserva, só com os módulos do 5.1 e com erro terminante, e a falha dos dois aparece com a causa de cada um.
+
 ## [3.17.0] - 2026-11-20
 
 ### Added

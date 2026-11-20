@@ -336,22 +336,46 @@ function sha256File(file) {
   return crypto.createHash('sha256').update(fs.readFileSync(file)).digest('hex');
 }
 
-async function unzip(zipFile, destDir) {
+/**
+ * PSModulePath for Windows PowerShell 5.1 without PowerShell 7's module folders. Inherited from a pwsh
+ * parent, they make 5.1 load the 7 Archive module, whose Expand-Archive fails yet exits with status 0.
+ * @param {string|undefined} value  the inherited PSModulePath
+ * @returns {string}
+ */
+function psModulePath51(value) {
+  return String(value || '').split(';')
+    .filter((p) => p && !/[\\/]PowerShell[\\/]7[^\\/]*[\\/]/i.test(p) && !/[\\/]Documents[\\/]PowerShell[\\/]/i.test(p))
+    .join(';');
+}
+
+/**
+ * Extract a release zip into destDir. On Windows the system tar (bsdtar reads zip) goes first;
+ * Expand-Archive is the fallback, on 5.1 modules only and with errors made terminating.
+ * @param {string} zipFile
+ * @param {string} destDir
+ * @param {Function} [run]  process runner (test seam), defaults to hiddenRun
+ */
+async function unzip(zipFile, destDir, run = hiddenRun) {
   fs.mkdirSync(destDir, { recursive: true });
   if (process.platform === 'win32') {
+    const tar = path.join(process.env.SystemRoot || 'C:\\Windows', 'System32', 'tar.exe');
+    const t = await run(tar, ['-xf', zipFile, '-C', destDir]);
+    if (t.status === 0) return;
     const esc = (s) => s.replace(/'/g, "''");
     const psCmd =
-      `$ProgressPreference='SilentlyContinue'; ` +
+      `$ProgressPreference='SilentlyContinue'; $ErrorActionPreference='Stop'; ` +
       `Expand-Archive -LiteralPath '${esc(zipFile)}' -DestinationPath '${esc(destDir)}' -Force`;
-    const r = await hiddenRun('powershell', ['-NoProfile', '-NonInteractive', '-Command', psCmd]);
+    const env = { ...process.env, PSModulePath: psModulePath51(process.env.PSModulePath) };
+    const r = await run('powershell', ['-NoProfile', '-NonInteractive', '-Command', psCmd], { env });
     if (r.status !== 0) {
-      throw new Error(`Expand-Archive falhou: ${String(r.stderr || '').split('\n')[0]}`);
+      const first = (s) => String(s || '').trim().split('\n')[0];
+      throw new Error(`extração do ZIP falhou — tar: ${first(t.stderr)}; Expand-Archive: ${first(r.stderr)}`);
     }
     return;
   }
-  let r = await hiddenRun('unzip', ['-o', zipFile, '-d', destDir]);
+  let r = await run('unzip', ['-o', zipFile, '-d', destDir]);
   if (r.status !== 0) {
-    r = await hiddenRun('tar', ['-xf', zipFile, '-C', destDir]);
+    r = await run('tar', ['-xf', zipFile, '-C', destDir]);
     if (r.status !== 0) {
       throw new Error(`unzip/tar falhou: ${String(r.stderr || '').split('\n')[0]}`);
     }
@@ -630,5 +654,7 @@ module.exports = {
   PLUGIN,
   // test seam: the default async runner used by performUpdate (forces windowsHide)
   _hiddenRun: hiddenRun,
+  unzip,
+  psModulePath51,
   CACHE_MODULE_LIKE,
 };

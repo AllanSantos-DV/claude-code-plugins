@@ -10320,6 +10320,40 @@ const _updRelNoDigest = { tag_name: 'v2.0.0', assets: [
   { name: 'claude-code-boss-2.0.0.zip', browser_download_url: 'https://github.com/foo/bar/releases/download/v2.0.0/claude-code-boss-2.0.0.zip', size: 10 },
 ] };
 
+test('plugin-updater.unzip: a release zip is extracted on Windows even when PSModulePath carries PowerShell 7 modules; the fallback runs 5.1 without them and stops on error', async () => {
+  const pu = require('./lib/plugin-updater.js');
+  assertEq(pu.psModulePath51('C:\\Users\\u\\Documents\\PowerShell\\Modules;C:\\Program Files\\PowerShell\\7\\Modules;C:\\WINDOWS\\system32\\WindowsPowerShell\\v1.0\\Modules'),
+    'C:\\WINDOWS\\system32\\WindowsPowerShell\\v1.0\\Modules', 'PowerShell 7 folders dropped, 5.1 folders kept');
+  assertEq(pu.psModulePath51(undefined), '');
+  if (process.platform !== 'win32') return;
+  const calls = [];
+  const fake = async (cmd, args, opts = {}) => { calls.push({ cmd, args, env: opts.env }); return cmd.endsWith('tar.exe') ? { status: 1, stderr: 'tar missing' } : { status: 1, stderr: 'Expand-Archive: boom' }; };
+  let err = null;
+  try { await pu.unzip('C:/x/a.zip', tempDir('ccb-unzip-fake-'), fake); } catch (e) { err = e; }
+  assert(err && /tar: tar missing; Expand-Archive: Expand-Archive: boom/.test(err.message), `both failures named: ${err && err.message}`);
+  assert(/System32[\\/]tar\.exe$/i.test(calls[0].cmd), 'the system tar goes first');
+  assertEq(calls[1].cmd, 'powershell');
+  assert(/\$ErrorActionPreference='Stop'/.test(calls[1].args.join(' ')), 'errors are terminating, so a failed extraction exits non-zero');
+  assert(!/PowerShell[\\/]7/i.test(calls[1].env.PSModulePath), 'the fallback runs without PowerShell 7 modules');
+
+  const src = tempDir('ccb-unzip-src-');
+  fs.writeFileSync(path.join(src, 'package.json'), '{"version":"9.9.9"}');
+  fs.mkdirSync(path.join(src, 'scripts'));
+  fs.writeFileSync(path.join(src, 'scripts', 'a.js'), '1');
+  const zip = path.join(tempDir('ccb-unzip-zip-'), 'r.zip');
+  const tar = path.join(process.env.SystemRoot || 'C:\\Windows', 'System32', 'tar.exe');
+  const mk = require('child_process').spawnSync(tar, ['-a', '-cf', zip, '-C', src, 'package.json', 'scripts'], { windowsHide: true });
+  assertEq(mk.status, 0, String(mk.stderr));
+  const saved = process.env.PSModulePath;
+  process.env.PSModulePath = `C:\\Program Files\\PowerShell\\7\\Modules;${saved || ''}`;
+  try {
+    const dest = tempDir('ccb-unzip-dest-');
+    await pu.unzip(zip, dest);
+    assertEq(JSON.parse(fs.readFileSync(path.join(dest, 'package.json'), 'utf8')).version, '9.9.9', 'package.json at the root');
+    assert(fs.existsSync(path.join(dest, 'scripts', 'a.js')), 'subfolders extracted');
+  } finally { if (saved === undefined) delete process.env.PSModulePath; else process.env.PSModulePath = saved; }
+});
+
 test('plugin-updater.performUpdate: digest MISMATCH aborts before unzip/npm (integrity gate)', async () => {
   let unzipCalled = false, spawnCalled = false;
   const io = {
