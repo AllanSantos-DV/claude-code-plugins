@@ -4334,7 +4334,7 @@ test('mcp-server: capture_lesson schema enum covers every type hooks nudge for',
 test('scope: sanitizeForUserScope strips paths, emails, project name', () => {
   const { sanitizeForUserScope } = require('../engine/lib/scope-sanitizer.js');
   const out = sanitizeForUserScope(
-    'In C:\\Users\\allan\\Desktop\\Projetos\\claude-code, also /home/joe/repo and /Users/anna/work; ping me at user@example.com — see claude-code thing',
+    'In C:\\Users\\dev\\Desktop\\Projetos\\claude-code, also /home/joe/repo and /Users/anna/work; ping me at user@example.com — see claude-code thing',
     'claude-code'
   );
   if (out.includes('allan')) throw new Error(`Windows path not stripped: ${out}`);
@@ -35063,7 +35063,7 @@ const sePlan = (cmd, o = {}) => require('../engine/lib/shell-escape.js').planEsc
 const seFile = (plan, i = 0) => plan.files[i].content;
 
 test('shell-escape: quoted heredoc with \\b regex, both quotes and a Windows path → payload moved byte-exact', () => {
-  const body = String.raw`const re = /\bfoo\b/; const p = 'C:\\Users\\allan'; console.log("it's", re.test('a foo b'), p);` + '\n';
+  const body = String.raw`const re = /\bfoo\b/; const p = 'C:\\Users\\dev'; console.log("it's", re.test('a foo b'), p);` + '\n';
   const p = sePlan("node <<'EOF'\n" + body + 'EOF');
   assert(p && p.command, `must rewrite, got ${JSON.stringify(p)}`);
   assert(/^node < '\/tmp\/ccb-se\/[0-9a-f]{16}\.txt'\n?$/.test(p.command), `command: ${JSON.stringify(p.command)}`);
@@ -36234,9 +36234,9 @@ test('lesson-promotion: never re-promotes — an active promotion, one the owner
 test('lesson-promotion: the user entry copies title/summary/detail only, scrubbed — secrets reject, no files/source, tags that name a project are dropped, maxPerRun skips rejected ones without spending a slot', async () => {
   const { planPromotions, buildUserEntry, prepareBatch } = require('./lib/lesson-promotion.js');
   const a = promoEntry('a', 'org/alpha-service', 0, { tags: ['workflow', 'alpha-service-bug', 'shared', 'http'], recurrence: 2 });
-  const b = promoEntry('b', 'org/beta-service', 5, { tags: ['shared', 'beta-service-only', 'C:\\Users\\allan\\x'] });
+  const b = promoEntry('b', 'org/beta-service', 5, { tags: ['shared', 'beta-service-only', 'C:\\Users\\dev\\x'] });
   const { candidates } = planPromotions({ entries: [a, b], userEntries: [], cites: [], registry: {}, simFn: promoCos });
-  const full = { title: 'Fix in org/alpha-service', summary: 'see C:\\Users\\allan\\repo and mail me@x.io; beta-service does the same', detail: 'detail for alpha-service' };
+  const full = { title: 'Fix in org/alpha-service', summary: 'see C:\\Users\\dev\\repo and mail me@x.io; beta-service does the same', detail: 'detail for alpha-service' };
   const built = buildUserEntry(candidates[0], full, 'prom-1');
   assert(built.entry, JSON.stringify(built));
   const e = built.entry;
