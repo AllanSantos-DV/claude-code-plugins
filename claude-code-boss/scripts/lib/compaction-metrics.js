@@ -158,6 +158,44 @@ function compactionTile(cfg, rows) {
   return { enabled, mechanicalCut: enabled && (!cfg || cfg.mechanicalCut !== false), runs: s.runs.total, measured: s.settled.count, tokensCut: s.settled.tokensCut };
 }
 
+/**
+ * Fold one cache.turn payload into running cache totals (the prompt tokens read from cache, written to it, and sent uncached).
+ * @param {{turns:number, read:number, write:number, input:number}} acc
+ * @param {object} p  cache.turn payload
+ */
+function foldCacheTurn(acc, p) {
+  acc.turns++;
+  acc.read += num(p.read); acc.write += num(p.write); acc.input += num(p.input);
+  return acc;
+}
+
+/**
+ * Compaction and cache in a few numbers, for the one-line summaries (daily digest, /boss). Same meanings as
+ * summarizeCompaction: cuts = compaction runs, tokensCut = measured on the turn after each cut, hitPct = cache reads
+ * over every prompt token.
+ * @param {Array} rows  any events; compaction.run, compaction.settled and cache.turn are read
+ * @param {{cache?: {turns:number, read:number, write:number, input:number}}} [o]  cache totals already folded (the rows' cache.turn are then ignored)
+ * @returns {{cuts:number, measured:number, tokensCut:number, cacheTurns:number, hitPct:number|null}}
+ */
+function compactionCacheBrief(rows, { cache = null } = {}) {
+  const b = { cuts: 0, measured: 0, tokensCut: 0 };
+  const acc = cache ? { ...cache } : { turns: 0, read: 0, write: 0, input: 0 };
+  for (const r of rows || []) {
+    const name = r.eventName || r.event_name;
+    if (name !== 'compaction.run' && name !== 'compaction.settled' && name !== 'cache.turn') continue;
+    let p = r.payload || {};
+    if (typeof p === 'string') { try { p = JSON.parse(p); } catch (err) { void err; continue; } }
+    if (name === 'compaction.run') b.cuts++;
+    else if (name === 'compaction.settled') {
+      if (p.prevented || p.tokensBefore == null) continue;
+      b.measured++;
+      b.tokensCut += Math.max(0, num(p.tokensCut));
+    } else if (!cache) foldCacheTurn(acc, p);
+  }
+  const prompt = acc.read + acc.write + acc.input;
+  return { ...b, cacheTurns: acc.turns, hitPct: prompt > 0 ? Math.round((acc.read / prompt) * 1000) / 10 : null };
+}
+
 /** Which settled events measured the first API call after the cut (older ones measured the turn's last call, larger). */
 const FIRST_CALL = 'first-call-after-cut';
 
@@ -217,4 +255,4 @@ function largestInstructions(jsonl, n = 3) {
   return [...size].map(([path, chars]) => ({ path, chars })).sort((a, b) => b.chars - a.chars).slice(0, n);
 }
 
-module.exports = { summarizeCompaction, compactionTile, compactionFloors, largestInstructions, COMPACTION_EVENTS, FIRST_CALL };
+module.exports = { summarizeCompaction, compactionTile, compactionCacheBrief, foldCacheTurn, compactionFloors, largestInstructions, COMPACTION_EVENTS, FIRST_CALL };

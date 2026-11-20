@@ -246,6 +246,20 @@ function checkBackupAge(ctx) {
   return { ...base, status: v.ok ? 'ok' : 'warn', detail: v.detail, fix: v.ok ? '' : 'Take one in /dashboard -> Backup.' };
 }
 
+const READ_BURST_DAYS = 7;
+
+/** How many of the files read after a read-burst delivery the bundle already had (ctx.readBurst; read by `--cost`). */
+function checkReadBurst(ctx) {
+  const base = { id: 'read-burst', label: 'Read-burst context hit rate', critical: false, fix: '' };
+  const r = ctx.readBurst;
+  if (!r) return { ...base, status: 'ok', detail: 'not measured here (run `doctor --cost`)' };
+  if (r.error) return { ...base, status: 'warn', detail: `the read-burst journal could not be read: ${r.error}` };
+  const bad = r.malformed ? ` (${r.malformed} unreadable journal line(s) skipped)` : '';
+  if (!r.delivered && !r.closed) return { ...base, status: 'ok', detail: `no ready context delivered in the last ${r.days} days${bad}` };
+  const rate = r.hitRate == null ? 'no file read after a delivery yet' : `${r.hits} of the ${r.readAfter} files read afterwards were in the bundle (${Math.round(r.hitRate * 100)}%)`;
+  return { ...base, status: 'ok', detail: `last ${r.days} days: ${r.delivered} bundle(s) delivered, ${r.closed} run(s) closed; ${rate}${bad}` };
+}
+
 function checkHooksEvents(ctx) {
   const events = ctx.hooksEvents || [];
   const unknown = events.filter(e => !STANDARD_EVENTS.has(e));
@@ -764,7 +778,7 @@ function checkSetup(ctx) {
   return out;
 }
 
-const CHECKS = [checkNode, checkDaemonNode, checkNativeDeps, checkEnv, checkDataDirs, checkModel, checkDaemon, checkHookLatency, checkNativeRuntime, checkEmbedderProbe, checkEmbedderGuard, checkRecall, checkCrashes, checkCostTuning, checkBossConfig, checkFixedCost, checkCompactionRate, checkCompactionFloor, checkClaudeCompat, checkSubagentContexts, checkSessionModules, checkAutoCompactPoint, checkSetup, checkBackupAge, checkHooksEvents, checkSkillManager];
+const CHECKS = [checkNode, checkDaemonNode, checkNativeDeps, checkEnv, checkDataDirs, checkModel, checkDaemon, checkHookLatency, checkNativeRuntime, checkEmbedderProbe, checkEmbedderGuard, checkRecall, checkCrashes, checkCostTuning, checkBossConfig, checkFixedCost, checkCompactionRate, checkCompactionFloor, checkClaudeCompat, checkSubagentContexts, checkSessionModules, checkAutoCompactPoint, checkSetup, checkBackupAge, checkReadBurst, checkHooksEvents, checkSkillManager];
 
 /** Run every pure check over a ctx snapshot (a check may return one result or a list). */
 function runChecks(ctx) {
@@ -1011,6 +1025,15 @@ async function gatherContext({ probe = false, audit = false, contextSources: wan
   const guardRec = embedderGuard.readGuard(data);
   const guardApplies = !!(guardRec && embedderCfg && guardRec.key === embedderGuard.guardKey({ model: embedderCfg.model, node: nodeChoice.version }));
 
+  let readBurst = null;
+  if (audit) {
+    try {
+      const rb = require('./lib/read-burst.js');
+      const { entries, malformed } = rb.readJournal();
+      readBurst = { days: READ_BURST_DAYS, malformed, ...rb.summarizeOutcomes(entries, { sinceMs: Date.now() - READ_BURST_DAYS * 86400_000 }) };
+    } catch (e) { console.error(`[doctor] read-burst journal: ${e.message}`); readBurst = { error: e.message }; }
+  }
+
   let backup = null;
   try { backup = require('./lib/backup-age.js').newestBackup(path.join(require('../engine/lib/data-dir.js').globalDir(), 'backups')); } catch (e) {
     console.error(`[doctor] backups: ${e.message}`);
@@ -1044,6 +1067,7 @@ async function gatherContext({ probe = false, audit = false, contextSources: wan
     autoCompact,
     setup,
     backup,
+    readBurst,
   };
 }
 

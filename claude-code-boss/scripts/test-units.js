@@ -34788,6 +34788,124 @@ test('boss-summary.createRowReader: a project whose db stamp did not change is n
   assertEq(opened, [], 'and that stays free');
 });
 
+test('boss-summary.createRowReader: cache.turn rows are folded into per-day totals, never kept as rows, and days that left the window drop out', () => {
+  const { createRowReader } = require('./boss-summary.js');
+  const DAY = 86400_000;
+  const turn = (id, day, read, write, input) => ({ id, ts: day * DAY + 1000, eventName: 'cache.turn', payload: JSON.stringify({ read, write, input }) });
+  const db = { a: [turn(1, 10, 900, 100, 0), { id: 2, ts: 10 * DAY + 2000, eventName: 'compaction.run', payload: {} }], b: [turn(1, 12, 300, 0, 100)] };
+  const stamps = { a: 's1', b: 's1' };
+  const store = { listProjects: () => Object.keys(db), dbStamp: (p) => stamps[p], getEventLogIsolated: (p, o) => db[p].filter((r) => r.id > (o.sinceId || 0)) };
+  const read = createRowReader(store);
+  const first = read(10 * DAY);
+  assertEq(first.rows.map((r) => r.eventName), ['compaction.run'], 'only the compaction row is kept as a row');
+  assertEq(first.cache, { turns: 2, read: 1200, write: 100, input: 100 });
+  assertEq(read(10 * DAY).cache, first.cache, 'an unchanged stamp still sums the folded days');
+  db.b.push(turn(2, 12, 100, 0, 0)); stamps.b = 's2';
+  assertEq(read(10 * DAY).cache.turns, 3, 'a new row past the last id is folded once');
+  assertEq(read(11 * DAY).cache, { turns: 2, read: 400, write: 0, input: 100 }, 'the day before the window start leaves the totals');
+});
+
+test('boss-summary.summarizeBoss and /boss: compaction cuts, measured tokens and the cache hit rate from the folded totals', async () => {
+  const bs = require('./boss-summary.js');
+  const band = await import(require('url').pathToFileURL(path.join(SCRIPTS, 'lib', 'boss-band.mjs')).href);
+  const now = Date.now();
+  const rows = [
+    { eventName: 'compaction.run', ts: now - 1000, payload: { outcome: 'brief' } },
+    { eventName: 'compaction.run', ts: now - 2000, payload: { outcome: 'pruned' } },
+    { eventName: 'compaction.settled', ts: now - 900, payload: { tokensBefore: 180000, tokensAfter: 40000, tokensCut: 140000 } },
+    { eventName: 'compaction.settled', ts: now - 800, payload: { prevented: true } },
+    { eventName: 'cache.turn', ts: now - 700, payload: { read: 1, write: 1, input: 1 } },
+  ];
+  const out = bs.summarizeBoss(rows, null, { now, cache: { turns: 40, read: 9000, write: 900, input: 100 } });
+  assertEq(out.compaction, { days: 30, cuts: 2, measured: 1, tokensCut: 140000, cacheTurns: 40, hitPct: 90 }, 'the folded totals win over stray cache rows');
+  const md = band.bossMarkdown({ costUsd: 1, summary: { ...out, tokenGuard: { days: 30 }, value: {}, brain: { connected: true, backend: 'mcp-memory' } } });
+  assert(md.includes('| Compactação e cache, 30 dias | 2 compactações (140 mil tokens cortados em 1 medidas); cache 90% de acerto em 40 chamadas |'), md);
+  assertEq(band.compactionRow({ cuts: 0, cacheTurns: 0 }), null, 'no data → no row');
+  assert(!band.bossMarkdown({ costUsd: 1, summary: { tokenGuard: {}, value: {}, brain: {} } }).includes('Compactação'), 'an older daemon without the field draws no row');
+});
+
+test('compaction-metrics.compactionCacheBrief: same meanings as summarizeCompaction (runs, measured settled, cache hit over every prompt token)', () => {
+  const { compactionCacheBrief, summarizeCompaction } = require('./lib/compaction-metrics.js');
+  const rows = [
+    { eventName: 'compaction.run', payload: JSON.stringify({ outcome: 'brief' }) },
+    { eventName: 'compaction.settled', payload: { tokensBefore: 100000, tokensCut: 60000 } },
+    { eventName: 'compaction.settled', payload: { tokensBefore: 90000, tokensCut: -5 } },
+    { eventName: 'cache.turn', payload: { host: 'h', auth: 'a', read: 750, write: 200, input: 50 } },
+    { eventName: 'curation.used', payload: {} },
+  ];
+  const b = compactionCacheBrief(rows);
+  const full = summarizeCompaction(rows);
+  assertEq(b, { cuts: full.runs.total, measured: full.settled.count, tokensCut: full.settled.tokensCut, cacheTurns: 1, hitPct: full.cache.byHost['h|a'].hitPct });
+  assertEq(compactionCacheBrief([]).hitPct, null, 'no prompt token → no rate, never 0%');
+});
+
+test('read-burst.readJournal + summarizeOutcomes: rotated files read oldest first, malformed lines counted, window and sessions filter the hit rate', () => {
+  const rb = require('./lib/read-burst.js');
+  const base = TEST_TEMP.dir('rb-journal');
+  const f = rb.journalFile(base);
+  fs.mkdirSync(path.dirname(f), { recursive: true });
+  const at = (ms) => new Date(ms).toISOString();
+  const now = Date.now();
+  fs.writeFileSync(`${f}.1`, [JSON.stringify({ at: at(now - 9 * 86400_000), event: 'closed', session: 's1', readAfter: 50, hits: 50 })].join('\n') + '\n');
+  fs.writeFileSync(f, [
+    JSON.stringify({ at: at(now - 1000), event: 'delivered', session: 's1' }),
+    JSON.stringify({ at: at(now - 900), event: 'closed', session: 's1', readAfter: 8, hits: 2 }),
+    '{not json',
+    JSON.stringify({ at: at(now - 800), event: 'closed', session: 's2', readAfter: 2, hits: 2 }),
+    JSON.stringify({ at: at(now - 700), event: 'abandoned', session: 's2' }),
+  ].join('\n') + '\n');
+  const { entries, malformed } = rb.readJournal(base);
+  assertEq(malformed, 1, 'a bad line is counted, not hidden');
+  assertEq(entries[0].readAfter, 50, 'the rotated file comes first');
+  const week = now - 7 * 86400_000;
+  assertEq(rb.summarizeOutcomes(entries, { sinceMs: week }), { delivered: 1, closed: 2, readAfter: 10, hits: 4, hitRate: 0.4 });
+  assertEq(rb.summarizeOutcomes(entries, { sinceMs: week, sessions: new Set(['s2']) }).hitRate, 1, 'only the sessions asked');
+  assertEq(rb.summarizeOutcomes([], {}).hitRate, null, 'no read after a delivery → no rate');
+  assertEq(rb.readJournal(TEST_TEMP.dir('rb-none')), { entries: [], malformed: 0 }, 'no journal yet is empty, not an error');
+});
+
+test('doctor read-burst check: --cost shows the hit rate, says when not measured, and shows a read failure', () => {
+  const doctor = require('./doctor.js');
+  const by = (ctx) => doctor.runChecks(ctx).find((r) => r.id === 'read-burst');
+  const r = by({ readBurst: { days: 7, malformed: 0, delivered: 316, closed: 250, readAfter: 490, hits: 35, hitRate: 35 / 490 } });
+  assertEq(r.status, 'ok');
+  assertEq(r.detail, 'last 7 days: 316 bundle(s) delivered, 250 run(s) closed; 35 of the 490 files read afterwards were in the bundle (7%)');
+  assert(/not measured here/.test(by({}).detail), 'a plain doctor says it did not read the journal');
+  assertEq(by({ readBurst: { error: 'EACCES' } }).status, 'warn', 'a read failure is shown');
+  assert(/no ready context delivered in the last 7 days \(2 unreadable/.test(by({ readBurst: { days: 7, malformed: 2, delivered: 0, closed: 0, readAfter: 0, hits: 0, hitRate: null } }).detail));
+});
+
+test('value digest: compaction, cache and read-burst sentences join the line, and a project with only those is no longer silent', async () => {
+  const vd = require('./value-digest.js');
+  const { summarizeCuration } = require('./lib/curation-metrics.js');
+  const line = vd.formatDigest(summarizeCuration([]), { compaction: { cuts: 3, measured: 2, tokensCut: 250000, cacheTurns: 120, hitPct: 93.4 }, readBurst: { delivered: 4, closed: 3, readAfter: 20, hits: 5, hitRate: 0.25 } });
+  assertEq(line, '[BOSS] Compactação e cache nos últimos 7 dias: 3 compactações (~250k tokens cortados em 2 medidas), cache com 93,4% de acerto em 120 chamadas. Contexto pronto das rajadas de leitura: 4 entregas, 5 dos 20 arquivos lidos depois estavam no pacote (25%). Detalhes: /dashboard → Curation & guards.');
+  assertEq(vd.formatDigest(summarizeCuration([]), { compaction: { cuts: 0, cacheTurns: 0 }, readBurst: { delivered: 0, closed: 0 } }), null, 'nothing in any of the three → silent');
+  assertEq(vd.readBurstSentence({ delivered: 1, closed: 0, readAfter: 0, hits: 0, hitRate: null }), 'Contexto pronto das rajadas de leitura: 1 entregas, nenhum arquivo lido depois da entrega ainda.');
+
+  const ms = require('../engine/lib/metrics-store.js');
+  const { runWithHookEnv } = require('./lib/hook-context.js');
+  const rb = require('./lib/read-burst.js');
+  const proj = path.join(TEST_TEMP.dir('digest-compaction'), 'digest-cc-' + Date.now());
+  fs.mkdirSync(proj);
+  const sid = 'digest-cc-session';
+  ms.close(); ms.init({ project: path.basename(proj) });
+  try {
+    ms.recordMetric('compaction.run', { outcome: 'brief' }, sid);
+    ms.recordMetric('cache.turn', { read: 800, write: 100, input: 100 }, sid);
+  } finally { ms.close(); }
+  const journal = rb.journalFile();
+  fs.mkdirSync(path.dirname(journal), { recursive: true });
+  fs.appendFileSync(journal, [
+    JSON.stringify({ at: new Date().toISOString(), event: 'delivered', session: sid }),
+    JSON.stringify({ at: new Date().toISOString(), event: 'closed', session: sid, readAfter: 4, hits: 1 }),
+    JSON.stringify({ at: new Date().toISOString(), event: 'closed', session: 'another-project-session', readAfter: 100, hits: 100 }),
+  ].join('\n') + '\n');
+  const shown = await runWithHookEnv({ CLAUDE_PROJECT_DIR: proj }, () => vd.run({}, { now: Date.now() }));
+  assert(/1 compactações, cache com 80% de acerto em 1 chamadas/.test(shown || ''), `compaction and cache: ${shown}`);
+  assert(/1 dos 4 arquivos lidos depois estavam no pacote \(25%\)/.test(shown || ''), `only this project's sessions count: ${shown}`);
+});
+
 test('boss-summary.dbStamp: changes when the project records an event, a stamp (not a throw) for a missing db', () => {
   const { dbStamp } = require('./boss-summary.js');
   const ms = require('../engine/lib/metrics-store.js');

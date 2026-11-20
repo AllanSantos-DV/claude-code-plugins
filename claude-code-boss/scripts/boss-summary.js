@@ -12,6 +12,7 @@
  *                numbers as the dashboard's Curation panel) and, per session seen in the
  *                last day, the exact savings of that session (shaper cuts + measured runs)
  *   value      — lessons captured, memories cited / injected (lib/value-summary.js)
+ *   compaction — cuts, tokens they cut and the cache hit rate (lib/compaction-metrics.compactionCacheBrief)
  *   brain      — the backend probe (lib/mcp-health.js) without paths or URLs: the reply
  *                travels to every session, so it carries a reason CODE, never a location
  */
@@ -19,20 +20,25 @@ const fs = require('fs');
 const path = require('path');
 const { summarizeCuration, CURATION_EVENTS, ECONOMY_EVENTS } = require('./lib/curation-metrics.js');
 const { summarize } = require('./lib/value-summary.js');
+const { compactionCacheBrief, foldCacheTurn } = require('./lib/compaction-metrics.js');
 const { CHARS_PER_TOKEN } = require('./lib/economy-metrics.js');
 
 const DAYS = 30;
 const SESSION_WINDOW_MS = 86400_000;
 const VALUE_EVENTS = ['lesson.captured', 'retrieve.cited', 'retrieve.injected'];
+const COMPACTION_EVENTS = ['compaction.run', 'compaction.settled'];
+// One row per API call, thousands a day: folded into per-day totals instead of kept as rows.
+const CACHE_EVENT = 'cache.turn';
+const DAY_MS = 86400_000;
 
 const tokens = (chars) => Math.round((Number(chars) || 0) / CHARS_PER_TOKEN);
 
 /**
  * @param {object[]} rows  metrics rows (curation + economy + value events) of the window
  * @param {object|null} health  probeHealth() answer, or null when the probe threw
- * @param {{now?:number, days?:number, healthError?:string}} [opts]
+ * @param {{now?:number, days?:number, healthError?:string, cache?:{turns:number, read:number, write:number, input:number}}} [opts]  cache: the window's cache.turn totals
  */
-function summarizeBoss(rows, health, { now = Date.now(), days = DAYS, healthError } = {}) {
+function summarizeBoss(rows, health, { now = Date.now(), days = DAYS, healthError, cache } = {}) {
   const cur = summarizeCuration(rows);
   const recent = new Map(); // session id → its rows of the last day
   for (const r of rows) {
@@ -59,6 +65,7 @@ function summarizeBoss(rows, health, { now = Date.now(), days = DAYS, healthErro
       bySession,
     },
     value: { days, lessons: v.learned.total, cited: v.memoryCited, injected: v.retrievalPrecision.injected },
+    compaction: { days, ...compactionCacheBrief(rows, cache ? { cache } : {}) },
   };
 }
 
@@ -105,38 +112,58 @@ function dbStamp(project) {
  * budgetMs, the projects not yet in the cache wait for the next call and the answer says `complete: false`.
  * @param {{listProjects:Function, getEventLogIsolated:Function, dbStamp?:Function}} [storeArg]  injectable for tests; the default store is stamped by dbStamp here, an injected one without dbStamp is opened on every call
  * @param {{now?:Function}} [opts]  clock, injectable for tests
- * @returns {(sinceTs:number, budgetMs?:number) => {rows:object[], complete:boolean}}
+ * cache.turn rows are not kept: each project folds them into per-day totals, summed over the days in the window.
+ * @returns {(sinceTs:number, budgetMs?:number) => {rows:object[], complete:boolean, cache:{turns:number, read:number, write:number, input:number}}}
  */
 function createRowReader(storeArg, { now = Date.now } = {}) {
-  const cache = new Map(); // project → { lastId, rows }
+  const slots = new Map(); // project → { lastId, rows, stamp, cacheDays }
   return function readRows(sinceTs, budgetMs = Infinity) {
     const store = storeArg || require('../engine/lib/metrics-store.js');
-    const eventNames = [...CURATION_EVENTS, ...ECONOMY_EVENTS, ...VALUE_EVENTS];
+    const eventNames = [...CURATION_EVENTS, ...ECONOMY_EVENTS, ...VALUE_EVENTS, ...COMPACTION_EVENTS, CACHE_EVENT];
+    const fromDay = Math.floor(sinceTs / DAY_MS);
+    const cache = { turns: 0, read: 0, write: 0, input: 0 };
+    const addCache = (slot) => {
+      for (const [day, t] of slot.cacheDays) {
+        if (day < fromDay) { slot.cacheDays.delete(day); continue; }
+        cache.turns += t.turns; cache.read += t.read; cache.write += t.write; cache.input += t.input;
+      }
+    };
     const projects = store.listProjects();
-    for (const p of [...cache.keys()]) if (!projects.includes(p)) cache.delete(p);
+    for (const p of [...slots.keys()]) if (!projects.includes(p)) slots.delete(p);
     const rows = [];
     let coldMs = 0;
     let complete = true;
     for (const project of projects) {
-      const cold = !cache.has(project);
+      const cold = !slots.has(project);
       if (cold && coldMs >= budgetMs) { complete = false; continue; }
       const t0 = now();
-      const slot = cache.get(project) || { lastId: 0, rows: [], stamp: null };
+      const slot = slots.get(project) || { lastId: 0, rows: [], stamp: null, cacheDays: new Map() };
       const stamp = storeArg ? (storeArg.dbStamp ? storeArg.dbStamp(project) : null) : dbStamp(project);
       if (!cold && stamp != null && stamp === slot.stamp) {
         slot.rows = slot.rows.filter((r) => Number(r.ts) >= sinceTs);
         for (const r of slot.rows) rows.push(r);
+        addCache(slot);
         continue;
       }
       const fresh = store.getEventLogIsolated(project, { eventNames, sinceTs, sinceId: slot.lastId });
       slot.stamp = stamp;
-      for (const r of fresh) if (Number(r.id) > slot.lastId) slot.lastId = Number(r.id);
-      slot.rows = slot.rows.filter((r) => Number(r.ts) >= sinceTs).concat(fresh);
-      cache.set(project, slot);
+      const kept = [];
+      for (const r of fresh) {
+        if (Number(r.id) > slot.lastId) slot.lastId = Number(r.id);
+        if ((r.eventName || r.event_name) !== CACHE_EVENT) { kept.push(r); continue; }
+        let p = r.payload || {};
+        if (typeof p === 'string') { try { p = JSON.parse(p); } catch (err) { void err; continue; } }
+        const day = Math.floor(Number(r.ts) / DAY_MS);
+        if (!slot.cacheDays.has(day)) slot.cacheDays.set(day, { turns: 0, read: 0, write: 0, input: 0 });
+        foldCacheTurn(slot.cacheDays.get(day), p);
+      }
+      slot.rows = slot.rows.filter((r) => Number(r.ts) >= sinceTs).concat(kept);
+      slots.set(project, slot);
+      addCache(slot);
       if (cold) coldMs += now() - t0;
       for (const r of slot.rows) rows.push(r);
     }
-    return { rows, complete };
+    return { rows, complete, cache };
   };
 }
 
@@ -146,7 +173,7 @@ const READ_BUDGET_MS = 2000;
 /** The summary, or `{ warming: true }` while the first reads still fill the row cache (no partial totals). */
 async function run() {
   const now = Date.now();
-  const { rows, complete } = readRows(now - DAYS * 86400_000, READ_BUDGET_MS);
+  const { rows, complete, cache } = readRows(now - DAYS * 86400_000, READ_BUDGET_MS);
   if (!complete) return { warming: true };
   let health = null;
   let healthError;
@@ -157,7 +184,7 @@ async function run() {
     healthError = err && err.message ? err.message : String(err);
     console.error(`[boss-summary] brain health probe failed: ${healthError}`);
   }
-  return summarizeBoss(rows, health, { now, healthError });
+  return summarizeBoss(rows, health, { now, healthError, cache });
 }
 
 module.exports = { run, summarizeBoss, createRowReader, dbStamp, DAYS };

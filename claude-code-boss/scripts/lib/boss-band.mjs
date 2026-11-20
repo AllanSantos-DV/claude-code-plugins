@@ -24,6 +24,18 @@ export function fmtUsd(usd) {
   return `US$ ${group(i)},${f}`;
 }
 
+/**
+ * The /boss row on compaction and cache: cuts, tokens they cut (measured) and the cache hit rate; null without data.
+ * @param {{cuts?:number, measured?:number, tokensCut?:number, cacheTurns?:number, hitPct?:number|null}|undefined} c
+ * @returns {string|null}
+ */
+export function compactionRow(c) {
+  if (!c || (!c.cuts && !c.cacheTurns)) return null;
+  const cuts = c.cuts ? `${int(c.cuts)} compactações${c.measured ? ` (${fmtTokens(c.tokensCut)} tokens cortados em ${int(c.measured)} medidas)` : ''}` : 'nenhuma compactação';
+  const cache = c.hitPct != null ? `cache ${dec(Number(c.hitPct), 1)}% de acerto em ${int(c.cacheTurns)} chamadas` : 'cache sem leitura';
+  return `${cuts}; ${cache}`;
+}
+
 const brainWord = (b) => (b && b.connected ? 'Brain no ar' : `Brain fora${b && b.reason ? ` (${b.reason})` : ''}`);
 const shortErr = (e) => String(e || '').replace(/\s+/g, ' ').slice(0, 80);
 
@@ -83,6 +95,7 @@ export function bossMarkdown({ costUsd, summary, error } = {}) {
     `| Token Guard, ${days} dias | ${fmtTokens(tg.savedTokens)} tokens (${fmtTokens(tg.exactTokens)} medidos + ${fmtTokens(tg.estimatedTokens)} estimados) |`,
     `| Brain | ${brain} |`,
     `| Aprendizado, ${days} dias | ${int(v.lessons || 0)} lições; ${int(v.cited || 0)} memórias citadas de ${int(v.injected || 0)} injetadas |`,
+    ...(compactionRow(summary.compaction) ? [`| Compactação e cache, ${summary.compaction.days || days} dias | ${compactionRow(summary.compaction)} |`] : []),
     '',
     'Detalhes e configuração: `/claude-code-boss:dashboard`.',
   ].join('\n');

@@ -208,4 +208,50 @@ function forget(sessionId, { base } = {}) {
   return removed;
 }
 
-module.exports = { onTool, forget, themeOf, themeKey, relKey, stateFile, journalFile, READ_TOOL, RESET_TOOL, CONTEXT_CAP };
+/**
+ * The outcome journal, rotated files included, oldest first.
+ * @param {string} [base] data dir
+ * @returns {{entries: object[], malformed: number}} malformed: lines that are not JSON (counted, not hidden)
+ */
+function readJournal(base) {
+  const file = journalFile(base);
+  const entries = [];
+  let malformed = 0;
+  for (const name of [3, 2, 1].map((i) => `${file}.${i}`).concat(file)) {
+    let text;
+    try { text = fs.readFileSync(name, 'utf8'); } catch (err) {
+      if (err.code === 'ENOENT') continue;
+      throw err;
+    }
+    for (const line of text.split('\n')) {
+      if (!line.trim()) continue;
+      try { entries.push(JSON.parse(line)); } catch (err) { void err; malformed++; }
+    }
+  }
+  return { entries, malformed };
+}
+
+/**
+ * How well the delivered bundles matched what the agent read next: of the files read after a delivery,
+ * how many the bundle already had (the `closed` events).
+ * @param {object[]} entries journal entries
+ * @param {{sinceMs?: number, sessions?: Set<string>|null}} [o] window start; only these sessions when given
+ * @returns {{delivered: number, closed: number, readAfter: number, hits: number, hitRate: number|null}}
+ */
+function summarizeOutcomes(entries, { sinceMs = 0, sessions = null } = {}) {
+  const s = { delivered: 0, closed: 0, readAfter: 0, hits: 0, hitRate: null };
+  for (const e of entries || []) {
+    if (!(Date.parse(e.at) >= sinceMs)) continue;
+    if (sessions && !sessions.has(e.session)) continue;
+    if (e.event === 'delivered') s.delivered++;
+    else if (e.event === 'closed') {
+      s.closed++;
+      s.readAfter += Number(e.readAfter) || 0;
+      s.hits += Number(e.hits) || 0;
+    }
+  }
+  if (s.readAfter > 0) s.hitRate = s.hits / s.readAfter;
+  return s;
+}
+
+module.exports = { onTool, forget, readJournal, summarizeOutcomes, themeOf, themeKey, relKey, stateFile, journalFile, READ_TOOL, RESET_TOOL, CONTEXT_CAP };
