@@ -1,6 +1,6 @@
 # Changelog
 
-## [Unreleased]
+## [3.17.1] - 2026-11-20
 
 ### Fixed
 - **Editar um arquivo grande não mostra mais "PostToolUse:Edit hook failed: Error POSTing to endpoint: request body too large"** (`hooks/hooks.json`, `scripts/lib/hook-routes.js` `postToolUseMatchers`, `servers/brain-server/lib/http-daemon.js` `oversizedMcpReply`): o hook de PostToolUse mandava o `tool_response` de toda ferramenta, e o de um Edit traz o arquivo original inteiro — um arquivo de mais de 1 MB passava do limite do daemon. Agora só Bash e PowerShell, cujas saídas a curadoria lê, recebem o `tool_response`; as outras ferramentas vão sem ele. Uma chamada de hook que ainda passe de 1 MB é respondida com um aviso de uma linha (`[hook-origin=claude-code-boss] hook … skipped this call: its input was N MB…`), e a ação segue; outra chamada grande recebe um 413 com os tamanhos.
