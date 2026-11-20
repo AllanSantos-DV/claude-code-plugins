@@ -23,25 +23,59 @@
  */
 'use strict';
 
+const http = require('http');
 const path = require('path');
 const { pathToFileURL } = require('url');
 
-const ENSURE_BUDGET_MS = 8000; // under Claude Code's 10 s helper limit
+// Claude Code kills the helper at 10 s; node's own start-up under load eats part of that.
+const ENSURE_BUDGET_MS = 5000;
+const PROBE_BUDGET_MS = 1000;
 
-async function headers({ argvDataDir, root = path.resolve(__dirname, '..'), ensure, budgetMs = ENSURE_BUDGET_MS } = {}) {
+/**
+ * Whether the daemon's `/health` answers on `port` within `timeoutMs`; never rejects.
+ * @param {number} port
+ * @param {number} [timeoutMs]
+ * @returns {Promise<boolean>}
+ */
+function daemonAnswers(port, timeoutMs = PROBE_BUDGET_MS) {
+  return new Promise((resolve) => {
+    const req = http.get({ host: '127.0.0.1', port, path: '/health', timeout: timeoutMs }, (res) => {
+      res.resume();
+      resolve(res.statusCode === 200);
+    });
+    req.on('timeout', () => { req.destroy(); resolve(false); });
+    req.on('error', () => resolve(false));
+  });
+}
+
+/**
+ * The `Authorization` header for the brain daemon. A daemon that already answers needs no ensure
+ * (the helper then costs one file read), so a restart under load cannot push it past the client's
+ * limit: a client that gets no header falls into OAuth registration (HTTP 404) and stays
+ * disconnected for the whole session.
+ *
+ * @param {{argvDataDir?:string, root?:string, ensure?:Function, budgetMs?:number, probe?:(port:number)=>Promise<boolean>}} [opts]
+ * @returns {Promise<{Authorization:string}>}
+ */
+async function headers({ argvDataDir, root = path.resolve(__dirname, '..'), ensure, budgetMs = ENSURE_BUDGET_MS, probe = daemonAnswers } = {}) {
   const { validEnvDir, dataDir } = require('../engine/lib/data-dir.js');
   // Same data dir the plugin's hooks resolve (they get CLAUDE_PLUGIN_DATA in their env).
   if (validEnvDir(argvDataDir)) process.env.CLAUDE_PLUGIN_DATA = argvDataDir;
   const data = dataDir();
   require('./lib/mcp-launcher.js').installLauncher(validEnvDir(argvDataDir) || data);
-  const run = ensure || ((d) => require('./brain-daemon-ensure.js').run({ hook_event_name: 'headersHelper' }, { root, data: d }));
-  let timer;
-  const note = await Promise.race([
-    Promise.resolve().then(() => run(data)),
-    new Promise((resolve) => { timer = setTimeout(() => resolve(`daemon not up within ${budgetMs} ms`), budgetMs); }),
-  ]).finally(() => clearTimeout(timer));
-  if (note) console.error(`[mcp-headers] ${note}`);
-  const { ensureToken } = await import(pathToFileURL(path.join(root, 'servers', 'brain-server', 'lib', 'daemon-common.js')).href);
+  const { ensureToken, resolvePort } = await import(pathToFileURL(path.join(root, 'servers', 'brain-server', 'lib', 'daemon-common.js')).href);
+  const within = (work, ms, onTimeout) => {
+    let timer;
+    return Promise.race([
+      Promise.resolve().then(work),
+      new Promise((resolve) => { timer = setTimeout(() => resolve(onTimeout), ms); }),
+    ]).finally(() => clearTimeout(timer));
+  };
+  if (!(await within(() => probe(resolvePort(data)), PROBE_BUDGET_MS, false))) {
+    const run = ensure || ((d) => require('./brain-daemon-ensure.js').run({ hook_event_name: 'headersHelper' }, { root, data: d }));
+    const note = await within(() => run(data), budgetMs, `daemon not up within ${budgetMs} ms`);
+    if (note) console.error(`[mcp-headers] ${note}`);
+  }
   const token = ensureToken(data);
   if (!token) throw new Error(`no brain daemon token in ${data}`);
   return { Authorization: `Bearer ${token}` };

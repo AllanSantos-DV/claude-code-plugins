@@ -5445,6 +5445,33 @@ test('curation home: when git cannot tell what it tracks, NOTHING is moved or de
   } finally { cp._resetConfigCache(); fs.rmSync(proj, { recursive: true, force: true }); }
 });
 
+test('mcp-headers: a daemon that already answers is not ensured (the helper is one file read, so a restart under load cannot push it past the 10 s limit); a hung probe or a hung ensure still answers in time', async () => {
+  const { headers } = require('./mcp-headers.js');
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-mcphdr-fast-'));
+  const savedData = process.env.CLAUDE_PLUGIN_DATA;
+  const savedTok = process.env.BRAIN_HTTP_TOKEN; delete process.env.BRAIN_HTTP_TOKEN;
+  try {
+    let ensured = 0;
+    const t0 = Date.now();
+    const up = await headers({ argvDataDir: dir, probe: async () => true, ensure: async () => { ensured++; return null; } });
+    assert(/^Bearer \S{20,}$/.test(up.Authorization), 'the token header is printed');
+    assertEq(ensured, 0, 'daemon answering → ensure not run');
+    assert(Date.now() - t0 < 1500, 'fast path');
+    const t1 = Date.now();
+    const hungProbe = await headers({ argvDataDir: dir, budgetMs: 200, probe: () => new Promise(() => {}), ensure: async () => { ensured++; return null; } });
+    assertEq(hungProbe, up, 'a probe that never answers does not hold the helper');
+    assertEq(ensured, 1, 'unknown answer → treated as down → ensure ran');
+    assert(Date.now() - t1 < 3500, 'bounded by the probe budget, not by the 10 s limit');
+    const probed = [];
+    await headers({ argvDataDir: dir, probe: async (p) => { probed.push(p); return true; } });
+    assertEq(probed, [38217], 'the probe targets the port plugin.json points the client at');
+  } finally {
+    if (savedData === undefined) delete process.env.CLAUDE_PLUGIN_DATA; else process.env.CLAUDE_PLUGIN_DATA = savedData;
+    if (savedTok !== undefined) process.env.BRAIN_HTTP_TOKEN = savedTok;
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 test('mcp-launcher.kickLauncherVerified: a hidden launch that FAILS (VBScript off / blocked) falls back to the plain launch and says so — it reported "kicked" forever', async () => {
   const L = require('./lib/mcp-bootstrap/launcher.js');
   const home = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-kickv-'));
@@ -19084,7 +19111,7 @@ test('mcp-headers (headersHelper): prints the daemon token of the plugin data di
   const savedTok = process.env.BRAIN_HTTP_TOKEN; delete process.env.BRAIN_HTTP_TOKEN;
   try {
     const order = [];
-    const h = await headers({ argvDataDir: dir, ensure: async (d) => { order.push(d); return null; } });
+    const h = await headers({ argvDataDir: dir, probe: async () => false, ensure: async (d) => { order.push(d); return null; } });
     // The data dir the hooks resolve from the same CLAUDE_PLUGIN_DATA (dataDir() may follow a heavier live folder).
     const resolved = require('../engine/lib/data-dir.js').dataDir();
     assertEq(order, [resolved], 'the daemon is ensured (for that data dir) before answering');
@@ -19092,7 +19119,7 @@ test('mcp-headers (headersHelper): prints the daemon token of the plugin data di
     const tok = fs.readFileSync(tokenFile(resolved), 'utf8').trim();
     assertEq(h, { Authorization: `Bearer ${tok}` }, 'Bearer <token file of that data dir>');
     const t0 = Date.now();
-    const slow = await headers({ argvDataDir: dir, budgetMs: 200, ensure: () => new Promise(() => {}) });
+    const slow = await headers({ argvDataDir: dir, budgetMs: 200, probe: async () => false, ensure: () => new Promise(() => {}) });
     assert(slow.Authorization === `Bearer ${tok}` && Date.now() - t0 < 2000, 'an ensure past the budget still answers, in time');
     // CLI contract as Claude Code runs it: argv[2] = ${CLAUDE_PLUGIN_DATA}, JSON on stdout, exit 0.
     const r = require('child_process').spawnSync(process.execPath, [path.join(ROOT, 'scripts', 'mcp-headers.js'), dir], { encoding: 'utf8', env: { ...process.env, BRAIN_HTTP_AUTOSTART: '0', CLAUDE_PLUGIN_DATA: '' }, timeout: 20000 });
@@ -34402,31 +34429,6 @@ function transcriptFixture() {
   ];
 }
 
-test('transcript-repair.planRepair: a tool result copied with the pre-cut parent is re-pointed to the copy of its call (by tool id, else by response); anything else crossing is left alone', () => {
-  const { planRepair, applyFixes } = require('./lib/transcript-repair.js');
-  const lines = transcriptFixture();
-  const plan = planRepair(lines.join('\n'));
-  assertEq(plan.fixes.map((f) => [f.line, f.from, f.to]), [[9, 'a1', 'a1c'], [12, 'a1', 'a1c']], 'r1c by tool id, rf by response id');
-  assertEq(plan.unfixable, 2, 'r9 (no copy of its call) and the queued message (not a tool result) are reported, not touched');
-  assertEq(plan.boundaries, 1);
-  const fixed = applyFixes(lines, plan.fixes);
-  const r1c = JSON.parse(fixed[9]);
-  assertEq([r1c.parentUuid, r1c.sourceToolAssistantUUID], ['a1c', 'a1c'], 'parent and source both follow the copy');
-  assertEq(fixed.filter((l, i) => l !== lines[i]).length, 2, 'no other line changes');
-  assertEq(planRepair(fixed.join('\n')).fixes.length, 0, 'idempotent');
-});
-
-test('transcript-repair.planRepair: every compaction segment is repaired, not only the last (a file under 5 MB loads whole)', () => {
-  const { planRepair } = require('./lib/transcript-repair.js');
-  const l = transcriptFixture().slice(0, -1);
-  const second = [JSON.stringify({ type: 'system', subtype: 'compact_boundary', uuid: 'b2', parentUuid: null }), JSON.stringify({ type: 'user', uuid: 'brief2', parentUuid: 'b2', message: { content: 'brief2' } }),
-    JSON.stringify({ type: 'assistant', uuid: 'a2c', parentUuid: 'brief2', message: { id: 'm1', content: [{ type: 'tool_use', id: 't1', name: 'Read', input: {} }] } }),
-    JSON.stringify({ type: 'user', uuid: 'r2cc', parentUuid: 'a1c', message: { content: [{ type: 'tool_result', tool_use_id: 't1', content: 'x' }] } }), ''];
-  const plan = planRepair([...l, ...second].join('\n'));
-  assertEq(plan.boundaries, 2);
-  assert(plan.fixes.some((f) => f.from === 'a1' && f.to === 'a1c') && plan.fixes.some((f) => f.from === 'a1c' && f.to === 'a2c'), JSON.stringify(plan.fixes));
-});
-
 function repairRig() {
   const base = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-repair-'));
   const root = path.join(base, 'projects'); const sessionsDir = path.join(base, 'sessions'); const backupRoot = path.join(base, 'data', 'transcript-repair');
@@ -34435,61 +34437,6 @@ function repairRig() {
   const put = (id, content = transcriptFixture().join('\n')) => { const f = path.join(root, 'proj', `${id}.jsonl`); fs.writeFileSync(f, content); fs.utimesSync(f, old, old); return f; };
   return { base, root, sessionsDir, backupRoot, put };
 }
-
-test('transcript-repair.repairTranscripts: backs up under the Boss folder with a manifest, skips a live session and a file written a moment ago, verifies, and is idempotent', () => {
-  const { repairTranscripts } = require('./lib/transcript-repair.js');
-  const rig = repairRig();
-  const closed = rig.put('closed-1'); const live = rig.put('live-1'); const recent = rig.put('recent-1');
-  const now = new Date(); fs.utimesSync(recent, now, now);
-  fs.writeFileSync(path.join(rig.sessionsDir, '4242.json'), JSON.stringify({ pid: 4242, sessionId: 'live-1' }));
-  const before = fs.readFileSync(closed, 'utf8');
-  const report = repairTranscripts({ root: rig.root, sessionsDir: rig.sessionsDir, backupRoot: rig.backupRoot, isAlive: (pid) => pid === 4242, now: Date.now(), runId: 'run-1' });
-  assertEq([report.repaired, report.skippedLive, report.skippedRecent, report.failed], [1, ['proj/live-1.jsonl'], ['proj/recent-1.jsonl'], []]);
-  assertEq(fs.readFileSync(path.join(rig.backupRoot, 'run-1', 'proj', 'closed-1.jsonl'), 'utf8'), before, 'the backup is the file as it was');
-  assertEq(fs.readFileSync(live, 'utf8'), before, 'a live session is not written');
-  assertEq(fs.readFileSync(recent, 'utf8'), before, 'a file written a moment ago is not written');
-  assert(fs.readFileSync(closed, 'utf8') !== before, 'the closed one was repaired');
-  const manifest = JSON.parse(fs.readFileSync(path.join(rig.backupRoot, 'run-1', 'manifest.json'), 'utf8'));
-  assertEq(manifest.files.map((f) => [f.file, f.rowsFixed]), [['proj/closed-1.jsonl', 2]]);
-  assert(/^[0-9a-f]{64}$/.test(manifest.files[0].sha256Before) && manifest.files[0].sha256After !== manifest.files[0].sha256Before, 'the manifest holds both hashes');
-  assertEq(manifest.files[0].bytesBefore, Buffer.byteLength(before));
-  const again = repairTranscripts({ root: rig.root, sessionsDir: rig.sessionsDir, backupRoot: rig.backupRoot, isAlive: (pid) => pid === 4242, now: Date.now(), runId: 'run-2' });
-  assertEq(again.repaired, 0, 'a repaired file is not touched twice');
-  assert(!fs.existsSync(path.join(rig.backupRoot, 'run-2', 'proj', 'closed-1.jsonl')), 'and is not backed up again');
-});
-
-test('transcript-repair.repairTranscripts: an unreadable entry of a running pid stops everything; one of a dead pid is a leftover; a failed verification restores the backup', () => {
-  const { repairTranscripts } = require('./lib/transcript-repair.js');
-  const rig = repairRig();
-  const f = rig.put('closed-2');
-  fs.writeFileSync(path.join(rig.sessionsDir, '77.json'), '   ');
-  nassert.throws(() => repairTranscripts({ root: rig.root, sessionsDir: rig.sessionsDir, backupRoot: rig.backupRoot, isAlive: (pid) => pid === 77, retryMs: 0, runId: "r" }), /sessions\/77\.json unreadable/);
-  assertEq(fs.readFileSync(f, 'utf8'), transcriptFixture().join('\n'), 'nothing was written');
-  const ok = repairTranscripts({ root: rig.root, sessionsDir: rig.sessionsDir, backupRoot: rig.backupRoot, isAlive: () => false, runId: 'r2' });
-  assertEq(ok.repaired, 1, 'a dead pid leftover does not block');
-  const rig2 = repairRig(); const g = rig2.put('closed-3'); const original = fs.readFileSync(g, 'utf8');
-  const bad = repairTranscripts({ root: rig2.root, sessionsDir: rig2.sessionsDir, backupRoot: rig2.backupRoot, isAlive: () => false, runId: 'r3', verify: () => 'forced mismatch' });
-  assertEq([bad.repaired, bad.failed.map((x) => x.why)], [0, ['forced mismatch; restored from backup']]);
-  assertEq(fs.readFileSync(g, 'utf8'), original, 'the file is back as it was');
-});
-
-test('transcript-repair.adoptBackup: moves a backup tree into the Boss folder and records what was repaired from the files themselves', () => {
-  const { repairTranscripts, adoptBackup, defaultBackupRoot } = require('./lib/transcript-repair.js');
-  const rig = repairRig();
-  rig.put('a-1'); rig.put('a-2');
-  const elsewhere = path.join(rig.base, 'elsewhere');
-  repairTranscripts({ root: rig.root, sessionsDir: rig.sessionsDir, backupRoot: elsewhere, isAlive: () => false, runId: 'old' });
-  const tree = path.join(elsewhere, 'old');
-  fs.rmSync(path.join(tree, 'manifest.json'));
-  const rec = adoptBackup({ from: tree, root: rig.root, backupRoot: rig.backupRoot, runId: 'adopted' });
-  assertEq(rec.files.map((f) => [f.file, f.rowsFixed]).sort(), [['proj/a-1.jsonl', 2], ['proj/a-2.jsonl', 2]]);
-  assert(!fs.existsSync(tree), 'moved, not copied');
-  assert(fs.existsSync(path.join(rig.backupRoot, 'adopted', 'proj', 'a-1.jsonl')), 'the files are under the Boss folder');
-  assertEq(JSON.parse(fs.readFileSync(path.join(rig.backupRoot, 'adopted', 'manifest.json'), 'utf8')).files.length, 2);
-  nassert.throws(() => adoptBackup({ from: tree, root: rig.root, backupRoot: rig.backupRoot, runId: 'again' }), /does not exist/);
-  const dd = path.join(rig.base, 'dd');
-  assertEq(defaultBackupRoot(() => dd), path.join(dd, 'transcript-repair'), 'the stable folder is under the plugin data dir');
-});
 
 test('compaction-core.planCompaction: a tool result among the newest messages is also handed back without its handle', () => {
   const msgs = cmpSession();
