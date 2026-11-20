@@ -12209,6 +12209,29 @@ test('release-audit.rfVersionsAligned: manifest e __version__ diferentes REPROVA
   assertEq(rfVersionsAligned('0.2.5', null).ok, false);
 });
 
+test('release-audit.workflowViolations: a hosted workflow that runs a suite or a Windows/macOS runner fails; static checks on Linux pass', async () => {
+  const { workflowViolations, CHECKS } = await loadReleaseAudit();
+  assert(CHECKS.some((c) => c.name === 'hosted-ci-static'), 'the check is in the list CI runs');
+  for (const bad of ['        run: npm test', '      - run: npm run gate', '        run: node scripts/test-units.js', '        run: xvfb-run -a npm test',
+    '        run: pytest -q', '    runs-on: windows-latest', '        os: [ubuntu-latest, macos-14]', '        run: node scripts/gate.mjs']) {
+    assertEq(workflowViolations(`jobs:\n  ci:\n${bad}\n`).length, 1, bad);
+  }
+  const fine = "    runs-on: ${{ vars.CI_RUNNER || 'ubuntu-latest' }}\n      - run: npm ci --ignore-scripts\n      - run: node scripts/gate.mjs --static\n" +
+    '      - run: node scripts/sync-version.js --check   # never npm test here\n      - run: npx eslint . --max-warnings=0\n';
+  assertEq(workflowViolations(fine), [], 'static gate, lint, version sync and a comment that names a suite all pass');
+  const ra = await loadReleaseAudit();
+  const real = ra.runAll().find((c) => c.name === 'hosted-ci-static');
+  assertEq(real.ok, true, real.details.join(' '));
+});
+
+test('gate --static: runs eslint and version sync, never the suites', () => {
+  const src = fs.readFileSync(path.join(ROOT, 'scripts', 'gate.mjs'), 'utf8');
+  assert(/name: 'tests \(hooks \+ units\)'[^\n]*local: true/.test(src), 'the suite step is marked local');
+  assert(/filter\(\(s\) => !\(s\.local && process\.argv\.includes\('--static'\)\)\)/.test(src), '--static drops local steps');
+  const ci = fs.readFileSync(path.resolve(ROOT, '..', '.github', 'workflows', 'ci.yml'), 'utf8');
+  assert(/gate\.mjs --static/.test(ci), 'the hosted CI calls the static gate');
+});
+
 test('release-audit: o repositorio de verdade esta com manifest == __version__ do rf-reviewer', async () => {
   const ra = await loadReleaseAudit();
   const r = ra.runAll().find((c) => c.name === 'rf-version-aligned');

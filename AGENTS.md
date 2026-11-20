@@ -131,9 +131,11 @@ hard-block a release on a *judged* opinion (which can be a false positive):
   matches `.gitignore` — adding a rule does not untrack what was already
   committed: 39 `.token-guard/` dumps stayed public for weeks that way),
   `claude-agents-synced` (each `.claude/agents` copy is byte-identical to its
-  `.github/agents` original) and `rf-version-aligned` (the rf-reviewer
+  `.github/agents` original), `rf-version-aligned` (the rf-reviewer
   `plugin.json` version equals the engine's `__version__`: Claude Code updates by
-  the first, the daemon restarts by the second).
+  the first, the daemon restarts by the second) and `hosted-ci-static` (no
+  workflow runs a test suite or uses a Windows/macOS runner: the suites run
+  locally before each release, hosted CI keeps lint and version sync on Linux).
   CI: `.github/workflows/release-audit.yml` (PR + push to `main`; mark **required**
   in branch protection to hard-block drift). Local:
   `node .github/scripts/release-audit.mjs check` (exit 1 on failure) · `... list`

@@ -30,6 +30,9 @@
  *                          does not untrack what was already committed).
  *   6. claude-agents-synced — .claude/agents copies equal .github/agents.
  *   7. rf-version-aligned — rf-reviewer plugin.json version equals rf_engine __version__.
+ *   8. hosted-ci-static  — no workflow runs a test suite or uses a Windows/macOS
+ *                          runner: the suites run locally before each release,
+ *                          and hosted minutes are paid for.
  *
  * Usage:
  *   node .github/scripts/release-audit.mjs check   # exit 1 if any check fails
@@ -251,6 +254,39 @@ function rfVersionAligned() {
   return rfVersionsAligned(JSON.parse(fs.readFileSync(RF_MANIFEST, 'utf8')).version, readRfPyVersion());
 }
 
+// ── Check 8: hosted workflows run static checks only, on Linux ────────────────────
+const SUITE_COMMAND = /\b(npm (?:run )?test|npm run gate(?! [^\n]*--static)|scripts\/gate\.mjs(?! [^\n]*--static)|test-(?:units|hooks)\.js|pytest|cargo test|go test|mvn test|gradlew? test|xvfb-run|jest|vitest|mocha)\b/;
+const NON_LINUX_RUNNER = /\b(windows|macos)-/;
+
+/**
+ * Lines of one workflow that break the hosted-CI rule.
+ * @param {string} text workflow YAML
+ * @returns {string[]} one entry per offending line, with its number
+ */
+function workflowViolations(text) {
+  const out = [];
+  text.split(/\r?\n/).forEach((line, i) => {
+    const code = line.replace(/(^|\s)#.*$/, '');
+    if (SUITE_COMMAND.test(code)) out.push(`line ${i + 1}: runs a test suite: ${code.trim()}`);
+    if (NON_LINUX_RUNNER.test(code)) out.push(`line ${i + 1}: non-Linux runner: ${code.trim()}`);
+  });
+  return out;
+}
+
+function hostedCiStatic() {
+  const dir = path.join(REPO_ROOT, '.github', 'workflows');
+  let names;
+  try { names = fs.readdirSync(dir).filter((f) => /\.ya?ml$/.test(f)); }
+  catch (err) { return { ok: false, details: [`cannot read .github/workflows: ${err.message}`] }; }
+  const problems = [];
+  for (const f of names) {
+    for (const v of workflowViolations(fs.readFileSync(path.join(dir, f), 'utf8'))) problems.push(`    ${f} ${v}`);
+  }
+  return problems.length
+    ? { ok: false, details: [...problems, '    hosted CI keeps static checks only (lint, manifest/version consistency) on Linux'] }
+    : { ok: true, details: [`${names.length} workflow(s): static checks only, Linux runners`] };
+}
+
 const CHECKS = [
   { name: 'hooks-doc-drift', run: hooksDocumented },
   { name: 'changelog-current', run: changelogCurrent },
@@ -259,6 +295,7 @@ const CHECKS = [
   { name: 'no-tracked-ignored', run: noTrackedIgnored },
   { name: 'claude-agents-synced', run: claudeAgentsSynced },
   { name: 'rf-version-aligned', run: rfVersionAligned },
+  { name: 'hosted-ci-static', run: hostedCiStatic },
 ];
 
 function runAll() {
@@ -293,7 +330,7 @@ function cmdList() {
   process.stdout.write(JSON.stringify(runAll(), null, 2) + '\n');
 }
 
-export { rfVersionsAligned, runAll, CHECKS };
+export { rfVersionsAligned, workflowViolations, runAll, CHECKS };
 
 // CLI only when run directly: an `import` (a unit test) must not run the audit and process.exit.
 const invokedDirectly = process.argv[1]

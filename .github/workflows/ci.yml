@@ -1,5 +1,7 @@
 name: CI
 
+# Static checks only (lint + version sync). The test suites run on the maintainer's machine before
+# each release; hosted runners never run them (release-audit check hosted-ci-static).
 on:
   push:
     branches: [main]
@@ -8,11 +10,7 @@ on:
 
 jobs:
   ci:
-    runs-on: ubuntu-latest
-
-    strategy:
-      matrix:
-        node-version: ['22', '24']
+    runs-on: ${{ vars.CI_RUNNER || 'ubuntu-latest' }}
 
     steps:
       - name: Checkout
@@ -21,14 +19,14 @@ jobs:
       - name: Setup Node.js
         uses: actions/setup-node@v6
         with:
-          node-version: ${{ matrix.node-version }}
+          node-version: '22'
           cache: 'npm'
           cache-dependency-path: claude-code-boss/package-lock.json
 
-      - name: Install dependencies
-        run: npm ci
+      - name: Install dependencies (no native builds; lint needs none)
+        run: npm ci --ignore-scripts
         working-directory: claude-code-boss
 
-      - name: Quality gate (eslint + version sync + tests)
-        run: npm run gate
+      - name: Static gate (eslint + version sync)
+        run: node scripts/gate.mjs --static
         working-directory: claude-code-boss
