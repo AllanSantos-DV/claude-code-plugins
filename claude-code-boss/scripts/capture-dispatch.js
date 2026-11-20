@@ -32,7 +32,7 @@
 const fs = require('fs');
 const queue = require('./lib/capture-queue.js');
 const { budgetForModel, shouldFire, DEFAULT_BOUNDS } = require('./lib/turn-budget.js');
-const { renderBlock } = require('./lib/transcript-block.js');
+const { renderBlock, isHumanTurn, _userText } = require('./lib/transcript-block.js');
 const { redact } = require('../engine/lib/redact.js');
 const brainConfig = require('../engine/lib/brain-config.js');
 const metrics = require('../engine/lib/metrics.js');
@@ -68,6 +68,32 @@ function _lastModel(buf) {
     } catch (err) { void err; }
   }
   return '';
+}
+
+/** The text of the last human prompt in a transcript tail, or '' when the tail holds none. */
+function _lastHumanText(buf) {
+  const lines = buf.toString('utf-8').split('\n');
+  for (let i = lines.length - 1; i >= 0; i--) {
+    if (!lines[i]) continue;
+    let o;
+    try { o = JSON.parse(lines[i]); } catch (err) { void err; continue; }
+    if (isHumanTurn(o)) return _userText(o.message) || '';
+  }
+  return '';
+}
+
+// A turn in which the user forbade tools cannot ack the window (capture_lesson/capture_ack are tools),
+// so blocking it only burns model calls until the valve relents.
+const TOOLS_FORBIDDEN = [
+  /\bsem\s+(usar\s+)?(nenhuma\s+)?ferramentas?\b/i,
+  /\bn[aã]o\s+(use|usar|chame|chamar|rode|rodar|execute|executar)\s+(nenhuma\s+)?ferramentas?\b/i,
+  /\bnenhuma\s+ferramenta\b/i,
+  /\b(no|without(\s+using)?|without\s+any|don'?t\s+use|do\s+not\s+use)\s+(any\s+)?tools?(\s+(calls?|use))?\b/i,
+];
+
+/** True when the prompt tells the agent not to use tools. */
+function forbidsTools(text) {
+  return TOOLS_FORBIDDEN.some((re) => re.test(String(text || '')));
 }
 
 function _readTail(transcriptPath, bytes) {
@@ -160,7 +186,9 @@ function run(event, deps) {
   }
 
   const st = queue.getState(project, sid);
-  const model = _lastModel(_readTail(transcriptPath));
+  const tail = _readTail(transcriptPath, 262144);
+  const model = _lastModel(tail);
+  const toolsForbidden = forbidsTools(_lastHumanText(tail));
   const budget = budgetForModel(model);
 
   // 3. An offer still open after reconcile = NOT yet acked → re-block the turn until
@@ -178,6 +206,11 @@ function run(event, deps) {
   if (st.offer) {
     const cur = queue.currentOfferText(project, sid, budget.maxChars, transcriptPath);
     if (!cur) return {};
+    // Held, not counted: the offer stays open and the next turn that allows tools re-blocks it.
+    if (toolsForbidden) {
+      metrics.fire('capture.held', { windowId: cur.windowId, reason: 'tools-forbidden', model }, { sessionId: sid, cwd: ev.cwd });
+      return {};
+    }
     const maxBlockAttempts = cfg.maxBlockAttempts != null ? cfg.maxBlockAttempts : DEFAULT_MAX_BLOCK_ATTEMPTS;
     const blocks = queue.noteBlock(project, sid); // per-offer re-block counter (CAS-safe, resets per offer)
     if (blocks >= maxBlockAttempts) {
@@ -194,7 +227,7 @@ function run(event, deps) {
   }
 
   // 4. No open offer → consider a NEW one, gated by cadence bounds + budget.
-  if (ev.stop_hook_active || st.paused) return {};
+  if (ev.stop_hook_active || st.paused || toolsForbidden) return {};
   const bounds = {
     maxCapturesPerSession: cfg.maxCapturesPerSession != null ? cfg.maxCapturesPerSession : DEFAULT_BOUNDS.maxCapturesPerSession,
     cooldownMs: cfg.cooldownMs != null ? cfg.cooldownMs : DEFAULT_BOUNDS.cooldownMs,
@@ -222,4 +255,4 @@ function run(event, deps) {
   return { block: true, reason };
 }
 
-module.exports = { run, buildInstruction, buildReason, _captureConfig };
+module.exports = { run, buildInstruction, buildReason, forbidsTools, _captureConfig };

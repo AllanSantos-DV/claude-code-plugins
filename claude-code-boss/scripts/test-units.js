@@ -24218,6 +24218,52 @@ test('capture-dispatch: an OPEN offer re-blocks even on stop_hook_active until t
   queue.reset(project, sid);
 });
 
+test('capture-dispatch: forbidsTools reads a prohibition in Portuguese or English and nothing else', () => {
+  const { forbidsTools } = require('./capture-dispatch.js');
+  for (const t of ['Responda sem ferramentas.', 'Sem usar nenhuma ferramenta, explique', 'não use ferramentas agora', 'Nenhuma ferramenta neste turno',
+    'Answer without tools', 'no tool calls please', "don't use tools", 'Do not use any tools.']) assert(forbidsTools(t), `forbids: ${t}`);
+  for (const t of ['use as ferramentas que precisar', 'rode os testes', 'the tools folder is empty', 'tooling', '']) assert(!forbidsTools(t), `allows: ${t}`);
+});
+
+test('capture-dispatch: a turn whose prompt forbids tools is neither offered nor re-blocked, and the next turn re-blocks the same window', () => {
+  const cd = require('./capture-dispatch.js');
+  const queue = require('./lib/capture-queue.js');
+  const metrics = require('../engine/lib/metrics.js');
+  const sid = 'cap-notools-' + Date.now();
+  const cwd = process.env.CLAUDE_PLUGIN_DATA;
+  const project = require('../engine/lib/project-id.js').resolveProjectId({ cwd });
+  const tp = path.join(cwd, `capnt-${sid}.jsonl`);
+  queue.reset(project, sid);
+  const turn = (i, text) => [
+    JSON.stringify({ type: 'user', promptId: 'p' + i, message: { role: 'user', content: text || 'question ' + i } }),
+    JSON.stringify({ type: 'assistant', message: { role: 'assistant', model: 'claude-sonnet-5', content: [{ type: 'text', text: 'answer ' + i }] } }),
+  ];
+  const lines = [];
+  for (let i = 1; i <= 6; i++) lines.push(...turn(i, i === 6 ? 'Explique sem ferramentas.' : null));
+  _writeTurnsAsStops(tp, project, sid, lines);
+  assert(!cd.run({ session_id: sid, cwd, transcript_path: tp }).block, 'no new offer in a turn without tools');
+  assert(!queue.getState(project, sid).offer, 'no window opened');
+
+  fs.appendFileSync(tp, turn(7).join('\n') + '\n');
+  assert(cd.run({ session_id: sid, cwd, transcript_path: tp }).block, 'the next turn opens the offer');
+  const wid = queue.getState(project, sid).offer.windowId;
+  fs.appendFileSync(tp, turn(8, 'Answer without tools').join('\n') + '\n');
+  const fired = [];
+  const orig = metrics.fire;
+  metrics.fire = (name, payload) => { fired.push({ name, payload }); };
+  try {
+    for (let i = 0; i < 7; i++) assert(!cd.run({ session_id: sid, cwd, transcript_path: tp, stop_hook_active: i > 0 }).block, `held Stop ${i + 1}`);
+  } finally { metrics.fire = orig; }
+  assertEq(queue.getState(project, sid).offer.windowId, wid, 'the window stays open, not relented');
+  assertEq(fired.filter((f) => f.name === 'capture.relented').length, 0, 'held Stops do not count toward the valve');
+  assert(fired.some((f) => f.name === 'capture.held' && f.payload.reason === 'tools-forbidden'), 'each hold is a capture.held metric');
+
+  fs.appendFileSync(tp, turn(9).join('\n') + '\n');
+  const again = cd.run({ session_id: sid, cwd, transcript_path: tp });
+  assert(again.block && again.reason.includes(wid), 'a turn that allows tools re-blocks the same window');
+  queue.reset(project, sid);
+});
+
 test('capture-dispatch: run stays silent below budget and when stop_hook_active', () => {
   const cd = require('./capture-dispatch.js');
   const cwd = process.env.CLAUDE_PLUGIN_DATA;
