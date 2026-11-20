@@ -293,6 +293,7 @@ html{scroll-behavior:auto}
       <a href="#config">Config &amp; perfis</a>
       <a href="#router">Model Router</a>
       <a href="#graph">Graph tools</a>
+      <a href="#observabilidade">Resumo e avisos</a>
       <a href="#dashboard">Dashboard</a>
     </div>
   </div>
@@ -604,6 +605,21 @@ html{scroll-behavior:auto}
         </table>
       </div>
       <div class="callout"><b>Exigem o backend mcp-memory:</b> no backend local elas respondem explicando como ativar — e o agente pode ativar o servidor para você (<code>backend_setup</code>). <b>Fail-open:</b> com o servidor offline, falham graciosamente — nunca derrubam a sessão.</div>
+    </div>
+  </section>
+
+  <section id="observabilidade">
+    <h2>Resumo, promoção, doctor e avisos <span class="tag">sessão e manutenção</span></h2>
+    <p class="lead">Seis mecanismos que dão visibilidade ao que a memória fez e ao que a manutenção semanal mudou. Todos só leem ou avisam; a única escrita nova é a métrica da consolidação.</p>
+    <div class="panel">
+      <ul class="tight">
+        <li><b>Resumo do fim da sessão:</b> <code>scripts/session-summary.js</code> usa <code>recallSince</code> (<code>scripts/lib/value-summary.js</code>) para somar as memórias lembradas e as citadas nas respostas desde o início da sessão. A linha <code>[SESSION]</code> traz esses números junto das lições capturadas e também é emitida numa sessão que lembrou sem capturar nada.</li>
+        <li><b>Rascunho de skill por citação:</b> <code>selectSkillCandidates</code> (<code>scripts/lib/lesson-promotion.js</code>), chamado por <code>scripts/brain-promote.js</code>, passa a admitir uma lição citada em pelo menos <code>kb.skillPromotion.minCitedSessions</code> sessões distintas (padrão 3, <code>0</code> desliga), mesmo com uma só captura. O critério é o uso, não só a recorrência; a aprovação do rascunho continua humana.</li>
+        <li><b>Latência dos hooks no doctor:</b> <code>checkHookLatency</code> (<code>scripts/doctor.js</code>) lista os hooks do daemon sem folga ou com prazo estourado (que decidem nada), a partir da medição que o daemon já guardava; nenhuma coleta nova.</li>
+        <li><b>Idade do backup no doctor:</b> <code>checkBackupAge</code> (<code>scripts/doctor.js</code>, <code>scripts/lib/backup-age.js</code>) avisa quando não há backup ou o mais novo passa de 30 dias, apontando o card Backup do painel. O motivo é que o Brain muda sozinho toda semana.</li>
+        <li><b>Consolidação semanal registrada:</b> ao aplicar, <code>scripts/brain-consolidate.js</code> grava a métrica <code>lesson.consolidated</code>; <code>scripts/lib/maintenance-notices.js</code> transforma isso numa única linha <code>[MEMORY]</code> na sessão seguinte, com os grupos fundidos e os duplicados removidos.</li>
+        <li><b>Scripts curados sem uso:</b> <code>scripts/curation-session.js</code> chama <code>unusedScriptsNotice</code> (<code>scripts/lib/maintenance-notices.js</code>) no início da sessão. A linha <code>[CURATION]</code> cita os scripts que passaram 30 dias sem rodar, só os antigos o bastante para julgar, e aponta o painel para removê-los. O aviso é semanal.</li>
+      </ul>
     </div>
   </section>
 
