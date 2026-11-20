@@ -34173,6 +34173,16 @@ test('compaction.cold: a session reopened over a cold history records the expiry
   } finally { h.done(); }
 });
 
+test('compaction-episodes.parsePayload: the one reader of a row payload (object, JSON string, garbage) that compaction-cache-cross shares', () => {
+  const ep = require('./lib/compaction-episodes.js');
+  assertEq(ep.parsePayload({ payload: { a: 1 } }), { a: 1 });
+  assertEq(ep.parsePayload({ payload: '{"a":2}' }), { a: 2 });
+  assertEq(ep.parsePayload({ payload: '{broken' }), {});
+  assertEq(ep.parsePayload({}), {});
+  const src = fs.readFileSync(path.join(__dirname, 'lib', 'compaction-cache-cross.js'), 'utf8');
+  assert(!/function parsePayload/.test(src), 'compaction-cache-cross keeps no copy of parsePayload');
+});
+
 test('compaction-cache-cross: per day, compactions over a warm vs a cold cache, the warm ones listed; expiries once per session and answer; a warm run after its own expiry is a disagreement', () => {
   const { crossCacheState, formatCross, periodOf } = require('./lib/compaction-cache-cross.js');
   const day1 = new Date(2026, 9, 27, 10, 0).getTime();

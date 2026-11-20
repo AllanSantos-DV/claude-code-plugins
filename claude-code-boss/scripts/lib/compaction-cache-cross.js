@@ -11,15 +11,11 @@
  * A run said warm although an expiry of that same answer was recorded before it is listed apart (`disagreements`).
  */
 
+const { parsePayload } = require('./compaction-episodes.js');
+
 const SAME_ANSWER_MS = 2 * 60000; // turn end (timer) vs the transcript's last call (reopen): the same answer, seconds apart
 
 const num = (v) => (v == null || v === '' || !Number.isFinite(Number(v)) ? null : Number(v));
-
-function parsePayload(r) {
-  let p = r.payload || {};
-  if (typeof p === 'string') { try { p = JSON.parse(p); } catch (err) { void err; p = {}; } }
-  return p;
-}
 
 /** The period key of a timestamp, in this machine's local time: 'YYYY-MM-DD', or the Monday of its week. */
 function periodOf(ts, period) {

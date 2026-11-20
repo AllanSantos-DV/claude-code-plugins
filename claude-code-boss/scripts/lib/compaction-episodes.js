@@ -178,4 +178,4 @@ function suggestLimit({ model, windowTokens, episodes, afterTokens, growthPerTur
   return { ok: true, tokens, percent: round((tokens / windowTokens) * 100, 1), basis: { afterTokens, growthPerTurn, writeOverRead: wOverR, episodes } };
 }
 
-module.exports = { buildEpisodes, suggestLimit, turnCostUsd, tooMuch, MIN_EPISODES, TOO_MUCH_PER_100_TURNS, TOO_MUCH_PER_HOUR };
+module.exports = { buildEpisodes, parsePayload, suggestLimit, turnCostUsd, tooMuch, MIN_EPISODES, TOO_MUCH_PER_100_TURNS, TOO_MUCH_PER_HOUR };
