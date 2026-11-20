@@ -18702,7 +18702,7 @@ test('SessionStart with the memory server UP spawns NOTHING (headless `claude -p
   class Up extends McpClient { _discoverDaemonUrl() { return 'http://127.0.0.1:1'; } _httpHealth() { return Promise.resolve(true); } }
   class Down extends McpClient { _discoverDaemonUrl() { return 'http://127.0.0.1:1'; } _httpHealth() { return Promise.resolve(false); } }
   const deps = (Client) => ({
-    root: ROOT, data: os.tmpdir(), runSetupInBackground: () => false,
+    root: ROOT, data: os.tmpdir(), dir: tempDir('ccb-ss-kick-'), runSetupInBackground: () => false,
     ensureDaemon: async () => ({ status: 'current' }), loadConfig: () => ({ backend: { type: 'mcp-memory', mcpMemory: { transport: 'http' } } }),
     runAutoUpdate: async () => ({ status: 'skipped' }), kickLauncher: () => { kicked++; return true; }, McpClient: Client,
   });
@@ -18710,8 +18710,10 @@ test('SessionStart with the memory server UP spawns NOTHING (headless `claude -p
   assertEq(kicked, 0, 'a daemon whose /health answers is never relaunched');
   await ens.run({ hook_event_name: 'SessionStart' }, deps(Down));
   assertEq(kicked, 1, 'a daemon that is down is still brought back at session start');
-  assertEq(await ens.ensureMemoryServer({ McpClient: Up, kickLauncher: () => { kicked++; return true; } }), 'alive');
-  assertEq(await ens.ensureMemoryServer({ McpClient: Down, kickLauncher: () => false }), 'error', 'no launcher installed is reported, not counted as kicked');
+  assertEq(await ens.ensureMemoryServer({ McpClient: Up, dir: tempDir('ccb-ss-kick-'), kickLauncher: () => { kicked++; return true; } }), 'alive');
+  const noLauncherDir = tempDir('ccb-ss-kick-');
+  assertEq(await ens.ensureMemoryServer({ McpClient: Down, dir: noLauncherDir, kickLauncher: () => false }), 'error', 'no launcher installed is reported, not counted as kicked');
+  assertEq(require('../engine/lib/memory-server-kick.js').lastKickAt(noLauncherDir), 0, 'and no launcher start is recorded for the others to wait on');
 });
 
 test('brain-daemon-ensure.UserPromptSubmit: a memory server that died mid-session is relaunched once per failure, found at run time in the registry (isolated daemon and port)', async () => {

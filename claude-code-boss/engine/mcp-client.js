@@ -156,8 +156,8 @@ class McpClient extends EventEmitter {
         err.code = 'MEMORY_SERVER_RESTARTING';
         throw err;
       }
-      kickMarker.recordKick(this.kickMarkerDir, now);
       const kicked = (this._kickLauncher || require('../scripts/lib/mcp-bootstrap/launcher.js').kickLauncher)();
+      if (kicked) kickMarker.recordKick(this.kickMarkerDir, now);
       if (kicked && await this._waitAnnounced(this.restartWaitMs)) return;
       const err = new Error(kicked
         ? `the memory server is not running — its launcher was started in the background and the server did not announce itself within ${this.restartWaitMs} ms; retry in a few seconds`
