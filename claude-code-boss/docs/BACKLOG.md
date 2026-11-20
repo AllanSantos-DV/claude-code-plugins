@@ -1,3 +1,7 @@
+## Latência dos hooks logo depois do reinício do daemon (2026-11-20)
+
+- [x] **Achado, fora do escopo, só medido — o novo check `hook-latency` do doctor acusou 4 de 19 hooks sem folga três minutos depois da instalação** (`scripts/doctor.js` `checkHookLatency`, medição de `/health.hookLatency`): `curation_guard` p95 2215 ms, `error_guard` p95 2210 ms, `pretooluse_dispatcher` p95 396 ms, `session_practices` p95 153 ms, com o daemon recém-reiniciado (pid 14928) e uma sessão oculta de teste como única carga. Com `MIN_CALLS` 10, o p95 de poucas chamadas é praticamente o máximo, e a primeira chamada de cada hook paga a carga fria (mesma família do item da faixa do Boss de 2026-11-04). O alerta de 6 h do daemon media `curation_guard` p95 326 ms em sessão aquecida. Proposta: repetir o `doctor` depois de 30 minutos de uso; se o p95 aquecido continuar acima do orçamento de PreToolUse (150 ms), aquecer os guardas no start do daemon. Nada mudado aqui.
+
 ## Gate de lint da 3.17.0 (2026-11-20)
 
 - [x] **Achado e corrigido na hora — o eslint do gate (`--max-warnings=0`) falhava com 3 avisos de variável sem uso** (`scripts/stop-dispatcher.js` `forClaudeCode`: `decision` só servia para sair do `...rest`, agora `_decision`; `scripts/test-units.js`: `loadFactor` importado e não usado, e `repairRig`/`transcriptFixture`, sobras dos testes da ferramenta de reparo de transcrito que saiu do plugin). Visto na suíte de fechamento da 3.17.0. Prova: eslint sai 0, unidades 2051/0, hooks 140/0.
