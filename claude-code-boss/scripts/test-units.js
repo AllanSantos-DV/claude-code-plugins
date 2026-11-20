@@ -28325,6 +28325,31 @@ test('graph-guard ladder: READY (with nodes) → advise once with reason, identi
   assertEq(other.action, 'advise', 'a DIFFERENT broad search is advised once too');
 });
 
+test('graph-guard ladder: a stale readiness entry answers at once and is refreshed in the background; only a project never probed waits for the probe', async () => {
+  const dataDir = tempDir('ccb-ggswr-');
+  let calls = 0;
+  let release;
+  const gate = new Promise((r) => { release = r; });
+  const slowProbe = async () => { calls++; await gate; return { state: 'not_indexed', nodes: 0 }; };
+  const args = { kind: 'native-grep', raw: 'Grep alpha', pattern: 'alpha', projectRoot: 'C:/swr', sid: 'sid-swr', dataDir, cfg: { cacheTtlMs: 1000 }, probe: slowProbe };
+  const file = ggCore.cachePath(dataDir, 'C:/swr');
+  ggCore.writeReadyCache(file, 'ready', 300, Date.now() - 60_000);
+  const t0 = Date.now();
+  const r = await ggCore.decideBroadSearch(args);
+  assert(Date.now() - t0 < 500, 'the stale entry answered without waiting for the probe');
+  assertEq(r.action, 'advise', 'decided on the stale READY state');
+  const again = await ggCore.decideBroadSearch({ ...args, raw: 'Grep beta', pattern: 'beta' });
+  assertEq(again.action, 'advise');
+  assertEq(calls, 1, 'two searches during one refresh share one probe');
+  release();
+  await new Promise((res) => setTimeout(res, 50));
+  assertEq(ggCore.readReadyCache(file, 1000).state, 'not_indexed', 'the background probe rewrote the cache');
+
+  let fresh = 0;
+  const first = await ggCore.decideBroadSearch({ ...args, projectRoot: 'C:/never', probe: async () => { fresh++; return { state: 'ready', nodes: 5 }; } });
+  assertEq([fresh, first.action], [1, 'advise'], 'a project with no entry waits for its first probe');
+});
+
 test('graph-guard ladder: advise-once is PER-REPO — the SAME broad search in a DIFFERENT repo advises again (no cross-repo stamp bleed)', async () => {
   const dataDir = tempDir('ccb-ggxrepo-');
   const base = {
@@ -34786,6 +34811,45 @@ test('boss-summary.createRowReader: a project whose db stamp did not change is n
   opened.length = 0;
   assertEq(read(1200).rows.map((r) => r.ts).sort(), [1500, 2000], 'a skipped project still drops rows that left the window');
   assertEq(opened, [], 'and that stays free');
+});
+
+test('hook-tools.warmFastLane: loads every main-thread hook script and the guards\' lazy modules without running a hook', () => {
+  const data = TEST_TEMP.dir('ccb-warm-');
+  const script = `
+    process.env.CLAUDE_PLUGIN_DATA = ${JSON.stringify(data)};
+    const path = require('path');
+    const tools = require(${JSON.stringify(path.join(SCRIPTS, 'lib', 'hook-tools.js'))});
+    const scripts = ${JSON.stringify(SCRIPTS)};
+    const before = (rel) => !!require.cache[path.join(scripts, rel)];
+    const was = before('curation-guard.js');
+    const r = tools.warmFastLane(${JSON.stringify(ROOT)});
+    const fast = Object.values(tools.HOOKS).filter((s) => s.lane !== 'heavy').map((s) => s.script);
+    const heavy = Object.values(tools.HOOKS).filter((s) => s.lane === 'heavy').map((s) => s.script);
+    console.log(JSON.stringify({ was, r, fastLoaded: fast.every(before), heavyLoaded: heavy.filter(before),
+      lazy: ['../engine/lib/shell-escape.js', 'lib/raw-report.js', 'lib/graph-guard-core.js'].every(before),
+      written: require('fs').readdirSync(${JSON.stringify(data)}) }));
+  `;
+  const out = JSON.parse(require('child_process').execFileSync(process.execPath, ['-e', script], { encoding: 'utf8', windowsHide: true, env: { ...process.env, CLAUDE_PLUGIN_ROOT: ROOT } }).trim().split('\n').pop());
+  assertEq(out.was, false, 'a fresh process has not loaded the guard');
+  assertEq(out.r.failed, [], 'every module loads');
+  assert(out.fastLoaded, 'every main-thread hook script is in the module cache');
+  assert(out.lazy, 'the modules the guards load inside a call are loaded too');
+  assertEq(out.heavyLoaded, [], 'the worker lane is not loaded on the main thread');
+  assertEq(out.written, [], 'nothing is written: no hook ran');
+  assert(out.r.loaded.includes('curation-guard.js') && out.r.loaded.includes('error-guard.js'), JSON.stringify(out.r.loaded));
+});
+
+test('http-daemon /health: REAL daemon — the main-thread hook modules are loaded at start and the result is shown', async () => {
+  const dir = tempDir('ccb-warm-daemon-');
+  const { startHttpDaemon } = await import(require('url').pathToFileURL(path.join(ROOT, 'servers', 'brain-server', 'lib', 'http-daemon.js')).href);
+  const d = await startHttpDaemon({ pluginRoot: ROOT, dataDir: dir, port: 0 });
+  try {
+    const h = await (await fetch(`http://127.0.0.1:${d.httpServer.address().port}/health`)).json();
+    assert(h.warmup && Array.isArray(h.warmup.loaded), `warmup in /health: ${JSON.stringify(h.warmup)}`);
+    assertEq(h.warmup.failed, [], 'no module failed');
+    for (const s of ['curation-guard.js', 'error-guard.js', 'session-practices.js', 'lib/graph-guard-core.js']) assert(h.warmup.loaded.includes(s), `${s} loaded at start`);
+    assertEq(typeof h.warmup.ms, 'number');
+  } finally { await d.shutdown(); }
 });
 
 test('boss-summary.createRowReader: cache.turn rows are folded into per-day totals, never kept as rows, and days that left the window drop out', () => {

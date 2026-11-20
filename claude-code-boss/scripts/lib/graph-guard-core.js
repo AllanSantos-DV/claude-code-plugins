@@ -178,15 +178,39 @@ function cachePath(dataDir, projectRoot) {
   return path.join(dataDir, '.runtime', `graph-ready-${rootKey(projectRoot)}.json`);
 }
 
-/** {state, nodes, ts} when fresh, else null. Never throws. */
+/** {state, nodes} when fresh, else null. Never throws. */
 function readReadyCache(file, ttlMs, nowMs = Date.now()) {
+  const c = readReadyEntry(file);
+  return c && nowMs - c.ts < ttlMs ? { state: c.state, nodes: c.nodes } : null;
+}
+
+/** The cached {state, nodes, ts} whatever its age, or null when absent or corrupt. Never throws. */
+function readReadyEntry(file) {
   try {
     const c = JSON.parse(fs.readFileSync(file, 'utf8'));
-    if (c && typeof c.state === 'string' && Number.isFinite(c.ts) && nowMs - c.ts < ttlMs) {
-      return { state: c.state, nodes: Number.isFinite(c.nodes) ? c.nodes : 0 };
-    }
+    if (c && typeof c.state === 'string' && Number.isFinite(c.ts)) return { state: c.state, nodes: Number.isFinite(c.nodes) ? c.nodes : 0, ts: c.ts };
     return null;
-  } catch (e) { void e; /* absent/corrupt → treat as stale */ return null; }
+  } catch (e) { void e; /* absent/corrupt */ return null; }
+}
+
+/** Probes in flight per cache file: concurrent searches of one project share one refresh. */
+const refreshing = new Map();
+
+/** Run the probe and write its answer to the cache; an unreachable server is cached as offline. */
+function refreshReady(cFile, probe) {
+  if (refreshing.has(cFile)) return refreshing.get(cFile);
+  const job = (async () => {
+    let res = { state: 'offline', nodes: 0 };
+    try {
+      const r = await probe();
+      // Back-compat: a probe may still resolve a bare state string.
+      res = typeof r === 'string' ? { state: r, nodes: 0 } : { state: (r && r.state) || 'offline', nodes: (r && r.nodes) || 0 };
+    } catch (e) { void e; /* unreachable → offline */ }
+    writeReadyCache(cFile, res.state, res.nodes);
+    return res;
+  })().finally(() => refreshing.delete(cFile));
+  refreshing.set(cFile, job);
+  return job;
 }
 
 /** state: string; nodes: number (needed to tell a USEFUL ready graph from a 0-node one). */
@@ -236,7 +260,8 @@ function searchSig(kind, raw, root) {
  * @param {{cacheTtlMs:number}} a.cfg
  * @param {() => Promise<{state:'ready'|'not_indexed'|'indexing'|'offline', nodes:number}>} a.probe
  *        resolves graph state + node count (short timeout, caller-provided);
- *        ONLY called on a stale cache.
+ *        awaited only when nothing was ever cached; a stale entry answers at once and the probe refreshes it in the
+ *        background, so the guard (advisory only) never waits on the memory server once a project has an answer.
  * @returns {Promise<{action:'allow'|'advise', reason?:string}>}
  */
 async function decideBroadSearch({ kind, raw, pattern, projectRoot, sid, dataDir, cfg, probe }) {
@@ -244,14 +269,13 @@ async function decideBroadSearch({ kind, raw, pattern, projectRoot, sid, dataDir
     const cFile = cachePath(dataDir, projectRoot);
     let cached = readReadyCache(cFile, cfg.cacheTtlMs);
     if (!cached) {
-      let res = { state: 'offline', nodes: 0 };
-      try {
-        const r = await probe();
-        // Back-compat: a probe may still resolve a bare state string.
-        res = typeof r === 'string' ? { state: r, nodes: 0 } : { state: (r && r.state) || 'offline', nodes: (r && r.nodes) || 0 };
-      } catch (e) { void e; /* unreachable → offline */ }
-      writeReadyCache(cFile, res.state, res.nodes);
-      cached = res;
+      const stale = readReadyEntry(cFile);
+      if (stale) {
+        refreshReady(cFile, probe).catch((e) => console.error(`[graph-guard] background readiness refresh failed: ${e.message}`));
+        cached = { state: stale.state, nodes: stale.nodes };
+      } else {
+        cached = await refreshReady(cFile, probe);
+      }
     }
 
     // READY but EMPTY (0 nodes): a repo with no graph-supported code. Redirecting

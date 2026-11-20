@@ -399,4 +399,36 @@ function createHookTools({ pluginRoot, hookWorker, deadlines } = {}) {
   return { definitions, names: new Set([...Object.keys(HOOKS), ...Object.keys(DISPATCHERS)]), handle };
 }
 
-module.exports = { createHookTools, runHookInline, deadlinesFromHooksJson, eventsFromHooksJson, rebuildEvent, hookLatencyStats, recordLatency, recordBackgroundLatency, _resetLatencyStats, HOOKS, FIELDS };
+/**
+ * Load the main-thread (fast lane) hook scripts and their config at daemon start, so the first PreToolUse
+ * guard of each session does not pay the module loading and config parse on its 150 ms budget. Nothing is
+ * run: a hook's side effects (metrics, curation files) stay with real calls.
+ * @param {string} pluginRoot
+ * @returns {{ loaded: string[], failed: Array<{script: string, error: string}>, ms: number }}
+ */
+function warmFastLane(pluginRoot) {
+  const t0 = performance.now();
+  const scripts = path.join(pluginRoot, 'scripts');
+  const loaded = [];
+  const failed = [];
+  const load = (label, fn) => {
+    try { fn(); loaded.push(label); } catch (err) { failed.push({ script: label, error: err && err.message ? err.message : String(err) }); }
+  };
+  load('lib/hooks-config.js', () => refreshConfig(path.join(scripts, 'lib', 'hooks-config.js'), [path.join(scripts, 'curation-paths.js')]));
+  load('engine/lib/brain-config.js', () => refreshConfig(path.join(scripts, '..', 'engine', 'lib', 'brain-config.js')));
+  load('lib/session-root.js', () => require(path.join(scripts, 'lib', 'session-root.js')));
+  for (const spec of Object.values(HOOKS)) {
+    if (spec.lane === 'heavy' || loaded.includes(spec.script)) continue;
+    load(spec.script, () => require(path.join(scripts, spec.script)));
+  }
+  for (const rel of GUARD_LAZY_MODULES) load(rel, () => require(path.join(scripts, rel)));
+  return { loaded, failed, ms: Math.round(performance.now() - t0) };
+}
+
+/** Modules the PreToolUse guards require inside a call rather than at the top of their file. */
+const GUARD_LAZY_MODULES = [
+  '../engine/lib/shell-escape.js', '../engine/lib/powershell-compat.js', '../engine/lib/metrics-store.js',
+  'lib/raw-report.js', 'lib/glob-injected.js', 'lib/graph-guard-core.js',
+];
+
+module.exports = { createHookTools, runHookInline, warmFastLane, deadlinesFromHooksJson, eventsFromHooksJson, rebuildEvent, hookLatencyStats, recordLatency, recordBackgroundLatency, _resetLatencyStats, HOOKS, FIELDS };

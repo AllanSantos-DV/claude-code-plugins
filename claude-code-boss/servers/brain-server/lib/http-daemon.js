@@ -80,6 +80,7 @@ export async function startHttpDaemon({ pluginRoot, dataDir, port, host = '127.0
   const inFlight = new Set();
   const idleWaiters = [];
   const startedAt = Date.now();
+  let warmup = null;
   // Since Node 15 an unhandled rejection anywhere in this process kills it, and with it
   // the daemon every session depends on. Log it with its stack and count it in /health.
   const unhandledRejections = { count: 0, last: null };
@@ -206,7 +207,7 @@ export async function startHttpDaemon({ pluginRoot, dataDir, port, host = '127.0
           ok: true, ...proof, pluginRoot, dataDir, version, pid: process.pid, port,
           // The doctor checks the daemon's real runtime: the hook that spawned it may have had another node on PATH.
           node: { version: process.version, execArgv: process.execArgv, nodeOptions: process.env.NODE_OPTIONS || '' },
-          sessions: sessions.size, hookWorker: hookWorker.stats(), readWorker: readWorker.stats(), hookLatency: hookLatencyStats(), unhandledRejections, startedAt, uptimeMs: Date.now() - startedAt,
+          sessions: sessions.size, hookWorker: hookWorker.stats(), readWorker: readWorker.stats(), hookLatency: hookLatencyStats(), warmup, unhandledRejections, startedAt, uptimeMs: Date.now() - startedAt,
         }));
         return;
       }
@@ -374,6 +375,16 @@ export async function startHttpDaemon({ pluginRoot, dataDir, port, host = '127.0
     }
   }, reapIntervalMs);
   reaper.unref();
+
+  // The PreToolUse guards run on this thread with a 150 ms budget: their modules load now, before the
+  // first session's call, instead of on it. A module that fails to load is logged and shown in /health.
+  try {
+    warmup = createRequire(import.meta.url)(path.join(pluginRoot, 'scripts', 'lib', 'hook-tools.js')).warmFastLane(pluginRoot);
+  } catch (err) {
+    warmup = { loaded: [], failed: [{ script: 'lib/hook-tools.js', error: err.message }], ms: 0 };
+  }
+  for (const f of warmup.failed) console.error(`[brain-http] warm-up: ${f.script} did not load: ${f.error}`);
+  console.error(`[brain-http] warm-up: ${warmup.loaded.length} hook module(s) loaded in ${warmup.ms} ms`);
 
   // Bind — the port is the singleton lock. EADDRINUSE bubbles to the caller.
   await new Promise((resolve, reject) => {
