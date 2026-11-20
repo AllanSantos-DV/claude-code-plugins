@@ -36933,6 +36933,40 @@ test('lesson-promotion.selectSkillCandidates: recurring or cited in enough disti
   assertEq(require('./../engine/lib/brain-config.js').getSkillPromotion().minCitedSessions, 3, 'the shipped default');
 });
 
+const backupAge = require('./lib/backup-age.js');
+test('doctor.checkHookLatency: a hook past its budget is a warning that names it; none slow and a silent daemon are ok', () => {
+  const slow = { hook_stop_dispatcher: { calls: 30, queued: 0, expired: 0, p95Ms: 2600 }, hook_other: { calls: 30, queued: 0, expired: 0, p95Ms: 20 } };
+  const w = doctor.checkHookLatency({ daemon: { healthy: true, hookLatency: slow, hookDeadlines: { hook_stop_dispatcher: 29000 }, hookEvents: { hook_stop_dispatcher: 'Stop', hook_other: 'Stop' } } });
+  assertEq(w.status, 'warn');
+  assert(w.detail.includes('stop_dispatcher p95 2600 ms') && w.detail.startsWith('1 of 2'), w.detail);
+  const expired = doctor.checkHookLatency({ daemon: { healthy: true, hookLatency: { hook_x: { calls: 3, queued: 0, expired: 2, p95Ms: 10 } } } });
+  assert(expired.status === 'warn' && expired.detail.includes('2 expired (decided nothing)'), 'an expired hook warns even on few calls');
+  assertEq(doctor.checkHookLatency({ daemon: { healthy: true, hookLatency: { hook_other: slow.hook_other }, hookEvents: { hook_other: 'Stop' } } }).status, 'ok');
+  assert(doctor.checkHookLatency({ daemon: { healthy: false } }).detail.includes('not measured'), 'daemon down');
+  assert(doctor.checkHookLatency({ daemon: { healthy: true } }).detail.includes('no latency sample'), 'no sample');
+  assert(doctor.runChecks({ daemon: { healthy: true, hookLatency: slow, hookEvents: { hook_stop_dispatcher: 'Stop' } } }).some((r) => r.id === 'hook-latency'), 'part of runChecks');
+});
+
+test('backup-age.newestBackup + doctor.checkBackupAge: no backup, an old one and a fresh one', () => {
+  const dir = tempDir('ccb-backups-');
+  assertEq(backupAge.newestBackup(path.join(dir, 'absent')), { count: 0, newestMs: null });
+  const day = 86400000;
+  const now = Date.now();
+  const put = (name, ageDays) => { const f = path.join(dir, name); fs.writeFileSync(f, 'x'); const t = new Date(now - ageDays * day); fs.utimesSync(f, t, t); };
+  put('ccb-backup-2026-01-01T00-00-00-000Z.tar.gz', 90);
+  put('notes.txt', 0);
+  const old = backupAge.newestBackup(dir);
+  assertEq(old.count, 1, 'only archives of the Backup card count');
+  assert(doctor.checkBackupAge({ backup: old, now }).detail.includes('90 days old'), 'old');
+  assertEq(doctor.checkBackupAge({ backup: old, now }).status, 'warn');
+  put('ccb-backup-2026-02-01T00-00-00-000Z.tar.gz', 2);
+  const fresh = doctor.checkBackupAge({ backup: backupAge.newestBackup(dir), now });
+  assertEq(fresh.status, 'ok');
+  assertEq(doctor.checkBackupAge({ backup: { count: 0, newestMs: null }, now }).status, 'warn');
+  assertEq(doctor.checkBackupAge({ backup: { error: 'EACCES' }, now }).status, 'warn');
+  assertEq(doctor.checkBackupAge({}).status, 'ok');
+});
+
 (async () => {
   // A suíte mexe em singletons de módulo, process.env e servidores HTTP locais.
   // Promise.all deixava esses testes disputarem o mesmo estado/event loop; em

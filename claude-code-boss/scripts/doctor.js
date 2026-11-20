@@ -217,6 +217,35 @@ function checkDaemon(ctx) {
   };
 }
 
+/**
+ * Hooks the daemon serves that have no headroom left: an expired hook decides nothing (fail-open).
+ * @param {object} ctx  ctx.daemon.hookLatency/hookDeadlines/hookEvents from the daemon's /health
+ */
+function checkHookLatency(ctx) {
+  const d = ctx.daemon || {};
+  const base = { id: 'hook-latency', label: 'Hook latency (daemon)', fix: '', critical: false };
+  if (!d.healthy) return { ...base, status: 'ok', detail: 'daemon not answering: latency not measured (see the daemon check)' };
+  if (!d.hookLatency || typeof d.hookLatency !== 'object') return { ...base, status: 'ok', detail: 'the daemon has no latency sample yet' };
+  const measured = Object.keys(d.hookLatency).length;
+  const slow = require('./lib/hook-latency-alert.js').slowHooks(d.hookLatency, d.hookDeadlines || {}, d.hookEvents || {});
+  if (!slow.length) return { ...base, status: 'ok', detail: `${measured} hook(s) measured, none without headroom` };
+  const items = slow.map((h) => `${h.name.replace(/^hook_/, '')} p95 ${h.p95Ms} ms${h.expired ? `, ${h.expired} expired (decided nothing)` : ''}`);
+  return {
+    ...base, status: 'warn',
+    detail: `${slow.length} of ${measured} hook(s) without headroom: ${items.join('; ')}`,
+    fix: 'Open /dashboard -> Curation & guards for the per-hook latency; restarting Claude Code restarts the daemon and clears the measurement.',
+  };
+}
+
+/** The Brain changes on its own every week (consolidation, promotion): warn when no recent backup exists. */
+function checkBackupAge(ctx) {
+  const base = { id: 'backup-age', label: 'Backup age', critical: false };
+  if (!ctx.backup) return { ...base, status: 'ok', detail: 'not measured', fix: '' };
+  if (ctx.backup.error) return { ...base, status: 'warn', detail: `the backups folder could not be read: ${ctx.backup.error}`, fix: '' };
+  const v = require('./lib/backup-age.js').backupVerdict(ctx.backup, ctx.now || Date.now());
+  return { ...base, status: v.ok ? 'ok' : 'warn', detail: v.detail, fix: v.ok ? '' : 'Take one in /dashboard -> Backup.' };
+}
+
 function checkHooksEvents(ctx) {
   const events = ctx.hooksEvents || [];
   const unknown = events.filter(e => !STANDARD_EVENTS.has(e));
@@ -735,7 +764,7 @@ function checkSetup(ctx) {
   return out;
 }
 
-const CHECKS = [checkNode, checkDaemonNode, checkNativeDeps, checkEnv, checkDataDirs, checkModel, checkDaemon, checkNativeRuntime, checkEmbedderProbe, checkEmbedderGuard, checkRecall, checkCrashes, checkCostTuning, checkBossConfig, checkFixedCost, checkCompactionRate, checkCompactionFloor, checkClaudeCompat, checkSubagentContexts, checkSessionModules, checkAutoCompactPoint, checkSetup, checkHooksEvents, checkSkillManager];
+const CHECKS = [checkNode, checkDaemonNode, checkNativeDeps, checkEnv, checkDataDirs, checkModel, checkDaemon, checkHookLatency, checkNativeRuntime, checkEmbedderProbe, checkEmbedderGuard, checkRecall, checkCrashes, checkCostTuning, checkBossConfig, checkFixedCost, checkCompactionRate, checkCompactionFloor, checkClaudeCompat, checkSubagentContexts, checkSessionModules, checkAutoCompactPoint, checkSetup, checkBackupAge, checkHooksEvents, checkSkillManager];
 
 /** Run every pure check over a ctx snapshot (a check may return one result or a list). */
 function runChecks(ctx) {
@@ -889,6 +918,12 @@ async function gatherContext({ probe = false, audit = false, contextSources: wan
       const health = await _daemonHealth(daemon.port);
       daemon.healthy = !!health;
       daemon.node = (health && health.node) || null;
+      if (health && health.hookLatency) {
+        const hookTools = require('./lib/hook-tools.js');
+        daemon.hookLatency = health.hookLatency;
+        daemon.hookDeadlines = hookTools.deadlinesFromHooksJson(pluginRoot());
+        daemon.hookEvents = hookTools.eventsFromHooksJson(pluginRoot());
+      }
     }
   } catch (e) { void e; }
 
@@ -976,6 +1011,12 @@ async function gatherContext({ probe = false, audit = false, contextSources: wan
   const guardRec = embedderGuard.readGuard(data);
   const guardApplies = !!(guardRec && embedderCfg && guardRec.key === embedderGuard.guardKey({ model: embedderCfg.model, node: nodeChoice.version }));
 
+  let backup = null;
+  try { backup = require('./lib/backup-age.js').newestBackup(path.join(require('../engine/lib/data-dir.js').globalDir(), 'backups')); } catch (e) {
+    console.error(`[doctor] backups: ${e.message}`);
+    backup = { error: e.message };
+  }
+
   return {
     nodeVersion: process.version,
     nodeChoice,
@@ -1002,6 +1043,7 @@ async function gatherContext({ probe = false, audit = false, contextSources: wan
     sessionModules,
     autoCompact,
     setup,
+    backup,
   };
 }
 
@@ -1117,5 +1159,6 @@ module.exports = {
   runChecks, summarize, applyFixes, FIXERS, checkCostTuning, checkBossConfig, checkFixedCost, checkSetup, bossPluginId, gatherContext, formatReport,
   checkNode, checkDaemonNode, checkNativeDeps, checkEnv, checkDataDirs, checkModel, checkDaemon, checkNativeRuntime, checkEmbedderProbe, checkEmbedderGuard, checkRecall, checkCrashes, checkHooksEvents, checkSkillManager, gatherSkillManager, checkCompactionFloor, gatherCompactionFloor, checkAutoCompactPoint, gatherAutoCompact,
   findDataDirCandidates, probeEmbedder, gatherNative, gatherCrashes, MIN_MSVCP,
+  checkHookLatency, checkBackupAge,
   STANDARD_EVENTS, MIN_NODE,
 };
