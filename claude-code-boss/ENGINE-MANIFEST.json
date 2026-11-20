@@ -28,7 +28,7 @@
     "engine/lib/log-rotate.js": "203dbb482fe09df3b18e950e8b62e41374a7b46f8ae90edc7389c6542708066e",
     "engine/lib/mcp-auth.js": "7f3f02ece097a4e017453ff718bb946e208ef527ca5a7ebc66e289a3542b6a08",
     "engine/lib/mcp-token-vault.js": "4deb21cff36318a585d541fe09f70ee53d3f292993d174618453689c259ca43f",
-    "engine/lib/metrics-project.js": "326374a271ca2e246ad63263c6ba14e6cfd04c8c5ae79b46ad5634ee9701adc7",
+    "engine/lib/metrics-project.js": "100c9ea331e422bb87285b0d060af36e5cd985e9db914785a58bd0de293e22a6",
     "engine/lib/metrics-store.js": "ac7f5a0603ce923ccfd81ef6940425496f68fd935554869b99700f09611e2101",
     "engine/lib/metrics.js": "33d78495fd60a51ebd132f9da1dfb81a285727faa275360d14d2ed73ca482367",
     "engine/lib/policy-store.js": "5276a70b4f7437a292b5750a5fa595bdcada0c7ac4b89b069f2c0fa343a01380",
