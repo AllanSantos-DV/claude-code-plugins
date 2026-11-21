@@ -32745,30 +32745,30 @@ test('compaction-core.decideTurnEnd: an autonomous turn (no person prompt gated)
 });
 
 test('compaction-core.thresholdFor: a % of the window the engine applies (200K and 1M alike), clamped to the slider range, flagged past the engine point', () => {
-  assertEq(cmpCore.thresholdFor({ window: 1000000, engineAutoCompactAt: 967000 }), { thresholdTokens: 300000, percent: 30, aboveEngine: false }, '1M window: 30% = 300k, no absolute cap by default');
-  assertEq(cmpCore.thresholdFor({ window: 1000000, engineAutoCompactAt: 967000 }, { thresholdMaxTokens: 150000 }), { thresholdTokens: 150000, percent: 30, aboveEngine: false, capped: true }, 'an explicit cap still applies: min(percent, cap)');
+  assertEq(cmpCore.thresholdFor({ window: 1000000, engineAutoCompactAt: 967000 }), { thresholdTokens: 170000, percent: 17, aboveEngine: false }, '1M window: 17% = 170k, no absolute cap by default');
+  assertEq(cmpCore.thresholdFor({ window: 1000000, engineAutoCompactAt: 967000 }, { thresholdMaxTokens: 150000 }), { thresholdTokens: 150000, percent: 17, aboveEngine: false, capped: true }, 'an explicit cap still applies: min(percent, cap)');
   assertEq(cmpCore.thresholdFor({ window: 1000000 }, { thresholdPercent: 10 }), { thresholdTokens: 100000, percent: 10, aboveEngine: false }, 'a percent already below the cap is not touched');
-  assertEq(cmpCore.thresholdFor({ window: 300000, engineAutoCompactAt: 267000 }), { thresholdTokens: 90000, percent: 30, aboveEngine: false });
+  assertEq(cmpCore.thresholdFor({ window: 300000, engineAutoCompactAt: 267000 }), { thresholdTokens: 51000, percent: 17, aboveEngine: false });
   assertEq(cmpCore.thresholdFor({ window: 200000, engineAutoCompactAt: 167000 }, { thresholdPercent: 50 }), { thresholdTokens: 100000, percent: 50, aboveEngine: false });
-  assertEq(cmpCore.thresholdFor({ window: 153000, engineAutoCompactAt: 120000 }), { thresholdTokens: 45900, percent: 30, aboveEngine: false }, 'pure percent: no token floor');
-  assertEq(cmpCore.thresholdFor({ window: 200000, engineAutoCompactAt: 167000 }).thresholdTokens, 60000, '30% of 200k = 60k, not 90k');
-  assertEq(cmpCore.thresholdFor({ window: 1000000, engineAutoCompactAt: 967000 }, { minThresholdTokens: 999999 }).thresholdTokens, 300000, 'no floor option exists any more: the pure percent');
+  assertEq(cmpCore.thresholdFor({ window: 153000, engineAutoCompactAt: 120000 }), { thresholdTokens: 26010, percent: 17, aboveEngine: false }, 'pure percent: no token floor');
+  assertEq(cmpCore.thresholdFor({ window: 200000, engineAutoCompactAt: 167000 }).thresholdTokens, 34000, '17% of 200k = 34k, not 90k');
+  assertEq(cmpCore.thresholdFor({ window: 1000000, engineAutoCompactAt: 967000 }, { minThresholdTokens: 999999 }).thresholdTokens, 170000, 'no floor option exists any more: the pure percent');
   assertEq(cmpCore.thresholdFor({ window: 200000, engineAutoCompactAt: 150000 }, { thresholdPercent: 80 }), { thresholdTokens: 160000, percent: 80, aboveEngine: true },'past the engine point: it compacts first — flagged, never silently moved');
   assertEq(cmpCore.thresholdFor({ window: 200000 }, { thresholdPercent: 95 }).percent, 80, 'clamped to the range top');
   assertEq(cmpCore.thresholdFor({ window: 200000 }, { thresholdPercent: 2 }).percent, 10, 'clamped to the range bottom');
   assertEq(cmpCore.thresholdFor({}).thresholdTokens, null, 'no window → no threshold');
-  assertEq(cmpCore.clampPercent('x'), 30, 'garbage → the default');
+  assertEq(cmpCore.clampPercent('x'), 17, 'garbage → the default');
 });
 
 test('compaction-core.thresholdFor: the floor measured after the session\'s last cut raises its threshold to floorFactor x floor, never lowers it', () => {
   const w = { window: 200000, engineAutoCompactAt: 167000 };
-  assertEq(cmpCore.thresholdFor({ ...w, floorTokens: 20000 }), { thresholdTokens: 60000, percent: 30, aboveEngine: false }, 'a light session (2 x 20k = 40k) keeps the percent');
-  assertEq(cmpCore.thresholdFor({ ...w, floorTokens: 40000 }), { thresholdTokens: 80000, percent: 30, aboveEngine: false, floorRaised: true, floorTokens: 40000 }, '2 x 40k = 80k beats 60k');
-  assertEq(cmpCore.thresholdFor({ ...w, floorTokens: 113900 }), { thresholdTokens: 227800, percent: 30, aboveEngine: true, floorRaised: true, floorTokens: 113900 }, 'a coordinator coming back at 114k: past the engine point, the engine summary handles it');
+  assertEq(cmpCore.thresholdFor({ ...w, floorTokens: 10000 }), { thresholdTokens: 34000, percent: 17, aboveEngine: false }, 'a light session (2 x 10k = 20k) keeps the percent');
+  assertEq(cmpCore.thresholdFor({ ...w, floorTokens: 40000 }), { thresholdTokens: 80000, percent: 17, aboveEngine: false, floorRaised: true, floorTokens: 40000 }, '2 x 40k = 80k beats 34k');
+  assertEq(cmpCore.thresholdFor({ ...w, floorTokens: 113900 }), { thresholdTokens: 227800, percent: 17, aboveEngine: true, floorRaised: true, floorTokens: 113900 }, 'a coordinator coming back at 114k: past the engine point, the engine summary handles it');
   assertEq(cmpCore.thresholdFor({ ...w, floorTokens: 40000 }, { floorFactor: 3 }).thresholdTokens, 120000, 'the factor is configurable');
-  assertEq(cmpCore.thresholdFor({ ...w, floorTokens: 40000 }, { floorFactor: 0 }).thresholdTokens, 60000, 'factor 0 turns it off');
-  assertEq(cmpCore.thresholdFor({ window: 1000000, engineAutoCompactAt: 967000, floorTokens: 113900 }, { thresholdMaxTokens: 150000 }), { thresholdTokens: 227800, percent: 30, aboveEngine: false, floorRaised: true, floorTokens: 113900 }, 'the floor also beats an explicit cap: a cut under 2 x floor recovers too little');
-  assertEq(cmpCore.thresholdFor({ ...w, floorTokens: 'x' }).thresholdTokens, 60000, 'garbage floor ignored');
+  assertEq(cmpCore.thresholdFor({ ...w, floorTokens: 40000 }, { floorFactor: 0 }).thresholdTokens, 34000, 'factor 0 turns it off');
+  assertEq(cmpCore.thresholdFor({ window: 1000000, engineAutoCompactAt: 967000, floorTokens: 113900 }, { thresholdMaxTokens: 150000 }), { thresholdTokens: 227800, percent: 17, aboveEngine: false, floorRaised: true, floorTokens: 113900 }, 'the floor also beats an explicit cap: a cut under 2 x floor recovers too little');
+  assertEq(cmpCore.thresholdFor({ ...w, floorTokens: 'x' }).thresholdTokens, 34000, 'garbage floor ignored');
 });
 
 test('compaction-core.decideTurnEnd: past the warm ceiling a WARM cache is cut at the end of the turn (a session that never idles); below it, off (0), or in the cooldown it still waits', () => {
@@ -32792,7 +32792,7 @@ test('hooks-config compaction: thresholdMaxTokens / warmCeilingTokens are OFF by
   const file = hc.userConfigPath();
   const c0 = hc.getCompaction();
   assertEq([c0.thresholdMaxTokens, c0.warmCeilingTokens], [0, 0], 'caps are off by default (owner: percent only)');
-  assertEq([c0.enabled, c0.thresholdPercent, c0.folderTtl, c0.mechanicalCut], [true, 30, true, true], '30% default, per-folder TTL switch and cold cut on');
+  assertEq([c0.enabled, c0.thresholdPercent, c0.folderTtl, c0.mechanicalCut], [true, 17, true, true], '17% default, per-folder TTL switch and cold cut on');
   const out = hc.saveCompaction({ thresholdMaxTokens: 0, warmCeilingTokens: 10 });
   assertEq([out.thresholdMaxTokens, out.warmCeilingTokens], [0, 50000], '0 = off; a tiny ceiling clamps to the 50k floor');
   assertEq(hc.saveCompaction({ thresholdMaxTokens: 9e9 }).thresholdMaxTokens, 2000000, 'clamped to the top');
@@ -32803,12 +32803,12 @@ test('hooks-config compaction: thresholdMaxTokens / warmCeilingTokens are OFF by
   fs.writeFileSync(file, JSON.stringify(cfg, null, 2));
 });
 
-test('cold compaction as the owner designed it: the user threshold defaults to 30% of the window; below it the folder keeps the long TTL, above it the short one', () => {
+test('cold compaction as the owner designed it: the user threshold defaults to 17% of the window; below it the folder keeps the long TTL, above it the short one', () => {
   const ft = require('./lib/folder-ttl.js');
   const cfg = require('./lib/hooks-config.js').getCompaction();
-  assertEq([cfg.enabled, cfg.thresholdPercent, cfg.folderTtl, cfg.mechanicalCut], [true, 30, true, true], 'shipped defaults: on, 30%, per-folder TTL, brief cut');
+  assertEq([cfg.enabled, cfg.thresholdPercent, cfg.folderTtl, cfg.mechanicalCut], [true, 17, true, true], 'shipped defaults: on, 17%, per-folder TTL, brief cut');
   const now = Date.now();
-  for (const [window, tokens, ttl] of [[200000, 50000, null], [200000, 61000, '5m'], [1000000, 290000, null], [1000000, 310000, '5m']]) {
+  for (const [window, tokens, ttl] of [[200000, 30000, null], [200000, 35000, '5m'], [1000000, 160000, null], [1000000, 180000, '5m']]) {
     const th = cmpCore.thresholdFor({ window, engineAutoCompactAt: window * 0.967 }, { thresholdPercent: cfg.thresholdPercent, thresholdMaxTokens: cfg.thresholdMaxTokens });
     const plan = ft.planFolder({ sessions: { a: { above: tokens >= th.thresholdTokens, seenAt: now } } }, now);
     assertEq(plan.want, ttl, `window ${window}, ${tokens} tokens, threshold ${th.thresholdTokens}: ${ttl || 'long TTL kept'}`);
@@ -32824,7 +32824,7 @@ test('cold compaction: the absolute caps are OFF by default everywhere (core def
   assertEq([hc.getCompaction().thresholdMaxTokens, hc.getCompaction().warmCeilingTokens], [0, 0], 'config reader');
   const shipped = JSON.parse(fs.readFileSync(path.join(ROOT, 'config', 'hooks-config.json'), 'utf8')).compaction;
   assert(!shipped.thresholdMaxTokens && !shipped.warmCeilingTokens, 'shipped config sets no cap');
-  assertEq(cmpCore.thresholdFor({ window: 1000000, engineAutoCompactAt: 967000 }).thresholdTokens, 300000, '30% of a 1M window stays 300k');
+  assertEq(cmpCore.thresholdFor({ window: 1000000, engineAutoCompactAt: 967000 }).thresholdTokens, 170000, '17% of a 1M window stays 170k');
   assertEq(cmpCore.decideTurnEnd({ busy: false, gated: false, now: 1e8, tokens: 900000, ttlMs: 3600000, lastAnswerAt: 1e8 - 20000 }, { thresholdTokens: 300000, warmCeilingTokens: cmpCore.DEFAULTS.warmCeilingTokens, minIntervalMs: 600000 }).action, 'wait', 'a warm cache is never cut at turn end by default');
 });
 
@@ -34818,7 +34818,7 @@ test('hook_compaction_event: daemon transport (payload arrives as an object, bad
   // The shipped file merges OVER the profile preset: an `enabled: true` here silently beat
   // `free`'s `enabled: false` (pre-release audit 3.1.0). On by default comes from `!== false`.
   assertEq(shipped.enabled, undefined, 'no enabled flag in the shipped block (it would override the free preset)');
-  assertEq(shipped.thresholdPercent, 30); assertEq(shipped.hardCeilingTokens, undefined, 'no ceiling');
+  assertEq(shipped.thresholdPercent, 17); assertEq(shipped.hardCeilingTokens, undefined, 'no ceiling');
   // Resolved over the REAL shipped file, the way production does it:
   assertEq(hc.resolveProfileConfig({ ...shippedAll, profile: 'free' }).compaction.enabled, false, 'free switches compaction off for real');
   assertEq(hc.resolveProfileConfig({ ...shippedAll, profile: 'standard' }).compaction.enabled, undefined, 'standard: on by default (!== false)');

@@ -75,7 +75,7 @@
     "maxBlocks": 1
   },
   "compaction": {
-    "thresholdPercent": 30,
+    "thresholdPercent": 17,
     "minIntervalMinutes": 10,
     "preserveRecentMessages": 6
   },

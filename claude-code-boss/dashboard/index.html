@@ -2961,7 +2961,7 @@ async function loadCompactionPanel() {
   const g = c.gate, r = c.runs, st = c.settled;
   const rng = cfg.thresholdRange || [10, 80];
   const ivr = cfg.minIntervalRange || [1, 60];
-  const pct = cfg.thresholdPercent || 30;
+  const pct = cfg.thresholdPercent || 17;
   const wins = (c.windows || []).length ? c.windows : [{ windowTokens: 200000, source: 'example' }, { windowTokens: 1000000, source: 'example' }];
   const winRows = wins.map(w => `<span data-win="${w.windowTokens}" data-engine="${w.engineAutoCompactAt || ''}">${fmt(w.windowTokens)} window${w.source && w.source !== 'example' ? ' (' + escapeHtml(String(w.source)) + ')' : ''} → <b class="cmp-thr">${fmt(Math.round(w.windowTokens * pct / 100))}</b>${w.engineAutoCompactAt ? ` · engine compacts at ${fmt(w.engineAutoCompactAt)}` : ''}<span class="cmp-warn badge badge-yellow" style="display:${w.engineAutoCompactAt && w.windowTokens * pct / 100 >= w.engineAutoCompactAt ? 'inline' : 'none'};margin-left:.3rem">past the engine: it compacts first</span>${w.source === 'unknown-model' ? ' <span class="badge badge-yellow">window assumed (model not recognized)</span>' : ''}</span>`).join('<br>');
   let html = `<p class="text-muted" style="font-size:.8rem;margin:0 0 .4rem 0">${cfg.enabled ? 'On' : '<b>Off</b> (profile free or config)'} · cuts when the cache is cold past the threshold, and at the end of a turn past the warm ceiling (both below)</p>`

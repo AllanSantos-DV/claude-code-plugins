@@ -271,9 +271,9 @@ Módulo de *function hook* do Claude Code (`hooks/compaction.mjs`, registrado pe
 - **Sessões autônomas**: um turno que nenhum prompt de pessoa abriu (mensagem de outra sessão, notificação de
   tarefa, comando na fila) não passa pelo gate. No fim dele, passado o limiar, o boss compacta se o cache já
   esfriou; com o cache quente, agenda nova checagem para quando ele vencer. Nada é segurado nem reenviado.
-- **Limiar**: um % (`thresholdPercent`, padrão 30, faixa 10–80) da janela que o engine aplica naquele
+- **Limiar**: um % (`thresholdPercent`, padrão 17, faixa 10–80) da janela que o engine aplica naquele
   prompt — o limite do modelo ou uma janela de compactação menor (`CLAUDE_CODE_AUTO_COMPACT_WINDOW`) —, então
-  o mesmo ajuste serve a modelos de 200K e de 1M e acompanha o `/model` (30% de 200k = 60k; 30% de 1M = 300k). O corte a frio
+  o mesmo ajuste serve a modelos de 200K e de 1M e acompanha o `/model` (17% de 200k = 34k; 17% de 1M = 170k). O corte a frio
   é o % puro; `thresholdMaxTokens` é um teto opcional, **desligado** (0) por padrão (o dono decidiu limiar só em %).
   Por sessão, o limiar sobe para `floorFactor` (padrão 2) vezes o tamanho medido na primeira chamada depois do
   último corte dela: uma sessão que volta de um corte em 114k ganha limiar 228k (passa do ponto do engine, e o resumo
@@ -307,7 +307,7 @@ Módulo de *function hook* do Claude Code (`hooks/compaction.mjs`, registrado pe
   rejeitava o thinking). O primeiro prompt detecta as cópias e compacta antes de qualquer envio (o resumo também as remove).
 - **Não age** em sessão headless (`-p`/SDK: o engine não deixa um plugin compactar ali — o `/compact`
   manual e o limiar automático continuam passando pela mesma escolha), no perfil `free`, nem com
-  `compaction.enabled: false`. Config em `hooks-config.json` → `compaction` (`thresholdPercent` 30, `thresholdMaxTokens` 0 e
+  `compaction.enabled: false`. Config em `hooks-config.json` → `compaction` (`thresholdPercent` 17, `thresholdMaxTokens` 0 e
   `warmCeilingTokens` 0 (tetos desligados), `minIntervalMinutes` 10, `preserveRecentMessages` 6); `GET/PUT /api/compaction/config`.
 - **Observabilidade**: o módulo envia cada evento ao daemon (`POST /hook/compaction-event`, mesmo
   token do `/mcp`) → metrics store: `compaction.gate` (decisão e motivo, idade e TTL do cache),

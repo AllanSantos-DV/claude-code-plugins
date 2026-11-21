@@ -27,7 +27,7 @@
 
 export const DEFAULTS = Object.freeze({
   enabled: true,
-  thresholdPercent: 30,        // % of the engine's window; past it, compact once the cache is cold
+  thresholdPercent: 17,        // % of the engine's window; past it, compact once the cache is cold
   minThresholdPercent: 10,     // the slider's range (and the clamp on hand-edited configs)
   maxThresholdPercent: 80,
   // No token floor: the threshold is ONLY a percent of the model's window (owner, 14/10: the user's
