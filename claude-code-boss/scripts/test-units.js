@@ -7194,14 +7194,22 @@ function withUserConfig(obj, fn) {
     fs.writeFileSync(gp, JSON.stringify(obj));
   }
   brainConfig._resetCache();
-  try {
-    return fn();
-  } finally {
+  const restore = () => {
     process.env.CLAUDE_PLUGIN_DATA = savedData;
     if (savedHome === undefined) delete process.env.HOME; else process.env.HOME = savedHome;
     if (savedProfile === undefined) delete process.env.USERPROFILE; else process.env.USERPROFILE = savedProfile;
     brainConfig._resetCache();
+  };
+  let out;
+  try {
+    out = fn();
+  } catch (err) {
+    restore();
+    throw err;
   }
+  if (out && typeof out.then === 'function') return out.finally(restore);
+  restore();
+  return out;
 }
 
 test('brain-config.getContextExcludeTypes: absent override → [] (shipped default)', () => {
@@ -25530,6 +25538,15 @@ test('dashboard: memory-disable puts the backend back on the local store; the ba
     assertEq(body, { ok: true, restartRequired: true });
     brainConfig._resetCache();
     assertEq(brainConfig.load().backend.type, 'local');
+  });
+  await withUserConfig({ backend: { type: 'mcp-memory', mcpMemory: { transport: 'http', serverUrl: 'http://127.0.0.1:1' } } }, async () => {
+    brainConfig._resetCache();
+    require('../engine/brain-backend.js')._resetConfig();
+    let body = null;
+    await dash.getBrainBackend({}, { writeHead() {}, end(b) { body = JSON.parse(b); } });
+    assertEq([body.mode, body.connected, body.fallback], ['mcp-memory', false, true], 'an unreachable memory server is shown as mcp-memory and disconnected, not as local');
+    assertEq(['launcherInstalled', 'serverVersion', 'recovery'].every((k) => k in body.memory), true, 'the install state reaches the dashboard even when the backend cannot connect');
+    require('../engine/brain-backend.js')._resetConfig();
   });
   const d = require('./lib/memory-recovery.js').describe(tempDir('ccb-memdesc-'));
   assertEq(['launcherInstalled', 'serverVersion', 'recovery'].every((k) => k in d), true);

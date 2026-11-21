@@ -504,12 +504,18 @@ async function brainBackendStatus() {
   return backend.getStatus();
 }
 
+/**
+ * GET /api/brain/backend: the backend status plus the local memory server install state. When the
+ * backend cannot connect the answer keeps the configured mode and the install state, so the
+ * dashboard shows what is wrong instead of reporting the local store.
+ */
 async function getBrainBackend(req, res) {
   try {
     json(res, { ...(await brainBackendStatus()), memory: require('./lib/memory-recovery.js').describe() });
   } catch (err) {
     console.error(`[DASHBOARD] Brain backend unavailable: ${err.message}`);
-    json(res, { mode: 'local', error: 'brain-backend not available', fallback: true });
+    const type = ((require('../engine/lib/brain-config.js').load().backend) || {}).type === 'mcp-memory' ? 'mcp-memory' : 'local';
+    json(res, { mode: type, connected: false, error: 'brain-backend not available', fallback: true, memory: require('./lib/memory-recovery.js').describe() });
   }
 }
 
@@ -2817,4 +2823,4 @@ if (require.main === module) startDashboardServer();
 // exported so a test can call it with a fake res ({writeHead,end}) and assert
 // on the exact JSON it serializes — otherwise a bug in byokSafe (e.g. `x || null`
 // silently turning a valid `0` into `null`) would never be caught by any test.
-module.exports = { postMemoryDisable, getCurationProjects, getCurationShells, deleteCurationShell, getValueSummary, getOutcomeSummary, getTuningRecommendations, _metricsMemo, getDoctorSwitchedOff, postDoctorUndo, getDoctorConfig, saveDoctorConfig, writeRouterOverride, resolveRouterFlags, getRouterConfig, fetchByokModelIds, getByokModels, opensWithField, postPluginUpdate, getProjectMarker, saveProjectMarker, saveCompactionConfig, getPhaseRestartMeasure, scanServerKb, quickKbList, brainBackendStatus };
+module.exports = { getBrainBackend, postMemoryDisable, getCurationProjects, getCurationShells, deleteCurationShell, getValueSummary, getOutcomeSummary, getTuningRecommendations, _metricsMemo, getDoctorSwitchedOff, postDoctorUndo, getDoctorConfig, saveDoctorConfig, writeRouterOverride, resolveRouterFlags, getRouterConfig, fetchByokModelIds, getByokModels, opensWithField, postPluginUpdate, getProjectMarker, saveProjectMarker, saveCompactionConfig, getPhaseRestartMeasure, scanServerKb, quickKbList, brainBackendStatus };
