@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 const http = require('http');
+require('./lib/memory-recovery.js');
 const https = require('https');
 const fs = require('fs');
 const path = require('path');
@@ -505,7 +506,7 @@ async function brainBackendStatus() {
 
 async function getBrainBackend(req, res) {
   try {
-    json(res, await brainBackendStatus());
+    json(res, { ...(await brainBackendStatus()), memory: require('./lib/memory-recovery.js').describe() });
   } catch (err) {
     console.error(`[DASHBOARD] Brain backend unavailable: ${err.message}`);
     json(res, { mode: 'local', error: 'brain-backend not available', fallback: true });
@@ -513,6 +514,19 @@ async function getBrainBackend(req, res) {
 }
 
 // ─── API: Brain Health (real-time integration status) ──────
+
+/** Turns the memory server off: the backend goes back to the built-in local store. The server itself is left alone. */
+function postMemoryDisable(req, res) {
+  try {
+    const brainConfig = require('../engine/lib/brain-config.js');
+    const { config, version } = brainConfig.loadWithVersion();
+    brainConfig.save({ ...config, backend: { ...(config.backend || {}), type: 'local' } }, { expectedVersion: version });
+    json(res, { ok: true, restartRequired: true });
+  } catch (err) {
+    console.error(`[DASHBOARD] /api/brain/memory-disable failed: ${err.message}`);
+    fail(res, err.message, 500);
+  }
+}
 
 function getBrainHealth(req, res) {
   try {
@@ -2629,6 +2643,7 @@ function handleAPI(req, res, url) {
    if (p === '/api/brain/mcp-wizard/status' && m === 'GET') return getMcpWizardStatus(req, res);
    if (p === '/api/brain/mcp-wizard/reset' && m === 'POST') return resetMcpWizard(req, res);
    if (p === '/api/brain/health' && m === 'GET') return getBrainHealth(req, res);
+  if (p === '/api/brain/memory-disable' && m === 'POST') return postMemoryDisable(req, res);
    if (p === '/api/brain/embedder/test' && m === 'POST') return testEmbedder(req, res);
   if (p === '/api/config/test' && m === 'POST') return testConfig(req, res);
   if (p === '/api/config/domains' && m === 'GET') return listConfigDomains(req, res);
@@ -2802,4 +2817,4 @@ if (require.main === module) startDashboardServer();
 // exported so a test can call it with a fake res ({writeHead,end}) and assert
 // on the exact JSON it serializes — otherwise a bug in byokSafe (e.g. `x || null`
 // silently turning a valid `0` into `null`) would never be caught by any test.
-module.exports = { getCurationProjects, getCurationShells, deleteCurationShell, getValueSummary, getOutcomeSummary, getTuningRecommendations, _metricsMemo, getDoctorSwitchedOff, postDoctorUndo, getDoctorConfig, saveDoctorConfig, writeRouterOverride, resolveRouterFlags, getRouterConfig, fetchByokModelIds, getByokModels, opensWithField, postPluginUpdate, getProjectMarker, saveProjectMarker, saveCompactionConfig, getPhaseRestartMeasure, scanServerKb, quickKbList, brainBackendStatus };
+module.exports = { postMemoryDisable, getCurationProjects, getCurationShells, deleteCurationShell, getValueSummary, getOutcomeSummary, getTuningRecommendations, _metricsMemo, getDoctorSwitchedOff, postDoctorUndo, getDoctorConfig, saveDoctorConfig, writeRouterOverride, resolveRouterFlags, getRouterConfig, fetchByokModelIds, getByokModels, opensWithField, postPluginUpdate, getProjectMarker, saveProjectMarker, saveCompactionConfig, getPhaseRestartMeasure, scanServerKb, quickKbList, brainBackendStatus };

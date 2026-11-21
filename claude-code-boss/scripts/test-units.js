@@ -25439,6 +25439,102 @@ test('KB gate: mcp-memory backend (handleRemoteKbTool) — cwd WITHOUT id refuse
   } finally { backend._resetConfig(); fs.rmSync(cwd, { recursive: true, force: true }); }
 }));
 
+const LOCAL_MEM = { backend: { type: 'mcp-memory', mcpMemory: { transport: 'http' } } };
+
+test('memory-recovery: only a backend set to mcp-memory with no server address installs anything — the local backend and a user-pointed server are left alone', async () => {
+  const MR = require('./lib/memory-recovery.js');
+  let runs = 0;
+  const ensure = async () => { runs++; return { url: 'u', version: '1.0.0' }; };
+  for (const config of [{ backend: { type: 'local' } }, { backend: { type: 'mcp-memory', mcpMemory: { serverUrl: 'http://10.0.0.9:1' } } }, {}]) {
+    assertEq((await MR.recover({ dir: tempDir('ccb-memrec-skip-'), ensure, config })).reason, 'not-configured', JSON.stringify(config));
+    assertEq(MR.startRecovery({ dir: tempDir('ccb-memrec-skip2-'), ensure, config }), { started: false, reason: 'not-configured' });
+  }
+  assertEq(runs, 0, 'nothing was installed');
+  assertEq(MR.configuredToRunHere(LOCAL_MEM), true);
+});
+
+test('memory-recovery: a machine with no memory server gets it from the published release once, with the progress recorded; a second call while it runs, or after a failure, does not start another', async () => {
+  const MR = require('./lib/memory-recovery.js');
+  const dir = tempDir('ccb-memrec-');
+  let release;
+  const gate = new Promise((r) => { release = r; });
+  let runs = 0;
+  const steps = [];
+  const ensure = async (cfg, emit) => { runs++; emit(2, 'running', 'Downloading mcp-memory-server-9.9.9.jar'); steps.push(MR.readState(dir).detail); await gate; return { url: 'http://127.0.0.1:1', version: '9.9.9', spawned: true }; };
+  const first = MR.recover({ dir, ensure, config: LOCAL_MEM });
+  assertEq((await MR.recover({ dir, ensure, config: LOCAL_MEM })).reason, 'running', 'a concurrent call is skipped');
+  assertEq(MR.startRecovery({ dir, ensure, config: LOCAL_MEM }), { started: false, reason: 'running' });
+  release();
+  const done = await first;
+  assertEq([done.status, runs, steps], ['ok', 1, ['Downloading mcp-memory-server-9.9.9.jar']], 'one install, progress visible while it ran');
+  assertEq([MR.readState(dir).status, MR.readState(dir).version], ['ok', '9.9.9']);
+  const failing = tempDir('ccb-memrec-fail-');
+  let t = 1000;
+  const boom = async () => { throw new Error('offline'); };
+  const bad = await MR.recover({ dir: failing, ensure: boom, now: () => t, config: LOCAL_MEM });
+  assertEq([bad.status, MR.readState(failing).error], ['failed', 'offline'], 'a failure is recorded with its cause');
+  assertEq((await MR.recover({ dir: failing, ensure: boom, now: () => t + 1000, config: LOCAL_MEM })).reason, 'cooldown', 'no hammering after a failure');
+  assertEq((await MR.recover({ dir: failing, ensure: async () => ({ url: 'u', version: '1.0.0' }), now: () => t + MR.FAILURE_COOLDOWN_MS + 1, config: LOCAL_MEM })).status, 'ok', 'after the cooldown it tries again');
+});
+
+test('memory-recovery on a clean machine: no launcher, no server jar -> the published jar is downloaded, the launcher installed and started (ensureLocalDaemon with the real recovery path)', async () => {
+  const install = require('./lib/mcp-bootstrap/install.js');
+  const calls = [];
+  let started = false;
+  const launcher = {
+    bundledJava: () => null,
+    MIN_LAUNCHER_VERSION: '2.45.6',
+    compareVersions: (a, b) => (a === b ? 0 : a > b ? 1 : -1),
+    runLauncher: async () => (started ? { ok: true, spawned: true, url: 'http://127.0.0.1:7', version: '2.46.0' } : { ok: false, missing: true, error: 'not installed' }),
+    newestInstalledJar: () => (calls.includes('download') ? { path: '/j.jar', version: '2.46.0' } : null),
+    installLauncher: async () => { calls.push('installLauncher'); started = true; return { ok: true, launcher: '/l' }; },
+  };
+  const dir = tempDir('ccb-memrec-clean-');
+  const MR = require('./lib/memory-recovery.js');
+  const out = await MR.recover({
+    dir,
+    config: LOCAL_MEM,
+    ensure: (cfg, emit) => install.ensureLocalDaemon(cfg, emit, { launcher, java: async () => ({ ok: true, version: '21', bin: 'java' }), download: async () => { calls.push('download'); } }),
+  });
+  assertEq([out.status, calls, MR.readState(dir).url], ['ok', ['download', 'installLauncher'], 'http://127.0.0.1:7'], 'downloaded from the release, installed the launcher, started the server');
+});
+
+test('mcp-client: with no launcher on the machine the client provisions the server instead of only asking for backend_setup — background starts the recovery, wait mode awaits it', async () => {
+  const McpClient = require('../engine/mcp-client.js');
+  let recoveries = 0;
+  const bg = new McpClient({ transport: 'http', serverUrl: '', runDir: tempDir('ccb-rec1-'), restartMode: 'background', kickMarkerDir: tempDir('ccb-rec1k-'), restartWaitMs: 0, kickLauncher: () => false, provisioner: { start: () => { recoveries++; return { started: true }; } } });
+  bg._discoverDaemonUrl = () => 'http://127.0.0.1:1';
+  bg._httpHealth = async () => false;
+  let err = null;
+  try { await bg._ensureDaemon(); } catch (e) { err = e; }
+  assertEq([err && err.code, recoveries], ['MEMORY_SERVER_RESTARTING', 1]);
+  assert(/launcher was not found.*installing it from the published release/.test(err.message), err.message);
+  let awaited = 0;
+  const wait = new McpClient({ transport: 'http', serverUrl: '', runDir: tempDir('ccb-rec2-'), restartMode: 'wait', runLauncher: async () => ({ ok: false, missing: true, error: 'x' }), provisioner: { run: async () => { awaited++; return { status: 'ok' }; } } });
+  wait._discoverDaemonUrl = () => 'http://127.0.0.1:1';
+  wait._httpHealth = async () => false;
+  try { await wait._ensureDaemon(); } catch (e) { void e; }
+  assertEq(awaited, 1, 'wait mode awaits the install');
+  const remote = new McpClient({ transport: 'http', serverUrl: 'http://10.0.0.9:1', runDir: tempDir('ccb-rec3-'), restartMode: 'background', provisioner: { start: () => { recoveries++; return { started: true }; } } });
+  remote._httpHealth = async () => false;
+  await remote._ensureDaemon();
+  assertEq(recoveries, 1, 'a server the user pointed to is not ours to install');
+});
+
+test('dashboard: memory-disable puts the backend back on the local store; the backend status carries the recovery line', async () => {
+  const dash = require('./dashboard.js');
+  await withUserConfig({ backend: { type: 'mcp-memory', mcpMemory: { transport: 'http' } } }, async () => {
+    brainConfig._resetCache();
+    let body = null;
+    dash.postMemoryDisable({}, { writeHead() {}, end(b) { body = JSON.parse(b); } });
+    assertEq(body, { ok: true, restartRequired: true });
+    brainConfig._resetCache();
+    assertEq(brainConfig.load().backend.type, 'local');
+  });
+  const d = require('./lib/memory-recovery.js').describe(tempDir('ccb-memdesc-'));
+  assertEq(['launcherInstalled', 'serverVersion', 'recovery'].every((k) => k in d), true);
+});
+
 test('mcp-client restartMode (Q59): background = kick the launcher and fail FAST with a retryable error; wait = keep blocking (CLIs)', async () => {
   const McpClient = require('../engine/mcp-client.js');
   let kicks = 0;

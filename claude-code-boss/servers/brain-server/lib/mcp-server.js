@@ -34,6 +34,7 @@ import path from 'path';
 const require = createRequire(import.meta.url);
 const fs = require('fs');
 const crypto = require('crypto');
+require(path.join(path.dirname(fileURLToPath(import.meta.url)), '..', '..', '..', 'scripts', 'lib', 'memory-recovery.js'));
 
 // ─── Policy adjudication (Fase 3 micro-B0) — trusted evidence-bundle builder ───
 // The prepare tool scans the CURRENT code for a glob/shadow policy's matches,

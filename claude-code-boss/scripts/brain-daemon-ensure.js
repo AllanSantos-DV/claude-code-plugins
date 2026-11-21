@@ -205,6 +205,7 @@ function takeAutoUpdateNotice({ dir } = {}) {
  * @returns {Promise<'alive'|'kicked'|'error'>}
  */
 async function ensureMemoryServer(deps = {}) {
+  require('./lib/memory-recovery.js');
   const Client = deps.McpClient || require('../engine/mcp-client.js');
   // The real kick is CONFIRMED (kickLauncherVerified): a hidden launch that silently failed
   // reported "kicked" forever. The sync test seam (deps.kickLauncher) stays as it was.

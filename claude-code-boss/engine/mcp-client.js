@@ -91,6 +91,7 @@ class McpClient extends EventEmitter {
     this.kickMarkerDir = typeof opts.kickMarkerDir === 'string' ? opts.kickMarkerDir : undefined;
     this._now = typeof opts.now === 'function' ? opts.now : Date.now;
     this._runLauncher = typeof opts.runLauncher === 'function' ? opts.runLauncher : null; // test seam
+    this._provisioner = opts.provisioner || null; // test seam
     // One restart per outage: a later one only after the cooldown, so a daemon that cannot start is reported, not hammered.
     this.restartWaitMs = Number.isFinite(opts.restartWaitMs) ? opts.restartWaitMs : 5000;
     this._loadToken = typeof opts.loadToken === 'function' ? opts.loadToken : tokenFromVault;
@@ -159,9 +160,11 @@ class McpClient extends EventEmitter {
       const kicked = (this._kickLauncher || require('../scripts/lib/mcp-bootstrap/launcher.js').kickLauncher)();
       if (kicked) kickMarker.recordKick(this.kickMarkerDir, now);
       if (kicked && await this._waitAnnounced(this.restartWaitMs)) return;
+      const provisioner = this._provisioner || hostProvisioner;
+      if (!kicked && provisioner) provisioner.start({ dir: this.kickMarkerDir });
       const err = new Error(kicked
         ? `the memory server is not running — its launcher was started in the background and the server did not announce itself within ${this.restartWaitMs} ms; retry in a few seconds`
-        : 'the memory server is not running and its launcher was not found (~/.mcp-memory/bin) — run backend_setup');
+        : `the memory server is not running and its launcher was not found (~/.mcp-memory/bin) — ${provisioner ? 'installing it from the published release in the background (progress in the dashboard, Brain tab); retry in a minute' : 'run backend_setup'}`);
       err.code = 'MEMORY_SERVER_RESTARTING';
       throw err;
     }
@@ -169,6 +172,7 @@ class McpClient extends EventEmitter {
     const runLauncher = this._runLauncher || require('../scripts/lib/mcp-bootstrap/launcher.js').runLauncher;
     const r = await runLauncher({ timeoutMs: this.restartTimeoutMs });
     if (!r.ok) console.error(`[MCP] the launcher could not start the memory server: ${r.error}`);
+    if (r.missing && (this._provisioner || hostProvisioner)) await (this._provisioner || hostProvisioner).run({ dir: this.kickMarkerDir });
     // _connectHttp does the final health check and fails loud.
   }
 
@@ -527,5 +531,14 @@ class McpClient extends EventEmitter {
     this._initialized = false;
   }
 }
+
+let hostProvisioner = null;
+
+/**
+ * A host registers how to install the memory server on a machine that has none ({start, run}); the
+ * engine core never requires host code, and without one the client only reports the missing launcher.
+ * @param {{start: Function, run: Function}|null} provisioner
+ */
+McpClient.setProvisioner = (provisioner) => { hostProvisioner = provisioner; };
 
 module.exports = McpClient;

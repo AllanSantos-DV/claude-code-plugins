@@ -551,6 +551,11 @@ table{font-variant-numeric:tabular-nums}
         <div style="min-width:160px">
           <label class="field-label" data-i18n="brain.currentStatus">Status atual</label>
           <span id="brain-backend-status" style="font-size:.85rem">—</span>
+          <div id="brain-memory-recovery" class="text-muted" style="font-size:.78rem;margin-top:.2rem"></div>
+        </div>
+        <div style="align-self:flex-end;display:flex;gap:.5rem">
+          <button class="btn-sm" id="brain-memory-enable-btn" onclick="startMcpWizard()" style="display:none">Enable memory server</button>
+          <button class="btn-sm" id="brain-memory-disable-btn" onclick="disableMemoryServer()" style="display:none">Disable (use local memory)</button>
         </div>
       </div>
 
@@ -3537,6 +3542,11 @@ async function loadBrain() {
     const backend = await api('GET', '/api/brain/backend');
     const statusEl = document.getElementById('brain-backend-status');
     const labelEl = document.getElementById('brain-backend-status-label');
+    const enableBtn = document.getElementById('brain-memory-enable-btn');
+    const disableBtn = document.getElementById('brain-memory-disable-btn');
+    enableBtn.style.display = backend.mode === 'mcp-memory' && backend.connected ? 'none' : '';
+    disableBtn.style.display = backend.mode === 'mcp-memory' ? '' : 'none';
+    document.getElementById('brain-memory-recovery').textContent = describeMemoryRecovery(backend.memory);
     if (backend.mode === 'mcp-memory') {
       const ok = backend.connected;
       statusEl.textContent = ok ? '● Connected' : '● Disconnected';
@@ -4689,6 +4699,22 @@ async function loadLogs() {
 }
 
 // ─── MCP Wizard ────────────────────────────────────────────
+
+/** One line on what the automatic install of the memory server is doing or did on this machine. */
+function describeMemoryRecovery(memory) {
+  const r = memory && memory.recovery;
+  if (!r) return memory && memory.launcherInstalled ? 'Server installed' + (memory.serverVersion ? ' (v' + memory.serverVersion + ')' : '') : 'Server not installed on this machine';
+  if (r.status === 'running') return 'Installing the memory server from the published release: ' + (r.detail || 'working') + '...';
+  if (r.status === 'failed') return 'Automatic install failed: ' + r.error + ' (retried after 10 minutes, or press Enable)';
+  return 'Memory server ready: ' + (r.detail || '');
+}
+
+async function disableMemoryServer() {
+  try {
+    const r = await api('POST', '/api/brain/memory-disable');
+    if (r.ok) { document.getElementById('brain-restart-banner').style.display = 'flex'; loadBrain(); }
+  } catch (e) { document.getElementById('brain-memory-recovery').textContent = 'Could not disable: ' + e.message; }
+}
 
 async function startMcpWizard() {
   const btn = document.getElementById('mcp-wizard-btn');
