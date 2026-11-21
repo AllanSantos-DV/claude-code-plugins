@@ -5,6 +5,11 @@ segue [Keep a Changelog](https://keepachangelog.com/pt-BR/1.1.0/); a versão viv
 em `servers/rf-engine/rf_engine/__init__.py` (`__version__`) e em
 `.claude-plugin/plugin.json` — os dois têm de ser iguais (checado pelo `release-audit`).
 
+## [0.2.7] - 2026-11-20
+
+### Changed
+- **Autor e titular da licença em forma neutra** (`.claude-plugin/plugin.json` campo `author`, `LICENSE`): quem tinha a 0.2.6 recebe os metadados novos ao atualizar. Nenhuma mudança de comportamento no motor.
+
 ## [0.2.6] - 2026-10-27
 
 ### Fixed
