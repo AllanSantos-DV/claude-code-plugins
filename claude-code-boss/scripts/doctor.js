@@ -345,6 +345,28 @@ function checkBossConfig(ctx) {
   return b.items.map((i) => ({ ...i, critical: i.status === 'fail', ...(i.status !== 'ok' && b.actions.length ? { autofix: 'boss-config' } : {}) }));
 }
 
+/**
+ * A folder pinned to a 5m prompt-cache TTL: left by a switch whose ownership was lost (restored by the next report of
+ * a session in that folder), or standing for more than a day with no recorded switch (the user's value, or a record
+ * that is gone). Nothing is changed here.
+ */
+function checkFolderTtl(ctx) {
+  const base = { id: 'folder-ttl', label: 'Folders pinned to a 5-minute cache', critical: false };
+  const f = ctx.folderTtl;
+  if (!f) return { ...base, status: 'ok', detail: 'not measured here', fix: '' };
+  if (f.error) return { ...base, status: 'warn', detail: `could not scan the folders: ${f.error}`, fix: '' };
+  const stuck = f.rows.filter((r) => r.bossStuck);
+  const unrecorded = f.rows.filter((r) => r.unrecorded);
+  if (!stuck.length && !unrecorded.length) return { ...base, status: 'ok', detail: 'no folder is pinned to 5 minutes', fix: '' };
+  const parts = [];
+  if (stuck.length) parts.push(`left by a switch of ours: ${stuck.map((r) => r.folder).join(', ')} (restored at the next report of a session there)`);
+  if (unrecorded.length) parts.push(`pinned for more than a day with no recorded switch: ${unrecorded.map((r) => `${r.folder} (${Math.floor(r.ageDays)} days)`).join(', ')}`);
+  return {
+    ...base, status: 'warn', detail: parts.join('; '),
+    fix: unrecorded.length ? `If it was not set on purpose, remove env.CLAUDE_CODE_PROMPT_CACHE_TTL from ${unrecorded.map((r) => r.file).join(', ')}; the cache then lasts one hour again.` : '',
+  };
+}
+
 /** Compactions per model|window from ctx.compaction (summary.episodes; read by `--cost`): warns on a group that compacts too much, never changes the threshold. */
 function checkCompactionRate(ctx) {
   const base = { id: 'compaction-rate', label: 'Compaction frequency', critical: false };
@@ -778,7 +800,7 @@ function checkSetup(ctx) {
   return out;
 }
 
-const CHECKS = [checkNode, checkDaemonNode, checkNativeDeps, checkEnv, checkDataDirs, checkModel, checkDaemon, checkHookLatency, checkNativeRuntime, checkEmbedderProbe, checkEmbedderGuard, checkRecall, checkCrashes, checkCostTuning, checkBossConfig, checkFixedCost, checkCompactionRate, checkCompactionFloor, checkClaudeCompat, checkSubagentContexts, checkSessionModules, checkAutoCompactPoint, checkSetup, checkBackupAge, checkReadBurst, checkHooksEvents, checkSkillManager];
+const CHECKS = [checkNode, checkDaemonNode, checkNativeDeps, checkEnv, checkDataDirs, checkModel, checkDaemon, checkHookLatency, checkNativeRuntime, checkEmbedderProbe, checkEmbedderGuard, checkRecall, checkCrashes, checkCostTuning, checkBossConfig, checkFixedCost, checkCompactionRate, checkCompactionFloor, checkClaudeCompat, checkSubagentContexts, checkSessionModules, checkAutoCompactPoint, checkSetup, checkBackupAge, checkReadBurst, checkFolderTtl, checkHooksEvents, checkSkillManager];
 
 /** Run every pure check over a ctx snapshot (a check may return one result or a list). */
 function runChecks(ctx) {
@@ -1034,6 +1056,12 @@ async function gatherContext({ probe = false, audit = false, contextSources: wan
     } catch (e) { console.error(`[doctor] read-burst journal: ${e.message}`); readBurst = { error: e.message }; }
   }
 
+  let folderTtl = null;
+  try { folderTtl = { rows: require('./lib/folder-ttl-scan.js').scanFolders({ includeMetrics: audit }) }; } catch (e) {
+    console.error(`[doctor] folder ttl: ${e.message}`);
+    folderTtl = { error: e.message };
+  }
+
   let backup = null;
   try { backup = require('./lib/backup-age.js').newestBackup(path.join(require('../engine/lib/data-dir.js').globalDir(), 'backups')); } catch (e) {
     console.error(`[doctor] backups: ${e.message}`);
@@ -1067,6 +1095,7 @@ async function gatherContext({ probe = false, audit = false, contextSources: wan
     autoCompact,
     setup,
     backup,
+    folderTtl,
     readBurst,
   };
 }
@@ -1183,6 +1212,6 @@ module.exports = {
   runChecks, summarize, applyFixes, FIXERS, checkCostTuning, checkBossConfig, checkFixedCost, checkSetup, bossPluginId, gatherContext, formatReport,
   checkNode, checkDaemonNode, checkNativeDeps, checkEnv, checkDataDirs, checkModel, checkDaemon, checkNativeRuntime, checkEmbedderProbe, checkEmbedderGuard, checkRecall, checkCrashes, checkHooksEvents, checkSkillManager, gatherSkillManager, checkCompactionFloor, gatherCompactionFloor, checkAutoCompactPoint, gatherAutoCompact,
   findDataDirCandidates, probeEmbedder, gatherNative, gatherCrashes, MIN_MSVCP,
-  checkHookLatency, checkBackupAge,
+  checkHookLatency, checkBackupAge, checkFolderTtl,
   STANDARD_EVENTS, MIN_NODE,
 };

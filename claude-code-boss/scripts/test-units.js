@@ -21488,11 +21488,11 @@ test('doctor.runChecks + summarize: criticalFail flagged, counts add up', () => 
     hooksEvents: ['Stop'],
   };
   const results = doctor.runChecks(ctx);
-  assertEq(results.length, 27);
+  assertEq(results.length, 28);
   const s = doctor.summarize(results);
   assert(s.criticalFail, 'old node → criticalFail');
   assertEq(s.ok, false);
-  assertEq(s.counts.ok + s.counts.warn + s.counts.fail, 27);
+  assertEq(s.counts.ok + s.counts.warn + s.counts.fail, 28);
 });
 
 test('doctor.runChecks: all-healthy ctx → ok summary', () => {
@@ -32669,6 +32669,126 @@ test('folder-ttl.report: a zero-filled or garbled state file is moved aside and 
     fs.writeFileSync(sb.state, Buffer.alloc(16));
     assertEq(ft.sweep({ now: 2000, file: sb.state, run, engineIdle: ENGINE_IDLE_OFF }).swept, [], 'the sweep over an unreadable file does not throw');
   } finally { console.error = quiet; sb.done(); }
+});
+
+test('folder-ttl.report: a zeroed state file falls back to the previous generation, so the 5m we wrote is still ours and is restored', () => {
+  const ft = require('./lib/folder-ttl.js');
+  const sb = folderTtlSandbox();
+  const quiet = console.error; console.error = () => {};
+  try {
+    const dir = path.join(sb.root, 'proj'); fs.mkdirSync(dir, { recursive: true });
+    fs.mkdirSync(path.join(dir, '.claude'), { recursive: true });
+    fs.writeFileSync(sb.local(dir), JSON.stringify({ permissions: { allow: ['Bash(ls)'] } }));
+    const run = () => ({ status: 128, stdout: '', stderr: '' });
+    const noEvidence = () => false;
+    const opts = (now) => ({ now, file: sb.state, run, engineIdle: ENGINE_IDLE_OFF, evidence: noEvidence });
+    assertEq(ft.report({ sessionId: 'A', folder: dir, above: true }, opts(1000)).action, 'switched');
+    ft.report({ sessionId: 'A', folder: dir, above: true }, opts(2000));
+    assert(fs.existsSync(`${sb.state}.prev`), 'the replaced generation is kept next to the state');
+    fs.writeFileSync(sb.state, Buffer.alloc(3283));
+    const r = ft.report({ sessionId: 'A', folder: dir, above: false }, opts(3000));
+    assertEq([r.action, r.stateFromPrevious], ['restored', true], 'the previous generation still holds the ownership');
+    assertEq(sb.read(dir), { permissions: { allow: ['Bash(ls)'] } }, 'the 5m is gone and the user keys are intact');
+    assert(fs.readFileSync(r.stateRecovered).equals(Buffer.alloc(3283)), 'the zeroed file is kept aside');
+  } finally { console.error = quiet; sb.done(); }
+});
+
+test('folder-ttl.report: a 5m left with no ownership is restored when the metrics db recorded the switch, and kept when it did not', () => {
+  const ft = require('./lib/folder-ttl.js');
+  const sb = folderTtlSandbox();
+  try {
+    const run = () => ({ status: 128, stdout: '', stderr: '' });
+    const mk = (name) => {
+      const dir = path.join(sb.root, name); fs.mkdirSync(path.join(dir, '.claude'), { recursive: true });
+      fs.writeFileSync(sb.local(dir), JSON.stringify({ permissions: { allow: ['Bash(ls)'] }, env: { CLAUDE_CODE_PROMPT_CACHE_TTL: '5m' } }));
+      return dir;
+    };
+    const opts = (now, evidence) => ({ now, file: sb.state, run, engineIdle: ENGINE_IDLE_OFF, evidence });
+    const ours = mk('ours'); const theirs = mk('theirs');
+    let r = ft.report({ sessionId: 'A', folder: ours, above: false }, opts(1000, () => true));
+    assertEq([r.action, r.ttl], ['restored', null], 'recorded switch, no restore: the 5m is ours and goes back to 1h');
+    assertEq(sb.read(ours), { permissions: { allow: ['Bash(ls)'] } }, 'other keys intact, the 5m key removed');
+    r = ft.report({ sessionId: 'B', folder: theirs, above: false }, opts(1000, () => false));
+    assertEq(r.action, 'none', 'no record of a switch: the value is the user\'s');
+    r = ft.report({ sessionId: 'B', folder: theirs, above: true }, opts(2000, () => false));
+    assertEq(r.action, 'skipped', 'and it is never switched over');
+    assertEq(sb.read(theirs).env.CLAUDE_CODE_PROMPT_CACHE_TTL, '5m', 'left as it was');
+    const held = mk('held');
+    r = ft.report({ sessionId: 'C', folder: held, above: true }, opts(3000, () => true));
+    assertEq([r.action, r.ttl], ['adopted', '5m'], 'still past the threshold: ownership is taken back, nothing is written');
+    r = ft.report({ sessionId: 'C', folder: held, above: false }, opts(4000, () => true));
+    assertEq([r.action, r.ttl], ['restored', null], 'after the cut the recovered 5m is removed');
+    assertEq(sb.read(held), { permissions: { allow: ['Bash(ls)'] } }, 'the env block that held only our key is dropped');
+  } finally { sb.done(); }
+});
+
+test('folder-ttl-scan.scanFolders + doctor.checkFolderTtl: a 5m left by a lost switch is listed with its file facts, an old unrecorded one is flagged, an owned or fresh one is not', () => {
+  const scan = require('./lib/folder-ttl-scan.js');
+  const ft = require('./lib/folder-ttl.js');
+  const doctor = require('./doctor.js');
+  const sb = folderTtlSandbox();
+  try {
+    const mk = (name, env, extra = {}) => {
+      const dir = path.join(sb.root, name); fs.mkdirSync(path.join(dir, '.claude'), { recursive: true });
+      fs.writeFileSync(sb.local(dir), JSON.stringify({ ...extra, env }));
+      return dir;
+    };
+    const stuck = mk('stuck', { CLAUDE_CODE_PROMPT_CACHE_TTL: '5m', FOO: '1' }, { permissions: { allow: [] } });
+    const old = mk('old', { CLAUDE_CODE_PROMPT_CACHE_TTL: '5m' });
+    const fresh = mk('fresh', { CLAUDE_CODE_PROMPT_CACHE_TTL: '5m' });
+    const owned = mk('owned', { CLAUDE_CODE_PROMPT_CACHE_TTL: '5m' });
+    const hour = mk('hour', { CLAUDE_CODE_PROMPT_CACHE_TTL: '1h' });
+    const now = Date.now();
+    const threeDays = new Date(now - 3 * 86400000);
+    fs.utimesSync(sb.local(old), threeDays, threeDays);
+    fs.utimesSync(sb.local(stuck), threeDays, threeDays);
+    const folders = {};
+    for (const d of [stuck, old, fresh, owned, hour]) folders[ft.folderKey(d)] = { dir: d, sessions: {}, ...(d === owned ? { owned: { wrote: '5m' } } : {}) };
+    fs.writeFileSync(sb.state, JSON.stringify({ folders }));
+    const rows = scan.scanFolders({ stateFile: sb.state, now, evidence: (d) => d === stuck || d === owned });
+    const by = (d) => rows.find((r) => r.folder === d);
+    assertEq([by(hour).value, by(hour).bossStuck, by(hour).unrecorded], ['1h', false, false], 'a 1h value is listed but never flagged');
+    assertEq([by(stuck).bossStuck, by(stuck).unrecorded, by(stuck).lastAction], [true, false, 'switched'], 'recorded switch, no ownership: Boss-stuck');
+    assertEq(by(stuck).otherKeys, ['permissions', 'env.FOO'], 'the other keys of the file are listed');
+    assert(by(stuck).ageDays >= 3 && by(stuck).mtime < now, 'the file age is reported');
+    assertEq([by(old).bossStuck, by(old).unrecorded], [false, true], 'no recorded switch and older than a day: unrecorded');
+    assertEq([by(fresh).bossStuck, by(fresh).unrecorded], [false, false], 'a fresh unrecorded value is not flagged yet');
+    assertEq([by(owned).bossStuck, by(owned).unrecorded, by(owned).owned], [false, false, true], 'owned in the state: nothing to repair');
+    const warn = doctor.checkFolderTtl({ folderTtl: { rows } });
+    assertEq(warn.status, 'warn');
+    assert(warn.detail.includes(stuck) && warn.detail.includes(old) && !warn.detail.includes(fresh), warn.detail);
+    assert(warn.fix.includes(sb.local(old)), 'the fix names the file to clean');
+    assertEq(doctor.checkFolderTtl({ folderTtl: { rows: [by(fresh), by(owned)] } }).status, 'ok');
+    assertEq(doctor.checkFolderTtl({ folderTtl: { error: 'boom' } }).status, 'warn', 'a scan that failed is shown, not hidden');
+    const metricsStore = require('../engine/lib/metrics-store.js');
+    const orig = [metricsStore.listProjects, metricsStore.getEventLogIsolated];
+    const extra = mk('only-in-metrics', { CLAUDE_CODE_PROMPT_CACHE_TTL: '5m' });
+    try {
+      metricsStore.listProjects = () => ['p1'];
+      metricsStore.getEventLogIsolated = () => [{ ts: 2, payload: { action: 'switched', folder: extra } }, { ts: 1, payload: { action: 'restored', folder: extra } }];
+      const all = scan.scanFolders({ includeMetrics: true, stateFile: sb.state, now });
+      const found = all.find((r) => r.folder === extra);
+      assertEq([found.bossStuck, found.lastAction], [true, 'switched'], 'a folder only the metrics db knows is scanned too, newest event wins');
+    } finally { [metricsStore.listProjects, metricsStore.getEventLogIsolated] = orig; }
+  } finally { sb.done(); }
+});
+
+test('folder-ttl.recordedSwitch: the newest switch/restore/release event of the folder decides, other folders do not count', () => {
+  const ft = require('./lib/folder-ttl.js');
+  const metricsStore = require('../engine/lib/metrics-store.js');
+  const orig = metricsStore.getEventLogIsolated;
+  const dir = path.join(tempDir('ccb-folder-ttl-ev-'), 'proj');
+  const ev = (action, folder) => ({ payload: { action, folder } });
+  try {
+    metricsStore.getEventLogIsolated = () => [ev('none', dir), ev('switched', dir), ev('restored', dir + '-other'), ev('restored', dir)];
+    assertEq(ft.recordedSwitch(dir), true, 'newest relevant event is a switch (a restore of another folder and a none are ignored)');
+    metricsStore.getEventLogIsolated = () => [ev('restored', dir), ev('switched', dir)];
+    assertEq(ft.recordedSwitch(dir), false, 'restored after the switch');
+    metricsStore.getEventLogIsolated = () => [ev('released', dir), ev('switched', dir)];
+    assertEq(ft.recordedSwitch(dir), false, 'released: the value became the user\'s');
+    metricsStore.getEventLogIsolated = () => [];
+    assertEq(ft.recordedSwitch(dir), false, 'no events: not ours');
+  } finally { metricsStore.getEventLogIsolated = orig; }
 });
 
 test('folder-ttl.report: a file we create is removed on restore (and its .claude dir), a dead owner is swept at anyone\'s next report, session end restores', () => {

@@ -24,11 +24,15 @@
  *   - a file we create inside a git repo goes to the repo's `info/exclude` (local, never committed) when git does
  *     not already ignore it.
  * The daemon is the single writer (every module reports through it), so the state needs no cross-process lock.
+ *
+ * The state file keeps its previous generation (`<state>.prev`): when the current file does not parse, the previous
+ * one is used. When ownership is lost anyway, the 5m value found in a folder is ours if the metrics db records a
+ * switch of that folder with no restore after it; a value with no such record stays the user's.
  */
 const fs = require('fs');
 const path = require('path');
 const { spawnSync } = require('child_process');
-const { writeJsonAtomic } = require('../../engine/lib/atomic-write.js');
+const { writeJsonAtomic, writeFileAtomic } = require('../../engine/lib/atomic-write.js');
 
 const KEY = 'CLAUDE_CODE_PROMPT_CACHE_TTL';
 const SWITCHED = '5m';
@@ -136,29 +140,88 @@ function restore(dir, owned) {
   return { restored: true };
 }
 
-/**
- * The folder state. A file that does not parse (a crash left it zero-filled or torn: the write is atomic but not
- * fsynced) is moved aside and the state starts empty, so one bad file cannot fail every later report.
- * @param {string} file
- * @returns {{folders: object, recovered?: string}}  `recovered` = where the unreadable file went
- */
-function loadState(file) {
-  if (!fs.existsSync(file)) return { folders: {} };
+const previousPath = (file) => `${file}.prev`;
+
+/** The state in `file`, or null when it is absent or does not parse. */
+function readState(file) {
+  if (!fs.existsSync(file)) return null;
   try {
     const s = JSON.parse(fs.readFileSync(file, 'utf8'));
-    return s && typeof s === 'object' && s.folders ? s : { folders: {} };
+    return s && typeof s === 'object' && s.folders ? s : null;
   } catch (err) {
     if (!(err instanceof SyntaxError)) throw err;
-    const aside = `${file}.corrupt-${Date.now()}`;
-    fs.renameSync(file, aside);
-    console.error(`[folder-ttl] state file unreadable (${err.message.slice(0, 80)}); moved to ${aside}, starting empty`);
-    return { folders: {}, recovered: aside };
+    return null;
   }
 }
 
+/**
+ * The folder state. A file that does not parse (a crash left it zero-filled or torn) is moved aside and the previous
+ * generation is used; with none, the state starts empty, so one bad file cannot fail every later report.
+ * @param {string} file
+ * @returns {{folders: object, recovered?: string, fromPrevious?: boolean}}  `recovered` = where the unreadable file went
+ */
+function loadState(file) {
+  if (!fs.existsSync(file)) return { folders: {} };
+  const s = readState(file);
+  if (s) return s;
+  const raw = fs.readFileSync(file);
+  let parsed = null;
+  try { parsed = JSON.parse(raw.toString('utf8')); } catch (err) { void err; }
+  if (parsed && typeof parsed === 'object') return { folders: {} };
+  const aside = `${file}.corrupt-${Date.now()}`;
+  fs.renameSync(file, aside);
+  const previous = readState(previousPath(file));
+  console.error(`[folder-ttl] state file unreadable; moved to ${aside}, ${previous ? 'using the previous generation' : 'starting empty'}`);
+  return previous ? { ...previous, recovered: aside, fromPrevious: true } : { folders: {}, recovered: aside };
+}
+
+/** Write the state, keeping the generation it replaces while that one still parses. */
+function saveState(file, state) {
+  if (readState(file)) writeFileAtomic(previousPath(file), fs.readFileSync(file));
+  writeJsonAtomic(file, state);
+}
+
+/**
+ * Did we switch this folder and never restore it? The newest switch/restore/release event of the folder in the
+ * metrics db decides: a switch is ours, anything else is not.
+ * @param {string} dir
+ * @returns {boolean}
+ */
+function recordedSwitch(dir) {
+  const key = folderKey(dir);
+  const events = require('../../engine/lib/metrics-store.js').getEventLogIsolated(
+    require('../../engine/lib/metrics-project.js').metricsKeyFor(dir), { eventName: 'compaction.folder', limit: 200 });
+  for (const e of events) {
+    const p = e.payload || {};
+    if (!['switched', 'restored', 'released'].includes(p.action) || typeof p.folder !== 'string' || folderKey(p.folder) !== key) continue;
+    return p.action === 'switched';
+  }
+  return false;
+}
+
+/**
+ * A 5m value in the folder file that the state does not own, with a recorded switch behind it: ownership is ours
+ * again (the state was lost), so it is restored like any other. Judged once per file change.
+ * @returns {boolean} true when ownership was recovered
+ */
+function adoptOrphan(entry, evidence) {
+  const file = path.join(entry.dir, LOCAL_REL);
+  let st;
+  try { st = fs.statSync(file); } catch (err) { if (err.code === 'ENOENT') return false; throw err; }
+  if (entry.judgedMtime === st.mtimeMs) return false;
+  let json;
+  try { json = readLocal(file); } catch (err) { console.error(`[folder-ttl] ${err.message}`); return false; }
+  if (!json || !json.env || json.env[KEY] !== SWITCHED) return false;
+  entry.judgedMtime = st.mtimeMs;
+  if (!evidence(entry.dir)) return false;
+  entry.owned = { wrote: SWITCHED, createdFile: false, createdDir: false, hadEnv: Object.keys(json.env).length > 1, at: Date.now(), git: null, recovered: true };
+  return true;
+}
+
 /** Bring one folder's file in line with its plan. Mutates the entry; returns what happened. */
-function reconcile(entry, now, { run = hiddenSpawnSync, liveMs = LIVE_MS, stepAside = false } = {}) {
+function reconcile(entry, now, { run = hiddenSpawnSync, liveMs = LIVE_MS, stepAside = false, evidence = recordedSwitch } = {}) {
   const plan = planFolder(entry, now, liveMs);
+  const adopted = !entry.owned && !entry.userValue && adoptOrphan(entry, evidence);
   const deferred = stepAside && plan.want;
   if (deferred) plan.want = null;
   for (const id of Object.keys(entry.sessions || {})) if (!plan.live.includes(id)) delete entry.sessions[id];
@@ -171,7 +234,10 @@ function reconcile(entry, now, { run = hiddenSpawnSync, liveMs = LIVE_MS, stepAs
     const r = restore(entry.dir, entry.owned);
     delete entry.owned;
     action = r.restored ? 'restored' : 'released';
-    detail = r.reason || null;
+    detail = r.reason || (adopted ? 'ownership recovered from the recorded switch' : null);
+  } else if (adopted) {
+    action = 'adopted';
+    detail = 'ownership recovered from the recorded switch';
   }
   if (!plan.want) delete entry.userValue; // judged again the next time every session is past the threshold
   if (deferred && action === 'none') detail = `the engine's idle compaction is on (${stepAside}): the 1 h TTL stays so it can compact while the cache is warm`;
@@ -182,13 +248,13 @@ function reconcile(entry, now, { run = hiddenSpawnSync, liveMs = LIVE_MS, stepAs
  * Reconcile every folder of the state (dead owners restored, empty entries dropped). Mutates the state.
  * @returns {{mine: (object|null), swept: Array, errors: string[]}} `mine` = the outcome of `key`'s folder
  */
-function reconcileAll(state, key, now, { run, liveMs, stepAside }) {
+function reconcileAll(state, key, now, { run, liveMs, stepAside, evidence }) {
   let mine = null;
   const swept = [];
   const errors = [];
   for (const [k, e] of Object.entries(state.folders)) {
     try {
-      const out = reconcile(e, now, { run, liveMs, stepAside });
+      const out = reconcile(e, now, { run, liveMs, stepAside, evidence });
       if (k === key) mine = out;
       else if (out.action !== 'none') swept.push({ folder: e.dir, action: out.action, detail: out.detail });
     } catch (err) {
@@ -212,7 +278,7 @@ function stepAsideFor(engineIdle) {
  * @param {{now?:number, file?:string, run?:Function, liveMs?:number}} [opts]
  * @returns {{folder:string, live:number, allAbove:boolean, ttl:('5m'|null), action:string, detail:(string|null), swept:Array}}
  */
-function report(r, { now = Date.now(), file = statePath(), run = hiddenSpawnSync, liveMs = LIVE_MS, engineIdle = require('./engine-flags.js').idleCompaction } = {}) {
+function report(r, { now = Date.now(), file = statePath(), run = hiddenSpawnSync, liveMs = LIVE_MS, engineIdle = require('./engine-flags.js').idleCompaction, evidence = recordedSwitch } = {}) {
   if (!r || typeof r.sessionId !== 'string' || !r.sessionId) throw new Error('folder-ttl: sessionId is required');
   const key = folderKey(r.folder);
   const stepAside = stepAsideFor(engineIdle);
@@ -220,12 +286,13 @@ function report(r, { now = Date.now(), file = statePath(), run = hiddenSpawnSync
   const entry = state.folders[key] || (state.folders[key] = { dir: path.resolve(r.folder), sessions: {} });
   if (r.end) delete entry.sessions[r.sessionId];
   else entry.sessions[r.sessionId] = { above: r.above === true, seenAt: now };
-  const { mine, swept, errors } = reconcileAll(state, key, now, { run, liveMs, stepAside });
-  const { recovered } = state;
+  const { mine, swept, errors } = reconcileAll(state, key, now, { run, liveMs, stepAside, evidence });
+  const { recovered, fromPrevious } = state;
   delete state.recovered;
-  writeJsonAtomic(file, state);
+  delete state.fromPrevious;
+  saveState(file, state);
   if (errors.length && (!mine || mine.action !== 'error')) swept.push(...errors.map((m) => ({ action: 'error', detail: m })));
-  return { folder: entry.dir, live: mine.live.length, allAbove: mine.allAbove, ttl: mine.ttl, action: mine.action, detail: mine.detail, swept, ...(recovered && { stateRecovered: recovered }) };
+  return { folder: entry.dir, live: mine.live.length, allAbove: mine.allAbove, ttl: mine.ttl, action: mine.action, detail: mine.detail, swept, ...(recovered && { stateRecovered: recovered, ...(fromPrevious && { stateFromPrevious: true }) }) };
 }
 
 /**
@@ -234,14 +301,17 @@ function report(r, { now = Date.now(), file = statePath(), run = hiddenSpawnSync
  * @param {{now?:number, file?:string, run?:Function, liveMs?:number}} [opts]
  * @returns {{swept: Array}}
  */
-function sweep({ now = Date.now(), file = statePath(), run = hiddenSpawnSync, liveMs = LIVE_MS, engineIdle = require('./engine-flags.js').idleCompaction } = {}) {
+function sweep({ now = Date.now(), file = statePath(), run = hiddenSpawnSync, liveMs = LIVE_MS, engineIdle = require('./engine-flags.js').idleCompaction, evidence = recordedSwitch } = {}) {
   const state = loadState(file);
   if (!Object.keys(state.folders).length) return { swept: [] };
+  const fromPrevious = state.fromPrevious;
+  delete state.recovered;
+  delete state.fromPrevious;
   const before = JSON.stringify(state);
-  const { swept, errors } = reconcileAll(state, null, now, { run, liveMs, stepAside: stepAsideFor(engineIdle) });
-  if (JSON.stringify(state) !== before) writeJsonAtomic(file, state);
+  const { swept, errors } = reconcileAll(state, null, now, { run, liveMs, stepAside: stepAsideFor(engineIdle), evidence });
+  if (fromPrevious || JSON.stringify(state) !== before) saveState(file, state);
   swept.push(...errors.map((m) => ({ action: 'error', detail: m })));
   return { swept };
 }
 
-module.exports = { KEY, SWITCHED, LIVE_MS, SWEEP_MS, folderKey, planFolder, applySwitch, restore, reconcile, report, sweep, excludeFromGit, statePath };
+module.exports = { KEY, SWITCHED, LIVE_MS, SWEEP_MS, folderKey, planFolder, applySwitch, restore, reconcile, report, sweep, excludeFromGit, statePath, recordedSwitch, readState, loadState, saveState };
