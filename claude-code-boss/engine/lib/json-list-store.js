@@ -5,13 +5,13 @@
  * trigger-evidence stores. Best-effort, last-writer-wins; never throws.
  */
 const fs = require('fs');
-const { writeJsonAtomic } = require('./atomic-write.js');
+const { writeJsonAtomic, retryTransient } = require('./atomic-write.js');
 
 /** The store at `file`; a missing/corrupt/unreadable file → `{ [key]: [] }` (logged when not missing). */
 function loadList(file, key, label) {
   try {
     if (!fs.existsSync(file)) return { [key]: [] };
-    const obj = JSON.parse(fs.readFileSync(file, 'utf-8'));
+    const obj = JSON.parse(retryTransient(() => fs.readFileSync(file, 'utf-8')));
     return obj && typeof obj === 'object' && Array.isArray(obj[key]) ? obj : { [key]: [] };
   } catch (err) {
     console.error(`[${label}] load failed (${file}): ${err.message}`);

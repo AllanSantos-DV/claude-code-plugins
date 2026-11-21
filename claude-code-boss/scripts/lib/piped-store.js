@@ -13,7 +13,7 @@
  */
 const fs = require('fs');
 const path = require('path');
-const { writeJsonAtomic } = require('../../engine/lib/atomic-write.js');
+const { writeJsonAtomic, retryTransient } = require('../../engine/lib/atomic-write.js');
 
 const MAX_KEYS = 500;
 const ASK_AT = 2;
@@ -25,7 +25,7 @@ const ASK_AT = 2;
  */
 function touch({ file, project, scriptId, filter, windowDays, deliverable = true, now = Date.now() }) {
   let state = {};
-  try { state = JSON.parse(fs.readFileSync(file, 'utf-8')); } catch (err) { if (err.code !== 'ENOENT') console.error(`[piped-store] read ${file}: ${err.message}`); }
+  try { state = JSON.parse(retryTransient(() => fs.readFileSync(file, 'utf-8'))); } catch (err) { if (err.code !== 'ENOENT') console.error(`[piped-store] read ${file}: ${err.message}`); }
   const entries = state && typeof state.entries === 'object' && state.entries ? state.entries : {};
   const windowMs = windowDays * 86400_000;
   for (const k of Object.keys(entries)) if (!entries[k] || now - (entries[k].last || 0) > windowMs) delete entries[k];

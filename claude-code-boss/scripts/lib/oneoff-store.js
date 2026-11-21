@@ -16,6 +16,7 @@
  */
 const fs = require('fs');
 const { saveJson } = require('../../engine/lib/json-file.js');
+const { retryTransient } = require('../../engine/lib/atomic-write.js');
 const path = require('path');
 const crypto = require('crypto');
 const { canonicalSig } = require('../../engine/lib/command-signature.js');
@@ -136,18 +137,32 @@ function remember(p, stamp, store) {
   if (_cache.size > MAX_CACHED) _cache.delete(_cache.keys().next().value);
 }
 
+// Stores load() could not read: saving one would replace every entry on disk with nothing.
+const _unreadable = new WeakSet();
+
 function load(dataDir, projectKey) {
   const p = storePath(dataDir, projectKey);
+  let stamp, text;
   try {
-    if (!fs.existsSync(p)) { _cache.delete(p); return { entries: {} }; }
-    const stamp = fileStamp(p);
+    stamp = retryTransient(() => fileStamp(p));
     const hit = _cache.get(p);
     if (hit && hit.stamp === stamp) return hit.store;
-    const obj = JSON.parse(fs.readFileSync(p, 'utf-8'));
+    text = retryTransient(() => fs.readFileSync(p, 'utf-8'));
+  } catch (err) {
+    _cache.delete(p);
+    if (err.code === 'ENOENT') return { entries: {} };
+    console.error(`[oneoff-store] load failed (${p}): ${err.message}`);
+    const empty = { entries: {} };
+    _unreadable.add(empty);
+    return empty;
+  }
+  try {
+    const obj = JSON.parse(text);
     const store = obj && typeof obj === 'object' && obj.entries ? pruneOrphanKeys(obj) : { entries: {} };
     remember(p, stamp, store);
     return store;
   } catch (err) {
+    // A file that reads but does not parse cannot be recovered; the next save starts it over.
     console.error(`[oneoff-store] load failed (${p}): ${err.message}`);
     _cache.delete(p);
     return { entries: {} };
@@ -158,6 +173,10 @@ function load(dataDir, projectKey) {
 // concurrent load→mutate→save cycles can still lose an update (see atomic-write.js).
 function save(dataDir, projectKey, store) {
   const p = storePath(dataDir, projectKey);
+  if (_unreadable.has(store)) {
+    console.error(`[oneoff-store] save skipped (${p}): the store could not be read, so writing it would erase every entry`);
+    return false;
+  }
   const ok = saveJson(p, store, 'oneoff-store');
   if (!ok) { _cache.delete(p); return ok; }
   try { remember(p, fileStamp(p), store); } catch (err) { void err; _cache.delete(p); }

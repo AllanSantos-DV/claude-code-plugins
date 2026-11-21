@@ -14,7 +14,7 @@ const path = require('path');
 
 const { sanitizeSessionId } = require('../../engine/lib/session-id.js');
 const { dataDir } = require('../../engine/lib/data-dir.js');
-const { writeJsonAtomic } = require('../../engine/lib/atomic-write.js');
+const { writeJsonAtomic, retryTransient } = require('../../engine/lib/atomic-write.js');
 
 const DATA_DIR = dataDir();
 const RUNTIME_DIR = path.join(DATA_DIR, '.runtime');
@@ -28,7 +28,7 @@ function _load(sessionId) {
   try {
     const p = _path(sessionId);
     if (!fs.existsSync(p)) return { keys: {} };
-    const obj = JSON.parse(fs.readFileSync(p, 'utf-8'));
+    const obj = JSON.parse(retryTransient(() => fs.readFileSync(p, 'utf-8')));
     if (!obj || typeof obj !== 'object' || typeof obj.keys !== 'object') return { keys: {} };
     const now = Date.now();
     for (const k of Object.keys(obj.keys)) {

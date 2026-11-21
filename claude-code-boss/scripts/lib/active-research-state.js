@@ -17,7 +17,7 @@ const fs = require('fs');
 const path = require('path');
 
 const { dataDir } = require('../../engine/lib/data-dir.js');
-const { writeJsonAtomic } = require('../../engine/lib/atomic-write.js');
+const { writeJsonAtomic, retryTransient } = require('../../engine/lib/atomic-write.js');
 
 const DATA_DIR = dataDir();
 const STATE = path.join(DATA_DIR, '.runtime', 'active-research-state.json');
@@ -27,7 +27,7 @@ const COOLDOWN_SWEEP_MS = 24 * 60 * 60 * 1000;
 
 function _read() {
   try {
-    const raw = fs.readFileSync(STATE, 'utf-8');
+    const raw = retryTransient(() => fs.readFileSync(STATE, 'utf-8'));
     const o = JSON.parse(raw);
     if (!o || typeof o !== 'object') throw new Error('not object');
     o.sessions = o.sessions && typeof o.sessions === 'object' ? o.sessions : {};

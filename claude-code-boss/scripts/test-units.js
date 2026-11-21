@@ -8555,6 +8555,42 @@ test('oneoff-store: load reaproveita o store ja lido enquanto o arquivo nao muda
   assert(b !== a && 'npm run build' in b.entries && !('npm test' in b.entries), 'external write → fresh read');
 });
 
+function withReadFailures(file, code, times, fn) {
+  const real = fs.readFileSync;
+  let left = times;
+  fs.readFileSync = function (p, ...rest) {
+    if (left > 0 && path.resolve(String(p)) === path.resolve(file)) {
+      left--;
+      throw Object.assign(new Error(`${code}: operation not permitted, open '${p}'`), { code });
+    }
+    return real.call(this, p, ...rest);
+  };
+  try { return fn(); } finally { fs.readFileSync = real; }
+}
+test('oneoff-store: uma leitura que falha por um instante (outro processo trocando o arquivo no Windows) e tentada de novo e conta a recorrencia certa', () => {
+  const dataDir = freshDataDir();
+  const f = path.join(dataDir, 'curation-oneoff', 'proj.json');
+  fs.mkdirSync(path.dirname(f), { recursive: true });
+  const now = Date.now();
+  fs.writeFileSync(f, JSON.stringify({ entries: { 'npm test': { sig: 'npm test', seen: [now - 1000], sessions: [] }, 'npm run build': { sig: 'npm run build', seen: [now - 1000], sessions: [] } } }));
+  const r = withReadFailures(f, 'EPERM', 2, () => oneoff.touch(dataDir, 'proj', 'npm test', { sessionId: 's', now, create: true }));
+  assertEq([r.matched, r.created, r.count], [true, false, 2], 'the retried read found the seeded entry');
+  assert('npm run build' in JSON.parse(fs.readFileSync(f, 'utf8')).entries, 'the other entries survive');
+});
+test('oneoff-store: uma leitura que segue falhando nao grava um store vazio por cima do arquivo (apagava toda recorrencia e marcacao one-hit do projeto)', () => {
+  const dataDir = freshDataDir();
+  const f = path.join(dataDir, 'curation-oneoff', 'proj.json');
+  fs.mkdirSync(path.dirname(f), { recursive: true });
+  const now = Date.now();
+  fs.writeFileSync(f, JSON.stringify({ entries: { 'npm run build': { sig: 'npm run build', seen: [now - 1000], sessions: [], oneHit: true, markedAt: now - 1000 } } }));
+  withReadFailures(f, 'EPERM', 1000, () => {
+    oneoff.touch(dataDir, 'proj', 'npm test', { sessionId: 's', now, create: true });
+    oneoff.mark(dataDir, 'proj', { aliases: ['npm run lint'], now });
+  });
+  const kept = JSON.parse(fs.readFileSync(f, 'utf8')).entries;
+  assert(kept['npm run build'] && kept['npm run build'].oneHit === true, 'the one-hit marking survives an unreadable store');
+});
+
 test('curation-detect: saida volumosa de EXPLORACAO nao cria entrada no store de one-off (nunca vira script; so inchava o store)', async () => {
   const detect = require('./curation-detect.js');
   const journal = require('./lib/turn-journal.js');
@@ -35044,7 +35080,8 @@ test('main-thread-stats: a blocked main thread is counted and dated as a long st
     await new Promise((r) => setTimeout(r, 150));
     const s = m.stats();
     assert(s.longStalls.count >= 1, `stall counted: ${JSON.stringify(s.longStalls)}`);
-    const stall = s.longStalls.recent[s.longStalls.recent.length - 1];
+    // A loaded machine can add a second stall after the blocked window; judge the one nearest it.
+    const stall = s.longStalls.recent.reduce((a, b) => (Math.abs(Date.parse(b.at) - before) < Math.abs(Date.parse(a.at) - before) ? b : a));
     assert(stall.ms >= 200, `stall length: ${stall.ms}`);
     assert(Math.abs(Date.parse(stall.at) - before) < 150, `stall dated at its start: ${stall.at} vs ${new Date(before).toISOString()}`);
     assert(s.loopDelay.maxMs >= 200, `histogram max: ${s.loopDelay.maxMs}`);

@@ -39,6 +39,7 @@
  */
 const fs = require('fs');
 const { saveJson } = require('./json-file.js');
+const { retryTransient } = require('./atomic-write.js');
 const path = require('path');
 const crypto = require('crypto');
 const { redact } = require('./redact.js');
@@ -92,7 +93,7 @@ function loadResult(dataDir) {
   const p = storePath(dataDir);
   try {
     if (!fs.existsSync(p)) return { records: {}, corrupt: false };
-    const obj = JSON.parse(fs.readFileSync(p, 'utf-8'));
+    const obj = JSON.parse(retryTransient(() => fs.readFileSync(p, 'utf-8')));
     if (obj && typeof obj === 'object' && obj.records && typeof obj.records === 'object') {
       return { records: obj.records, corrupt: false };
     }

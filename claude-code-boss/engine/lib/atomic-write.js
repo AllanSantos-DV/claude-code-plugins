@@ -122,4 +122,23 @@ function writeJsonAtomic(file, obj, io) {
   writeFileAtomic(file, JSON.stringify(obj), io);
 }
 
-module.exports = { writeFileAtomic, writeJsonAtomic, tempPathFor };
+/**
+ * Runs a synchronous fs call, retrying the same transient Windows codes as the rename: a file
+ * another process is replacing through `writeFileAtomic` is briefly delete-pending, and a
+ * stat or open of it then fails with EPERM/EACCES/EBUSY although the new content lands a
+ * moment later. Any other error (ENOENT included) is thrown at once.
+ * @template T
+ * @param {() => T} fn
+ * @returns {T}
+ */
+function retryTransient(fn) {
+  for (let attempt = 1; ; attempt++) {
+    try { return fn(); }
+    catch (err) {
+      if (attempt >= RENAME_ATTEMPTS || !TRANSIENT_RENAME.has(err && err.code)) throw err;
+      _sleepMs(Math.min(2 * attempt, 25));
+    }
+  }
+}
+
+module.exports = { writeFileAtomic, writeJsonAtomic, tempPathFor, retryTransient };
