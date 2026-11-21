@@ -11327,6 +11327,23 @@ test('semver: plugin.json PINS the version and it equals package.json (without i
   assert(/\.claude-plugin', 'plugin\.json'\), 'version'/.test(sync), 'sync-version keeps it in step on every bump');
 });
 
+test('authorship: the plugin manifest names its author, and the repository manifests and licences do too', () => {
+  const AUTHOR = 'Allan Santos';
+  const pj = JSON.parse(fs.readFileSync(path.join(ROOT, '.claude-plugin', 'plugin.json'), 'utf8'));
+  assertEq(pj.author && pj.author.name, AUTHOR);
+  const repo = path.join(ROOT, '..');
+  const marketplace = path.join(repo, '.claude-plugin', 'marketplace.json');
+  if (!fs.existsSync(marketplace)) return;
+  const mk = JSON.parse(fs.readFileSync(marketplace, 'utf8'));
+  assertEq(mk.owner && mk.owner.name, AUTHOR);
+  for (const p of mk.plugins) assertEq(p.author && p.author.name, AUTHOR);
+  const rf = JSON.parse(fs.readFileSync(path.join(repo, 'rf-reviewer', '.claude-plugin', 'plugin.json'), 'utf8'));
+  assertEq(rf.author && rf.author.name, AUTHOR);
+  for (const lic of ['LICENSE', path.join('claude-code-boss', 'LICENSE'), path.join('rf-reviewer', 'LICENSE')]) {
+    assert(/^Copyright \(c\) \d{4} Allan Santos$/m.test(fs.readFileSync(path.join(repo, lic), 'utf8')), lic + ' carries the copyright holder');
+  }
+});
+
 // ─── Sprint 3 — correctness fixes (recall/state that failed silently) ─────────
 const arDetectS3 = require('./active-research-detect.js');
 test('C4 active-research: buildLibRegex([]) never matches (no fail-open noise)', () => {
