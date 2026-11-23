@@ -14,7 +14,7 @@ const path = require('path');
 
 const { sanitizeSessionId } = require('../../engine/lib/session-id.js');
 const { dataDir } = require('../../engine/lib/data-dir.js');
-const { writeJsonAtomic, retryTransient } = require('../../engine/lib/atomic-write.js');
+const { writeJsonAtomic, retryTransient, markUnreadable, isUnreadable } = require('../../engine/lib/atomic-write.js');
 
 const DATA_DIR = dataDir();
 const RUNTIME_DIR = path.join(DATA_DIR, '.runtime');
@@ -35,11 +35,16 @@ function _load(sessionId) {
       if (typeof obj.keys[k] !== 'number' || (now - obj.keys[k]) > TTL_MS) delete obj.keys[k];
     }
     return obj;
-  } catch { /* absent/corrupt: empty */ return { keys: {} }; }
+  } catch (err) {
+    if (err instanceof SyntaxError || err.code === 'ENOENT') return { keys: {} };
+    console.error(`[cooldown-store] load failed: ${err.message}`);
+    return markUnreadable({ keys: {} });
+  }
 }
 
 // Best-effort, last-writer-wins (tear-free publish, no cross-process lock).
 function _save(sessionId, obj) {
+  if (isUnreadable(obj)) return;
   try {
     writeJsonAtomic(_path(sessionId), obj);
   } catch (err) {

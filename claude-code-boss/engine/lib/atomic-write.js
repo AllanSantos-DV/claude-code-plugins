@@ -141,4 +141,26 @@ function retryTransient(fn) {
   }
 }
 
-module.exports = { writeFileAtomic, writeJsonAtomic, tempPathFor, retryTransient };
+const _unreadable = new WeakSet();
+
+/**
+ * Marks the empty stand-in a store returns when its file exists but could not be read: saving it
+ * would replace every entry on disk with nothing.
+ * @template T
+ * @param {T} value
+ * @returns {T}
+ */
+function markUnreadable(value) {
+  _unreadable.add(value);
+  return value;
+}
+
+/**
+ * @param {object} value
+ * @returns {boolean} true when `value` stands in for a store file that could not be read
+ */
+function isUnreadable(value) {
+  return _unreadable.has(value);
+}
+
+module.exports = { writeFileAtomic, writeJsonAtomic, tempPathFor, retryTransient, markUnreadable, isUnreadable };

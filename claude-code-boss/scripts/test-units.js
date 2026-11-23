@@ -8599,6 +8599,64 @@ test('oneoff-store: uma leitura que segue falhando nao grava um store vazio por 
   assert(kept['npm run build'] && kept['npm run build'].oneHit === true, 'the one-hit marking survives an unreadable store');
 });
 
+test('piped-store: uma leitura que segue falhando nao grava um store de uma chave por cima do arquivo, e uma que falha por um instante e tentada de novo', () => {
+  const piped = require('./lib/piped-store.js');
+  const f = path.join(tempDir('ccb-piped-'), 'piped.json');
+  const args = { file: f, project: 'p', scriptId: 's', filter: 'tail -3', windowDays: 7 };
+  const now = Date.now();
+  fs.writeFileSync(f, JSON.stringify({ entries: { 'p\u0000other\u0000head -1': { count: 1, asked: false, last: now } } }));
+  const retried = withReadFailures(f, 'EPERM', 2, () => piped.touch({ ...args, now }));
+  assertEq(retried.count, 1, 'the retried read counted the new key');
+  assertEq(Object.keys(JSON.parse(fs.readFileSync(f, 'utf8')).entries).length, 2, 'the seeded key survives the retried read');
+  withReadFailures(f, 'EPERM', 1000, () => piped.touch({ ...args, scriptId: 'x', now }));
+  const kept = Object.keys(JSON.parse(fs.readFileSync(f, 'utf8')).entries);
+  assertEq(kept.length, 2, `an unreadable store is not written over: ${kept}`);
+});
+
+test('json-list-store: um arquivo que existe mas nao pode ser lido nao e sobrescrito por uma lista de um registro', () => {
+  const jls = require('../engine/lib/json-list-store.js');
+  const f = path.join(tempDir('ccb-jls-'), 'ledger.json');
+  fs.writeFileSync(f, JSON.stringify({ records: [{ n: 1 }, { n: 2 }] }));
+  assert(withReadFailures(f, 'EPERM', 2, () => jls.appendCapped(f, 'records', 'jls-test', { n: 3 }, 10)), 'a transient failure is retried and the append lands');
+  assertEq(JSON.parse(fs.readFileSync(f, 'utf8')).records.length, 3, 'three records after the retried append');
+  const wrote = withReadFailures(f, 'EPERM', 1000, () => jls.appendCapped(f, 'records', 'jls-test', { n: 4 }, 10));
+  assertEq(wrote, false, 'append refused while the store cannot be read');
+  assertEq(JSON.parse(fs.readFileSync(f, 'utf8')).records.length, 3, 'the records on disk are untouched');
+});
+
+test('cooldown-store e active-research-state: um arquivo ilegivel nao e apagado por um estado vazio com uma chave', () => {
+  const sid = `coolro-${Date.now()}-${Math.random().toString(16).slice(2, 8)}`;
+  cooldownStore.add(sid, 'k1');
+  const runtime = path.join(require('../engine/lib/data-dir.js').dataDir(), '.runtime');
+  const cf = path.join(runtime, fs.readdirSync(runtime).find((n) => n.startsWith('cooldown-') && n.includes(sid)));
+  withReadFailures(cf, 'EPERM', 1000, () => cooldownStore.add(sid, 'k2'));
+  assertEq(Object.keys(JSON.parse(fs.readFileSync(cf, 'utf8')).keys), ['k1'], 'cooldown keys survive an unreadable read');
+  cooldownStore.clear(sid);
+  arstate.resetForTests();
+  arstate.recordFire(sid, 'first query');
+  withReadFailures(arstate.STATE_PATH, 'EPERM', 1000, () => arstate.recordFire(sid, 'second query'));
+  assertEq(arstate.getSessionCount(sid), 1, 'the count on disk is untouched');
+  arstate.resetForTests();
+});
+
+test('folder-ttl.loadState, monitor-marker.seen e memory-recovery.readState: uma leitura que falha por um instante e tentada de novo', async () => {
+  const ft = require('./lib/folder-ttl.js');
+  const dir = tempDir('ccb-retry-');
+  const sf = path.join(dir, 'folder-ttl-state.json');
+  fs.writeFileSync(sf, JSON.stringify({ folders: { a: { owned: { wrote: '5m' } } } }));
+  const state = withReadFailures(sf, 'EPERM', 2, () => ft.loadState(sf));
+  assert(state.folders.a && !state.recovered, 'the folder state is read after the retry, not treated as unreadable');
+  const mm = require('./lib/monitor-marker.js');
+  mm.record('s-retry', 'until x; do sleep 2; done', { dir });
+  const mf = path.join(dir, fs.readdirSync(dir).find((n) => n.startsWith('monitor-marker-')));
+  assertEq(await withReadFailures(mf, 'EPERM', 2, () => mm.seen('s-retry', 'until x; do sleep 2; done', { dir, waitMs: 0 })), true, 'a marker read that fails for a moment is retried');
+  const mr = require('./lib/memory-recovery.js');
+  const rf = path.join(dir, '.runtime', 'memory-recovery.json');
+  fs.mkdirSync(path.dirname(rf), { recursive: true });
+  fs.writeFileSync(rf, JSON.stringify({ status: 'running' }));
+  assertEq(withReadFailures(rf, 'EPERM', 2, () => mr.readState(dir)), { status: 'running' }, 'the recovery state is read after the retry');
+});
+
 test('curation-detect: saida volumosa de EXPLORACAO nao cria entrada no store de one-off (nunca vira script; so inchava o store)', async () => {
   const detect = require('./curation-detect.js');
   const journal = require('./lib/turn-journal.js');

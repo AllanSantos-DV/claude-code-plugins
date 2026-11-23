@@ -15,6 +15,7 @@ const crypto = require('crypto');
 
 const { sanitizeSessionId } = require('../../engine/lib/session-id.js');
 const { dataDir } = require('../../engine/lib/data-dir.js');
+const { retryTransient } = require('../../engine/lib/atomic-write.js');
 
 const FRESH_MS = 30 * 1000;
 const WAIT_MS = 600;
@@ -71,7 +72,7 @@ async function seen(sessionId, command, opts = {}) {
   const deadline = now() + waitMs;
   for (;;) {
     try {
-      const { at } = JSON.parse(fs.readFileSync(file, 'utf8'));
+      const { at } = JSON.parse(retryTransient(() => fs.readFileSync(file, 'utf8')));
       if (now() - at <= FRESH_MS) return true;
     } catch (err) {
       if (err.code !== 'ENOENT' && !(err instanceof SyntaxError)) throw err;

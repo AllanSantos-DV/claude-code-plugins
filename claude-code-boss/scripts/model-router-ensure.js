@@ -35,7 +35,7 @@ const os     = require('os');
 const { spawn, execSync, execFileSync } = require('child_process');
 const shim   = require('./model-router-shim.js');
 const { resolveMode } = require('./lib/router-mode.js');
-const { writeJsonAtomic, writeFileAtomic } = require('../engine/lib/atomic-write.js');
+const { writeJsonAtomic, writeFileAtomic, retryTransient } = require('../engine/lib/atomic-write.js');
 const { dataDir, globalDir } = require('../engine/lib/data-dir.js');
 const costTuning = require('./lib/cost-tuning.js');
 const { routerUserConfigPath, backfillRouterUserConfig } = require('./lib/router-config-path.js');
@@ -689,7 +689,7 @@ function planCostTuningNow(env = process.env) {
   if (s === null) return null;
   let state = {};
   try {
-    if (fs.existsSync(COST_TUNING_STATE)) state = JSON.parse(fs.readFileSync(COST_TUNING_STATE, 'utf-8'));
+    if (fs.existsSync(COST_TUNING_STATE)) state = JSON.parse(retryTransient(() => fs.readFileSync(COST_TUNING_STATE, 'utf-8')));
   } catch (e) {
     log(`AVISO: ${COST_TUNING_STATE} ilegível (${e.message}) — cost-tuning não mexe no settings.json.`);
     return null;

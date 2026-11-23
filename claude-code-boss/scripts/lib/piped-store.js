@@ -15,6 +15,17 @@ const fs = require('fs');
 const path = require('path');
 const { writeJsonAtomic, retryTransient } = require('../../engine/lib/atomic-write.js');
 
+/** Reads and parses the store; `unreadable` is true when the file exists but could not be read. */
+function readEntries(file) {
+  try {
+    return { state: JSON.parse(retryTransient(() => fs.readFileSync(file, 'utf-8'))), unreadable: false };
+  } catch (err) {
+    if (err.code === 'ENOENT') return { state: {}, unreadable: false };
+    console.error(`[piped-store] read ${file}: ${err.message}`);
+    return { state: {}, unreadable: !(err instanceof SyntaxError) };
+  }
+}
+
 const MAX_KEYS = 500;
 const ASK_AT = 2;
 
@@ -24,8 +35,7 @@ const ASK_AT = 2;
  * @param {{file:string, project:string, scriptId:string, filter:string, windowDays:number, deliverable?:boolean, now?:number}} a
  */
 function touch({ file, project, scriptId, filter, windowDays, deliverable = true, now = Date.now() }) {
-  let state = {};
-  try { state = JSON.parse(retryTransient(() => fs.readFileSync(file, 'utf-8'))); } catch (err) { if (err.code !== 'ENOENT') console.error(`[piped-store] read ${file}: ${err.message}`); }
+  const { state, unreadable } = readEntries(file);
   const entries = state && typeof state.entries === 'object' && state.entries ? state.entries : {};
   const windowMs = windowDays * 86400_000;
   for (const k of Object.keys(entries)) if (!entries[k] || now - (entries[k].last || 0) > windowMs) delete entries[k];
@@ -40,6 +50,10 @@ function touch({ file, project, scriptId, filter, windowDays, deliverable = true
   entries[key] = e;
   const keys = Object.keys(entries);
   if (keys.length > MAX_KEYS) keys.sort((a, b) => entries[a].last - entries[b].last).slice(0, keys.length - MAX_KEYS).forEach((k) => { delete entries[k]; });
+  if (unreadable) {
+    console.error(`[piped-store] not persisted ${file}: the store could not be read, so writing it would erase every key`);
+    return { count: e.count, ask };
+  }
   try {
     fs.mkdirSync(path.dirname(file), { recursive: true });
     writeJsonAtomic(file, { entries });

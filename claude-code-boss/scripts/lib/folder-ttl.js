@@ -32,7 +32,7 @@
 const fs = require('fs');
 const path = require('path');
 const { spawnSync } = require('child_process');
-const { writeJsonAtomic, writeFileAtomic } = require('../../engine/lib/atomic-write.js');
+const { writeJsonAtomic, writeFileAtomic, retryTransient } = require('../../engine/lib/atomic-write.js');
 
 const KEY = 'CLAUDE_CODE_PROMPT_CACHE_TTL';
 const SWITCHED = '5m';
@@ -146,7 +146,7 @@ const previousPath = (file) => `${file}.prev`;
 function readState(file) {
   if (!fs.existsSync(file)) return null;
   try {
-    const s = JSON.parse(fs.readFileSync(file, 'utf8'));
+    const s = JSON.parse(retryTransient(() => fs.readFileSync(file, 'utf8')));
     return s && typeof s === 'object' && s.folders ? s : null;
   } catch (err) {
     if (!(err instanceof SyntaxError)) throw err;
@@ -164,7 +164,7 @@ function loadState(file) {
   if (!fs.existsSync(file)) return { folders: {} };
   const s = readState(file);
   if (s) return s;
-  const raw = fs.readFileSync(file);
+  const raw = retryTransient(() => fs.readFileSync(file));
   let parsed = null;
   try { parsed = JSON.parse(raw.toString('utf8')); } catch (err) { void err; }
   if (parsed && typeof parsed === 'object') return { folders: {} };

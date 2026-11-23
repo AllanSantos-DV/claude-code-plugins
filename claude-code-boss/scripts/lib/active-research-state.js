@@ -17,7 +17,7 @@ const fs = require('fs');
 const path = require('path');
 
 const { dataDir } = require('../../engine/lib/data-dir.js');
-const { writeJsonAtomic, retryTransient } = require('../../engine/lib/atomic-write.js');
+const { writeJsonAtomic, retryTransient, markUnreadable, isUnreadable } = require('../../engine/lib/atomic-write.js');
 
 const DATA_DIR = dataDir();
 const STATE = path.join(DATA_DIR, '.runtime', 'active-research-state.json');
@@ -33,11 +33,16 @@ function _read() {
     o.sessions = o.sessions && typeof o.sessions === 'object' ? o.sessions : {};
     o.cooldown = o.cooldown && typeof o.cooldown === 'object' ? o.cooldown : {};
     return o;
-  } catch { /* absent/corrupt: empty state */ return { sessions: {}, cooldown: {} }; }
+  } catch (err) {
+    if (err.code === 'ENOENT' || err instanceof SyntaxError || err.message === 'not object') return { sessions: {}, cooldown: {} };
+    console.error(`[active-research-state] read failed: ${err.message}`);
+    return markUnreadable({ sessions: {}, cooldown: {} });
+  }
 }
 
 // Best-effort, last-writer-wins (tear-free publish, no cross-process lock).
 function _write(s) {
+  if (isUnreadable(s)) return;
   try {
     writeJsonAtomic(STATE, s);
   } catch (err) {

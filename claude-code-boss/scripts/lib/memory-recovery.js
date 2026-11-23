@@ -24,7 +24,7 @@ function statePath(dir) {
 /** @returns {object|null} the last recorded recovery state, null when none ran */
 function readState(dir) {
   try {
-    return JSON.parse(fs.readFileSync(statePath(dir), 'utf8'));
+    return JSON.parse(require('../../engine/lib/atomic-write.js').retryTransient(() => fs.readFileSync(statePath(dir), 'utf8')));
   } catch (err) {
     if (err.code !== 'ENOENT') console.error(`[memory-recovery] state unreadable: ${err.message}`);
     return null;

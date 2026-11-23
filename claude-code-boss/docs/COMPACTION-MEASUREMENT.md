@@ -1,6 +1,6 @@
 # Compactação: como os limiares padrão foram medidos
 
-Medição por trás dos tetos opcionais `thresholdMaxTokens` = 150 000 (corte a frio) e `warmCeilingTokens` = 200 000 (corte no fim do turno com cache quente). Os dois vêm desligados (`0`) por padrão: o limiar padrão é só o percentual da janela (30%). Arquivo independente: o texto vale sem o resto da documentação.
+Medição por trás dos tetos opcionais `thresholdMaxTokens` = 150 000 (corte a frio) e `warmCeilingTokens` = 200 000 (corte no fim do turno com cache quente). Os dois vêm desligados (`0`) por padrão: o limiar padrão é só o percentual da janela (17%). Arquivo independente: o texto vale sem o resto da documentação.
 
 ## Dados
 

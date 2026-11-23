@@ -31,7 +31,7 @@ export const DEFAULTS = Object.freeze({
   minThresholdPercent: 10,     // the slider's range (and the clamp on hand-edited configs)
   maxThresholdPercent: 80,
   // No token floor: the threshold is ONLY a percent of the model's window (owner, 14/10: the user's
-  // setting, 200k → 30% of 200k, 1M → 30% of 1M). A compaction leaves ~10–20k (measured on 15 real
+  // setting, 200k → 17% of 200k, 1M → 17% of 1M). A compaction leaves ~10–20k (measured on 15 real
   // ones, 14/10), far below any percent in the slider's range, and minIntervalMs stops a loop.
   // Optional absolute caps in tokens, both OFF by default (the owner's rule is percent only: his 14/10 decision, and on
   // 2026-11-02 he withdrew the 150k/200k caps). thresholdMaxTokens caps the cold threshold at min(percent of window, cap);

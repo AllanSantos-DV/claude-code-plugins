@@ -5,9 +5,12 @@
  * trigger-evidence stores. Best-effort, last-writer-wins; never throws.
  */
 const fs = require('fs');
-const { writeJsonAtomic, retryTransient } = require('./atomic-write.js');
+const { writeJsonAtomic, retryTransient, markUnreadable, isUnreadable } = require('./atomic-write.js');
 
-/** The store at `file`; a missing/corrupt/unreadable file → `{ [key]: [] }` (logged when not missing). */
+/**
+ * The store at `file`; a missing/corrupt/unreadable file → `{ [key]: [] }` (logged when not missing).
+ * A file that exists but could not be read comes back marked, and `appendCapped` will not write over it.
+ */
 function loadList(file, key, label) {
   try {
     if (!fs.existsSync(file)) return { [key]: [] };
@@ -15,7 +18,8 @@ function loadList(file, key, label) {
     return obj && typeof obj === 'object' && Array.isArray(obj[key]) ? obj : { [key]: [] };
   } catch (err) {
     console.error(`[${label}] load failed (${file}): ${err.message}`);
-    return { [key]: [] };
+    const empty = { [key]: [] };
+    return err instanceof SyntaxError ? empty : markUnreadable(empty);
   }
 }
 
@@ -23,6 +27,10 @@ function loadList(file, key, label) {
 function appendCapped(file, key, label, record, max) {
   try {
     const store = loadList(file, key, label);
+    if (isUnreadable(store)) {
+      console.error(`[${label}] append skipped (${file}): the store could not be read, so writing it would erase every record`);
+      return false;
+    }
     store[key].push(record);
     if (store[key].length > max) store[key] = store[key].slice(store[key].length - max);
     writeJsonAtomic(file, store);
