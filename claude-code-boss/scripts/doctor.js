@@ -17,6 +17,7 @@ const path = require('path');
 const os = require('os');
 const http = require('http');
 const { spawnSync } = require('child_process');
+const minimumLib = require('./lib/mcp-memory-minimum.js');
 
 const nodeSupport = require('./lib/node-support.js');
 const { MIN_NODE } = nodeSupport;
@@ -766,6 +767,13 @@ function checkSetup(ctx) {
       fix: 'Optional: fix the part mcp-memory reports as failing; capture and search keep working meanwhile.' });
   } else {
     out.push({ ...base, id: 'setup-memory', label: 'Memory backend', status: 'ok', detail: m.backend === 'mcp-memory' ? 'mcp-memory connected' : 'local SQLite (inside the plugin)', fix: '' });
+  }
+  if (m.server) {
+    const detail = minimumLib.describeLine(m.server).replace(/^Server management: /, '');
+    out.push(m.server.belowMinimum
+      ? { ...base, id: 'setup-memory-server', label: 'Memory server version', status: 'warn', detail,
+        fix: 'Nothing to do: the next session start downloads the published server and restarts it. If it keeps failing, the notice names the cause; Java 21 is needed.' }
+      : { ...base, id: 'setup-memory-server', label: 'Memory server version', status: 'ok', detail, fix: '' });
   }
   const sc = m.scope;
   if (sc && !sc.id && !sc.optedOut) {

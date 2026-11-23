@@ -32,6 +32,7 @@ async function gatherSetup({
   derivePort = (url) => require('./mcp-health.js')._derivePort(url),
   loadBrainConfig = () => require('../../engine/lib/brain-config.js').load(),
   probeMemory = (cfg) => require('./mcp-health.js').probeHealth(cfg),
+  probeServer = (cfg) => require('./mcp-memory-minimum.js').inspectServer(((cfg && cfg.backend && cfg.backend.mcpMemory) || {}).serverUrl),
   graphProbe = (c) => require('./graph-guard-core.js').makeGraphStateProbe({ cwd: c, timeoutMs: 3000 })(),
   resolveScope = (c) => {
     const pid = require('../../engine/lib/project-id.js');
@@ -78,6 +79,7 @@ async function gatherSetup({
       out.memory.state = h.state || (h.connected ? 'ok' : 'unreachable');
       out.memory.reason = h.connected ? String((h.state === 'degraded' && h.details && h.details.reason) || '') : String((h.details && (h.details.reason || (h.details.jarExists === false ? 'no server running and no jar installed' : ''))) || 'not connected');
     } catch (err) { errors.push(`memory: ${err.message}`); }
+    try { out.memory.server = await probeServer(cfg); } catch (err) { errors.push(`memory server: ${err.message}`); }
     out.graph.applicable = true;
     if (out.memory.connected) {
       try {

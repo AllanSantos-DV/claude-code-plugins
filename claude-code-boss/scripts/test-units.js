@@ -30499,6 +30499,49 @@ test('mcp-auto-update: the Boss manages the memory server only when it is local 
   }
 });
 
+test('mcp-memory-minimum.describeServer: says whether the server is managed (local) or the user own (remote), its version and the minimum; backend_status and the doctor show it', async () => {
+  const minimum = require('./lib/mcp-memory-minimum.js');
+  const old = { running: true, version: '2.30.0' };
+  let d = minimum.describeServer({ serverUrl: '', daemon: old, jar: null, min: '2.49.0' });
+  assertEq(JSON.stringify(d), JSON.stringify({ management: 'local', running: true, version: '2.30.0', minimum: '2.49.0', belowMinimum: true }));
+  d = minimum.describeServer({ serverUrl: '  ', daemon: { running: true, version: '3.1.1' }, jar: null, min: '2.49.0' });
+  assertEq(d.belowMinimum, false); assertEq(d.management, 'local');
+  d = minimum.describeServer({ serverUrl: '', daemon: { running: false }, jar: { version: '2.30.0' }, min: '2.49.0' });
+  assertEq(d.version, '2.30.0'); assertEq(d.running, false); assertEq(d.belowMinimum, true, 'a stopped server is judged by the newest jar');
+  d = minimum.describeServer({ serverUrl: 'http://127.0.0.1:38999', daemon: old, jar: { version: '2.30.0' }, min: '2.49.0' });
+  assertEq(d.management, 'remote', 'any configured URL is the user own server, even on loopback');
+  assertEq(d.belowMinimum, false, 'a server the Boss never touches is never judged against the minimum');
+  d = minimum.describeServer({ serverUrl: '', daemon: { running: false }, jar: null, min: '2.49.0' });
+  assertEq(d.version, null); assertEq(d.belowMinimum, false);
+  assert(/managed by the Boss/.test(minimum.describeLine(minimum.describeServer({ serverUrl: '', daemon: old, jar: null, min: '2.49.0' }))));
+  assert(/never touches/.test(minimum.describeLine({ management: 'remote', running: false, version: null, minimum: '2.49.0', belowMinimum: false })));
+  const below = minimum.describeLine(minimum.describeServer({ serverUrl: '', daemon: old, jar: null, min: '2.49.0' }));
+  assert(/2\.30\.0/.test(below) && /2\.49\.0/.test(below) && /below/.test(below), below);
+
+  const server = minimum.describeServer({ serverUrl: '', daemon: old, jar: null, min: '2.49.0' });
+  const cfg = { loadBrainConfig: () => ({ backend: { type: 'mcp-memory', mcpMemory: {} } }), probeServer: async () => server };
+  const s = await setupMap.gatherSetup(mkSetupDeps(cfg));
+  assertEq(s.memory.server.belowMinimum, true);
+  const row = doctor.checkSetup({ setup: s }).find((x) => x.id === 'setup-memory-server');
+  assert(row && row.status === 'warn' && /2\.30\.0/.test(row.detail) && /2\.49\.0/.test(row.detail), JSON.stringify(row));
+  const okRow = doctor.checkSetup({ setup: await setupMap.gatherSetup(mkSetupDeps({ ...cfg, probeServer: async () => minimum.describeServer({ serverUrl: '', daemon: { running: true, version: '3.1.1' }, jar: null, min: '2.49.0' }) })) }).find((x) => x.id === 'setup-memory-server');
+  assert(okRow && okRow.status === 'ok' && /managed by the Boss/.test(okRow.detail), JSON.stringify(okRow));
+  const local = await setupMap.gatherSetup(mkSetupDeps({ probeServer: async () => { throw new Error('must not be probed on the local backend'); } }));
+  assertEq(local.memory.server, undefined);
+  assertEq(doctor.checkSetup({ setup: local }).find((x) => x.id === 'setup-memory-server'), undefined);
+
+  const { createSetupTools } = require('./lib/setup-tools.js');
+  const status = async (cfg, daemonUrl) => {
+    const wizard = { checkJava: async () => ({ ok: true, version: '21' }), discoverDaemonUrl: () => daemonUrl, handshake: async () => ({ update: null }) };
+    const tools = createSetupTools({ pluginRoot: ROOT, deps: { wizard, loadConfig: () => cfg, health: async () => ({ version: '2.30.0' }) } });
+    return (await tools.handle('backend_status')).content[0].text;
+  };
+  const mine = await status({ backend: { type: 'mcp-memory', mcpMemory: {} } }, 'http://127.0.0.1:1');
+  assert(/managed by the Boss/.test(mine) && /2\.30\.0/.test(mine) && /below/.test(mine), mine);
+  const theirs = await status({ backend: { type: 'mcp-memory', mcpMemory: { serverUrl: 'https://memory.example.com' } } }, null);
+  assert(/never touches/.test(theirs), theirs);
+});
+
 test('brain-daemon-ensure: the upgrade of an old memory server reaches the user as a visible notice, on the session start and on the background path', async () => {
   const bde = require('./brain-daemon-ensure.js');
   const dir = tempDir('ccb-min-notice-');

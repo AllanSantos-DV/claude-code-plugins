@@ -167,6 +167,15 @@ nenhum                       → off            (cinza)
 | `curation.shapeMaxLines` | `80` | Sem Token Guard instalado: linhas de um comando de exploração isolado que chegam ao modelo (o resto fica em `.runtime/shaped`, com o caminho indicado) |
 | `curation.shapeMaxChars` | `8000` | Idem, em caracteres |
 
+### Quem gerencia o servidor do mcp-memory
+
+O Boss instala, sobe e atualiza o servidor do mcp-memory **somente quando ele é local**: o backend é `mcp-memory` **e** nenhum `backend.mcpMemory.serverUrl` está configurado (só o nome do backend). O Boss acha o servidor local pelo arquivo de anúncio `~/.mcp-memory/run/daemon.json`, ou, com o servidor parado, pelo jar mais novo em `~/.mcp-memory/lib`.
+
+- Um servidor local abaixo do mínimo declarado (`MIN_SERVER_VERSION`) é atualizado no início da sessão: o Boss baixa a versão publicada e reinicia o servidor nela, sem depender de nenhuma tool do servidor antigo, e avisa na tela a versão e a causa (ou a falha, com nova tentativa depois de 10 minutos).
+- Com qualquer `serverUrl` preenchido, mesmo em loopback, o servidor é seu: o Boss nunca o instala, sobe nem atualiza. A única exceção explícita é `autoUpdate.allowRemote=true`, que você liga por conta própria e que só chama a tool `update` desse servidor.
+- `backend_status` e o `doctor` mostram a versão do servidor local, o mínimo e se ele é gerenciado pelo Boss (local) ou é o seu (remoto). Só leem o que os comandos já liam: não criam processo, vigia nem tarefa agendada.
+- Com `transport: stdio` o Boss sobe o `.jar` por conta própria e esse caminho não aplica o mínimo.
+
 ### Data dirs e identidade de instalação
 
 O Claude Code dá a cada modo de lançamento um **sufixo próprio** de data dir sob

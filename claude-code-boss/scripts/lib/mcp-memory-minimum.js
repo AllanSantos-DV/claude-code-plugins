@@ -44,6 +44,35 @@ function versionBelowMinimum(snap, min) {
   return compareVersions(version, min) < 0 ? version : null;
 }
 
+/**
+ * What a status screen shows about the memory server: who manages it, its version and the minimum.
+ * A configured server URL means the server is the user's own and is never touched, whatever runs locally.
+ * @param {{serverUrl?: string, daemon: {running:boolean, version?:string}, jar: ?{version:string}, min?: string}} snap
+ * @returns {{management:'local'|'remote', running:boolean, version:?string, minimum:string, belowMinimum:boolean}}
+ */
+function describeServer(snap) {
+  const minimum = snap.min || MIN_SERVER_VERSION;
+  if (String(snap.serverUrl || '').trim()) return { management: 'remote', running: false, version: null, minimum, belowMinimum: false };
+  const below = versionBelowMinimum({ jar: snap.jar, daemon: snap.daemon }, minimum);
+  const version = snap.daemon.running ? snap.daemon.version || null : snap.jar ? snap.jar.version : null;
+  return { management: 'local', running: !!snap.daemon.running, version, minimum, belowMinimum: below !== null };
+}
+
+/** @returns {string} one line for backend_status */
+function describeLine(d) {
+  if (d.management === 'remote') return 'Server management: the server address is set, so it is yours and the Boss never touches it (no install, start or update).';
+  const state = d.version ? `v${d.version}${d.running ? '' : ' (not running)'}` : 'not installed';
+  const below = d.belowMinimum ? ` — below the minimum ${d.minimum}; the Boss upgrades it at the next session start` : ` — minimum ${d.minimum} met`;
+  return `Server management: managed by the Boss (local server, no address set) — ${state}${d.version ? below : ''}.`;
+}
+
+/** Reads the local daemon and the newest jar the way the bootstrap CLI does, for a status screen. */
+async function inspectServer(serverUrl) {
+  if (String(serverUrl || '').trim()) return describeServer({ serverUrl, daemon: { running: false }, jar: null });
+  const deps = require('../mcp-memory-bootstrap.js').defaultDeps();
+  return describeServer({ serverUrl: '', daemon: await deps.probeDaemon(), jar: deps.launcher.newestInstalledJar() });
+}
+
 function describeFailure(from, min, error) {
   return `[BRAIN] O servidor de memória (mcp-memory) está na versão ${from}, abaixo da mínima ${min}, e a atualização automática falhou: ${error}. `
     + 'Enquanto isso a memória do Brain fica degradada. Nova tentativa em alguns minutos; a causa também está em ~/.mcp-memory/logs.';
@@ -100,4 +129,4 @@ async function ensureMinimumServer(opts = {}) {
   }
 }
 
-module.exports = { ensureMinimumServer, versionBelowMinimum, FAILURE_COOLDOWN_MS, stateFile };
+module.exports = { ensureMinimumServer, versionBelowMinimum, describeServer, describeLine, inspectServer, FAILURE_COOLDOWN_MS, stateFile };

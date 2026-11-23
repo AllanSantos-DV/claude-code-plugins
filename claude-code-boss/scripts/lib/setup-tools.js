@@ -11,6 +11,7 @@
  */
 const fs = require('fs');
 const path = require('path');
+const minimumLib = require('./mcp-memory-minimum.js');
 
 function text(s) { return { content: [{ type: 'text', text: s }] }; }
 function fail(s) { return { isError: true, content: [{ type: 'text', text: s }] }; }
@@ -152,6 +153,8 @@ function createSetupTools({ pluginRoot, requestRestart = () => {}, deps = {} } =
         lines.push(`mcp-memory server on this machine: ${daemon.running ? `running v${daemon.version} at ${daemon.url}` : installed ? `installed (${installed.version}, ${installed.path}) but not running` : 'none'}`);
         lines.push(`Server launcher (starts it, also at logon): ${hasLauncher ? 'installed' : `not installed yet (needs server ${launcher.MIN_LAUNCHER_VERSION}+)`}`);
         lines.push(`Java 21+ (only to install the launcher without the bundled runtime): ${launcher.bundledJava() ? 'not needed (bundled runtime)' : java.ok ? `found (${java.version})` : `missing — ${java.error}`}`);
+        if (type === 'mcp-memory') lines.push(minimumLib.describeLine(minimumLib.describeServer({ serverUrl: mcp.serverUrl, daemon, jar: installed })));
+        if (type === 'mcp-memory') lines.push(minimumLib.describeLine(minimumLib.describeServer({ serverUrl: mcp.serverUrl, daemon, jar: installed })));
         const target = mcp.serverUrl || (daemon.running ? daemon.url : '');
         if (target) lines.push(updateLine((await wizard.handshake('default', target)).update, !!mcp.serverUrl && !isLoopback(mcp.serverUrl)));
         if (type === 'local') {
