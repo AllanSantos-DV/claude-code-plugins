@@ -30370,6 +30370,91 @@ test('mcp-memory-bootstrap CLI: declared minimum, no-op when current, install/st
   assertEq(JSON.parse(p.stdout).ok, false, 'JSON says not ok');
 });
 
+test('mcp-memory-minimum: a local server below the declared minimum is brought up by download + restart without calling the old server, a failure waits a cooldown and says why', async () => {
+  const minimum = require('./lib/mcp-memory-minimum.js');
+  const mk = (o = {}) => {
+    const calls = [];
+    let daemon = o.daemon || { running: false };
+    let jar = o.jar === undefined ? null : o.jar;
+    const deps = {
+      launcher: { newestInstalledJar: () => jar, bundledJava: () => 'java', launcherPath: () => 'Z:/nope/mcp-memory-daemon.cmd', compareVersions: require('./lib/mcp-bootstrap/launcher.js').compareVersions },
+      probeDaemon: async () => daemon,
+      checkJava: async () => ({ ok: true, version: '21' }),
+      resolveLatest: async () => ({ version: 'v3.1.1' }),
+      downloadServerJar: async () => { calls.push('download'); if (o.downloadFails) throw new Error(o.downloadFails); jar = { version: '3.1.1', path: 'new.jar' }; },
+      ensureLocalDaemon: async () => { calls.push('start'); daemon = { running: true, url: 'http://127.0.0.1:1', version: '3.1.1' }; return { spawned: true }; },
+      restartOnJar: async (p, v) => { calls.push(`restart:${v}`); daemon = { running: true, url: 'http://127.0.0.1:1', version: v }; },
+      javaInstallCommand: () => 'x',
+    };
+    let state = null;
+    const lock = { acquire: () => (o.locked ? { acquired: false } : { acquired: true, owner: 't' }), release: () => {} };
+    let t = 1000;
+    const run = () => minimum.ensureMinimumServer({ min: '2.49.0', deps, read: () => state, write: (s) => { state = s; }, lock, now: () => t });
+    return { calls, run, advance: (ms) => { t += ms; } };
+  };
+
+  let m = mk({ daemon: { running: true, version: '2.30.0' }, jar: { version: '2.30.0', path: 'old.jar' } });
+  let r = await m.run();
+  assertEq(r.status, 'upgraded', 'an old live server is upgraded');
+  assertEq(m.calls.join(','), 'download,restart:3.1.1', 'download the published release, then restart onto it');
+  assertEq(`${r.from}>${r.to}`, '2.30.0>3.1.1');
+  assert(/2\.30\.0/.test(r.advisory) && /3\.1\.1/.test(r.advisory), 'the user is told what was updated');
+
+  m = mk({ jar: { version: '2.30.0', path: 'old.jar' } });
+  r = await m.run();
+  assertEq(r.status, 'upgraded', 'a stopped server with only an old jar on disk is upgraded too');
+  assertEq(m.calls.join(','), 'download,start', 'the launcher would start the old jar, so the new one is downloaded first');
+
+  m = mk({ daemon: { running: true, version: '3.1.1' }, jar: { version: '3.1.1', path: 'j' } });
+  assertEq((await m.run()).status, 'ok', 'a current server is left alone'); assertEq(m.calls.length, 0, 'nothing touched');
+
+  m = mk({});
+  assertEq((await m.run()).status, 'ok', 'no server at all is the first-install flow, not this one'); assertEq(m.calls.length, 0, 'nothing touched');
+
+  m = mk({ daemon: { running: true, version: '2.30.0' }, jar: { version: '2.30.0', path: 'old.jar' }, locked: true });
+  assertEq((await m.run()).status, 'locked', 'a concurrent session does not repeat the download'); assertEq(m.calls.length, 0, 'nothing touched');
+
+  m = mk({ daemon: { running: true, version: '2.30.0' }, jar: { version: '2.30.0', path: 'old.jar' }, downloadFails: 'Download HTTP 503' });
+  r = await m.run();
+  assertEq(r.status, 'error', 'a failed upgrade is reported');
+  assert(/2\.30\.0/.test(r.advisory) && /Download HTTP 503/.test(r.advisory) && /degradada/.test(r.advisory), `the notice names the version, the cause and the degraded state: ${r.advisory}`);
+  m.advance(60 * 1000);
+  r = await m.run();
+  assertEq(r.status, 'cooldown', 'the failure is not retried on every session start');
+  assertEq(m.calls.filter((c) => c === 'download').length, 1, 'one download attempt inside the cooldown');
+  assert(/Download HTTP 503/.test(r.advisory), 'the notice keeps naming the cause');
+  m.advance(minimum.FAILURE_COOLDOWN_MS);
+  await m.run();
+  assertEq(m.calls.filter((c) => c === 'download').length, 2, 'retried after the cooldown');
+});
+
+test('mcp-auto-update: an old local server is upgraded before the server is asked for check_update, a remote or user-given server never is', async () => {
+  const updater = require('./lib/mcp-memory-auto-update.js');
+  const boom = () => { throw new Error('must not connect'); };
+  const event = { hook_event_name: 'SessionStart' };
+  const local = { backend: { type: 'mcp-memory', mcpMemory: { transport: 'http', runDir: tempDir('ccb-min-run-') } } };
+  let seen = 0;
+  const up = await updater.runAutoUpdate({ event, config: local, clientFactory: boom, ensureMinimum: async () => { seen++; return { status: 'upgraded', from: '2.30.0', to: '3.1.1', advisory: 'upgraded notice' }; } });
+  assertEq(seen, 1); assertEq(up.status, 'upgraded'); assertEq(up.version, '3.1.1'); assertEq(up.advisory, 'upgraded notice');
+  const bad = await updater.runAutoUpdate({ event, config: local, clientFactory: boom, ensureMinimum: async () => ({ status: 'error', error: 'Download HTTP 503', advisory: 'failed notice' }) });
+  assertEq(bad.status, 'error'); assertEq(bad.advisory, 'failed notice');
+  const cooling = await updater.runAutoUpdate({ event, config: local, clientFactory: boom, ensureMinimum: async () => ({ status: 'cooldown', error: 'Download HTTP 503', advisory: 'still failing' }) });
+  assertEq(cooling.status, 'error'); assertEq(cooling.advisory, 'still failing');
+  let called = 0;
+  const explicit = { backend: { type: 'mcp-memory', mcpMemory: { transport: 'http', serverUrl: 'https://memory.example.com', autoUpdate: { allowRemote: true } } } };
+  await updater.runAutoUpdate({ event, config: explicit, clientFactory: () => ({ async connect() { throw new Error('stop'); }, close() {} }), ensureMinimum: async () => { called++; return { status: 'ok' }; } });
+  assertEq(called, 0, 'a server the user pointed to is not ours to upgrade');
+});
+
+test('brain-daemon-ensure: the upgrade of an old memory server reaches the user as a visible notice, on the session start and on the background path', async () => {
+  const bde = require('./brain-daemon-ensure.js');
+  const dir = tempDir('ccb-min-notice-');
+  const result = await bde.runAutoUpdateInBackground({ hook_event_name: 'SessionStart' }, { dir, loadConfig: () => ({}), runAutoUpdate: async () => ({ status: 'upgraded', from: '2.30.0', version: '3.1.1', advisory: '[BRAIN] atualizado 2.30.0 para 3.1.1' }) });
+  assertEq(result.status, 'upgraded');
+  assertEq(bde.takeAutoUpdateNotice({ dir }), '[BRAIN] atualizado 2.30.0 para 3.1.1', 'the notice waits for the next prompt');
+  assertEq(bde.takeAutoUpdateNotice({ dir }), null, 'taken once');
+});
+
 test('setup-tools: user-given server address is used as-is (no Java/download), a running local server is reused with a version check, updates only with backend_update', async () => {
   const { createSetupTools } = require('./lib/setup-tools.js');
   let startOpts = null, javaChecked = 0, cfg = { backend: { type: 'local' } }, state = { status: 'idle' }, updaterCalls = 0, upd = { status: 'updated', from: '2.44.3', version: '2.45.0' };

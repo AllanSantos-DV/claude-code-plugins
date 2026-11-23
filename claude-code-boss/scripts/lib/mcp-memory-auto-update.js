@@ -180,7 +180,14 @@ async function runAutoUpdate(opts = {}) {
   const remoteTarget = !!targetUrl && !isLoopbackUrl(targetUrl);
   if (remoteTarget && autoUpdate.allowRemote !== true) return { status: 'skipped-remote' };
 
-  const now = typeof opts.now === 'function' ? opts.now : Date.now;
+  if (!explicitServerUrl && !remoteTarget) {
+    const ensureMinimum = opts.ensureMinimum || ((o) => require('./mcp-memory-minimum.js').ensureMinimumServer(o));
+    const minimum = await ensureMinimum({});
+    if (minimum.status === 'upgraded') return { status: 'upgraded', from: minimum.from, version: minimum.to, advisory: minimum.advisory };
+    if (minimum.status === 'error' || minimum.status === 'cooldown') return { status: 'error', error: minimum.error, advisory: minimum.advisory };
+  }
+
+  const now =typeof opts.now === 'function' ? opts.now : Date.now;
   const readState = opts.readState || (() => readStateFile());
   const writeState = opts.writeState || ((state) => writeStateFile(state));
   const acquireLock = opts.acquireLock || (() => acquireFileLock(lockFile()));

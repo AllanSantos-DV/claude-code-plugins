@@ -143,4 +143,4 @@ if (require.main === module) {
   });
 }
 
-module.exports = { run, ensure, parseArgs, snapshot, EXIT, MIN_SERVER_VERSION };
+module.exports = { run, ensure, parseArgs, snapshot, defaultDeps, EXIT, MIN_SERVER_VERSION };

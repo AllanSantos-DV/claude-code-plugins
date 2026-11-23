@@ -150,7 +150,7 @@ async function run(event, deps = {}) {
       if (mm.type === 'mcp-memory' && !((mm.mcpMemory || {}).serverUrl)) await (deps.ensureMemoryServer || ensureMemoryServer)(deps);
       if (!deps.skipAutoUpdate) {
         const updateResult = await (deps.runAutoUpdate || mcpAutoUpdate.runAutoUpdate)({ event, config: cfg });
-        if (updateResult && updateResult.status === 'error') return crashNote + updateResult.advisory;
+        if (updateResult && updateResult.advisory) return crashNote + updateResult.advisory;
       }
     }
     return crashNote ? crashNote.trimEnd() : null;
@@ -173,11 +173,11 @@ const noticeFile = (dir) => path.join(dir || dataDir(), '.runtime', 'mcp-auto-up
 async function runAutoUpdateInBackground(event, deps = {}) {
   const cfg = (deps.loadConfig || brainConfig.load)();
   const result = await (deps.runAutoUpdate || mcpAutoUpdate.runAutoUpdate)({ event, config: cfg });
-  if (result && result.status === 'error') {
+  if (result && result.advisory) {
     const file = noticeFile(deps.dir);
     fs.mkdirSync(path.dirname(file), { recursive: true });
     fs.writeFileSync(file, result.advisory);
-    once.logDetail(`mcp-memory auto-update failed: ${result.error}`, { base: deps.dir });
+    once.logDetail(result.status === 'error' ? `mcp-memory auto-update failed: ${result.error}` : `mcp-memory server upgraded ${result.from} → ${result.version}`, { base: deps.dir });
   }
   return result;
 }

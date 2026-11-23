@@ -204,6 +204,7 @@ function createSetupTools({ pluginRoot, requestRestart = () => {}, deps = {} } =
         const cfg = loadConfig() || {};
         if (backendType() !== 'mcp-memory') return fail('The plugin is not on the mcp-memory backend — run backend_setup first.');
         const r = await updater({ event: { hook_event_name: 'SessionStart' }, config: cfg, ttlMs: 0 });
+        if (r.status === 'upgraded') return text(`Updated the memory server ${r.from} → ${r.version} (it was below the minimum; restarted and verified).`);
         if (r.status === 'updated') return text(`Updated the memory server ${r.from} → ${r.version} (restarted and verified).`);
         if (r.status === 'current') return text('The memory server is already up to date.');
         if (r.status === 'skipped-remote') return text('This server runs on another host — it is updated by whoever runs it. Tell the user.');
