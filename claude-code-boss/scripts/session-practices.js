@@ -13,6 +13,11 @@
  * 2.1.310+ blocks a foreground `sleep` natively; whichever block comes first wins, and
  * this one never repeats after its single use.
  *
+ * Claude Code also sends a Monitor call to the Bash matcher, as a plain Bash with the same `command`.
+ * The Monitor matcher (same route, tool_name Monitor) records a marker for that command
+ * (lib/monitor-marker.js); a wait with a fresh marker is the Monitor tool doing its job, not a
+ * foreground wait, so the deny does not apply and is not spent.
+ *
  * The text does not depend on the Claude Code version: where the Monitor tool does not
  * exist (older builds) the same instruction says "run in background and end the turn".
  *
@@ -25,6 +30,7 @@
 
 const { readStdin, parsePayload, emitJson } = require('./lib/hook-io.js');
 const { isShellTool } = require('./lib/shell-tool.js');
+const { hookLog } = require('./hook-logger.js');
 
 // Waits up to this long in total are fine (a short settle); past it, the session sits blocked.
 const LONG_WAIT_S = 30;
@@ -109,12 +115,31 @@ const PRACTICES = [
 ];
 
 /**
+ * The Monitor-matcher invocation: marks the command so the Bash-matcher invocation of the same
+ * call (Claude Code sends it there as a plain Bash) is not mistaken for a foreground wait.
+ * Never decides anything itself.
+ * @param {object} event PreToolUse payload with tool_name Monitor
+ * @param {{record:Function}} markers
+ * @returns {object} always {}
+ */
+function recordMonitor(event, markers) {
+  const command = event.tool_input && event.tool_input.command;
+  if (typeof command !== 'string' || !command || !event.session_id) return {};
+  markers.record(event.session_id, command);
+  hookLog('info', 'session-practices', `monitor call marked (${command.length} chars, session ${event.session_id})`);
+  return {};
+}
+
+/**
  * @param {object} event PreToolUse payload
- * @param {{platform?:string, practices?:object[], store?:{has:Function, add:Function}, config?:{getSessionPractices:Function, isHookDisabled:Function}}} [deps] test seams
+ * @param {{platform?:string, practices?:object[], store?:{has:Function, add:Function}, markers?:{seen:Function, record:Function}, config?:{getSessionPractices:Function, isHookDisabled:Function}}} [deps] test seams
  * @returns {Promise<object>} {} or an additionalContext-only reply
  */
 async function run(event, deps = {}) {
-  if (!event || !isShellTool(event.tool_name)) return {};
+  if (!event) return {};
+  const markers = deps.markers || require('./lib/monitor-marker.js');
+  if (event.tool_name === 'Monitor') return recordMonitor(event, markers);
+  if (!isShellTool(event.tool_name)) return {};
   const input = event.tool_input || {};
   const cmd = input.command;
   if (typeof cmd !== 'string' || !cmd) return {};
@@ -122,7 +147,8 @@ async function run(event, deps = {}) {
   const cfg = deps.config || require('./lib/hooks-config.js');
   if (!cfg.getSessionPractices().enabled || cfg.isHookDisabled('hook_session_practices')) return {};
   const platform = deps.platform || process.platform;
-  const hits = (deps.practices || PRACTICES).filter((p) => (!p.platforms || p.platforms.includes(platform)) && p.applies(cmd, input));
+  let hits = (deps.practices || PRACTICES).filter((p) => (!p.platforms || p.platforms.includes(platform)) && p.applies(cmd, input));
+  if (hits.some((p) => p.deny) && event.session_id && await markers.seen(event.session_id, cmd)) hits = hits.filter((p) => !p.deny);
   if (!hits.length) return {};
   if (!event.session_id) {
     // Without a session there is no "once": better silent than repeated on every call.

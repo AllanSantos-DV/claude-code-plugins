@@ -26482,6 +26482,57 @@ test('session-practices: the first long foreground wait is denied once (one sent
   assertEq(await sp.run({ ...ev('sleep 120'), session_id: undefined }, w), {}, 'no session id → no "once" to keep → silent, not repeated');
 });
 
+test('session-practices: a Monitor call is not a foreground wait — the Monitor-matcher invocation marks it, the Bash-matcher one lets it through', async () => {
+  const sp = require('./session-practices.js');
+  const mm = require('./lib/monitor-marker.js');
+  const w = { platform: 'win32', markers: { seen: (s, c) => mm.seen(s, c, { waitMs: 150 }), record: mm.record } };
+  const poll = 'until [ -s out.log ]; do sleep 2; done; echo ready';
+  const bash = (sid, command, input = {}) => ({ hook_event_name: 'PreToolUse', tool_name: 'Bash', session_id: sid, tool_input: { command, description: 'x', ...input } });
+  const monitor = (sid, command) => ({ hook_event_name: 'PreToolUse', tool_name: 'Monitor', session_id: sid, tool_input: { command, description: 'x', timeout_ms: 20000 } });
+
+  const a = `mon-a-${Date.now()}`;
+  assertEq(await sp.run(monitor(a, poll), w), {}, 'the Monitor-matcher invocation only records and abstains');
+  assertEq(await sp.run(bash(a, poll), w), {}, 'Monitor with an until/while script is allowed');
+  assertEq((await sp.run(bash(a, 'sleep 120'), w)).hookSpecificOutput.permissionDecision, 'deny', 'a different command with no marker is still refused, and the once-per-session deny was not spent by the Monitor call');
+
+  const b = `mon-b-${Date.now()}`;
+  const late = Promise.resolve().then(() => new Promise((r) => setTimeout(r, 60))).then(() => sp.run(monitor(b, poll), w));
+  assertEq(await sp.run(bash(b, poll), w), {}, 'both hooks fire together: the Bash side waits for the marker that lands a moment later');
+  await late;
+
+  const c = `mon-c-${Date.now()}`;
+  assertEq((await sp.run(bash(c, poll), w)).hookSpecificOutput.permissionDecision, 'deny', 'a foreground Bash while/sleep loop with no marker is blocked');
+  const d = `mon-d-${Date.now()}`;
+  assertEq((await sp.run(bash(d, 'echo "monitor marker: ' + poll + '"; ' + poll, { description: 'monitor ' + poll }), w)).hookSpecificOutput.permissionDecision, 'deny', 'text in the command or description cannot fake the marker');
+  assertEq(await sp.run(bash(`mon-e-${Date.now()}`, poll, { run_in_background: true }), w), {}, 'a background Bash is allowed');
+  const f = `mon-f-${Date.now()}`;
+  await sp.run(monitor(`${f}-other`, poll), w);
+  assertEq((await sp.run(bash(f, poll), w)).hookSpecificOutput.permissionDecision, 'deny', 'a marker belongs to its own session');
+  assertEq(await sp.run({ hook_event_name: 'PreToolUse', tool_name: 'Monitor', session_id: f, tool_input: { ws: { url: 'wss://x' }, description: 'x', timeout_ms: 1000 } }, w), {}, 'a ws Monitor has no command: nothing to record');
+});
+
+test('monitor-marker: a marker is fresh for a short while, per session and per command; old ones are swept', async () => {
+  const mm = require('./lib/monitor-marker.js');
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-mm-'));
+  try {
+    const t0 = Date.now();
+    mm.record('s1', 'cmd', { dir, now: t0 });
+    assertEq(await mm.seen('s1', 'cmd', { dir, waitMs: 0, now: () => t0 + 1000 }), true);
+    assertEq(await mm.seen('s1', 'cmd', { dir, waitMs: 0, now: () => t0 + mm.FRESH_MS + 1 }), false, 'expired');
+    assertEq(await mm.seen('s2', 'cmd', { dir, waitMs: 0 }), false, 'other session');
+    assertEq(await mm.seen('s1', 'cmd2', { dir, waitMs: 0 }), false, 'other command');
+    mm.record('s9', 'later', { dir, now: t0 + mm.FRESH_MS * 5 });
+    assertEq(fs.readdirSync(dir).length, 1, 'the stale marker is swept');
+  } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+});
+
+test('session-practices: the Monitor tool reaches the daemon route and the hooks.json entry', () => {
+  const hooks = JSON.parse(fs.readFileSync(path.join(ROOT, 'hooks', 'hooks.json'), 'utf8')).hooks;
+  const { routesFor: routedTo } = require('./lib/hook-routes.js');
+  assert(hooks.PreToolUse.some((g) => new RegExp('^(?:' + g.matcher + ')$').test('Monitor')), 'the PreToolUse entry reaches Monitor');
+  assertEq(routedTo('PreToolUse', 'Monitor').map((r) => r.tool), ['hook_session_practices'], 'only the practices hook runs on Monitor');
+});
+
 test('session-practices: the free profile and a hook switched off in the dashboard make it passthrough ({}), even for the first long wait', async () => {
   const sp = require('./session-practices.js');
   const hc = require('./lib/hooks-config.js');

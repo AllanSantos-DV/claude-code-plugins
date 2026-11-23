@@ -45,7 +45,7 @@
     ],
     "PreToolUse": [
       {
-        "matcher": "Bash|PowerShell|Write|Edit|Grep|Glob",
+        "matcher": "Bash|PowerShell|Monitor|Write|Edit|Grep|Glob",
         "hooks": [
           {
             "type": "mcp_tool",
