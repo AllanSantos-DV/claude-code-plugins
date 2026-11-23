@@ -571,12 +571,18 @@ function checkNativeRuntime(ctx) {
   return { ...base, status: 'ok', detail: `msvcp140.dll ${msvcp} (>= ${MIN_MSVCP}), bundled onnxruntime ${n.bundledOrt || '?'}${sys}`, fix: '' };
 }
 
+/** Share of the recall window answered only partially (rerank fell back to the original order) from which the doctor warns. */
+const RECALL_PARTIAL_WARN_RATE = 0.5;
+/** Fewest partial recalls that count as a pattern rather than a one-off. */
+const RECALL_PARTIAL_MIN = 3;
+
 /**
  * Per-turn memory recall over the recent window (recall-health). A partial compose answer
- * (`recall_warning`) was still injected, so it is degraded-ok: reported with its warning, never a
- * failure. Only real degradation (>= 3 and >= 20% of the window, the brain-health gate) warns,
- * telling a slow embedder (the project search kept answering in most degraded turns) from a
- * backend that did not answer.
+ * (`recall_warning`) was still injected, so it is degraded-ok: a few are reported with their warning, never a
+ * failure. Real degradation (>= 3 and >= 20% of the window, the brain-health gate) warns, telling a slow
+ * embedder (the project search kept answering in most degraded turns) from a backend that did not answer.
+ * A window where most recalls were only partial (RECALL_PARTIAL_WARN_RATE) warns too: the recalls ran, but
+ * without the rerank the memory server is meant to apply.
  */
 function checkRecall(ctx) {
   const r = ctx.recall;
@@ -586,6 +592,15 @@ function checkRecall(ctx) {
     ? `; ${r.windowPartial} partial (degraded-ok)${r.lastPartial && r.lastPartial.warning ? `, last warning: ${r.lastPartial.warning}` : ''}`
     : '';
   if (!(r.windowDegraded >= 3 && r.degradedRate >= 0.2)) {
+    if (r.windowPartial >= RECALL_PARTIAL_MIN && r.windowPartial / r.windowTotal >= RECALL_PARTIAL_WARN_RATE) {
+      const took = r.latencyMs && r.latencyMs.p50 != null ? `; a recall takes ${r.latencyMs.p50} ms (p50)${r.latencyMs.p95 != null ? `, ${r.latencyMs.p95} ms (p95)` : ''}` : '';
+      const cause = r.lastPartial && r.lastPartial.warning ? `; cause: ${r.lastPartial.warning}` : '';
+      return {
+        ...base, status: 'warn',
+        detail: `${r.windowPartial} of the last ${r.windowTotal} recalls answered only partially (searches ${r.windowTotal}, fallbacks ${r.windowPartial})${took}${cause}`,
+        fix: 'The memory server answers without the rerank step: its search does not reply inside the budget the server applies. The cause is in the memory server or the embeddings home, not in the Boss: restarting the memory server or its embeddings home is the first thing to try.',
+      };
+    }
     return { ...base, status: 'ok', detail: `${r.windowTotal - r.windowDegraded} of the last ${r.windowTotal} recalls answered${partial}`, fix: '' };
   }
   const reasons = Object.entries(r.windowByReason || {}).sort((a, b) => b[1] - a[1]).map(([k, n]) => `${k} x${n}`).join(', ');
@@ -1219,7 +1234,7 @@ if (require.main === module) {
 module.exports = {
   runChecks, summarize, applyFixes, FIXERS, checkCostTuning, checkBossConfig, checkFixedCost, checkSetup, bossPluginId, gatherContext, formatReport,
   checkNode, checkDaemonNode, checkNativeDeps, checkEnv, checkDataDirs, checkModel, checkDaemon, checkNativeRuntime, checkEmbedderProbe, checkEmbedderGuard, checkRecall, checkCrashes, checkHooksEvents, checkSkillManager, gatherSkillManager, checkCompactionFloor, gatherCompactionFloor, checkAutoCompactPoint, gatherAutoCompact,
-  findDataDirCandidates, probeEmbedder, gatherNative, gatherCrashes, MIN_MSVCP,
+  findDataDirCandidates, probeEmbedder, gatherNative, gatherCrashes, MIN_MSVCP, RECALL_PARTIAL_WARN_RATE,
   checkHookLatency, checkBackupAge, checkFolderTtl,
   STANDARD_EVENTS, MIN_NODE,
 };

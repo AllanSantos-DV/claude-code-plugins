@@ -6789,8 +6789,8 @@ test('doctor.checkRecall: parcial e degraded-ok (ok com o aviso); degradacao rea
     const [r, arms] = Array.isArray(t) ? t : [t];
     return rh.applyOutcome(s, r, i, r === 'compose-partial' ? DEAD_WARNING : null, 100, arms);
   }, {}));
-  const partial = doc.checkRecall({ recall: window(['compose-partial', 'compose-partial', 'compose-partial', undefined]) });
-  assertEq(partial.status, 'ok', 'partial answers are not a failure');
+  const partial = doc.checkRecall({ recall: window(['compose-partial', 'compose-partial', 'compose-partial', undefined, undefined, undefined, undefined, undefined]) });
+  assertEq(partial.status, 'ok', 'a few partial answers are not a failure');
   assert(partial.detail.includes('3 partial (degraded-ok)') && partial.detail.includes(DEAD_WARNING), partial.detail);
   const slow = doc.checkRecall({ recall: window([['compose-slow', ANS], ['compose-skipped', ANS], ['compose-slow', ANS], ['timeout', MUTE], 'circuit-open', undefined]) });
   assertEq(slow.status, 'warn');
@@ -6798,6 +6798,26 @@ test('doctor.checkRecall: parcial e degraded-ok (ok com o aviso); degradacao rea
   const dead = doc.checkRecall({ recall: window([['timeout', MUTE], ['timeout', MUTE], 'circuit-open', undefined]) });
   assertEq(dead.status, 'warn');
   assert(/not answering/.test(dead.fix), dead.fix);
+});
+
+test('doctor.checkRecall: a window where most recalls fell back to the original order warns with the counts, the recall time and the cause; the boundary is RECALL_PARTIAL_WARN_RATE', () => {
+  const doc = require('./doctor.js');
+  const rh = require('../engine/lib/recall-health.js');
+  const FALLBACK = 'recall degradado: rerank: ordem original (home sem resposta no orçamento da busca (1113ms))';
+  const window = (partials, total, ms = 1900) => rh.summarize(Array.from({ length: total }, (_, i) => i).reduce((s, i) => (
+    rh.applyOutcome(s, i < partials ? 'compose-partial' : undefined, i, i < partials ? FALLBACK : null, ms)
+  ), {}));
+  const rate = doc.RECALL_PARTIAL_WARN_RATE;
+  assert(rate > 0 && rate < 1, `RECALL_PARTIAL_WARN_RATE must be a fraction, got ${rate}`);
+  const total = rh.WINDOW_SIZE;
+  const atRate = Math.round(rate * total);
+  const at = doc.checkRecall({ recall: window(atRate, total) });
+  assertEq(at.status, 'warn', `exactly ${atRate} of ${total} partial is at the threshold`);
+  assert(at.detail.includes(`${atRate} of the last ${total} recalls`) && at.detail.includes('1900 ms') && at.detail.includes(FALLBACK), at.detail);
+  assert(/memory server/.test(at.fix) && !/embedder is slow/.test(at.fix), at.fix);
+  assertEq(doc.checkRecall({ recall: window(atRate - 1, total) }).status, 'ok', 'one below the threshold stays ok');
+  assertEq(doc.checkRecall({ recall: window(2, 2) }).status, 'ok', 'two recalls are too few to call a pattern');
+  assertEq(doc.checkRecall({ recall: window(3, 3) }).status, 'warn', 'three of three is a pattern');
 });
 
 test('retrieve-core retrieveRemote (2.29.1): project arm ALWAYS fires (focus+ancestors+__user__, no home) with the capped query; merged project-first', async () => {
