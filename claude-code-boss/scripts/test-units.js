@@ -30446,6 +30446,59 @@ test('mcp-auto-update: an old local server is upgraded before the server is aske
   assertEq(called, 0, 'a server the user pointed to is not ours to upgrade');
 });
 
+test('mcp-auto-update: the Boss manages the memory server only when it is local — backend mcp-memory, no server URL configured, the daemon found through the announce file', async () => {
+  const updater = require('./lib/mcp-memory-auto-update.js');
+  const minimum = require('./lib/mcp-memory-minimum.js');
+  const http = require('http');
+  const event = { hook_event_name: 'SessionStart' };
+  const boom = () => { throw new Error('the server must not be asked'); };
+  const configs = {
+    'mcp-memory without a server URL': { cfg: { backend: { type: 'mcp-memory', mcpMemory: { transport: 'http' } } }, managed: true },
+    'mcp-memory with a blank server URL': { cfg: { backend: { type: 'mcp-memory', mcpMemory: { transport: 'http', serverUrl: '  ' } } }, managed: true },
+    'mcp-memory with a loopback server URL': { cfg: { backend: { type: 'mcp-memory', mcpMemory: { transport: 'http', serverUrl: 'http://127.0.0.1:38999' } } }, managed: false },
+    'mcp-memory with a remote server URL': { cfg: { backend: { type: 'mcp-memory', mcpMemory: { transport: 'http', serverUrl: 'https://memory.example.com', autoUpdate: { allowRemote: true } } } }, managed: false },
+    'the local backend': { cfg: { backend: { type: 'local', mcpMemory: { transport: 'http' } } }, managed: false },
+    'no backend section': { cfg: {}, managed: false },
+  };
+  for (const [name, { cfg, managed }] of Object.entries(configs)) {
+    let called = 0;
+    await updater.runAutoUpdate({ event, config: cfg, clientFactory: () => ({ async connect() { throw new Error('stop'); }, close() {} }), ensureMinimum: async () => { called++; return { status: 'ok' }; } });
+    assertEq(called, managed ? 1 : 0, name + (managed ? ': managed' : ': never touched'));
+  }
+
+  const run = path.join(os.homedir(), '.mcp-memory', 'run');
+  fs.mkdirSync(run, { recursive: true });
+  const server = http.createServer((req, res) => { res.writeHead(200, { 'Content-Type': 'application/json' }); res.end(JSON.stringify({ status: 'ok', version: '2.30.0' })); });
+  await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
+  const url = 'http://127.0.0.1:' + server.address().port;
+  fs.writeFileSync(path.join(run, 'daemon.json'), JSON.stringify({ url, port: server.address().port }));
+  try {
+    const bootstrap = require('./mcp-memory-bootstrap.js');
+    const calls = [];
+    let jar = null;
+    const deps = {
+      ...bootstrap.defaultDeps(),
+      launcher: { ...require('./lib/mcp-bootstrap/launcher.js'), newestInstalledJar: () => jar },
+      checkJava: async () => ({ ok: true, version: '21' }),
+      resolveLatest: async () => ({ version: 'v3.1.1' }),
+      downloadServerJar: async () => { calls.push('download'); jar = { version: '3.1.1', path: 'new.jar' }; },
+      restartOnJar: async (p, v) => { calls.push('restart:' + v); },
+    };
+    deps.probeDaemon = (real => async () => { const r = await real(); return r.running && calls.includes('restart:3.1.1') ? { ...r, version: '3.1.1' } : r; })(deps.probeDaemon);
+    const lock = { acquire: () => ({ acquired: true, owner: 't' }), release: () => {} };
+    const local = configs['mcp-memory without a server URL'].cfg;
+    const r = await updater.runAutoUpdate({
+      event, config: local, clientFactory: boom,
+      ensureMinimum: (o) => minimum.ensureMinimumServer({ ...o, min: '2.49.0', deps, lock, read: () => null, write: () => {} }),
+    });
+    assertEq(r.status, 'upgraded', 'the old server found through daemon.json is upgraded although it announces no update tool');
+    assertEq(calls.join(','), 'download,restart:3.1.1');
+  } finally {
+    server.close();
+    fs.rmSync(path.join(run, 'daemon.json'), { force: true });
+  }
+});
+
 test('brain-daemon-ensure: the upgrade of an old memory server reaches the user as a visible notice, on the session start and on the background path', async () => {
   const bde = require('./brain-daemon-ensure.js');
   const dir = tempDir('ccb-min-notice-');
