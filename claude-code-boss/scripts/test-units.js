@@ -38034,6 +38034,154 @@ test('maintenance-notices.unusedScriptsNotice: a weekly line naming never-run sc
   assertEq(maintNotices.unusedScriptsNotice(dir, { ...args, project: 'other' }), null, 'a project with no curation is silent');
 });
 
+test('brain-store prunePreview: counts what prune would archive (stale, over the cap) without archiving, and matches the real prune', async () => {
+  const store = require('../engine/brain-store.js');
+  const dataDir = tempDir('ccb-prune-preview-');
+  const old = new Date(Date.now() - 200 * 86400000).toISOString();
+  const mk = (title, extra) => ({ type: 'lesson', title, summary: title, content: { detail: title }, tags: [], confidence: 0.5, ...extra });
+  try {
+    assertEq(store.prunePreview('pv', { dataDir }), null, 'no database yet: nothing to read');
+    await store.init({ project: 'pv', dataDir });
+    await store.save(mk('stale-one', { created_at: old }));
+    await store.save(mk('old-but-used', { created_at: old, access_count: 3 }));
+    await store.save(mk('old-but-recurring', { created_at: old, recurrence: 2 }));
+    await store.save(mk('young'));
+    const p = store.prunePreview('pv', { dataDir });
+    assertEq([p.stale, p.overCap, p.total, p.entries], [1, 0, 1, 4], 'only the unused, never-repeated old entry is stale');
+    const capped = store.prunePreview('pv', { dataDir, maxEntries: 2 });
+    assertEq([capped.stale, capped.overCap, capped.total], [1, 1, 2], 'three live entries over a cap of 2: one more to archive');
+    assertEq(await store.count(undefined, 'pv'), 4, 'the dry run archived nothing');
+    const real = await store.prune({ maxEntries: 2, project: 'pv' });
+    assertEq([real.archivedStale, real.archivedOverCap, real.remaining], [capped.stale, capped.overCap, 2], 'the real prune archives exactly what the preview counted');
+  } finally { await store.close(); }
+});
+
+test('brain-health stalePruneText: one dry-run line only for the local backend and only when something would be archived', async () => {
+  const store = require('../engine/brain-store.js');
+  const bh = require('./brain-health.js');
+  const dataDir = tempDir('ccb-prune-line-');
+  try {
+    await store.init({ project: 'ln', dataDir });
+    await store.save({ type: 'lesson', title: 'fresh', summary: 's', content: { detail: 'd' }, tags: [], confidence: 0.5 });
+    assertEq(bh.stalePruneText('ln', dataDir, 'local'), null, 'nothing qualifies: no line');
+    await store.save({ type: 'lesson', title: 'forgotten', summary: 's', content: { detail: 'd' }, tags: [], confidence: 0.5, created_at: new Date(Date.now() - 400 * 86400000).toISOString() });
+    const line = bh.stalePruneText('ln', dataDir, 'local');
+    assert(/^\[BRAIN-HEALTH\] 1 of 2 memory entry in this project would be archived by a prune \(1 never used, seen once, older than \d+ days; 0 over the \d+ cap\) — dry run, nothing was archived\.$/.test(line), String(line));
+    assertEq(bh.stalePruneText('ln', dataDir, 'mcp-memory'), null, 'a server-backed memory has no local prune');
+    assertEq(bh.stalePruneText('absent', dataDir, 'local'), null, 'no local database for the project: no line');
+    assertEq(await store.count(undefined, 'ln'), 2, 'the line archived nothing');
+  } finally { await store.close(); }
+});
+
+test('shells-prune restoreShells: the newest backup (or a named one) comes back merged into the current file, current entries kept, backup taken first', () => {
+  const sp = require('./lib/shells-prune.js');
+  const root = tempDir('ccb-restore-shells-');
+  const file = require('./curation-paths.js').getShellsConfigPath(root);
+  fs.mkdirSync(path.dirname(file), { recursive: true });
+  const sh = (id) => ({ id, script: `scripts/${id}.mjs`, aliases: [`npm run ${id}`] });
+  const usage = () => ({ historyFromTs: Date.now() - 60 * 86400_000, usedIds: [] });
+  const t = Date.now();
+  try {
+    assertEq(sp.restoreShells({ root }).ok, false, 'no backup yet: loud failure');
+    fs.writeFileSync(file, JSON.stringify({ shells: [sh('A'), sh('B')], whitelist: ['git'] }));
+    assert(sp.pruneShells({ root, ids: ['A'], days: 30, usage, now: t }).ok, 'prune A');
+    const afterFirst = JSON.parse(fs.readFileSync(file, 'utf8'));
+    afterFirst.shells.push(sh('C'));
+    afterFirst.whitelist = ['git', 'npm'];
+    fs.writeFileSync(file, JSON.stringify(afterFirst));
+    assert(sp.pruneShells({ root, ids: ['B'], days: 30, usage, now: t + 1 }).ok, 'prune B');
+    assertEq(JSON.parse(fs.readFileSync(file, 'utf8')).shells.map((s) => s.id), ['C'], 'A and B pruned, C added in between');
+    const named = sp.restoreShells({ root, backup: path.basename(sp.listShellBackups(root)[0]), now: t + 2 });
+    assert(named.ok && named.restored.join() === 'A,B', `the oldest backup holds A and B: ${JSON.stringify(named)}`);
+    const merged = JSON.parse(fs.readFileSync(file, 'utf8'));
+    assertEq(merged.shells.map((s) => s.id), ['C', 'A', 'B'], 'C kept, A and B back');
+    assertEq(merged.whitelist, ['git', 'npm'], 'other fields of the current file are kept');
+    assertEq(JSON.parse(fs.readFileSync(named.backup, 'utf8')).shells.map((s) => s.id), ['C'], 'the current file was backed up before the merge');
+    const again = sp.restoreShells({ root, now: t + 3 });
+    assert(again.ok && again.restored.length === 0, 'nothing missing any more: no-op');
+    assertEq(sp.restoreShells({ root, backup: 'nope.json' }).ok, false, 'an unknown backup name is refused');
+    const newest = sp.listShellBackups(root).pop();
+    fs.writeFileSync(file, JSON.stringify({ shells: [] }));
+    const fresh = sp.restoreShells({ root, now: t + 4 });
+    assert(fresh.ok && fresh.from === path.basename(newest) && fresh.restored.join() === 'C', `no name: the newest backup — ${JSON.stringify(fresh)}`);
+  } finally { fs.rmSync(root, { recursive: true, force: true }); }
+});
+
+test('scope move undo: a bulk reclassify to the user scope is recorded, and undo restores the original and drops the copy', async () => {
+  const store = require('../engine/brain-store.js');
+  const index = require('../engine/brain-index.js');
+  const graph = require('../engine/brain-graph.js');
+  const bulk = require('./scope-bulk-reclassify.js');
+  const preg = require('./lib/promotion-registry.js');
+  const { undoMoves } = require('./lib/scope-move.js');
+  const dataDir = process.env.CLAUDE_PLUGIN_DATA;
+  const project = `mv-bulk-${Date.now()}`;
+  const deps = { dataDir, store, index, graph };
+  try {
+    await store.init({ project });
+    const id = await store.save({ type: 'lesson', title: 'Prefer small commits', summary: 'commit small', content: { detail: 'keep commits small' }, tags: ['workflow'], confidence: 0.7, recurrence: 3 });
+    const original = store.getRaw(id);
+    const r = await bulk.moveToUserScope(original, project, { dataDir });
+    assertEq(r.status, 'promoted');
+    const rec = preg.load(dataDir).promotions.find((p) => p.id === r.moveId);
+    assert(rec && rec.kind === 'move' && rec.status === 'active' && rec.move.original.id === id, 'the move is in the registry with the original');
+    await store.init({ project: '__user__' });
+    assert(store.getRaw(rec.move.toId), 'the user-scope copy exists under the recorded id');
+    await store.init({ project });
+    assertEq(store.getRaw(id), null, 'the move itself removed the original');
+    const out = await undoMoves(deps, [r.moveId]);
+    assert(out[0].ok && /original restored; copy deleted/.test(out[0].note), JSON.stringify(out));
+    await store.init({ project });
+    const back = store.getRaw(id);
+    assertEq([back.title, back.recurrence, back.tags, back.content.detail], ['Prefer small commits', 3, ['workflow'], 'keep commits small'], 'the original is back whole');
+    await store.init({ project: '__user__' });
+    assertEq(store.getRaw(rec.move.toId), null, 'the copy is gone');
+    assertEq(preg.load(dataDir).promotions.find((p) => p.id === r.moveId).status, 'reverted');
+    assertEq((await undoMoves(deps, [r.moveId]))[0].note, 'already undone');
+    assertEq((await undoMoves(deps, ['nope']))[0].ok, false, 'an unknown id is reported');
+  } finally { await store.close(); }
+});
+
+test('scope move undo: the dashboard move (project -> user, then back) is recorded with its moveId and undone from the registry; lesson-promote refuses to treat it as a promotion', async () => {
+  const dash = require('./dashboard.js');
+  const store = require('../engine/brain-store.js');
+  const index = require('../engine/brain-index.js');
+  const graph = require('../engine/brain-graph.js');
+  const preg = require('./lib/promotion-registry.js');
+  const { undoMoves } = require('./lib/scope-move.js');
+  const lp = require('./lesson-promote.js');
+  const dataDir = process.env.CLAUDE_PLUGIN_DATA;
+  const project = `mv-dash-${Date.now()}`;
+  const call = async (id, body) => {
+    const req = { [Symbol.asyncIterator]: async function* () { yield Buffer.from(JSON.stringify(body)); } };
+    const res = { writeHead(s) { this.status = s; }, end(b) { this.body = JSON.parse(b); } };
+    await dash.moveBrainEntryScope(req, res, new URL(`http://x/api/brain/entry/${id}/scope?project=${project}`));
+    return res;
+  };
+  try {
+    await store.init({ project });
+    const id = await store.save({ type: 'lesson', title: 'Run the linter first', summary: 'lint early', content: { detail: 'lint before tests' }, tags: ['workflow'], confidence: 0.6 });
+    const res = await call(id, { scope: 'user' });
+    assertEq([res.status, res.body.ok, res.body.scope], [200, true, 'user'], JSON.stringify(res.body));
+    const toId = res.body.id;
+    assert(res.body.moveId, 'the response names the move id');
+    await store.init({ project });
+    assertEq(store.getRaw(id), null, 'the move deleted the original, exactly as before');
+    await store.init({ project: '__user__' });
+    assert(store.getRaw(toId), 'the copy is in the user scope');
+    const guard = await lp.undoPromotions({ dataDir, backend: { init: async () => {}, get: async () => null, delete: async () => {} }, now: Date.now, recordEvent: () => {} }, [res.body.moveId]);
+    assertEq(guard[0].ok, false, 'lesson-promote does not undo a move by deleting its copy');
+    assert(/scope-bulk-reclassify\.js --undo/.test(guard[0].error), guard[0].error);
+    assertEq(preg.load(dataDir).promotions.find((p) => p.id === res.body.moveId).status, 'active', 'still active after the refusal');
+    const out = await undoMoves({ dataDir, store, index, graph }, [res.body.moveId]);
+    assert(out[0].ok && /original restored; copy deleted/.test(out[0].note), JSON.stringify(out));
+    await store.init({ project });
+    assertEq(store.getRaw(id).title, 'Run the linter first', 'the original is back under its own id');
+    await store.init({ project: '__user__' });
+    assertEq(store.getRaw(toId), null, 'the copy is gone');
+  } finally { await store.close(); }
+});
+
 (async () => {
   // A suíte mexe em singletons de módulo, process.env e servidores HTTP locais.
   // Promise.all deixava esses testes disputarem o mesmo estado/event loop; em

@@ -291,6 +291,27 @@ function recallDegradedStatus() {
 }
 
 /**
+ * Dry-run line for the local store: how many entries of this project a prune would archive. Nothing is
+ * archived here. Null when the backend is not the local store, SQLite is unavailable, or nothing qualifies.
+ * @param {string} project
+ * @param {string} data  the plugin data dir
+ * @param {string} [mode]  the configured backend type (default: read from the config)
+ * @returns {string|null}
+ */
+function stalePruneText(project, data, mode) {
+  try {
+    if ((mode || require('../engine/brain-backend.js').peekMode()) !== 'local') return null;
+    const p = require('../engine/brain-store.js').prunePreview(project, { dataDir: data });
+    if (!p || p.total === 0) return null;
+    return `[BRAIN-HEALTH] ${p.total} of ${p.entries} memory entr${p.total === 1 ? 'y' : 'ies'} in this project would be archived by a prune ` +
+      `(${p.stale} never used, seen once, older than ${p.archiveAfterDays} days; ${p.overCap} over the ${p.maxEntries} cap) — dry run, nothing was archived.`;
+  } catch (err) {
+    console.error(`[BRAIN-HEALTH] stale-entries check skipped: ${err.message}`);
+    return null;
+  }
+}
+
+/**
  * Pure detector entry point — returns the advisory text (string) when
  * something is actionable, or `null` when healthy/silent/throttled. Never
  * throws. Shared by the standalone CLI (below) and
@@ -350,7 +371,9 @@ async function run(event) {
 
     let other = null;
     let mismatch = null;
+    let stale = null;
     if (eventName === 'SessionStart') {
+      stale = stalePruneText(project, data);
       const rstat = recallDegradedStatus();
       if (rstat) other = buildRecallDegradedText(rstat);
       else if (getSqliteBackend() === 'none') other = buildDegradedSqliteText();
@@ -364,7 +387,7 @@ async function run(event) {
 
     // Config recovery first: it decides whether the rest is even running on the user's choices.
     const cfgNote = eventName === 'SessionStart' ? configRecoveryText() : null;
-    return [cfgNote, slow, other].filter(Boolean).join('\n\n') || null;
+    return [cfgNote, slow, other, stale].filter(Boolean).join('\n\n') || null;
   } catch (err) {
     console.error(`[BRAIN-HEALTH] probe crashed: ${err.message}`);
     return null;
@@ -376,4 +399,4 @@ function main() { return runTextCli(run, 'BRAIN-HEALTH', 'SessionStart'); }
 if (require.main === module) main();
 
 module.exports = {
-  embedderDimMismatch, configRecoveryText, countPendingDrafts, shouldRunOnPrompt, brainServerDepsOk, run, _slowHookAlert: slowHookAlert, buildRecallDegradedText };
+  embedderDimMismatch, configRecoveryText, countPendingDrafts, shouldRunOnPrompt, brainServerDepsOk, run, _slowHookAlert: slowHookAlert, buildRecallDegradedText, stalePruneText };

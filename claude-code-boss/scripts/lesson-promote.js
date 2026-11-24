@@ -146,17 +146,22 @@ async function applyPlan(deps, built) {
   return { done, failed };
 }
 
-/** Delete the copy in `__user__` and mark the promotion reverted; the originals are not touched. */
+/**
+ * Delete the copy in `__user__` and mark the promotion reverted; the originals are not touched.
+ * Scope moves (lib/scope-move.js) share the registry but are undone by scope-bulk-reclassify.js --undo: they are
+ * left out of `all` and refused by id, because deleting their copy without restoring the original would lose the entry.
+ */
 async function undoPromotions(deps, ids) {
   const { backend, dataDir } = deps;
   const reg = registry.load(dataDir);
-  const targets = ids === 'all' ? reg.promotions.filter((p) => p.status === 'active').map((p) => p.id) : ids;
+  const targets = ids === 'all' ? reg.promotions.filter((p) => p.status === 'active' && p.kind !== 'move').map((p) => p.id) : ids;
   const out = [];
   if (targets.length) await backend.init({ project: USER_SENTINEL, skipEmbedder: true });
   for (const id of targets) {
     const p = reg.promotions.find((x) => x.id === id);
     if (!p) { out.push({ id, ok: false, error: 'unknown promotion id' }); continue; }
     if (p.status === 'reverted') { out.push({ id, ok: true, note: 'already reverted' }); continue; }
+    if (p.kind === 'move') { out.push({ id, ok: false, error: 'a scope move, not a promotion — undo it with: node scripts/scope-bulk-reclassify.js --undo ' + id }); continue; }
     try {
       const present = await backend.get(p.userEntryId);
       if (present) await backend.delete(p.userEntryId);

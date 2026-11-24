@@ -972,6 +972,10 @@ async function listBrainEntries(req, res, url) {
   } catch (e) { fail(res, e.message); }
 }
 
+/**
+ * PATCH /api/brain/entry/<id>/scope?project=<p> — move an entry between project and user scope. The original is
+ * recorded in the promotion registry first (the response carries `moveId`), so the move can be undone.
+ */
 async function moveBrainEntryScope(req, res, url) {
   const parts = url.pathname.split('/');
   const id = parts[parts.length - 2];
@@ -1025,7 +1029,8 @@ async function moveBrainEntryScope(req, res, url) {
       safeEntry.detail = prep.safe.detail;
       safeEntry.content = { ...(entry.content || {}), detail: prep.safe.detail };
     }
-    delete safeEntry.id;
+    safeEntry.id = crypto.randomUUID();
+    const moveId = require('./lib/scope-move.js').recordMove(DATA_DIR, { original: entry, fromProject: srcProject, toProject: dstProject, toId: safeEntry.id });
 
     await index.init({ project: srcProject });
     await graph.init({ project: srcProject });
@@ -1041,7 +1046,7 @@ async function moveBrainEntryScope(req, res, url) {
     await graph.registerNode(safeEntry);
 
     await store.init({ project: srcProject });
-    json(res, { ok: true, id: safeEntry.id, scope: targetScope, project: dstProject });
+    json(res, { ok: true, id: safeEntry.id, scope: targetScope, project: dstProject, moveId });
   } catch (e) { fail(res, e.message); }
 }
 
@@ -2823,4 +2828,4 @@ if (require.main === module) startDashboardServer();
 // exported so a test can call it with a fake res ({writeHead,end}) and assert
 // on the exact JSON it serializes — otherwise a bug in byokSafe (e.g. `x || null`
 // silently turning a valid `0` into `null`) would never be caught by any test.
-module.exports = { getBrainBackend, postMemoryDisable, getCurationProjects, getCurationShells, deleteCurationShell, getValueSummary, getOutcomeSummary, getTuningRecommendations, _metricsMemo, getDoctorSwitchedOff, postDoctorUndo, getDoctorConfig, saveDoctorConfig, writeRouterOverride, resolveRouterFlags, getRouterConfig, fetchByokModelIds, getByokModels, opensWithField, postPluginUpdate, getProjectMarker, saveProjectMarker, saveCompactionConfig, getPhaseRestartMeasure, scanServerKb, quickKbList, brainBackendStatus };
+module.exports = { getBrainBackend, postMemoryDisable, getCurationProjects, getCurationShells, deleteCurationShell, getValueSummary, getOutcomeSummary, getTuningRecommendations, _metricsMemo, getDoctorSwitchedOff, postDoctorUndo, getDoctorConfig, saveDoctorConfig, writeRouterOverride, resolveRouterFlags, getRouterConfig, fetchByokModelIds, getByokModels, opensWithField, postPluginUpdate, getProjectMarker, saveProjectMarker, saveCompactionConfig, getPhaseRestartMeasure, scanServerKb, quickKbList, brainBackendStatus, moveBrainEntryScope };

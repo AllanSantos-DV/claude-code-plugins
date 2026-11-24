@@ -944,6 +944,42 @@ function archiveSqlite(entry, reason) {
 }
 
 /**
+ * Which entries a prune would archive, as pure data (the single source for `prune` and its dry run):
+ * stale = older than archiveAfterDays with no access and no recurrence; overCap = the lowest-utility
+ * of what remains beyond maxEntries.
+ * @returns {{stale: object[], overCap: object[]}}
+ */
+function planPrune(all, { nowMs, lim, maxEntries, archiveAfterDays }) {
+  const cutoff = nowMs - archiveAfterDays * 86400000;
+  const stale = [];
+  const live = [];
+  for (const e of all) {
+    const created = Date.parse(e.created_at);
+    if (Number.isFinite(created) && created < cutoff && (e.access_count || 0) === 0 && (e.recurrence || 1) <= 1) stale.push(e);
+    else live.push(e);
+  }
+  let overCap = [];
+  if (live.length > maxEntries) {
+    overCap = live
+      .map(e => ({ e, u: entryUtility(e, nowMs, lim.halfLifeDays) }))
+      .sort((a, b) => a.u - b.u)
+      .slice(0, live.length - maxEntries)
+      .map(r => r.e);
+  }
+  return { stale, overCap };
+}
+
+/** The prune thresholds: explicit opts win over the kb limits of the layered config. */
+function pruneSettings(opts) {
+  const lim = loadKbLimits();
+  return {
+    lim,
+    maxEntries: opts.maxEntries || lim.maxEntriesPerProject,
+    archiveAfterDays: opts.archiveAfterDays || lim.archiveAfterDays,
+  };
+}
+
+/**
  * Prune the KB (graceful archive, not delete) — BRAIN-PLAN §2.3.
  * 1. Stale: entries older than archiveAfterDays with no access and no recurrence.
  * 2. Over cap: if still over maxEntriesPerProject, archive lowest-utility.
@@ -951,39 +987,38 @@ function archiveSqlite(entry, reason) {
  */
 async function prune(opts = {}) {
   if (!_useSqlite) return { archivedStale: 0, archivedOverCap: 0, remaining: await count() };
-  const lim = loadKbLimits();
-  const maxEntries = opts.maxEntries || lim.maxEntriesPerProject;
-  const archiveAfterDays = opts.archiveAfterDays || lim.archiveAfterDays;
-  const nowMs = Date.now();
+  const { lim, maxEntries, archiveAfterDays } = pruneSettings(opts);
   const project = opts.project || _project;
-  let archivedStale = 0, archivedOverCap = 0;
 
   const all = _db.prepare(`SELECT * FROM entries WHERE project = ?`).all(project).map(rowToEntry);
+  const { stale, overCap } = planPrune(all, { nowMs: Date.now(), lim, maxEntries, archiveAfterDays });
+  for (const e of stale) archiveSqlite(e, `stale>${lim.archiveAfterDays}d`);
+  for (const e of overCap) archiveSqlite(e, 'over-capacity');
 
-  // 1) Stale
-  const cutoff = nowMs - archiveAfterDays * 86400000;
-  for (const e of all) {
-    const created = Date.parse(e.created_at);
-    if (Number.isFinite(created) && created < cutoff && (e.access_count || 0) === 0 && (e.recurrence || 1) <= 1) {
-      archiveSqlite(e, `stale>${lim.archiveAfterDays}d`);
-      archivedStale++;
-    }
+  return { archivedStale: stale.length, archivedOverCap: overCap.length, remaining: await count(undefined, project) };
+}
+
+/**
+ * Dry run of `prune`: how many entries of a project it WOULD archive, without archiving anything.
+ * Read-only throwaway connection (the module singleton is untouched, so it is safe next to a live store).
+ * @param {string} project
+ * @param {{dataDir?:string, maxEntries?:number, archiveAfterDays?:number}} [opts]
+ * @returns {{stale:number, overCap:number, total:number, entries:number, archiveAfterDays:number, maxEntries:number}|null} null when there is no SQLite database to read
+ */
+function prunePreview(project, opts = {}) {
+  const Database = loadSqlite();
+  if (!Database) return null;
+  const dbPath = path.join(opts.dataDir ? storeDir(opts) : (_storeDir || storeDir()), 'brain', project, 'brain.db');
+  if (!fs.existsSync(dbPath)) return null;
+  const db = new Database(dbPath, { readonly: true });
+  try {
+    const all = db.prepare('SELECT * FROM entries WHERE project = ?').all(project).map(rowToEntry);
+    const { lim, maxEntries, archiveAfterDays } = pruneSettings(opts);
+    const { stale, overCap } = planPrune(all, { nowMs: Date.now(), lim, maxEntries, archiveAfterDays });
+    return { stale: stale.length, overCap: overCap.length, total: stale.length + overCap.length, entries: all.length, archiveAfterDays, maxEntries };
+  } finally {
+    try { db.close(); } catch (err) { void err; }
   }
-
-  // 2) Over cap → archive lowest-utility
-  const live = _db.prepare(`SELECT * FROM entries WHERE project = ?`).all(project).map(rowToEntry);
-  if (live.length > maxEntries) {
-    const ranked = live
-      .map(e => ({ e, u: entryUtility(e, nowMs, lim.halfLifeDays) }))
-      .sort((a, b) => a.u - b.u);
-    const toRemove = live.length - maxEntries;
-    for (let i = 0; i < toRemove; i++) {
-      archiveSqlite(ranked[i].e, 'over-capacity');
-      archivedOverCap++;
-    }
-  }
-
-  return { archivedStale, archivedOverCap, remaining: await count(undefined, project) };
 }
 
 async function close() {
@@ -1034,7 +1069,7 @@ function getStatus() {
 }
 
 module.exports = {
-  init, save, get, getRaw, merge, prune, search, searchByKeywords, searchIsolated,
+  init, save, get, getRaw, merge, prune, prunePreview, search, searchByKeywords, searchIsolated,
   delete: delete_, list, count, close,
   listWithVectors, setRecurrence, applyConsolidation,
   getVector, deleteVector,

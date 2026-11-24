@@ -30,7 +30,7 @@ import { WORKER_RESOURCE_LIMITS } from './daemon-common.js';
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
 const STORE_METHODS = [
-  'init', 'save', 'get', 'getRaw', 'merge', 'prune', 'search', 'searchByKeywords',
+  'init', 'save', 'get', 'getRaw', 'merge', 'prune', 'prunePreview', 'search', 'searchByKeywords',
   'searchIsolated', 'delete', 'list', 'count', 'close', 'listWithVectors',
   'setRecurrence', 'applyConsolidation', 'getVector', 'deleteVector',
   'getStorageType', 'getStatus', 'cosineSimilarity', 'recordCitation', 'citationMultiplier',

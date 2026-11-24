@@ -31,11 +31,15 @@ const scriptOf = (s) => String((s && (s.script || s.command || s.path)) || '').t
 // Backups live in the plugin data dir — never next to shells.json (a versioned .vscode/
 // would get them committed) — and only the newest KEEP_BACKUPS per project are kept.
 const KEEP_BACKUPS = 5;
-function backupPath(root, now) {
+/** Where the backups of this project live: the data-dir folder and the file-name prefix. */
+function backupLocation(root) {
   const { dataDir } = require('../../engine/lib/data-dir.js');
   const dir = path.join(dataDir(), '.runtime', 'shells-backups');
   fs.mkdirSync(dir, { recursive: true });
-  const prefix = `${path.basename(path.resolve(root)).replace(/[^\w.-]+/g, '_')}-`;
+  return { dir, prefix: `${path.basename(path.resolve(root)).replace(/[^\w.-]+/g, '_')}-` };
+}
+function backupPath(root, now) {
+  const { dir, prefix } = backupLocation(root);
   const old = fs.readdirSync(dir).filter((f) => f.startsWith(prefix) && f.endsWith('.json')).sort();
   for (const f of old.slice(0, Math.max(0, old.length - (KEEP_BACKUPS - 1)))) {
     try { fs.unlinkSync(path.join(dir, f)); } catch (err) { console.error(`[shells-prune] could not drop old backup ${f}: ${err.message}`); }
@@ -114,6 +118,54 @@ function pruneShells({ root, ids, days = 30, now = Date.now(), usage, project } 
 }
 
 /**
+ * The backups of a project's shells file, oldest first.
+ * @returns {string[]} absolute paths
+ */
+function listShellBackups(root) {
+  const { dir, prefix } = backupLocation(root);
+  return fs.readdirSync(dir).filter((f) => f.startsWith(prefix) && f.endsWith('.json')).sort().map((f) => path.join(dir, f));
+}
+
+/**
+ * Put back the registrations a prune removed, from the newest backup (or the one named). Merge, never overwrite:
+ * entries added since the backup stay as they are, only ids missing from the current file come back, and every
+ * other field of the current file is kept. The current file is backed up first, so a restore can itself be undone.
+ * @param {{root:string, backup?:string, now?:number}} a  backup — a backup file name or path from listShellBackups
+ * @returns {{ok:boolean, restored?:string[], kept?:number, from?:string, backup?:string, file?:string, error?:string}}
+ */
+function restoreShells({ root, backup, now = Date.now() } = {}) {
+  if (!root) return { ok: false, error: 'root is required' };
+  const available = listShellBackups(root);
+  let from;
+  if (backup) {
+    from = available.find((f) => f === backup || path.basename(f) === path.basename(String(backup)));
+    if (!from) return { ok: false, error: `no such backup for this project: ${backup} (have: ${available.map((f) => path.basename(f)).join(', ') || 'none'})` };
+  } else {
+    from = available[available.length - 1];
+    if (!from) return { ok: false, error: 'no shells backup for this project — nothing to restore' };
+  }
+  let saved;
+  try { saved = JSON.parse(fs.readFileSync(from, 'utf8')); } catch (err) { return { ok: false, error: `backup ${path.basename(from)} unreadable: ${err.message}` }; }
+  if (!saved || !Array.isArray(saved.shells)) return { ok: false, error: `backup ${path.basename(from)} has no shells list` };
+  const { file, json } = readShellsFile(root);
+  if (!file) return { ok: false, error: `no shells config location for ${root}` };
+  const current = json && Array.isArray(json.shells) ? json : { ...(json || {}), shells: [] };
+  const have = new Set(current.shells.map((s) => String(s && s.id)));
+  const back = saved.shells.filter((s) => s && s.id && !have.has(String(s.id)));
+  const fromName = path.basename(from);
+  if (!back.length) return { ok: true, restored: [], kept: current.shells.length, from: fromName };
+  let made = null;
+  if (json) {
+    made = backupPath(root, now);
+    fs.copyFileSync(file, made);
+  }
+  current.shells = [...current.shells, ...back];
+  fs.mkdirSync(path.dirname(file), { recursive: true });
+  writeFileAtomic(file, JSON.stringify(current, null, 2) + String.fromCharCode(10));
+  return { ok: true, restored: back.map((s) => String(s.id)), kept: current.shells.length, from: fromName, backup: made && made.replace(/\\/g, '/'), file: file.replace(/\\/g, '/') };
+}
+
+/**
  * Metrics key for a shells root when the calling session is unknown (dashboard): the project-id
  * key lib/metrics.js writes under when the project has an id (every folder of the repo agrees).
  * Without one, sessions record under the SESSION root's folder name, which can be an ancestor of
@@ -136,4 +188,4 @@ function metricsProjectFor(root, known) {
   return path.basename(path.resolve(root));
 }
 
-module.exports = { pruneCandidates, pruneShells, metricsProjectFor };
+module.exports = { pruneCandidates, pruneShells, restoreShells, listShellBackups, metricsProjectFor };
