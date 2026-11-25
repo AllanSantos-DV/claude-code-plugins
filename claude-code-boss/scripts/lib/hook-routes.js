@@ -23,7 +23,8 @@ const ROUTES = {
     { matcher: 'PowerShell', tool: 'hook_powershell_guard', timeoutS: 5 },
     { matcher: 'Bash|PowerShell|Monitor', tool: 'hook_session_practices', timeoutS: 5 },
     { matcher: 'Write', tool: 'hook_file_format_guard', timeoutS: 5 },
-    { matcher: 'Edit', tool: 'hook_policy_enforce_shadow', timeoutS: 10 },
+    { matcher: 'Edit|Write|MultiEdit', tool: 'hook_policy_enforce_shadow', timeoutS: 10 },
+    { matcher: 'Edit|Write|MultiEdit|NotebookEdit', tool: 'hook_policy_glob_inject', timeoutS: 10 },
     { matcher: 'Grep|Glob', tool: 'hook_graph_guard', timeoutS: 5 },
   ],
   PostToolUse: [

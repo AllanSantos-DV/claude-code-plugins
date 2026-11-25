@@ -1,13 +1,14 @@
 #!/usr/bin/env node
 'use strict';
 /**
- * policy-glob-inject.js — PostToolUse post-edit GLOB advisory (Phase 2 micro-3).
+ * policy-glob-inject.js — PreToolUse and PostToolUse GLOB advisory (Phase 2 micro-3).
  *
- * After an Edit / Write / MultiEdit / NotebookEdit, this hook checks whether the
+ * Before and after an Edit / Write / MultiEdit / NotebookEdit, this hook checks whether the
  * edited file's project-relative path matches any USER-ACTIVATED glob-mode policy
  * for the current project. If so, it surfaces those rule(s) as
- * `hookSpecificOutput.additionalContext` (with `hookEventName:'PostToolUse'`), so
+ * `hookSpecificOutput.additionalContext` (with the event's own `hookEventName`), so
  * the runtime places them next to the tool result — read on the next model request.
+ * The PreToolUse output carries no permissionDecision: it never allows, asks or denies.
  *
  * Framing is deliberately DECLARATIVE/TEMPORAL ("For the completed edit of …, …
  * rule(s) matched"), NOT imperative: imperative injected text trips Claude's
@@ -60,11 +61,13 @@ function editedPath(ev) {
  * @param {string} rel  project-relative, normalized edited path
  * @param {Array<{globs?:string[], text?:string}>} matches  sorted matching policies
  * @param {number} maxChars  character budget (config policyInject.maxChars)
+ * @param {'PreToolUse'|'PostToolUse'} [event]  which side of the edit the block is read on
  * @returns {string}
  */
-function renderGlobBlock(rel, matches, maxChars) {
+function renderGlobBlock(rel, matches, maxChars, event = 'PostToolUse') {
   const cap = (typeof maxChars === 'number' && maxChars > 0) ? maxChars : FALLBACK_MAX_CHARS;
-  const header = `[BRAIN policy] For the completed edit of ${JSON.stringify(rel)}, user-activated project rule(s) matched:`;
+  const lead = event === 'PreToolUse' ? 'For the pending edit of' : 'For the completed edit of';
+  const header = `[BRAIN policy] ${lead} ${JSON.stringify(rel)}, user-activated project rule(s) ${event === 'PreToolUse' ? 'match' : 'matched'}:`;
   const lines = [header];
   let used = header.length;
   let rendered = 0;
@@ -118,11 +121,14 @@ async function evaluate(event) {
 
   const DATA_DIR = dataDir();
   const matches = policyStore.listGlobMatching(DATA_DIR, { projectId, filePath: rawPath, cwd: ev.cwd });
-  const fresh = globInjected.takeFresh(ev.session_id || ev.sessionId, matches, { base: DATA_DIR });
+  const phase = ev.hook_event_name === 'PreToolUse' ? 'PreToolUse' : 'PostToolUse';
+  // The pre-edit notice keeps its own freshness record, so it never mutes the post-edit one.
+  const keyed = phase === 'PreToolUse' ? matches.map((m) => ({ ...m, id: `pre:${m.id}` })) : matches;
+  const fresh = globInjected.takeFresh(ev.session_id || ev.sessionId, keyed, { base: DATA_DIR });
   if (!fresh.length) return {};
 
-  const block = renderGlobBlock(rel, fresh, cfg.maxChars);
-  return { hookSpecificOutput: { hookEventName: 'PostToolUse', additionalContext: block } };
+  const block = renderGlobBlock(rel, fresh, cfg.maxChars, phase);
+  return { hookSpecificOutput: { hookEventName: phase, additionalContext: block } };
 }
 
 /** CLI/stdout entry: writes evaluate()'s output (exactly one write). */

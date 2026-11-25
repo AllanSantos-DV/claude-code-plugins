@@ -92,7 +92,7 @@ Fluxo: captura, recall, citação, consolidação, e (manual) skill ou policy. C
 
 - `policy_activate` (`mcp-server.js:1262-1339`; store em `engine/lib/policy-store.js`): a policy nunca nasce de uma lição automaticamente, só de ação explícita do usuário.
 - Regras: com `globs` o escopo é forçado a projeto; `assert` exige `globs`; limites de 10 policies sempre ativas ou 4000 chars injetados, 20 globs por policy, 50 policies glob e 10 shadow por projeto; literal com cara de segredo é recusado; texto é redigido antes de gravar.
-- Injeção determinística e sem LLM: `policy-inject.js` (SessionStart, SubagentStart) injeta as "always"; `policy-glob-inject.js` (pós-edição) injeta as cujo glob casa com o arquivo editado. Policy com `scope:'user'` vale para todos os projetos, mas só se o usuário a ativar. Sem métrica.
+- Injeção determinística e sem LLM: `policy-inject.js` (SessionStart, SubagentStart) injeta as "always"; `policy-glob-inject.js` (antes e depois da edição, cada lado com o seu controle de "já mostrei") injeta as cujo glob casa com o arquivo editado. Policy com `scope:'user'` vale para todos os projetos, mas só se o usuário a ativar. Sem métrica.
 
 ### 2.6 Consolidação
 

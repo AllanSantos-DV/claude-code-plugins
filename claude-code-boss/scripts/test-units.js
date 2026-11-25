@@ -10898,6 +10898,55 @@ test('policy-glob-inject: a glob policy is injected once per session; a compact 
   }
 });
 
+test('policy-glob-inject: the PreToolUse notice states the pending edit, decides nothing and does not mute the post-edit notice', () => {
+  const { execFileSync } = require('child_process');
+  const store = require('../engine/lib/policy-store.js');
+  const { ROUTES, unionMatcher } = require('./lib/hook-routes.js');
+  const cwd = tempDir('ccb-gi-pre-proj-');
+  const data = tempDir('ccb-gi-pre-data-');
+  try {
+    store.activate(data, { text: 'never write the token inline', projectId: path.basename(cwd), globs: ['src/**'] });
+    const fire = (hook_event_name, sid = 'pre1', tool_name = 'Edit') => {
+      const out = execFileSync(process.execPath, [path.join(__dirname, 'policy-glob-inject.js')], {
+        input: JSON.stringify({ hook_event_name, tool_name, session_id: sid, cwd, tool_input: { file_path: 'src/app.ts' } }),
+        env: { ...process.env, CLAUDE_PLUGIN_DATA: data, CCB_PROJECT_ID: '' }, encoding: 'utf8', windowsHide: true,
+      });
+      return JSON.parse(out || '{}').hookSpecificOutput || {};
+    };
+    const pre = fire('PreToolUse');
+    assertEq(pre.hookEventName, 'PreToolUse');
+    assert(pre.additionalContext.includes('pending edit') && pre.additionalContext.includes('never write the token inline'), 'rule shown before the edit');
+    assert(!('permissionDecision' in pre), 'the notice never allows, asks or denies');
+    assertEq(fire('PreToolUse').additionalContext, undefined, 'a second pre-edit match in the session stays silent');
+    const post = fire('PostToolUse');
+    assertEq(post.hookEventName, 'PostToolUse');
+    assert(post.additionalContext.includes('completed edit'), 'the pre notice did not mute the post-edit one');
+    assert(fire('PreToolUse', 'pre2', 'NotebookEdit').additionalContext, 'every edit tool reaches it');
+    const route = ROUTES.PreToolUse.find((r) => r.tool === 'hook_policy_glob_inject');
+    assertEq(route.matcher, 'Edit|Write|MultiEdit|NotebookEdit');
+    const hooks = JSON.parse(fs.readFileSync(path.join(ROOT, 'hooks', 'hooks.json'), 'utf8')).hooks;
+    assertEq(hooks.PreToolUse[0].matcher, unionMatcher('PreToolUse'), 'hooks.json reaches the route');
+  } finally {
+    fs.rmSync(cwd, { recursive: true, force: true });
+    fs.rmSync(data, { recursive: true, force: true });
+  }
+});
+
+test('policy-enforce-shadow: diffOf gives Write the file on disk, MultiEdit its joined edits, and flags an unreadable-size Write', () => {
+  const shadow = require('./policy-enforce-shadow.js');
+  const d = tempDir('ccb-shadow-diff-');
+  try {
+    fs.writeFileSync(path.join(d, 'a.ts'), 'old text\n');
+    assertEq(shadow.diffOf({ tool_name: 'Write', cwd: d, tool_input: { file_path: 'a.ts', content: 'new text\n' } }), { oldStr: 'old text\n', newStr: 'new text\n' });
+    assertEq(shadow.diffOf({ tool_name: 'Write', cwd: d, tool_input: { file_path: 'missing.ts', content: 'x' } }), { oldStr: '', newStr: 'x' }, 'a new file has no old text');
+    assertEq(shadow.diffOf({ tool_name: 'MultiEdit', tool_input: { edits: [{ old_string: 'a', new_string: 'b' }, { old_string: 'c', new_string: 'd' }] } }), { oldStr: 'a\nc', newStr: 'b\nd' });
+    assertEq(shadow.diffOf({ tool_name: 'Edit', tool_input: { old_string: 'a', new_string: 'b' } }), { oldStr: 'a', newStr: 'b' });
+    fs.writeFileSync(path.join(d, 'big.ts'), 'x'.repeat(1_000_001));
+    assertEq(shadow.diffOf({ tool_name: 'Write', cwd: d, tool_input: { file_path: 'big.ts', content: 'y' } }).oldStr, null, 'too large to read: unevaluable, never mislabeled pass');
+    assertEq([...shadow.EDIT_TOOLS].sort(), ['Edit', 'MultiEdit', 'Write']);
+  } finally { fs.rmSync(d, { recursive: true, force: true }); }
+});
+
 test('scope-rules: ids and triggers are mechanical (kind from the id, scope from the touched path)', () => {
   const sr = require('./lib/scope-rules.js');
   assertEq(sr.parseRuleId('rule:codigo:sem-any'), { kind: 'codigo', slug: 'sem-any' });
@@ -38077,6 +38126,34 @@ test('brain-store prunePreview: counts what prune would archive (stale, over the
     assertEq(await store.count(undefined, 'pv'), 4, 'the dry run archived nothing');
     const real = await store.prune({ maxEntries: 2, project: 'pv' });
     assertEq([real.archivedStale, real.archivedOverCap, real.remaining], [capped.stale, capped.overCap, 2], 'the real prune archives exactly what the preview counted');
+  } finally { await store.close(); }
+});
+
+test('brain-prune CLI: preview rehearses without changing anything, apply archives exactly what the preview counted, other backends are skipped', async () => {
+  const store = require('../engine/brain-store.js');
+  const bp = require('./brain-prune.js');
+  const dataDir = tempDir('ccb-prune-cli-');
+  const old = new Date(Date.now() - 300 * 86400000).toISOString();
+  const mk = (title, extra) => ({ type: 'lesson', title, summary: title, content: { detail: title }, tags: [], confidence: 0.5, ...extra });
+  const local = { peekMode: () => 'local' };
+  try {
+    assert((await bp.run(['--project', 'cli', '--data-dir', dataDir], local)).out.includes('nothing to prune'), 'no database yet');
+    await store.init({ project: 'cli', dataDir });
+    await store.save(mk('forgotten', { created_at: old }));
+    await store.save(mk('forgotten-too', { created_at: old }));
+    await store.save(mk('fresh'));
+    await store.close();
+    const prev = await bp.run(['preview', '--project', 'cli', '--data-dir', dataDir, '--json'], local);
+    assertEq([prev.code, prev.data.mode, prev.data.total, prev.data.entries], [0, 'preview', 2, 3]);
+    assertEq((await bp.run(['--project', 'cli', '--data-dir', dataDir], local)).data.mode, 'preview', 'preview is the default');
+    assertEq(store.prunePreview('cli', { dataDir }).total, 2, 'the rehearsal changed nothing');
+    const applied = await bp.run(['apply', '--project', 'cli', '--data-dir', dataDir], local);
+    assertEq([applied.code, applied.data.archivedStale, applied.data.remaining], [0, 2, 1]);
+    assertEq(store.prunePreview('cli', { dataDir }).total, 0, 'nothing left to archive');
+    assertEq((await bp.run(['apply', '--project', 'cli'], { peekMode: () => 'mcp-memory' })).data.skipped, 'backend-not-local', 'a server-backed memory is not pruned here');
+    assertEq((await bp.run(['wipe'], local)).code, 2, 'unknown command: usage');
+    assertEq((await bp.run(['--project', 'x'], { peekMode: () => 'local', resolveProject: () => null, dataDir })).data.skipped, 'no-database');
+    assertEq((await bp.run([], { peekMode: () => 'local', resolveProject: () => null, dataDir })).code, 1, 'no project id: fails loudly');
   } finally { await store.close(); }
 });
 

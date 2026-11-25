@@ -353,7 +353,12 @@ function readShadowOutcomes(dataDir, cwd) {
 const _shTrigger = seedShadowPolicy();  // Edit ADDS the literal → outcome 'trigger'
 const _shPass = seedShadowPolicy();     // Edit PRESERVES the literal (same count) → 'pass'
 const _shNoMatch = seedShadowPolicy();  // non-matching path → no metric
-const _shNonEdit = seedShadowPolicy();  // non-Edit tool → no metric
+const _shNonEdit = seedShadowPolicy();  // tool outside the allowlist (NotebookEdit) → no metric
+const _shWrite = seedShadowPolicy();    // Write of a NEW file with the literal → 'trigger'
+const _shWritePass = seedShadowPolicy(); // Write over a file that already holds the literal once → 'pass'
+fs.mkdirSync(path.join(_shWritePass.cwd, 'src'), { recursive: true });
+fs.writeFileSync(path.join(_shWritePass.cwd, 'src', 'app.ts'), 'console.log(1);\nconst x = 1;\n');
+const _shMulti = seedShadowPolicy();    // MultiEdit whose second edit ADDS the literal → 'trigger'
 const _shDisabled = seedShadowPolicy(); // policyInject.enabled=false → no metric
 
 // micro-B1 trigger-evidence capture fixtures (each its own dataDir → contamination-free
@@ -1551,16 +1556,62 @@ const TESTS = [
     },
   },
   {
-    name: 'policy-enforce-shadow[non-Edit tool (Write)→SILENT {} + NO metric]',
+    name: 'policy-enforce-shadow[tool outside the allowlist (NotebookEdit)→SILENT {} + NO metric]',
     script: 'policy-enforce-shadow.js',
-    payload: { hook_event_name: 'PreToolUse', tool_name: 'Write', tool_input: { file_path: 'src/app.ts', content: 'console.log(1)\n' }, cwd: _shNonEdit.cwd, session_id: SESSION },
+    payload: { hook_event_name: 'PreToolUse', tool_name: 'NotebookEdit', tool_input: { file_path: 'src/app.ts', content: 'console.log(1)\n' }, cwd: _shNonEdit.cwd, session_id: SESSION },
     expect: { noError: true },
     extraEnv: () => ({ CLAUDE_PLUGIN_DATA: _shNonEdit.dataDir, CCB_PROJECT_ID: '' }),
     validateWithEnv: (r, env) => {
       if (r.parsed && r.parsed.hookSpecificOutput) return `must be SILENT, got: ${JSON.stringify(r.parsed)}`;
       const out = readShadowOutcomes(env.CLAUDE_PLUGIN_DATA, _shNonEdit.cwd);
       if (out && out.skip) return null;
-      if (out) return `Write (out of the Edit-only allowlist) must record NO evaluation, got: ${JSON.stringify(out)}`;
+      if (out) return `a tool outside the allowlist must record NO evaluation, got: ${JSON.stringify(out)}`;
+      return null;
+    },
+  },
+  {
+    name: 'policy-enforce-shadow[Write of a new file with the literal→SILENT {} + outcome trigger]',
+    script: 'policy-enforce-shadow.js',
+    payload: { hook_event_name: 'PreToolUse', tool_name: 'Write', tool_input: { file_path: 'src/app.ts', content: 'console.log(1)\n' }, cwd: _shWrite.cwd, session_id: SESSION },
+    expect: { noError: true },
+    extraEnv: () => ({ CLAUDE_PLUGIN_DATA: _shWrite.dataDir, CCB_PROJECT_ID: '' }),
+    validateWithEnv: (r, env) => {
+      if (r.parsed && r.parsed.hookSpecificOutput) return `must be SILENT, got: ${JSON.stringify(r.parsed)}`;
+      const out = readShadowOutcomes(env.CLAUDE_PLUGIN_DATA, _shWrite.cwd);
+      if (out && out.skip) return null;
+      if (!out || out.length !== 1) return `Write must record exactly ONE evaluation, got: ${JSON.stringify(out)}`;
+      if (out[0].outcome !== 'trigger') return `a Write that adds the literal must yield 'trigger', got: ${out[0].outcome}`;
+      const keys = Object.keys(out[0]).sort();
+      if (JSON.stringify(keys) !== JSON.stringify(['activationId', 'outcome', 'schema'])) return `payload must stay ONLY {schema,activationId,outcome}, got: ${keys}`;
+      return null;
+    },
+  },
+  {
+    name: 'policy-enforce-shadow[Write over a file that already holds the literal once→outcome pass]',
+    script: 'policy-enforce-shadow.js',
+    payload: { hook_event_name: 'PreToolUse', tool_name: 'Write', tool_input: { file_path: 'src/app.ts', content: 'console.log(1);\nconst x = 2;\n' }, cwd: _shWritePass.cwd, session_id: SESSION },
+    expect: { noError: true },
+    extraEnv: () => ({ CLAUDE_PLUGIN_DATA: _shWritePass.dataDir, CCB_PROJECT_ID: '' }),
+    validateWithEnv: (r, env) => {
+      const out = readShadowOutcomes(env.CLAUDE_PLUGIN_DATA, _shWritePass.cwd);
+      if (out && out.skip) return null;
+      if (!out || out.length !== 1) return `Write must record exactly ONE evaluation, got: ${JSON.stringify(out)}`;
+      if (out[0].outcome !== 'pass') return `a literal kept at the same count (1→1) must yield 'pass', got: ${out[0].outcome}`;
+      return null;
+    },
+  },
+  {
+    name: 'policy-enforce-shadow[MultiEdit whose second edit ADDS the literal→SILENT {} + outcome trigger]',
+    script: 'policy-enforce-shadow.js',
+    payload: { hook_event_name: 'PreToolUse', tool_name: 'MultiEdit', tool_input: { file_path: 'src/app.ts', edits: [{ old_string: 'a', new_string: 'b' }, { old_string: 'const x = 1;', new_string: 'const x = 1;\nconsole.log(x);' }] }, cwd: _shMulti.cwd, session_id: SESSION },
+    expect: { noError: true },
+    extraEnv: () => ({ CLAUDE_PLUGIN_DATA: _shMulti.dataDir, CCB_PROJECT_ID: '' }),
+    validateWithEnv: (r, env) => {
+      if (r.parsed && r.parsed.hookSpecificOutput) return `must be SILENT, got: ${JSON.stringify(r.parsed)}`;
+      const out = readShadowOutcomes(env.CLAUDE_PLUGIN_DATA, _shMulti.cwd);
+      if (out && out.skip) return null;
+      if (!out || out.length !== 1) return `MultiEdit must record exactly ONE evaluation, got: ${JSON.stringify(out)}`;
+      if (out[0].outcome !== 'trigger') return `a MultiEdit that adds the literal must yield 'trigger', got: ${out[0].outcome}`;
       return null;
     },
   },

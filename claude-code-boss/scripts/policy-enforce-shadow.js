@@ -14,9 +14,10 @@
  *   - SILENT: ALWAYS emits `{}` — never a permissionDecision, never additionalContext.
  *     It never blocks and produces no agent-visible output (measuring incidence, not
  *     enforcing). "trigger" here is a CANDIDATE-guard hit, NOT a violation.
- *   - Edit-ONLY: the allowlist is EXACTLY {'Edit'} — Write/MultiEdit/NotebookEdit are
- *     out of scope this micro (their content-diff shape differs; measuring them wrong
- *     would poison the incidence signal).
+ *   - The allowlist is EXACTLY {'Edit','Write','MultiEdit'}; NotebookEdit stays out (its
+ *     cell diff has no old/new string). The old/new text of each: Edit its
+ *     old_string/new_string; MultiEdit its edits joined by a newline; Write the file on
+ *     disk (empty when new) against `content`.
  *   - PRIVACY-BOUNDED: the metric payload is ONLY {schema, activationId, outcome} —
  *     never the file path, the literal, a snippet, or the tool name.
  *   - CONSISTENT: it stamps the metric with `metricsProjectKey(cwd)` — the SAME
@@ -42,12 +43,14 @@ const { getPolicyInject, getCaptureTriggerEvidence } = require('./lib/hooks-conf
 const metrics = require('../engine/lib/metrics.js');
 const { metricsProjectKey } = require('../engine/lib/metrics-project.js');
 const crypto = require('crypto');
+const fs = require('fs');
+const path = require('path');
 const { redact } = require('../engine/lib/redact.js');
 const triggerEvidenceStore = require('./lib/trigger-evidence-store.js');
 
-// Belt-and-suspenders beyond the hooks.json matcher: this micro measures ONLY Edit.
-// EXACT string set (not a substring regex) so no other tool can slip in.
-const EDIT_TOOLS = new Set(['Edit']);
+// Belt-and-suspenders beyond the hooks.json matcher. EXACT string set (not a substring
+// regex) so no other tool can slip in.
+const EDIT_TOOLS = new Set(['Edit', 'Write', 'MultiEdit']);
 
 // Above this size (chars) we don't scan old/new strings — a pathological input would
 // stall the PreToolUse path. Such an edit is recorded as 'unevaluable' (honest: we
@@ -80,6 +83,33 @@ function countOccurrences(hay, needle, caseSensitive) {
     from = idx + ns.length; // non-overlapping: advance past this match
   }
   return count;
+}
+
+/**
+ * The text a write replaces and the text it leaves, per tool.
+ * `oldStr` is null for a Write over a file too large to read: the caller records 'unevaluable'.
+ * @param {object} ev  PreToolUse payload
+ * @returns {{oldStr: string|null, newStr: string}}
+ */
+function diffOf(ev) {
+  const ti = ev.tool_input || {};
+  const str = (v) => (typeof v === 'string' ? v : '');
+  if (ev.tool_name === 'MultiEdit') {
+    const edits = Array.isArray(ti.edits) ? ti.edits : [];
+    return { oldStr: edits.map((e) => str(e && e.old_string)).join('\n'), newStr: edits.map((e) => str(e && e.new_string)).join('\n') };
+  }
+  if (ev.tool_name === 'Write') {
+    const abs = path.resolve(ev.cwd || '', ti.file_path);
+    let oldStr = '';
+    try {
+      const st = fs.statSync(abs);
+      if (st.isFile()) oldStr = st.size > LITMAX_INPUT ? null : fs.readFileSync(abs, 'utf8');
+    } catch (err) {
+      if (err.code !== 'ENOENT') throw err;
+    }
+    return { oldStr, newStr: str(ti.content) };
+  }
+  return { oldStr: str(ti.old_string), newStr: str(ti.new_string) };
 }
 
 /**
@@ -116,9 +146,9 @@ async function evaluate(event) {
   if (!matches.length) return {};
 
   const projKey = metricsProjectKey(ev.cwd);
-  const oldStr = typeof ti.old_string === 'string' ? ti.old_string : '';
-  const newStr = typeof ti.new_string === 'string' ? ti.new_string : '';
-  const tooBig = newStr.length > LITMAX_INPUT || oldStr.length > LITMAX_INPUT;
+  const { oldStr: oldRaw, newStr } = diffOf(ev);
+  const oldStr = oldRaw === null ? '' : oldRaw;
+  const tooBig = oldRaw === null || newStr.length > LITMAX_INPUT || oldStr.length > LITMAX_INPUT;
 
   // OPT-IN capture gate (DEFAULT OFF). Read once: when disabled, no evidence is ever
   // stored — the privacy default. Keyed by the SAME resolved projectId the judge's
@@ -192,4 +222,4 @@ if (require.main === module) {
   })();
 }
 
-module.exports = { run, evaluate, countOccurrences, EDIT_TOOLS };
+module.exports = { run, evaluate, countOccurrences, diffOf, EDIT_TOOLS };
