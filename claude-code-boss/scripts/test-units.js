@@ -32223,8 +32223,10 @@ test('plugin-updater.killStale: so casa modulos da PASTA DE CACHE do plugin, nao
   const OLD_WIRING = [
     ['PreToolUse', 'Bash', ['hook_curation_guard', 'hook_error_guard', 'hook_session_practices']],
     ['PreToolUse', 'PowerShell', ['hook_error_guard', 'hook_powershell_guard', 'hook_session_practices']],
-    ['PreToolUse', 'Write', ['hook_file_format_guard']],
-    ['PreToolUse', 'Edit', ['hook_policy_enforce_shadow']],
+    ['PreToolUse', 'Write', ['hook_file_format_guard', 'hook_policy_enforce_shadow', 'hook_policy_glob_inject']],
+    ['PreToolUse', 'Edit', ['hook_policy_enforce_shadow', 'hook_policy_glob_inject']],
+    ['PreToolUse', 'MultiEdit', ['hook_policy_enforce_shadow', 'hook_policy_glob_inject']],
+    ['PreToolUse', 'NotebookEdit', ['hook_policy_glob_inject']],
     ['PreToolUse', 'Grep', ['hook_graph_guard']],
     ['PreToolUse', 'Glob', ['hook_graph_guard']],
     ['PreToolUse', 'Read', []],
