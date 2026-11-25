@@ -10,6 +10,7 @@
  * Every external effect is a seam in `deps`, so a test never reaches the real registry, server or toasts.
  */
 const fs = require('fs');
+const cp = require('child_process');
 const os = require('os');
 const path = require('path');
 const crypto = require('crypto');
@@ -39,8 +40,10 @@ const stateFile = () => path.join(require('../../engine/lib/data-dir.js').global
 const home = (env) => env.USERPROFILE || env.HOME || os.homedir();
 
 /** Reads and writes the user-level environment variables of the machine (the registry on Windows). */
-function windowsUserEnv(exec = require('child_process').execFileSync) {
-  const reg = (args) => exec('reg.exe', args, { windowsHide: true, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], timeout: 5000 });
+function windowsUserEnv(exec) {
+  const reg = (args) => (exec
+    ? exec('reg.exe', args, { windowsHide: true, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], timeout: 5000 })
+    : cp.execFileSync('reg.exe', args, { windowsHide: true, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], timeout: 5000 }));
   const checked = (name) => { if (!/^[A-Z][A-Z0-9_]*$/.test(name)) throw new Error(`refusing an unexpected variable name: ${name}`); return name; };
   return {
     get(name) {

@@ -6,6 +6,7 @@
  * can prove what the user was shown; `CCB_TOAST_DRY=1` records without showing.
  */
 const fs = require('fs');
+const cp = require('child_process');
 const path = require('path');
 
 const POWERSHELL_APP_ID = '{1AC14E77-02E7-4E5D-B744-2EB1AE5198B7}\\WindowsPowerShell\\v1.0\\powershell.exe';
@@ -57,9 +58,11 @@ function toast({ title, body }, deps = {}) {
   if (env.CCB_TOAST_DRY === '1') return out;
   if (platform !== 'win32') { out.error = out.error || 'toasts are only raised on Windows'; return out; }
   try {
-    const spawn = deps.spawn || require('child_process').spawn;
     const encoded = Buffer.from(toastScript(title, body), 'utf16le').toString('base64');
-    const child = spawn('powershell.exe', ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-EncodedCommand', encoded], { windowsHide: true, stdio: 'ignore', detached: true });
+    const args = ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-EncodedCommand', encoded];
+    const child = deps.spawn
+      ? deps.spawn('powershell.exe', args, { windowsHide: true, stdio: 'ignore', detached: true })
+      : cp.spawn('powershell.exe', args, { windowsHide: true, stdio: 'ignore', detached: true });
     if (child && typeof child.unref === 'function') child.unref();
     out.shown = true;
   } catch (err) { out.error = `toast not raised: ${err.message}`; }
