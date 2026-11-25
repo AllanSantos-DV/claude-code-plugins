@@ -1,5 +1,24 @@
 # Changelog
 
+## [3.18.0] - 2026-11-24
+
+### Added
+- **O servidor de memória local é gerenciado pelo Boss e mostra a versão** (`scripts/lib/mcp-memory-minimum.js`, `scripts/lib/mcp-memory-auto-update.js`, `scripts/doctor.js`, `servers/brain-server`): com o backend `mcp-memory` e sem endereço de servidor, o Boss acha o daemon (`daemon.json` ou o jar mais novo), instala o servidor da release publicada quando falta o lançador e atualiza, por download e reinício com intervalo entre tentativas, um servidor mais velho que o mínimo declarado (2.49.0), com aviso visível que nomeia a versão e a causa. Um endereço de servidor, mesmo local, é do usuário: o Boss nunca o instala, inicia nem atualiza. `backend_status` e o doctor mostram a versão, o mínimo e quem gerencia (Boss ou usuário). O painel liga e desliga o servidor e mostra o estado da instalação mesmo sem conexão.
+- **O doctor avisa quando a memória responde sem o rerank** (`scripts/doctor.js`): a linha "Memory recall" passa a avisar quando pelo menos 3 recalls e metade da janela rodaram só em parte, com buscas, retornos parciais, p50, p95 e a causa, em vez de uma linha verde.
+- **Três funções de manutenção** (`engine/brain-store.js` `prunePreview`, `scripts/brain-health.js`, `scripts/lib/shells-prune.js` `restoreShells`, `scripts/lib/scope-move.js`): um relatório de ensaio das lições que a limpeza arquivaria (uma linha no início da sessão, só no backend local e só quando há o que arquivar); restauração de scripts curados podados; e `--undo` na reclassificação de escopo em lote e no painel, que devolve a lição ao escopo de origem.
+
+### Changed
+- **O limite padrão de compactação é 17% da janela** (`hooks/compaction.mjs`), como o dono decidiu; textos que ainda diziam 30% foram corrigidos.
+- **O TTL de pasta guarda a geração anterior e se recupera dela** (`scripts/lib/folder-ttl.js`): um 5m deixado por uma troca perdida é varrido e o doctor o mostra.
+- **O nome do autor volta aos manifestos, READMEs, licenças e rodapés das páginas**, com um teste de que os manifestos o trazem.
+
+### Fixed
+- **Um store que existe mas não pode ser lido não é mais sobrescrito** (`engine/lib/atomic-write.js`): o EPERM transitório na leitura de um JSON enquanto outro hook o substitui é repetido, e um store ilegível nunca é salvo por cima como vazio, então hooks concorrentes não apagam mais as marcas de comandos de uso único.
+- **`scope-bulk-reclassify` movia a lição sem apagar a original** (`scripts/scope-bulk-reclassify.js`): chamava `store.delete(id)` com uma string, e `delete_` lê `{ id }`; a cópia nascia no escopo do usuário e a original ficava no projeto. Agora a original é removida.
+- **Uma chamada de Monitor não é mais tratada como espera em primeiro plano** (`scripts/session-practices.js`, `scripts/lib/monitor-marker.js`): o matcher do Monitor deixa uma marca curta que deixa passar a mesma chamada pelo matcher de Bash.
+- **O status do backend no painel mantém o modo configurado e o estado da instalação do servidor de memória quando não consegue conectar** (`scripts/dashboard.js`).
+- **`docs/FUNCOES.md` descreve o gate de compactação a 17% com a sessão ociosa e o `economy-report --split boss`.**
+
 ## [3.17.1] - 2026-11-20
 
 ### Fixed
