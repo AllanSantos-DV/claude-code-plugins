@@ -81,11 +81,7 @@ function stateFile(dir) {
 }
 
 function readState(file) {
-  try { return JSON.parse(fs.readFileSync(file, 'utf8')) || {}; }
-  catch (err) {
-    if (err.code !== 'ENOENT') console.error(`[update-notice] ${file} unreadable (${err.message}) — starting fresh`);
-    return {};
-  }
+  return require('../../engine/lib/json-file.js').readJsonLoud(file, 'update-notice') || {};
 }
 
 function writeState(file, state) {

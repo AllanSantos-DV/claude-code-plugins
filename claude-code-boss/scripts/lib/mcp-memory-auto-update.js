@@ -5,6 +5,7 @@ const path = require('path');
 const McpClient = require('../../engine/mcp-client.js');
 const { globalDir, dataDir } = require('../../engine/lib/data-dir.js');
 const { writeJsonAtomic } = require('../../engine/lib/atomic-write.js');
+const { readJsonLoud } = require('../../engine/lib/json-file.js');
 const { acquireFileLock, releaseFileLock } = require('../../engine/lib/process-lock.js');
 const { restartForBootUpdate, rollbackAfterFailedUpdate } = require('./mcp-daemon-restart.js');
 
@@ -22,14 +23,7 @@ function lockFile() {
 }
 
 function readStateFile(file = stateFile()) {
-  try {
-    return JSON.parse(fs.readFileSync(file, 'utf8'));
-  } catch (err) {
-    if (err && err.code !== 'ENOENT') {
-      console.error(`[mcp-memory-auto-update] state unreadable (${file}): ${err.message}`);
-    }
-    return null;
-  }
+  return readJsonLoud(file, 'mcp-memory-auto-update');
 }
 
 function writeStateFile(state, file = stateFile()) {

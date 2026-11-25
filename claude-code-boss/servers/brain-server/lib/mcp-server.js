@@ -853,7 +853,7 @@ export function createBrainServer({ pluginRoot, mode = 'http', kbWorker, kbLock,
     },
     {
       name: 'curation_prune_unused',
-      description: 'List (default) or prune curated scripts that NEVER ran (no run, redirect or pipe) in the last `days`. Candidates require the usage history to cover the whole window and the script to be older than it. Pruning removes only the shells.json registration (backup written; the script file stays — re-register to restore). To prune, call again with apply:true and ids = the candidate ids you want removed (non-candidates are refused).',
+      description: 'List (default) or prune curated scripts that NEVER ran (no run, redirect or pipe) in the last `days`. Candidates require the usage history to cover the whole window and the script to be older than it. Pruning removes only the shells.json registration (backup written; the script file stays). To prune, call again with apply:true and ids = the candidate ids you want removed (non-candidates are refused). To undo a prune, call with restore:true: the registrations missing from the current file come back from the newest backup (or the one named in `backup`); entries added since stay, and the current file is backed up first.',
       inputSchema: {
         type: 'object',
         properties: {
@@ -861,6 +861,8 @@ export function createBrainServer({ pluginRoot, mode = 'http', kbWorker, kbLock,
           days: { type: 'number', description: 'Window in days (default 30)' },
           apply: { type: 'boolean', description: 'false (default) = list candidates only; true = prune `ids`' },
           ids: { type: 'array', items: { type: 'string' }, description: 'Script ids to prune (only with apply:true; each must be a current candidate)' },
+          restore: { type: 'boolean', description: 'true = put back the registrations a prune removed, from the newest backup' },
+          backup: { type: 'string', description: 'Backup file name to restore from (only with restore:true; default the newest)' },
         },
         required: ['cwd'],
       },
@@ -1324,6 +1326,11 @@ export function createBrainServer({ pluginRoot, mode = 'http', kbWorker, kbLock,
           if (!a.cwd || typeof a.cwd !== 'string') return { isError: true, content: [{ type: 'text', text: 'curation_prune_unused: cwd is required (the project folder) — the shared daemon cannot infer which project you mean.' }] };
           const root = findProjectRoot(a.cwd);
           if (!root) return { isError: true, content: [{ type: 'text', text: `curation_prune_unused: no project root (shells config) found from ${a.cwd}` }] };
+          if (a.restore) {
+            const back = prune.restoreShells({ root, backup: a.backup });
+            if (!back.ok) return { isError: true, content: [{ type: 'text', text: `curation_prune_unused: ${back.error}` }] };
+            return { content: [{ type: 'text', text: JSON.stringify({ root, ...back }, null, 2) }] };
+          }
           const days = Math.max(1, Math.min(365, Number(a.days) || 30));
           // No `project`: shells-prune resolves the metrics key of `root` itself (the project id,
           // where lib/metrics.js writes). A folder name read the frozen legacy db (history stops

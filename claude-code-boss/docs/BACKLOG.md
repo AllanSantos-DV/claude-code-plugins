@@ -3175,6 +3175,8 @@ Lacunas conhecidas do gate de project id (2.29.1):
 - [x] Relatório de lições que o `prune` arquivaria (`prunePreview`, uma linha no `brain-health` só no backend local e só com N > 0), restauração de scripts curados podados (`restoreShells`) e desfazer da troca de escopo (registro `kind: move`, `--undo` no bulk e `moveId` no dashboard). Todos aditivos, com teste que falha antes.
 - [x] **Decidido (2026-11-24, ordem de release do dono via orquestrador) — candidatos da lente fora desta versão:** (a) sanitizar o rascunho de skill no `approve`, (b) sinal negativo no rerank, (c) promoção de lições no backend local e script curado de usuário. Nenhum entra na 3.18.0; nada muda para quem usa o Boss hoje.
 
+- **Candidatos aditivos da lente da 3.18.0, fora desta versão (2026-11-24)** (agente sem contexto, só código e docs; todos deixam o uso atual como está): comando para aplicar a poda de lições com ensaio (`prunePreview` e `prune` já existem, falta o CLI no formato do `lesson-promote.js`); guarda de CRLF/BOM também em Edit e MultiEdit (antes, sondar se o Edit altera as quebras de linha); aviso de política por glob antes da edição (PreToolUse com `additionalContext`, confirmar na documentação de hooks); medição das políticas sombra também para Write e MultiEdit.
+
 ## Pontos técnicos fechados antes do build de teste (2026-11-24)
 
 - [x] **Corrigido — `docs/FUNCOES.md` contradizia o código**: a abertura dizia que o Boss não define limiar nem dispara cortes de compactação (o Compaction gate compacta a 17% com a sessão ociosa) e que o `economy-report` não separa sessões com Boss de sem Boss (`--split boss` separa).

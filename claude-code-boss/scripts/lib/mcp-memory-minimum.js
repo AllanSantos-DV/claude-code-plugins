@@ -18,12 +18,7 @@ function stateFile() {
 }
 
 function readState(file = stateFile()) {
-  try {
-    return JSON.parse(require('fs').readFileSync(file, 'utf8'));
-  } catch (err) {
-    if (err.code !== 'ENOENT') console.error(`[mcp-memory-minimum] state unreadable (${file}): ${err.message}`);
-    return null;
-  }
+  return require('../../engine/lib/json-file.js').readJsonLoud(file, 'mcp-memory-minimum');
 }
 
 function writeState(state, file = stateFile()) {

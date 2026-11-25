@@ -29660,6 +29660,30 @@ test('prune never-used: apply removes only current candidates (non-candidates re
   } finally { fs.rmSync(root, { recursive: true, force: true }); }
 });
 
+test('curation_prune_unused restore: the MCP tool puts back a pruned registration from the backup, keeps entries added since, and refuses without a backup', async () => {
+  const { pruneShells } = require('./lib/shells-prune.js');
+  const root = tempDir('ccb-prune-restore-');
+  const file = require('./curation-paths.js').getShellsConfigPath(root);
+  fs.mkdirSync(path.dirname(file), { recursive: true });
+  fs.writeFileSync(path.join(root, 'package.json'), '{}');
+  fs.writeFileSync(file, JSON.stringify({ shells: [{ id: 'A', script: 'scripts/a.mjs', aliases: ['npm run a'] }, { id: 'B', script: 'scripts/b.mjs', aliases: ['npm run b'] }] }));
+  try {
+    const { createBrainServer } = await import(pathToFileURL(path.join(ROOT, 'servers', 'brain-server', 'lib', 'mcp-server.js')).href);
+    const server = createBrainServer({ pluginRoot: ROOT, mode: 'http' });
+    const none = await server.dispatch('curation_prune_unused', { cwd: root, restore: true });
+    assert(none.isError && /nothing to restore|no shells backup/.test(none.content[0].text), `no backup yet is a loud refusal: ${none.content[0].text}`);
+    const pruned = pruneShells({ root, ids: ['B'], days: 30, usage: () => ({ historyFromTs: Date.now() - 60 * 86400_000, usedIds: ['A'] }) });
+    assert(pruned.ok, JSON.stringify(pruned));
+    const cur = JSON.parse(fs.readFileSync(file, 'utf8'));
+    cur.shells.push({ id: 'C', script: 'scripts/c.mjs', aliases: ['npm run c'] });
+    fs.writeFileSync(file, JSON.stringify(cur));
+    const res = await server.dispatch('curation_prune_unused', { cwd: root, restore: true });
+    const out = JSON.parse(res.content[0].text);
+    assert(!res.isError && out.restored.join(',') === 'B', `B comes back: ${res.content[0].text}`);
+    assertEq(JSON.parse(fs.readFileSync(file, 'utf8')).shells.map((s) => s.id).sort().join(','), 'A,B,C', 'A and C (added since) stay, B is back');
+  } finally { fs.rmSync(root, { recursive: true, force: true }); }
+});
+
 test('prune never-used: real metrics usage (exact, no row cap) + the MCP tool lists by default and prunes only with apply', async () => {
   const ms = require('../engine/lib/metrics-store.js');
   const root = tempDir('ccb-prune-tool-');
