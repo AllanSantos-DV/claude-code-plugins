@@ -3186,3 +3186,7 @@ Lacunas conhecidas do gate de project id (2.29.1):
 ## Brain do Jarvis sem conexão: entrada fora do lançador do plugin (2026-11-25)
 
 - [x] **Achado fora deste repositório, entregue ao orquestrador para a sessão do orchestrador (nada a fazer no Boss):** o `brainServer()` de `orchestrador/src/environment.mjs` grava no `headersHelper` o `scripts/mcp-headers.js` de uma pasta de versão do plugin; a atualização automática removeu a pasta (`3.18.0-dev.fce4f878490e`), o helper morreu antes do token e o cliente caiu no OAuth (DCR 404). Correção: usar `mcp-headers-launcher.cjs` da pasta de dados do plugin. Nada a mudar no Boss: o lançador já existe e tem teste. Causa e medições em `docs/research/2026-11-25-brain-do-jarvis-nao-conecta-helper-fixado-na-versao.md`.
+
+## Wizard do servidor de memória preso e sem motivo na tela (2026-11-25)
+
+- [x] **Achado e corrigido na hora (5bb092c):** uma ativação gravada como `running` por um processo morto era servida para sempre e `start()` recusava recomeçar (`scripts/lib/mcp-wizard.js`); o painel Brain trocava o motivo real por "Failed to start" e uma página velha (401) não dizia para recarregar (`dashboard/index.html`). Agora a execução órfã vira `failed`, o motivo aparece e há Retry. Testes: `mcp-wizard` (órfã vira failed) e `dashboard wizard` (motivo e recarga); falham sem a correção. Suíte: 143/0 e 2111/0.
