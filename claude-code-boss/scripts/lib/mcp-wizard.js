@@ -71,13 +71,27 @@ function _releaseLock() {
   _manualLockOwner = null;
 }
 
+/**
+ * A persisted 'running' state whose runner is gone (process killed, reboot) would be served
+ * forever: start() refuses to begin and the panel polls a run that no longer exists.
+ * The run is settled as failed so the user can retry.
+ */
+function settleOrphanedRun(state) {
+  if (state.status !== 'running' || _activeRun) return state;
+  const lp = lockFile();
+  if (fs.existsSync(lp) && !_isLockStale(lp)) return state;
+  const settled = { ...state, status: 'failed', finishedAt: new Date().toISOString(), error: 'The activation was interrupted before it finished (the process running it ended). Try again.' };
+  try { fs.writeFileSync(wizardStateFile(), JSON.stringify(settled)); } catch (err) { console.error(`[mcp-wizard] could not persist the settled state: ${err.message}`); }
+  return settled;
+}
+
 function loadState() {
   if (_state) return _state;
   try {
     const sp = wizardStateFile();
     if (fs.existsSync(sp)) {
       _state = JSON.parse(fs.readFileSync(sp, 'utf8'));
-      if (_state && _state.status) return _state;
+      if (_state && _state.status) return settleOrphanedRun(_state);
     }
   } catch { /* corrupted */ }
   _state = { step: 0, total: 5, status: 'idle', progress: 0, details: [], startedAt: null, finishedAt: null, error: null };

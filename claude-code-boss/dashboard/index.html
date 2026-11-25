@@ -4728,8 +4728,22 @@ async function startMcpWizard() {
   try {
     const r = await api('POST', '/api/brain/mcp-wizard', { projectId: 'default' });
     if (r.ok) pollWizard();
-    else { const d = document.getElementById('wizard-detail'); if (d) d.textContent = 'Failed to start'; btn.disabled = false; }
-  } catch (e) { const d = document.getElementById('wizard-detail'); if (d) d.textContent = e.message; btn.disabled = false; }
+    else showWizardFailure(wizardStartError(r), btn);
+  } catch (e) { showWizardFailure(e.message, btn); }
+}
+
+function wizardStartError(r) {
+  if (r && r.error === 'Unauthorized') return 'Unauthorized: this page belongs to a dashboard that was restarted. Reload the page and try again.';
+  return (r && r.error) || 'The dashboard did not start the activation and gave no reason.';
+}
+
+function showWizardFailure(message, btn) {
+  const d = document.getElementById('wizard-detail');
+  if (d) d.textContent = 'Activation failed';
+  const errEl = document.getElementById('wizard-error');
+  if (errEl) { errEl.style.display = ''; errEl.textContent = message; }
+  btn.disabled = false;
+  btn.textContent = 'Retry';
 }
 
 function pollWizard() {

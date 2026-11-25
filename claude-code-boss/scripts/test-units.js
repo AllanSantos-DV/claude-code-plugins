@@ -12990,6 +12990,29 @@ test('FASE-G dashboard.js: rotas do wizard + brain/health wireadas (API + UI + h
   assert(upsDispatcher.DETECTORS.some(d => d.name === 'brain-status'), 'user-prompt-submit-dispatcher deve rodar brain-status.run() in-process');
 });
 
+test('dashboard wizard: a failed start shows the real reason and a stale page says to reload, instead of a bare "Failed to start"', () => {
+  const vm = require('vm');
+  const html = fs.readFileSync(path.join(ROOT, 'dashboard', 'index.html'), 'utf8');
+  const grab = (name) => {
+    const m = html.match(new RegExp(`function ${name}\\([^)]*\\) \\{[\\s\\S]*?\\r?\\n\\}\\r?\\n`));
+    assert(m, `${name} present in the dashboard page`);
+    return m[0];
+  };
+  assert(!/Failed to start/.test(html), 'the bare message is gone');
+  const els = {};
+  const el = (id) => (els[id] = els[id] || { style: {}, textContent: '' });
+  const ctx = vm.createContext({ document: { getElementById: el } });
+  vm.runInContext(`${grab('wizardStartError')}${grab('showWizardFailure')}`, ctx);
+  assert(/Reload the page/.test(ctx.wizardStartError({ ok: false, error: 'Unauthorized' })), 'stale token: tells the user to reload');
+  assertEq(ctx.wizardStartError({ ok: false, error: 'Another wizard instance is running' }), 'Another wizard instance is running', 'server reason passes through');
+  const btn = { disabled: true, textContent: 'Starting...' };
+  ctx.showWizardFailure('boom', btn);
+  assertEq(el('wizard-error').textContent, 'boom', 'reason shown in the error box');
+  assertEq(el('wizard-error').style.display, '', 'error box visible');
+  assertEq(btn.textContent, 'Retry', 'button offers a retry');
+  assertEq(btn.disabled, false, 'button enabled again');
+});
+
 test('FASE-G mcp-wizard: reset limpa estado persistido; getState devolve idle (round-trip no arquivo)', () => {
   const saved = process.env.CLAUDE_PLUGIN_DATA;
   const tmp = tempDir('ccb-wiz-');
@@ -13008,8 +13031,10 @@ test('FASE-G mcp-wizard: reset limpa estado persistido; getState devolve idle (r
     delete require.cache[require.resolve('./lib/mcp-wizard.js')];
     const wizard2 = require('./lib/mcp-wizard.js');
     const state = wizard2.getState();
-    assertEq(state.status, 'running', 'getState devolve o run persistido');
+    assertEq(state.status, 'failed', 'a run persisted as running with no live runner is settled as failed, not served forever');
     assertEq(state.step, 3, 'step persistido mantido');
+    assert(/interrupted/.test(state.error), 'the user is told why: ' + state.error);
+    assertEq(JSON.parse(fs.readFileSync(stPath, 'utf8')).status, 'failed', 'settled state is persisted');
     assertEq(wizard2.reset().status, 'idle', 'reset posterior volta a idle');
     assert(!fs.existsSync(stPath), 'reset remove o arquivo de estado');
   } finally {
