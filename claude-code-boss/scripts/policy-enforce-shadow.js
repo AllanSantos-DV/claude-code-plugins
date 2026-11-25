@@ -35,7 +35,7 @@
  * best-effort and wrapped so it can NEVER break the silent hook — the hook still
  * ALWAYS emits `{}`. Off by default: nothing is stored unless the user opts in.
  */
-const { readStdin, emitEmpty } = require('./lib/hook-io.js');
+const { emitEmpty, runSideEffectCli } = require('./lib/hook-io.js');
 const { dataDir } = require('../engine/lib/data-dir.js');
 const { resolveLocalScopeId } = require('../engine/lib/project-id.js');
 const policyStore = require('../engine/lib/policy-store.js');
@@ -207,19 +207,6 @@ async function run(event) {
   return emitEmpty();
 }
 
-if (require.main === module) {
-  (async () => {
-    try {
-      const raw = await readStdin();
-      let event = {};
-      try { event = JSON.parse(raw || '{}'); }
-      catch (err) { void err; /* non-JSON stdin → treat as empty event */ }
-      await run(event);
-    } catch (err) {
-      console.error('[POLICY-SHADOW] ' + (err && err.message ? err.message : err));
-      emitEmpty();
-    }
-  })();
-}
+if (require.main === module) runSideEffectCli(evaluate, 'POLICY-SHADOW');
 
 module.exports = { run, evaluate, countOccurrences, diffOf, EDIT_TOOLS };
