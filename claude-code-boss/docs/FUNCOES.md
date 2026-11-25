@@ -59,6 +59,11 @@ Fluxo: captura, recall, citação, consolidação, e (manual) skill ou policy. C
 - Métrica: `lesson.captured {type, decision:'merge'|'admit', scope, recurrence?, windowId?, source}`.
 - Limite conhecido: o dedup local só olha o banco do escopo de destino. A mesma lição em dois projetos vira duas entradas, cada uma com `recurrence` 1. Isso é inferido da leitura do código, sem teste em execução.
 
+**memory-stack-recovery** (`scripts/lib/memory-stack-recovery.js`, chamada por `brain-daemon-ensure.js` `runMemoryStackRecoveryInBackground` logo depois do auto-update, em segundo plano no SessionStart)
+- Entra: SessionStart, só para o servidor mcp-memory local gerenciado (sem endereço configurado); um estado `ok` checado há menos de 5 minutos pula a rodada.
+- Faz: remove as variáveis de usuário que o servidor atual recusa (backup antes); com a casa de embeddings sem modelo, procura o modelo no disco, grava `CASA_MODEL_DIR` e reinicia o servidor uma vez (carência de 30 min); copia para o servidor as memórias gravadas em arquivos (uma vez cada, sem duplicar, sem apagar o arquivo; no máximo a cada 6 h); apaga as versões antigas do servidor quando a em execução está saudável há 2 min.
+- Mostra: `recovering`, `recovered`, `degraded` ou `critical` com a mensagem exata no dashboard (aba Brain), no doctor ("Memory stack") e no próximo prompt; cada etapa é linha de log e notificação do Windows sem janela (`CCB_TOAST_SINK` registra a notificação). Cada etapa tem prazo; uma recuperação que nunca terminou aparece como `critical`.
+
 ### 2.2 Recall
 
 **retrieve-core** (`engine/lib/retrieve-core.js`, chamado por `brain_retrieve_context`, `mcp-server.js:1131-1186`)

@@ -82,7 +82,13 @@ const BACKGROUND_ENV = 'CCB_SESSION_START_BACKGROUND';
 const DETECTORS = [
   // The daemon check only: its update (download + restart) is the separate background step below.
   { name: 'brain-daemon-ensure', mod: { run: (event) => brainDaemonEnsure.run(event, { skipAutoUpdate: true }) }, timeoutMs: 5000 },
-  { name: 'mcp-memory-auto-update', mod: { run: (event) => brainDaemonEnsure.runAutoUpdateInBackground(event) }, timeoutMs: 120000, bg: true },
+  // The recovery follows the update in the same process: both restart or probe the same server.
+  { name: 'mcp-memory-auto-update', mod: { run: async (event) => {
+    let update = null;
+    try { update = await brainDaemonEnsure.runAutoUpdateInBackground(event); } catch (err) { console.error(`[session-start] mcp-memory auto-update: ${err.message}`); }
+    await brainDaemonEnsure.runMemoryStackRecoveryInBackground(event);
+    return update;
+  } }, timeoutMs: 420000, bg: true },
   { name: 'memory-rotate', mod: memoryRotate, timeoutMs: 10000, bg: true },
   { name: 'runtime-sweep', mod: runtimeSweep, timeoutMs: 5000, bg: true },
   { name: 'session-whitelist', mod: sessionWhitelist, timeoutMs: 5000 },

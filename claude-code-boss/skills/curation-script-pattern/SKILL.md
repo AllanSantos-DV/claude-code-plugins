@@ -20,7 +20,7 @@ You already have full turn context — don't reload payloads from disk; act on w
 
 Curated scripts and their `shells.json` live **outside the project**, in the user's curation folder for it: `~/.claude/claude-code-boss/curation/<owner>/<repo>/` (keyed by the project id; `curation/local/<name>-<hash>/` for a folder without one). Nothing is written in the repo. A project that still has the old `.vscode/shells.json` + `.vscode/scripts/` is moved there automatically (backup kept, git-tracked scripts left in place and reported; a git-TRACKED shells.json is the team's, branch-scoped file — never moved, read in place). Each entry points to a **script** that wraps a raw command and **standardizes its output**. The LLM never sees raw verbose output: it sees the script's filtered summary.
 
-The redirect runs the script with `CCB_PROJECT_ROOT` set to the project root: **find the project through that variable** (fallback `process.cwd()`), never through the script's own location (`__dirname/../..` now points into the curation folder).
+The redirect runs the script with `CCB_PROJECT_ROOT` set to the work tree the command runs in (the project root, or the worktree a leading `cd <dir> &&` moves into): **find the project through that variable** (fallback `process.cwd()`), never through the script's own location (`__dirname/../..` now points into the curation folder). A script that acts on a repository (`git`, tests) must run it in that root and never in a root it derives some other way.
 
 - Success → exactly one line: `OK  <summary> (<N>ms)`
 - Failure → relevant error lines + final line: `FAIL  <tool> (<N>ms)`

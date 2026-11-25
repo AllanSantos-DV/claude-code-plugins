@@ -790,6 +790,11 @@ function checkSetup(ctx) {
         fix: 'Nothing to do: the next session start downloads the published server and restarts it. If it keeps failing, the notice names the cause; Java 21 is needed.' }
       : { ...base, id: 'setup-memory-server', label: 'Memory server version', status: 'ok', detail, fix: '' });
   }
+  const stack = m.backend === 'mcp-memory' && m.server && m.server.management === 'local' ? require('./lib/memory-stack-recovery.js').readStack() : null;
+  if (stack && stack.state !== 'ok') {
+    out.push({ ...base, id: 'setup-memory-stack', label: 'Memory stack', status: stack.state === 'critical' ? 'fail' : stack.state === 'recovered' ? 'ok' : 'warn',
+      detail: `${stack.state}: ${stack.message}`, fix: stack.nextAction || '' });
+  }
   const sc = m.scope;
   if (sc && !sc.id && !sc.optedOut) {
     out.push({ ...base, id: 'setup-memory-scope', label: 'Memory in this folder', status: 'warn',

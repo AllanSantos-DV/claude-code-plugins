@@ -300,7 +300,7 @@ async function cascadeSteps(event, notes) {
       reportPath = rr.newReportPath();
     } catch (err) { console.error(`[curation-guard] raw report off for this run: ${err.message}`); }
     const reportId = reportPath ? require('./lib/raw-report.js').reportIdOf(reportPath) : '';
-    const plan = planRedirect(command, shells, projectRoot, { reportPath, ps: isPs });
+    const plan = planRedirect(command, shells, projectRoot, { reportPath, ps: isPs, cwd: event.cwd });
     const mctx = { sessionId: event.session_id, cwd: event.cwd };
     if (plan.rewritten) {
       const mode = event.permission_mode === 'bypassPermissions' ? 'allow' : 'ask';

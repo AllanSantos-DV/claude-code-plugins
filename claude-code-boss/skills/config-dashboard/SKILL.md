@@ -40,7 +40,7 @@ After launching, read the output for the URL (pattern: `http://localhost:<port>`
 | Tab | Purpose |
 |-----|---------|
 | Home | System overview: KB stats, hooks status, uptime |
-| Brain KB | Select project, search KB, view/delete entries, backend status |
+| Brain KB | Select project, search KB, view/delete entries, backend status, and the state of the memory stack the Boss manages (recovering, recovered, degraded, critical, with the exact message and the steps taken) |
 | Hooks | View all registered hooks, toggle active/inactive; edit hooks-config + brain-config |
 | Logs | Dashboard + hook error logs (ring buffer) |
 

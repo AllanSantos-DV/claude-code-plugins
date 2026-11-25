@@ -182,20 +182,48 @@ async function runAutoUpdateInBackground(event, deps = {}) {
   return result;
 }
 
+const stackNoticeFile = (dir) => path.join(dir || dataDir(), '.runtime', 'memory-stack.notice');
+
 /**
- * The failed background auto-update, once: the advisory text, or null when none is waiting.
+ * Bring the memory stack back after an update or an outage (obsolete variables, missing model, files
+ * written while the server was down, previous server version), apart from the session start. What
+ * happened waits as a notice for the next prompt; every step is also a Windows notification and a log line.
+ * @param {object} event  SessionStart payload
+ * @param {{loadConfig?: Function, recover?: Function, dir?: string}} [deps]
+ * @returns {Promise<{state: string}|null>}
+ */
+async function runMemoryStackRecoveryInBackground(event, deps = {}) {
+  if (!event || event.hook_event_name !== 'SessionStart') return null;
+  const cfg = (deps.loadConfig || brainConfig.load)();
+  const recover = deps.recover || require('./lib/memory-stack-recovery.js').recoverMemoryStack;
+  const result = await recover({ config: cfg });
+  if (result && result.advisory) {
+    const file = stackNoticeFile(deps.dir);
+    fs.mkdirSync(path.dirname(file), { recursive: true });
+    const tmp = `${file}.${process.pid}.tmp`;
+    fs.writeFileSync(tmp, result.advisory);
+    fs.renameSync(tmp, file);
+  }
+  return result;
+}
+
+/**
+ * The background notices, once: the failed auto-update and the memory-stack recovery. Null when none is waiting.
  * @param {{dir?: string}} [opts]
  * @returns {string|null}
  */
 function takeAutoUpdateNotice({ dir } = {}) {
-  const file = noticeFile(dir);
-  let text;
-  try { text = fs.readFileSync(file, 'utf8'); } catch (err) {
-    if (err.code !== 'ENOENT') console.error(`[brain-daemon-ensure] auto-update notice unreadable: ${err.message}`);
-    return null;
+  const texts = [];
+  for (const file of [noticeFile(dir), stackNoticeFile(dir)]) {
+    let text;
+    try { text = fs.readFileSync(file, 'utf8'); } catch (err) {
+      if (err.code !== 'ENOENT') console.error(`[brain-daemon-ensure] notice unreadable (${file}): ${err.message}`);
+      continue;
+    }
+    try { fs.unlinkSync(file); } catch (err) { console.error(`[brain-daemon-ensure] notice not removed (${file}): ${err.message}`); }
+    if (text) texts.push(text);
   }
-  try { fs.unlinkSync(file); } catch (err) { console.error(`[brain-daemon-ensure] auto-update notice not removed: ${err.message}`); }
-  return text || null;
+  return texts.length ? texts.join('\n') : null;
 }
 
 /**
@@ -280,4 +308,4 @@ async function main() {
 if (require.main === module) main();
 
 module.exports = {
-  relaunchDeadMemoryServer, KICK_MARKER_COOLDOWN_MS, crashAdvisory, pluginRoot, runSetupInBackground, run, ensureMemoryServer, runAutoUpdateInBackground, takeAutoUpdateNotice };
+  relaunchDeadMemoryServer, KICK_MARKER_COOLDOWN_MS, crashAdvisory, pluginRoot, runSetupInBackground, run, ensureMemoryServer, runAutoUpdateInBackground, runMemoryStackRecoveryInBackground, takeAutoUpdateNotice };

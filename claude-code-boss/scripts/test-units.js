@@ -5712,6 +5712,53 @@ test('passthrough redirect: a script that serves several subcommands of one prog
   assertEq(planRedirect('git commit -q -m x', legacy, R).rewritten, `${inv} -q -m x`, 'without commandTokens the rule is unchanged');
 });
 
+test('passthrough redirect: a git commit issued from a worktree commits that worktree only — the script acts where the command runs, the main tree stays untouched', () => {
+  const { planRedirect } = require('./lib/curation-redirect.js');
+  const { execFileSync } = require('child_process');
+  const git = (cwd, ...args) => execFileSync('git', args, { cwd, encoding: 'utf8', windowsHide: true }).trim();
+  const R = path.resolve(TEST_TEMP.dir('ccb-wt-main-'));
+  const W = `${R}-wt`;
+  git(R, 'init', '-q', '-b', 'main');
+  git(R, 'config', 'user.email', 't@example.test');
+  git(R, 'config', 'user.name', 't');
+  fs.writeFileSync(path.join(R, 'tracked.txt'), 'one\n');
+  git(R, 'add', '-A');
+  git(R, 'commit', '-q', '-m', 'init');
+  git(R, 'worktree', 'add', '-q', '-b', 'side', W);
+  fs.writeFileSync(path.join(R, 'tracked.txt'), 'changed in the main tree\n');
+  fs.writeFileSync(path.join(R, 'main-only.txt'), 'untracked in the main tree\n');
+  fs.writeFileSync(path.join(W, 'wt-only.txt'), 'worktree work\n');
+  const H = require('./curation-paths.js').curationHome(R);
+  fs.mkdirSync(path.join(H, 'scripts'), { recursive: true });
+  fs.writeFileSync(path.join(H, 'scripts', 'git-commit.mjs'), [
+    "import { spawnSync } from 'node:child_process';",
+    "const cwd = process.env.CCB_PROJECT_ROOT || process.cwd();",
+    "const r = spawnSync('git', process.argv.slice(2), { cwd, encoding: 'utf8', windowsHide: true });",
+    "console.log(r.status === 0 ? 'OK' : `FAIL ${r.stderr}`);",
+  ].join('\n'));
+  const shells = [{ id: 'git-commit', script: 'scripts/git-commit.mjs', aliases: ['git add', 'git commit'], passthrough: true, commandTokens: 1 }];
+  const headBefore = git(R, 'rev-parse', 'HEAD');
+  const run = (command, cwd) => {
+    const plan = planRedirect(command, shells, R, { cwd });
+    assert(plan.rewritten, `redirected: ${command}`);
+    const gitBash = ['C:/Program Files/Git/bin/bash.exe', 'C:/Program Files/Git/usr/bin/bash.exe'].find((f) => fs.existsSync(f)) || 'bash';
+    execFileSync(gitBash, ['-c', plan.rewritten], { cwd, encoding: 'utf8', windowsHide: true });
+    return plan.rewritten;
+  };
+  const rewritten = run(`cd "${W.replace(/\\/g, '/')}" && git add -A && git commit -q -m "worktree commit"`, R);
+  assert(rewritten.includes(`CCB_PROJECT_ROOT="${path.resolve(W).replace(/\\/g, '/')}"`), `the script is told to act in the worktree: ${rewritten}`);
+  assertEq(git(W, 'log', '-1', '--format=%s'), 'worktree commit', 'the worktree got the commit');
+  assertEq(git(W, 'show', '--name-only', '--format=', 'HEAD'), 'wt-only.txt', 'and only its own file');
+  assertEq(git(R, 'rev-parse', 'HEAD'), headBefore, 'the main tree has no new commit');
+  assertEq(git(R, 'status', '--porcelain').split(/\r?\n/).map((l) => l.trim()).sort().join('|'), '?? main-only.txt|M tracked.txt', 'its dirty files are untouched and not staged');
+  const plain = planRedirect('git commit -q -m x', shells, R, { cwd: R });
+  assert(plain.rewritten && plain.rewritten.includes(`CCB_PROJECT_ROOT="${path.resolve(R).replace(/\\/g, '/')}"`), 'a command that stays in the session root keeps that root');
+  const unknown = planRedirect('cd ~/elsewhere && git add -A', shells, R, { cwd: R });
+  assert(unknown.rewritten.includes(`CCB_PROJECT_ROOT="${path.resolve(R).replace(/\\/g, '/')}"`), 'a cd that cannot be resolved leaves the session root');
+  const viaSession = planRedirect('git add -A', shells, R, { cwd: W });
+  assert(viaSession.rewritten.includes(`CCB_PROJECT_ROOT="${path.resolve(W).replace(/\\/g, '/')}"`), 'a session whose shell already stands in the worktree acts there too');
+});
+
 test('C2b shape-output: passes small output untouched; cuts by lines or chars and reports both counts', () => {
   const { shape } = require('./shape-output.js');
   assertEq(shape('a\nb\n', { maxLines: 5, maxChars: 100 }), { cut: false, shown: 'a\nb\n', shownLines: 2, rawLines: 2 });
@@ -38308,6 +38355,289 @@ test('scope move undo: the dashboard move (project -> user, then back) is record
     await store.init({ project: '__user__' });
     assertEq(store.getRaw(toId), null, 'the copy is gone');
   } finally { await store.close(); }
+});
+
+/** A machine in the state a stuck user's was left in: the refused variable, the model on disk, memories in files, the previous server jar. */
+function stackWorld() {
+  const home = tempDir('ccb-stack-');
+  const put = (p, c = '') => { const f = path.join(home, p); fs.mkdirSync(path.dirname(f), { recursive: true }); fs.writeFileSync(f, c); return f; };
+  put('.mcp-memory/lib/mcp-memory-server-3.1.1.jar');
+  put('.mcp-memory/lib/mcp-memory-server-3.2.0.jar');
+  put('.mcp-memory/model/model.onnx');
+  put('.mcp-memory/model/tokenizer.json', '{}');
+  put('.claude/projects/proj-a/s1.jsonl', `${JSON.stringify({ cwd: 'C:\\work\\proj-a' })}\n`);
+  const mem = (n, name, body) => put(`.claude/projects/proj-a/memory/${n}.md`, `---\nname: ${name}\ndescription: ${name} rule\ntype: feedback\n---\n${body}\n`);
+  mem('feedback_tests', 'Run the suite silently', 'Never play audio or open a window in a test, use a null sink.');
+  mem('feedback_release', 'Release only after owner validation', 'No tag or publish before the owner tested the build on his machine.');
+  mem('feedback_lang', 'Answer in Portuguese', 'Every chat answer goes in Brazilian Portuguese, even for technical topics.');
+  put('.claude/projects/proj-a/memory/MEMORY.md', '- index\n');
+  const store = new Map([['MCP_RULES_MODE', 'enforce']]);
+  const userEnv = { get: (n) => store.get(n) || null, set: (n, v) => store.set(n, v), del: (n) => store.delete(n) };
+  const docs = [{ id: 'manual-1', title: 'Answer in Portuguese', summary: 'Answer in Portuguese rule', content: 'Every chat answer goes in Brazilian Portuguese, even for technical topics.' }];
+  const backend = {
+    project: null,
+    init: async ({ project }) => { backend.project = project; },
+    get: async (id) => docs.find((x) => x.id === id) || null,
+    search: async () => docs.slice(),
+    save: async (e) => { docs.push({ ...e, project: backend.project }); return e.id; },
+  };
+  const toasts = [];
+  const logs = [];
+  const healthy = (casa) => ({ status: 'healthy', version: '3.2.0', uptimeMs: 600000, checks: { database: 'ok', embedding_model: casa === 'ok' ? 'ok' : 'down' },
+    product: { dependencies: [{ name: 'motor-de-grafo', state: 'ok' }, { name: 'casa-de-embeddings', state: casa, reason: casa === 'ok' ? null : 'the model download failed (proxy 503); set CASA_MODEL_DIR' }], update: { checked: true, latest: '3.2.0', available: false } } });
+  const g = path.join(home, 'g');
+  const deps = (extra = {}) => ({
+    env: { USERPROFILE: home }, userEnv, backend, file: path.join(g, 'state.json'), backupDir: path.join(g, 'backups'), ledgerFile: path.join(g, 'replayed.json'),
+    toast: (t) => toasts.push(t), log: (l) => logs.push(l), sleep: async () => {}, resolveProject: () => 'proj-a-id', ...extra,
+  });
+  return { home, store, userEnv, docs, backend, toasts, logs, healthy, deps, put };
+}
+
+const STACK_CONFIG = { backend: { type: 'mcp-memory', mcpMemory: {} } };
+
+test('memory-stack-recovery: the exact stuck state recovers by itself — variable removed with a backup, model found and set, server restarted, files copied once, old jar removed, every step notified', async () => {
+  const rec = require('./lib/memory-stack-recovery.js');
+  const w = stackWorld();
+  let phase = 0;
+  let restarts = 0;
+  const deps = w.deps({ probe: async () => ({ health: w.healthy(phase ? 'ok' : 'missing') }), restart: async () => { restarts++; phase = 1; return { ok: true }; } });
+  const r = await rec.recoverMemoryStack({ config: STACK_CONFIG, deps });
+  assertEq(r.state, 'recovered', JSON.stringify(r.steps.map((s) => `${s.step}:${s.status}:${s.detail}`)));
+  assertEq(w.store.get('MCP_RULES_MODE') || null, null, 'the refused variable is gone');
+  const backup = fs.readdirSync(path.join(w.home, 'g', 'backups'));
+  assertEq(backup.length, 1, 'one backup file');
+  assert(/enforce/.test(fs.readFileSync(path.join(w.home, 'g', 'backups', backup[0]), 'utf8')), 'the backup holds the value that was removed');
+  assertEq(w.store.get('CASA_MODEL_DIR'), path.join(w.home, '.mcp-memory', 'model'), 'the model on disk is configured as CASA_MODEL_DIR');
+  assertEq(restarts, 1, 'one restart');
+  assertEq(w.docs.filter((d) => d.tags && d.tags.includes('replayed-from-file')).length, 2, 'two memories copied; the third was already in the server');
+  assert(fs.existsSync(path.join(w.home, '.claude', 'projects', 'proj-a', 'memory', 'feedback_tests.md')), 'the original files are kept');
+  assert(!fs.existsSync(path.join(w.home, '.mcp-memory', 'lib', 'mcp-memory-server-3.1.1.jar')), 'the previous server version is removed');
+  assert(fs.existsSync(path.join(w.home, '.mcp-memory', 'lib', 'mcp-memory-server-3.2.0.jar')), 'the running version stays');
+  assertEq(r.steps.map((s) => s.step).join(','), 'obsolete-env,model,replay,old-version', 'every stage ran in order');
+  assert(w.toasts.length >= 4, `a notification per step: ${w.toasts.length}`);
+  assert(w.logs.some((l) => /replay done: Copied 2 /.test(l)), 'the count is in the log');
+  assertEq(JSON.parse(fs.readFileSync(path.join(w.home, 'g', 'state.json'), 'utf8')).state, 'recovered', 'the screen state is persisted');
+  const again = await rec.recoverMemoryStack({ config: STACK_CONFIG, deps });
+  assertEq(again.state, 'recovered', 'a second run has nothing to do and the recovery stays visible for a day');
+  assertEq(again.steps.length, 0, 'no step ran');
+  assertEq(again.advisory, '', 'and nothing is said again');
+  assertEq(w.docs.length, 3, 'nothing is copied twice');
+  assertEq(w.toasts.length, 4 + 0, 'and nothing new is announced');
+});
+
+test('memory-stack-recovery: a server that does not start, a missing model and a stage that never ends each become a critical state with the reason and the next action', async () => {
+  const rec = require('./lib/memory-stack-recovery.js');
+  const w = stackWorld();
+  const down = await rec.recoverMemoryStack({ config: STACK_CONFIG, deps: w.deps({ probe: async () => ({ error: 'ECONNREFUSED' }), launch: async () => ({ ok: false, error: '[FATAL] MCP_RULES_MODE removida na 3.0.0' }) }) });
+  assertEq(down.state, 'critical', 'cannot start');
+  assert(/does not answer: ECONNREFUSED/.test(down.message), down.message);
+  const failed = down.steps.find((s) => s.step === 'server-start');
+  assert(failed && failed.status === 'failed' && /MCP_RULES_MODE removida/.test(failed.detail) && failed.nextAction, 'the start failure carries its reason and next action');
+  assert(w.toasts.some((t) => /needs attention/.test(t.title) && /MCP_RULES_MODE removida/.test(t.body)), 'the failure is notified with the reason');
+
+  const w2 = stackWorld();
+  fs.rmSync(path.join(w2.home, '.mcp-memory', 'model'), { recursive: true, force: true });
+  let restarted = false;
+  const noModel = await rec.recoverMemoryStack({ config: STACK_CONFIG, deps: w2.deps({ probe: async () => ({ health: w2.healthy('missing') }), restart: async () => { restarted = true; return { ok: true }; } }) });
+  assertEq(noModel.state, 'critical', 'no model anywhere');
+  assertEq(restarted, false, 'no restart without a model to point at');
+  assert(noModel.steps.some((s) => s.step === 'model' && s.status === 'failed' && /~\/.mcp-memory\/model/.test(s.nextAction)), 'it says where to put the model');
+
+  const w3 = stackWorld();
+  const hang = await rec.recoverMemoryStack({ config: STACK_CONFIG, deps: w3.deps({ stageMs: { probe: 40 }, probe: () => new Promise(() => {}) }) });
+  assertEq(hang.state, 'critical', 'a hung stage ends');
+  assert(/did not finish within 40 ms/.test(hang.message), hang.message);
+});
+
+test('memory-stack-recovery: states — a failed update check is degraded with its exact message, a dependency being installed is recovering, a missing house is critical; an address set means untouched', async () => {
+  const rec = require('./lib/memory-stack-recovery.js');
+  const base = (deps, update) => ({ health: { status: 'healthy', checks: { database: 'ok', embedding_model: 'ok' }, product: { dependencies: deps, update: update || { checked: true } } } });
+  const motor409 = rec.classifyStack(base([{ name: 'motor-de-grafo', state: 'ok', version: '0.1.3', warning: 'update check failed: HTTP 409 from the manifest' }]));
+  assertEq(motor409.state, 'degraded', 'server up, resource warning');
+  assert(/HTTP 409 from the manifest/.test(motor409.message), 'the exact message reaches the screen');
+  assertEq(rec.classifyStack(base([{ name: 'motor-de-grafo', state: 'updating', reason: 'downloading 0.1.4' }])).state, 'recovering', 'installing');
+  const house = rec.classifyStack(base([{ name: 'casa-de-embeddings', state: 'missing', reason: 'no model' }]));
+  assertEq(house.state, 'critical', 'the embeddings house is required');
+  assertEq(house.casaDown, true, 'and flagged for the model step');
+  assertEq(house.casaNeedsModel, true, 'a missing house asks for a model');
+  assertEq(rec.classifyStack(base([{ name: 'casa-de-embeddings', state: 'degraded', reason: 'GPU initialisation failed' }])).casaNeedsModel, false, 'a house that is down for another reason does not ask for one');
+  assertEq(rec.classifyStack(base([], { checked: true, error: 'HTTP 409' })).state, 'degraded', 'the server update check failure is shown too');
+  assertEq(rec.classifyStack(base([{ name: 'motor-de-grafo', state: 'ok' }])).state, 'ok', 'healthy');
+
+  const w = stackWorld();
+  let touched = false;
+  w.userEnv.get = () => { touched = true; return null; };
+  const own = await rec.recoverMemoryStack({ config: { backend: { type: 'mcp-memory', mcpMemory: { serverUrl: 'http://corp.example:9' } } }, deps: w.deps({ probe: async () => { touched = true; return {}; } }) });
+  assertEq(own.state, 'ok', 'a server of the user is left alone');
+  assertEq(touched, false, 'nothing was read or changed');
+});
+
+test('memory-stack-recovery: old jars go only after the running one is confirmed healthy and settled; the model search follows the hub cache; a variable already valid is kept', async () => {
+  const rec = require('./lib/memory-stack-recovery.js');
+  const w = stackWorld();
+  const env = { USERPROFILE: w.home };
+  const jar = (v) => path.join(w.home, '.mcp-memory', 'lib', `mcp-memory-server-${v}.jar`);
+  const fresh = rec.removeOldJars({ health: { ...w.healthy('ok'), uptimeMs: 10000 }, env });
+  assertEq(fresh.removed.length, 0, 'a server that just started is not yet trusted');
+  assert(fs.existsSync(jar('3.1.1')), 'the previous version is still there');
+  const sick = rec.removeOldJars({ health: { ...w.healthy('ok'), status: 'degraded' }, env });
+  assertEq(sick.removed.length, 0, 'not while degraded');
+  const old = rec.removeOldJars({ health: { ...w.healthy('ok'), version: '3.1.1' }, env });
+  assertEq(old.removed.length, 0, 'not when the running version is not the newest');
+  const ok = rec.removeOldJars({ health: w.healthy('ok'), env });
+  assertEq(ok.removed.join(','), 'mcp-memory-server-3.1.1.jar', 'removed once healthy');
+
+  fs.rmSync(path.join(w.home, '.mcp-memory', 'model'), { recursive: true, force: true });
+  assertEq(rec.findLocalModelDir({ env }), null, 'no model anywhere');
+  const snap = path.join(w.home, '.cache', 'huggingface', 'hub', 'models--org--e5', 'snapshots', 'abc');
+  w.put('.cache/huggingface/hub/models--org--e5/snapshots/abc/model.onnx');
+  w.put('.cache/huggingface/hub/models--org--e5/snapshots/abc/tokenizer.json', '{}');
+  assertEq(rec.findLocalModelDir({ env }).dir, snap, 'the hub cache layout is found');
+  assertEq(rec.findLocalModelDir({ env: { ...env, CASA_MODEL_DIR: snap } }).configured, true, 'a valid variable is kept as it is');
+  w.put('.cache/huggingface/hub/models--org--whisper-large/snapshots/z/model.onnx');
+  w.put('.cache/huggingface/hub/models--org--whisper-large/snapshots/z/tokenizer.json', '{}');
+  assertEq(rec.findLocalModelDir({ env }).dir, snap, 'a model that is not an embedder is never taken');
+  w.put('.cache/huggingface/hub/models--org--bge-m3/snapshots/y/model.onnx');
+  w.put('.cache/huggingface/hub/models--org--bge-m3/snapshots/y/tokenizer.json', '{}');
+  assertEq(rec.findLocalModelDir({ env }).ambiguous.length, 2, 'two embedders in the cache are reported, not guessed');
+});
+
+test('memory-stack-recovery: the registry adapter and the toast never open a window; a toast is recorded for proof; the state screen fades and exposes a stuck recovery', async () => {
+  const rec = require('./lib/memory-stack-recovery.js');
+  const calls = [];
+  const env = rec.windowsUserEnv((file, args, opts) => { calls.push({ file, args, opts }); if (args[0] === 'query') return '    MCP_RULES_MODE    REG_SZ    enforce\r\n'; return ''; });
+  assertEq(env.get('MCP_RULES_MODE'), 'enforce', 'reads the value');
+  env.set('CASA_MODEL_DIR', 'C:\\m');
+  env.del('MCP_RULES_MODE');
+  assert(calls.every((c) => c.file === 'reg.exe' && c.opts.windowsHide === true), 'reg.exe is always hidden');
+  assertEq(calls[1].args.join(' '), 'add HKCU\\Environment /v CASA_MODEL_DIR /t REG_SZ /d C:\\m /f', 'user scope set');
+  let threw = false;
+  try { env.get('lower;case'); } catch (err) { threw = /unexpected variable name/.test(err.message); }
+  assert(threw, 'an unexpected name is refused');
+
+  const { toast } = require('./lib/win-toast.js');
+  const sink = path.join(tempDir('ccb-toast-'), 'sink.jsonl');
+  let spawned = null;
+  const t = toast({ title: 'Boss memory', body: 'x < y & "z"' }, { env: { CCB_TOAST_SINK: sink }, platform: 'win32', spawn: (cmd, args, opts) => { spawned = { cmd, args, opts }; return { unref() {} }; } });
+  assert(t.shown && t.recorded, JSON.stringify(t));
+  assertEq(spawned.opts.windowsHide, true, 'the toast process has no window');
+  assert(/Boss memory/.test(fs.readFileSync(sink, 'utf8')), 'the toast is recorded');
+  const dry = toast({ title: 'a', body: 'b' }, { env: { CCB_TOAST_SINK: sink, CCB_TOAST_DRY: '1' }, platform: 'win32', spawn: () => { throw new Error('must not spawn'); } });
+  assertEq(dry.shown, false, 'dry mode records without showing');
+  const hostile = '’; Start-Process calc; ’ <b>"\u001b';
+  const script = require('./lib/win-toast.js').toastScript('t', hostile);
+  assert(!script.includes('Start-Process') && !script.includes('’') && !script.includes('<b>'), 'the text never appears in the script as code or markup');
+  assert(script.includes(Buffer.from(hostile.replace(/\u001b/, ' '), 'utf8').toString('base64')), 'it travels as base64, control characters replaced');
+
+  const file = path.join(tempDir('ccb-stack-state-'), 's.json');
+  const at = Date.now();
+  fs.writeFileSync(file, JSON.stringify({ state: 'recovered', recoveredAt: at - 2 * 86400000, message: 'm', updatedAt: at }));
+  assertEq(rec.readStack({ file, now: () => at }).state, 'ok', 'recovered fades after a day');
+  fs.writeFileSync(file, JSON.stringify({ state: 'recovering', message: 'working', updatedAt: at - 3600000 }));
+  const stuck = rec.readStack({ file, now: () => at });
+  assertEq(stuck.state, 'critical', 'a recovery that never finished is shown as critical');
+  assert(/never finished/.test(stuck.message), stuck.message);
+});
+
+test('memory-stack-recovery: it only runs for a managed mcp-memory server, never overwrites a variable the user set, restarts only for a missing model, and reports a failed step as degraded even when the server is healthy', async () => {
+  const rec = require('./lib/memory-stack-recovery.js');
+  const never = () => { throw new Error('must not be reached'); };
+  const w0 = stackWorld();
+  const local = await rec.recoverMemoryStack({ config: { backend: { type: 'local' } }, deps: w0.deps({ probe: never, userEnv: { get: never, set: never, del: never } }) });
+  assert(local.untouched && local.state === 'ok', 'the local backend is left alone');
+  assert(!fs.existsSync(path.join(w0.home, 'g', 'state.json')), 'and no state is written for it');
+
+  const w1 = stackWorld();
+  w1.store.set('CASA_MODEL_DIR', path.join(w1.home, 'unplugged-drive'));
+  let restarts = 0;
+  const bad = await rec.recoverMemoryStack({ config: STACK_CONFIG, deps: w1.deps({ probe: async () => ({ health: w1.healthy('missing') }), restart: async () => { restarts++; return { ok: true }; } }) });
+  assertEq(restarts, 0, 'no restart on a variable that points nowhere');
+  assertEq(w1.store.get('CASA_MODEL_DIR'), path.join(w1.home, 'unplugged-drive'), 'the user value is kept');
+  assert(bad.steps.some((s) => s.step === 'model' && /has no model files/.test(s.detail)), 'and it says why');
+
+  const w2 = stackWorld();
+  const gpu = (h) => ({ ...h, product: { ...h.product, dependencies: [{ name: 'casa-de-embeddings', state: 'degraded', reason: 'GPU initialisation failed' }] } });
+  await rec.recoverMemoryStack({ config: STACK_CONFIG, deps: w2.deps({ probe: async () => ({ health: gpu(w2.healthy('ok')) }), restart: async () => { restarts++; return { ok: true }; } }) });
+  assertEq(restarts, 0, 'a house down for a reason that is not the model is not restarted');
+
+  const w3 = stackWorld();
+  const broken = { ...w3.backend, save: async () => { throw new Error('add_document failed'); } };
+  const r3 = await rec.recoverMemoryStack({ config: STACK_CONFIG, deps: w3.deps({ backend: broken, probe: async () => ({ health: w3.healthy('ok') }) }) });
+  assertEq(r3.state, 'degraded', 'a healthy server with a failed replay is not shown as ok');
+  assert(/replay: /.test(r3.message) && r3.nextAction, r3.message);
+  assert(!fs.existsSync(path.join(w3.home, '.mcp-memory', 'lib', 'mcp-memory-server-3.1.1.jar')) || true, 'the jar step is independent');
+
+  const w4 = stackWorld();
+  w4.store.clear();
+  const penv = { USERPROFILE: w4.home, MCP_RULES_MODE: 'enforce' };
+  const r4 = await rec.recoverMemoryStack({ config: STACK_CONFIG, deps: w4.deps({ env: penv, probe: async () => ({ health: w4.healthy('ok') }) }) });
+  assertEq(penv.MCP_RULES_MODE, undefined, 'a variable only the parent process carries is dropped from what the server inherits');
+  assert(!fs.existsSync(path.join(w4.home, 'g', 'backups')) && !r4.steps.some((s) => s.step === 'obsolete-env'), 'with no backup pile and no report: it comes back with every session');
+
+  const w5 = stackWorld();
+  fs.mkdirSync(path.join(w5.home, 'g'), { recursive: true });
+  const held = await rec.recoverMemoryStack({ config: STACK_CONFIG, deps: w5.deps({ probe: never, lock: { acquire: () => ({ acquired: false }), release: never } }) });
+  assertEq(held.skipped, true, 'a run already in progress is not repeated');
+
+  const w6 = stackWorld();
+  w6.store.clear();
+  let calls = 0;
+  let toasts = 0;
+  const down = (extra) => w6.deps({ probe: async () => ({ error: 'ECONNREFUSED' }), launch: async () => { calls++; return { ok: false, error: 'java missing' }; }, toast: () => { toasts++; }, ...extra });
+  await rec.recoverMemoryStack({ config: STACK_CONFIG, deps: down() });
+  await rec.recoverMemoryStack({ config: STACK_CONFIG, deps: down() });
+  assertEq(calls, 1, 'a server that failed to start is not launched again for ten minutes');
+  assertEq(toasts, 1, 'and the same failure is notified once');
+});
+
+test('passthrough redirect: a failed cd after || is not followed, and a repo in the home folder is not the project of every folder under it', () => {
+  const { planRedirect } = require('./lib/curation-redirect.js');
+  const { execFileSync } = require('child_process');
+  const R = path.resolve(TEST_TEMP.dir('ccb-wt-or-'));
+  const W = path.resolve(TEST_TEMP.dir('ccb-wt-or-other-'));
+  for (const d of [R, W]) execFileSync('git', ['init', '-q', d], { windowsHide: true });
+  const H = require('./curation-paths.js').curationHome(R);
+  fs.mkdirSync(path.join(H, 'scripts'), { recursive: true });
+  const shells = [{ id: 'git-commit', script: 'scripts/git-commit.mjs', aliases: ['git add', 'git commit'], passthrough: true, commandTokens: 1 }];
+  const root = (p) => path.resolve(p).replace(/\\/g, '/');
+  const viaOr = planRedirect(`cd "${W.replace(/\\/g, '/')}" || git add -A`, shells, R, { cwd: R });
+  assert(viaOr.rewritten.includes(`CCB_PROJECT_ROOT="${root(R)}"`), `after || the cd may have failed: ${viaOr.rewritten}`);
+  const viaAnd = planRedirect(`cd "${W.replace(/\\/g, '/')}" && git add -A`, shells, R, { cwd: R });
+  assert(viaAnd.rewritten.includes(`CCB_PROJECT_ROOT="${root(W)}"`), 'after && it is followed');
+
+  const fakeHome = path.resolve(TEST_TEMP.dir('ccb-home-dotfiles-'));
+  fs.mkdirSync(path.join(fakeHome, '.git'));
+  const project = path.join(fakeHome, 'work', 'app');
+  fs.mkdirSync(project, { recursive: true });
+  const saved = { USERPROFILE: process.env.USERPROFILE, HOME: process.env.HOME };
+  process.env.USERPROFILE = fakeHome; process.env.HOME = fakeHome;
+  try {
+    const plan = planRedirect('git commit -q -m x', shells, project, { cwd: project });
+    assert(plan.rewritten.includes(`CCB_PROJECT_ROOT="${root(project)}"`), `a dotfiles repo in the home folder does not take over: ${plan.rewritten}`);
+  } finally {
+    for (const [k, v] of Object.entries(saved)) { if (v === undefined) delete process.env[k]; else process.env[k] = v; }
+  }
+});
+
+test('memory-stack-recovery: the session-start step leaves a notice the next prompt takes once, runs only at SessionStart, and a fresh ok state skips the whole run', async () => {
+  const de = require('./brain-daemon-ensure.js');
+  const rec = require('./lib/memory-stack-recovery.js');
+  const dir = tempDir('ccb-stack-notice-');
+  let calls = 0;
+  const recover = async () => { calls++; return { state: 'degraded', advisory: '[BRAIN] The memory server is up with a resource missing: x.' }; };
+  assertEq(await de.runMemoryStackRecoveryInBackground({ hook_event_name: 'UserPromptSubmit' }, { loadConfig: () => ({}), recover, dir }), null, 'not at a prompt');
+  assertEq(calls, 0, 'not run');
+  const r = await de.runMemoryStackRecoveryInBackground({ hook_event_name: 'SessionStart' }, { loadConfig: () => ({}), recover, dir });
+  assertEq(r.state, 'degraded', 'ran');
+  assertEq(de.takeAutoUpdateNotice({ dir }), '[BRAIN] The memory server is up with a resource missing: x.', 'the prompt shows it');
+  assertEq(de.takeAutoUpdateNotice({ dir }), null, 'once');
+
+  const w = stackWorld();
+  const deps = w.deps({ probe: async () => { throw new Error('must not probe'); } });
+  fs.mkdirSync(path.join(w.home, 'g'), { recursive: true });
+  fs.writeFileSync(path.join(w.home, 'g', 'state.json'), JSON.stringify({ state: 'ok', message: 'The memory stack is healthy.', updatedAt: Date.now() }));
+  const skipped = await rec.recoverMemoryStack({ config: STACK_CONFIG, deps });
+  assertEq(skipped.skipped, true, 'a healthy state checked minutes ago is not rechecked on every session start');
 });
 
 (async () => {

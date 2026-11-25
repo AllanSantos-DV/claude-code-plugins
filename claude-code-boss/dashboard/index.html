@@ -603,6 +603,11 @@ table{font-variant-numeric:tabular-nums}
           <span class="tip" data-i18n-tip="tip.ingestion" data-tip="Opt-in. Quando ligado, ao fim de cada turno o plugin envia a conversa (add_document) ao seu servidor para curadoria server-side. Desligado = só save + recall semântico. Os dados não passam pelo contexto do modelo.">i</span>
         </label>
 
+        <div id="memory-stack-box" style="display:none;margin-top:.75rem;border:1px solid var(--border);border-radius:8px;padding:.6rem .75rem;font-size:.82rem">
+          <div><strong id="memory-stack-state"></strong> <span id="memory-stack-message"></span></div>
+          <div id="memory-stack-next" class="text-muted" style="font-size:.75rem;margin-top:.25rem"></div>
+          <ul id="memory-stack-steps" class="text-muted" style="font-size:.75rem;margin:.35rem 0 0 1rem;padding:0"></ul>
+        </div>
         <p id="java-check-msg" class="text-muted" style="margin-top:.5rem;font-size:.75rem"></p>
         <div style="margin-top:.5rem;display:flex;align-items:center;gap:.75rem;flex-wrap:wrap">
           <button class="btn-primary btn-sm" id="mcp-test-btn" onclick="testMcpMemory()" data-i18n="brain.testConn">Test connection</button>
@@ -4779,7 +4784,31 @@ function closeWizard() {
   if (overlay) overlay.style.display = 'none';
 }
 
+const MEMORY_STACK_COLORS = { ok: 'var(--success)', recovered: 'var(--success)', recovering: 'var(--accent)', degraded: 'var(--warn, #d9a400)', critical: 'var(--danger)' };
+
+/** Shows the state of the memory stack the Boss manages, with the exact message and the next action. */
+function renderMemoryStack(stack) {
+  const box = document.getElementById('memory-stack-box');
+  if (!box) return;
+  if (!stack) { box.style.display = 'none'; return; }
+  box.style.display = '';
+  const state = document.getElementById('memory-stack-state');
+  state.textContent = stack.state;
+  state.style.color = MEMORY_STACK_COLORS[stack.state] || 'var(--fg)';
+  document.getElementById('memory-stack-message').textContent = stack.message || '';
+  document.getElementById('memory-stack-next').textContent = stack.nextAction || '';
+  const list = document.getElementById('memory-stack-steps');
+  list.innerHTML = (stack.steps || []).map((s) => '<li>' + escapeHtml(s.step + ' — ' + s.status + ': ' + s.detail) + '</li>').join('');
+}
+
+function pollMemoryStack() {
+  const unreadable = (why) => renderMemoryStack({ state: 'critical', message: 'The dashboard could not read the memory stack state: ' + why, nextAction: 'Reload the page; if it persists, run the doctor.', steps: [] });
+  api('GET', '/api/brain/memory-stack').then((r) => { if (r.ok) renderMemoryStack(r.stack); else unreadable(r.error || 'the server refused'); }).catch((err) => unreadable(err.message));
+  setTimeout(pollMemoryStack, 30000);
+}
+
 window.addEventListener('DOMContentLoaded', () => {
+  pollMemoryStack();
   api('GET', '/api/brain/mcp-wizard/status').then(r => {
     if (r.ok && r.status === 'running') pollWizard();
   }).catch(() => {});

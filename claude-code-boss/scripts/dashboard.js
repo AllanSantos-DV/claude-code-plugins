@@ -1727,6 +1727,16 @@ function getMcpWizardStatus(req, res) {
   }
 }
 
+function getMemoryStack(req, res) {
+  try {
+    const stack = require('./lib/memory-stack-recovery.js').readStack();
+    json(res, { ok: true, stack });
+  } catch (err) {
+    console.error(`[DASHBOARD] /api/brain/memory-stack failed: ${err.message}`);
+    fail(res, err.message, 500);
+  }
+}
+
 function resetMcpWizard(req, res) {
   try {
     const wizard = require('./lib/mcp-wizard.js');
@@ -2652,6 +2662,7 @@ function handleAPI(req, res, url) {
    if (p === '/api/brain/migrate-status' && m === 'GET') return getBrainMigrateStatus(req, res);
    if (p === '/api/brain/mcp-wizard' && m === 'POST') return postMcpWizard(req, res);
    if (p === '/api/brain/mcp-wizard/status' && m === 'GET') return getMcpWizardStatus(req, res);
+   if (p === '/api/brain/memory-stack' && m === 'GET') return getMemoryStack(req, res);
    if (p === '/api/brain/mcp-wizard/reset' && m === 'POST') return resetMcpWizard(req, res);
    if (p === '/api/brain/health' && m === 'GET') return getBrainHealth(req, res);
   if (p === '/api/brain/memory-disable' && m === 'POST') return postMemoryDisable(req, res);

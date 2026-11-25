@@ -16,6 +16,8 @@
  * variant is NOT rewritten: it runs raw, no hint, and is reported as `uncovered` so the
  * metrics show which scripts deserve extending.
  */
+const fs = require('fs');
+const os = require('os');
 const path = require('path');
 const { canonicalSig, principalSegment, indexOfShellMeta } = require('../../engine/lib/command-signature.js');
 const { classifySegment } = require('../../engine/lib/curation-families.js');
@@ -114,11 +116,44 @@ function isInside(dir, p) {
 }
 
 /**
+ * The work-tree root `dir` lives in (a `.git` file or folder in `dir` or an ancestor), or null.
+ * The search stops below the home folder, as the project-root search does: a dotfiles repo in
+ * `~` is not the project of every folder under it.
+ */
+function repoRootOf(dir) {
+  const homeDir = path.resolve(os.homedir());
+  let d = path.resolve(dir);
+  for (;;) {
+    if (d === homeDir) return null;
+    if (fs.existsSync(path.join(d, '.git'))) return d;
+    const up = path.dirname(d);
+    if (up === d) return null;
+    d = up;
+  }
+}
+
+const CD_PART = /^cd\s+(?:"([^"]+)"|'([^']+)'|([^\s;&|]+))\s*$/;
+
+/**
+ * The directory a leading `cd <dir>` moves to, or null when it cannot be known statically
+ * (`cd -`, `cd ~`, a variable): the caller's root is then left to the session's.
+ */
+function cdTarget(from, text) {
+  const m = CD_PART.exec(text);
+  if (!m) return undefined;
+  const target = m[1] || m[2] || m[3];
+  if (!from || target === '-' || /^~|[$`]/.test(target)) return null;
+  return path.resolve(from, target);
+}
+
+/**
  * The command that runs a curated script, by extension (absolute, forward slashes), with
  * `CCB_PROJECT_ROOT` naming the project: the script lives in the user's curation home, not
- * in the repo, so it can't find the project from its own location.
+ * in the repo, so it can't find the project from its own location. `callerRoot` is the work tree
+ * the command itself runs in (a `cd` into a worktree): the script must act there, while the
+ * script and its curation folder are still looked up under `projectRoot`.
  */
-function invocationFor(shell, projectRoot, { reportPath = '', ps = false } = {}) {
+function invocationFor(shell, projectRoot, { reportPath = '', ps = false, callerRoot = '' } = {}) {
   const rel = String((shell && (shell.script || shell.path || shell.command)) || '').trim(); // `command` = legacy field register writes
   if (!rel) return null;
   // The path is interpolated into a shell command between "…": a `"`, `$` or backtick in a
@@ -131,6 +166,7 @@ function invocationFor(shell, projectRoot, { reportPath = '', ps = false } = {})
   if (!abs) return null;
   if (projectRoot && !isInside(curationHome(projectRoot), abs) && !isInside(projectRoot, abs)) return null;
   if (projectRoot && /["$`]/.test(projectRoot)) return null;
+  const actingRoot = projectRoot && callerRoot && !/["$`\n\r]/.test(callerRoot) ? callerRoot : projectRoot;
   const file = abs.replace(/\\/g, '/');
   if (ps) {
     // PowerShell has no `VAR=x cmd` prefix: one native call through the launcher carries the
@@ -138,7 +174,7 @@ function invocationFor(shell, projectRoot, { reportPath = '', ps = false } = {})
     // .ps1; a .sh/.py would need an interpreter we cannot promise is on this PATH → raw.
     if (!/\.(mjs|cjs|js|ps1)$/i.test(file)) return null;
     const rep = String(reportPath || '').replace(/\\/g, '/');
-    const root = projectRoot ? path.resolve(projectRoot).replace(/\\/g, '/') : '';
+    const root = actingRoot ? path.resolve(actingRoot).replace(/\\/g, '/') : '';
     if ([file, rep, root, LAUNCHER].some((s) => PS_UNSAFE.test(s.replace(/[&<>(){}@]/g, '')))) return null; // smart quotes, `$`, backtick, newline
     return ['node', psq(LAUNCHER), root && psq(`--root=${root}`), rep && psq(`--report=${rep}`), psq(file)].filter(Boolean).join(' ');
   }
@@ -147,7 +183,7 @@ function invocationFor(shell, projectRoot, { reportPath = '', ps = false } = {})
   // non-redirected part that merely contained the literal got it too — audit 3.2.1).
   const rep = String(reportPath || '').replace(/\\/g, '/');
   const reportEnv = rep && !/["$`\n\r]/.test(rep) ? `CCB_RAW_REPORT="${rep}" ` : '';
-  const env = projectRoot ? `${reportEnv}CCB_PROJECT_ROOT="${path.resolve(projectRoot).replace(/\\/g, '/')}" ` : '';
+  const env = actingRoot ? `${reportEnv}CCB_PROJECT_ROOT="${path.resolve(actingRoot).replace(/\\/g, '/')}" ` : '';
   if (/\.(mjs|cjs|js)$/i.test(file)) return `${env}node "${file}"`;
   if (/\.ps1$/i.test(file)) return `${env}powershell -NoProfile -ExecutionPolicy Bypass -File "${file}"`;
   if (/\.sh$/i.test(file)) return `${env}bash "${file}"`;
@@ -219,7 +255,7 @@ function passthroughMatch(text, profiles) {
  * Plan the rewrite of `command`.
  * @returns {{rewritten:string|null, replaced:Array<{shellId:string, from:string, to:string}>, uncovered:string[]}}
  */
-function planRedirect(command, shells, projectRoot, { reportPath = '', ps = false } = {}) {
+function planRedirect(command, shells, projectRoot, { reportPath = '', ps = false, cwd = '' } = {}) {
   const parts = splitTopLevel(command);
   const replaced = []; const uncovered = [];
   // A CCB_RAW set anywhere in the command (`export CCB_RAW=1; …`) is emptied for the script.
@@ -227,8 +263,15 @@ function planRedirect(command, shells, projectRoot, { reportPath = '', ps = fals
   if (!parts) return { rewritten: null, replaced, uncovered };
   const profiles = profilesFor(shells);
   if (!profiles.length) return { rewritten: null, replaced, uncovered };
+  // Where each part runs: the hook's cwd, moved by the `cd` parts before it. After a `||` a failed
+  // `cd` would leave the next part where it was, so the move is not followed.
+  const followCd = !/\|\|/.test(String(command || ''));
+  let dir = cwd || null;
   for (const p of parts) {
     const text = p.text.trim();
+    const moved = cdTarget(dir, text);
+    if (moved !== undefined) { if (followCd) dir = moved; continue; }
+    const callerRoot = dir ? repoRootOf(dir) || '' : '';
     if (!text || classifySegment(text) !== 'task') continue;
     // Output sent to a FILE (`> log`, `>> log`, `2> err`, `&> all`) means the raw output is
     // wanted on disk (typically grepped next) — rewriting would store the curated summary
@@ -246,7 +289,7 @@ function planRedirect(command, shells, projectRoot, { reportPath = '', ps = fals
     //    (`mvn test -Dtest=X`, `gh run list --limit 5`) no longer run raw.
     const pass = passthroughMatch(text, profiles);
     if (pass) {
-      const inv = invocationFor(pass.shell, projectRoot, { reportPath, ps });
+      const inv = invocationFor(pass.shell, projectRoot, { reportPath, ps, callerRoot });
       const to = inv && `${unsetRaw}${envPrefixOf(text)}${pass.args ? `${inv} ${pass.args}` : inv}`;
       if (to) { replaced.push({ shellId: pass.shell.id, from: text, to }); p.text = to; continue; }
     }
@@ -255,7 +298,7 @@ function planRedirect(command, shells, projectRoot, { reportPath = '', ps = fals
     const flags = flagsOf(text);
     const exact = profiles.find((pr) => pr.sig === sig && [...flags].every((f) => pr.flags.has(f)));
     if (exact) {
-      let to = invocationFor(exact.shell, projectRoot, { reportPath, ps });
+      let to = invocationFor(exact.shell, projectRoot, { reportPath, ps, callerRoot });
       if (to && exact.extraFrom) {
         // Variant alias: only a script that reads its argv gets it, WITH the extra tokens (taken
         // after the env/wrapper prefixes — splitting the raw part handed `FOO=1 git stash list`
