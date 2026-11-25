@@ -3173,7 +3173,7 @@ Lacunas conhecidas do gate de project id (2.29.1):
 
 - [x] **Achado e corrigido na hora:** `scripts/scope-bulk-reclassify.js` chamava `store.delete(e.id)` com uma string, e `delete_` desestrutura `{ id }`: a cópia nascia em `__user__` e a original ficava no projeto, então a "movimentação" duplicava a lição. Agora chama `store.delete({ id })`. Teste `scope move undo: a bulk reclassify…` reprova com a chamada antiga (a original continuava lá) e passa com a nova.
 - [x] Relatório de lições que o `prune` arquivaria (`prunePreview`, uma linha no `brain-health` só no backend local e só com N > 0), restauração de scripts curados podados (`restoreShells`) e desfazer da troca de escopo (registro `kind: move`, `--undo` no bulk e `moveId` no dashboard). Todos aditivos, com teste que falha antes.
-- Candidatos da lente que ficam de fora, para decisão: sanitizar o rascunho de skill no `approve` e sinal negativo no rerank (substitutivos); script curado de usuário e promoção de lições no backend local (mudam o uso, pedem a validação do dono).
+- [x] **Decidido (2026-11-24, ordem de release do dono via orquestrador) — candidatos da lente fora desta versão:** (a) sanitizar o rascunho de skill no `approve`, (b) sinal negativo no rerank, (c) promoção de lições no backend local e script curado de usuário. Nenhum entra na 3.18.0; nada muda para quem usa o Boss hoje.
 
 ## Pontos técnicos fechados antes do build de teste (2026-11-24)
 
