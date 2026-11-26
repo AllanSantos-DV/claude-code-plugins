@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [3.19.0] - 2026-11-26
+
 ### Added
 - **A pilha de memória se recupera sozinha depois de uma atualização ou de uma queda** (`scripts/lib/memory-stack-recovery.js`, `scripts/lib/win-toast.js`, `scripts/brain-daemon-ensure.js`, `scripts/dashboard.js`, `scripts/doctor.js`). No início da sessão, para o servidor local gerenciado pelo Boss: (1) as variáveis de usuário que o servidor atual recusa (`MCP_RULES_MODE`, `MCP_ENFORCE_RULES`, removidas na 3.0.0) são guardadas num arquivo de backup e só então removidas, com aviso; (2) com a casa de embeddings sem modelo, o Boss procura uma cópia local (`CASA_MODEL_DIR` já válido, `~/.mcp-memory/model`, cache do hub de modelos), grava `CASA_MODEL_DIR` e reinicia o servidor uma vez; (3) as memórias gravadas em arquivos enquanto o servidor estava fora (`~/.claude/projects/*/memory/*.md`) voltam para o servidor uma vez cada, sem duplicar o que o servidor já tem e sem apagar os arquivos, e a contagem aparece; (4) as versões antigas do servidor só são apagadas depois que a versão em execução está saudável há pelo menos dois minutos. Cada etapa e cada falha vira linha no log, notificação do Windows (sem janela) e aviso no próximo prompt, com a causa e o próximo passo. O dashboard (aba Brain) e o doctor mostram o estado: `recovering`, `recovered`, `degraded` (servidor de pé, falta um recurso) ou `critical` (não roda sem ele), com a mensagem exata, inclusive a falha da checagem de atualização do motor de grafo. Toda etapa tem prazo e tentativas limitadas. Um servidor com endereço configurado é do usuário e nunca é tocado.
 
