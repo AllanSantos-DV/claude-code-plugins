@@ -3,22 +3,22 @@
 <head>
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
-<title>claude-code-boss v3.18.0 — detalhes técnicos</title>
-<meta name="description" content="Detalhes técnicos do claude-code-boss v3.18.0: daemon HTTP, hooks, Brain KB, Model Router Anthropic/OpenAI, MCP Memory, graph tools e dashboard." />
+<title>claude-code-boss v3.19.0 — detalhes técnicos</title>
+<meta name="description" content="Detalhes técnicos do claude-code-boss v3.19.0: daemon HTTP, hooks, Brain KB, Model Router Anthropic/OpenAI, MCP Memory, graph tools e dashboard." />
 <link rel="canonical" href="https://allansantos-dv.github.io/claude-code-plugins/claude-code-boss/tech.html">
 <meta property="og:type" content="website">
 <meta property="og:site_name" content="allansantos-plugins">
 <meta property="og:locale" content="pt_BR">
-<meta property="og:title" content="claude-code-boss v3.18.0 — detalhes técnicos">
-<meta property="og:description" content="Detalhes técnicos do claude-code-boss v3.18.0: daemon HTTP, hooks, Brain KB, Model Router Anthropic/OpenAI, MCP Memory, graph tools e dashboard.">
+<meta property="og:title" content="claude-code-boss v3.19.0 — detalhes técnicos">
+<meta property="og:description" content="Detalhes técnicos do claude-code-boss v3.19.0: daemon HTTP, hooks, Brain KB, Model Router Anthropic/OpenAI, MCP Memory, graph tools e dashboard.">
 <meta property="og:url" content="https://allansantos-dv.github.io/claude-code-plugins/claude-code-boss/tech.html">
 <meta property="og:image" content="https://allansantos-dv.github.io/claude-code-plugins/claude-code-boss/og-card.jpg">
 <meta property="og:image:width" content="1200">
 <meta property="og:image:height" content="630">
 <meta property="og:image:alt" content="claude-code-boss: Menos repetição. Mais memória.">
 <meta name="twitter:card" content="summary_large_image">
-<meta name="twitter:title" content="claude-code-boss v3.18.0 — detalhes técnicos">
-<meta name="twitter:description" content="Detalhes técnicos do claude-code-boss v3.18.0: daemon HTTP, hooks, Brain KB, Model Router Anthropic/OpenAI, MCP Memory, graph tools e dashboard.">
+<meta name="twitter:title" content="claude-code-boss v3.19.0 — detalhes técnicos">
+<meta name="twitter:description" content="Detalhes técnicos do claude-code-boss v3.19.0: daemon HTTP, hooks, Brain KB, Model Router Anthropic/OpenAI, MCP Memory, graph tools e dashboard.">
 <meta name="twitter:image" content="https://allansantos-dv.github.io/claude-code-plugins/claude-code-boss/og-card.jpg">
 <script data-ccb-theme-script>
 /* Shared theme; executed before styles and first paint. */
@@ -274,14 +274,14 @@ html{scroll-behavior:auto}
   <nav class="nav-links">
     <a href="index.html">← Apresentação</a>
     <a href="https://github.com/AllanSantos-DV/claude-code-plugins/blob/main/claude-code-boss/README.md">README</a>
-    <a href="#top" class="ver">v3.18.0</a>
+    <a href="#top" class="ver">v3.19.0</a>
   </nav>
 <div class="ccb-theme" role="group" aria-label="Tema"><button type="button" data-ccb-theme="dark" aria-pressed="true">Dark</button><button type="button" data-ccb-theme="light" aria-pressed="false">Light</button></div>
 </header>
 
 <main class="wrap" id="top">
   <div class="page-head">
-    <p class="kick">documentação técnica · v3.18.0</p>
+    <p class="kick">documentação técnica · v3.19.0</p>
     <h1>Arquitetura e funcionamento interno</h1>
     <p class="intro">Para quem quer saber <b>como funciona por baixo</b>: daemon HTTP único, pipeline de hooks, Brain KB em 3 camadas, Model Router Anthropic/OpenAI, backend MCP Memory, exploração de repositório por grafo e dashboard. Fontes: <a href="https://github.com/AllanSantos-DV/claude-code-plugins/blob/main/claude-code-boss/README.md">README</a> e <a href="https://github.com/AllanSantos-DV/claude-code-plugins/blob/main/claude-code-boss/CHANGELOG.md">CHANGELOG</a>.</p>
     <div class="toc">
@@ -504,6 +504,7 @@ html{scroll-behavior:auto}
         <li><b>O agente ativa para você:</b> no backend local o agente é avisado do que está desligado. Ele pergunta se você já roda um servidor em outro host (aponta para o endereço, sem instalar nada); se você não souber, reaproveita o servidor que já roda na máquina (instalado por plugins irmãos — nunca um segundo) ou o instala: <code>backend_status</code>, <code>backend_setup</code> (confere Java 21+ e dá o comando de instalação do seu sistema se faltar), <code>backend_setup_status</code>. Ele mostra a versão do servidor e atualiza só com o seu OK (<code>backend_update</code>). Pelo Dashboard, o mesmo assistente roda no botão <b>Activate Server</b>.</li>
         <li><b>Auto-update HTTP:</b> no <code>SessionStart</code>, consulta <code>check_update</code> no máximo uma vez por 24h e chama <code>update</code> uma vez, sem retry, sob lock cross-process. Um <code>serverUrl</code> remoto exige <code>autoUpdate.allowRemote=true</code> e nunca usa o fallback local. Se a nova versão falha no boot, o caminho local restaura o JAR anterior e confirma a versão restaurada em <code>/health.version</code> antes de reportar rollback concluído.</li>
         <li><b>Servidor local gerenciado e versão visível:</b> com o backend <code>mcp-memory</code> e sem <code>serverUrl</code>, <code>scripts/lib/mcp-memory-auto-update.js</code> acha o daemon (<code>daemon.json</code> ou o jar mais novo), instala o servidor da release publicada quando falta o lançador e atualiza, por download e reinício com intervalo entre tentativas, um servidor abaixo do mínimo declarado em <code>scripts/lib/mcp-memory-minimum.js</code> (2.49.0), com aviso visível que nomeia a versão e a causa. Um <code>serverUrl</code>, mesmo local, é do usuário: o Boss nunca o instala, inicia nem atualiza. <code>backend_status</code> (<code>servers/brain-server</code>) e o <code>scripts/doctor.js</code> mostram a versão, o mínimo e quem gerencia (Boss ou usuário); o painel (<code>scripts/dashboard.js</code>) liga e desliga o servidor e mantém o modo configurado e o estado da instalação mesmo quando não consegue conectar.</li>
+        <li><b>Recuperação da pilha de memória:</b> no início da sessão, <code>scripts/lib/memory-stack-recovery.js</code> (chamado por <code>brain-daemon-ensure.js</code>) age só sobre o servidor gerenciado pelo Boss; com <code>serverUrl</code> preenchido o servidor é do usuário e nada é tocado. Etapas: (1) as variáveis de usuário que o servidor atual recusa (<code>MCP_RULES_MODE</code>, <code>MCP_ENFORCE_RULES</code>) vão para um arquivo de backup e só então são removidas, com aviso; (2) com a casa de embeddings sem modelo, procura uma cópia local (<code>CASA_MODEL_DIR</code> já válido, <code>~/.mcp-memory/model</code>, cache do hub de modelos), grava <code>CASA_MODEL_DIR</code> e reinicia o servidor uma vez; (3) as memórias gravadas em <code>~/.claude/projects/*/memory/*.md</code> enquanto o servidor estava fora voltam uma vez cada, sem duplicar e sem apagar os arquivos; (4) versões antigas do servidor só são apagadas depois de a versão em execução estar saudável há pelo menos dois minutos. Cada etapa tem prazo e tentativas limitadas. Cada etapa e falha vira linha no log, notificação do Windows sem janela (<code>scripts/lib/win-toast.js</code>) e aviso no próximo prompt; o dashboard (aba Brain) e o doctor mostram o estado <code>recovering</code>, <code>recovered</code>, <code>degraded</code> ou <code>critical</code> com a mensagem exata.</li>
         <li><b>Servidor remoto e token:</b> com <code>backend.mcpMemory.serverUrl</code> preenchido, o cliente (<code>engine/mcp-client.js</code>) lê <code>features.auth</code> em <code>/api/v1/server/health</code> e, se a autenticação está ligada, envia o Bearer guardado no cofre do sistema (DPAPI, Keychain ou <code>secret-tool</code>), sempre pelo stdin, nunca em arquivo de texto nem em argv. Sem token guardado a falha é alta e aponta <code>node scripts/mcp-token.js set</code>; se a sonda não responde, segue sem token com um aviso. Nesse modo o Boss não lê o registro do daemon local nem sobe o daemon local. O grafo (ferramentas <code>graph</code> e <code>guard</code>) usa a mesma resolução do token (<code>engine/lib/mcp-auth.js</code>) e manda o Bearer em cada chamada.</li>
         <li><b>Backup:</b> o Dashboard (aba Brain) guarda tudo o que o plugin aprendeu num <code>.tar.gz</code> (bancos SQLite em snapshot <code>VACUUM INTO</code>, sem modelos nem segredos) e restaura em outra máquina, com cópia de segurança antes. Os dados do servidor entram quando ele oferecer <code>backup_export</code>/<code>backup_import</code> (contrato em <code>docs/BACKUP-CONTRACT.md</code>).</li>
         <li><b>Status em tempo real</b> (<code>scripts/brain-status.js</code>, hook no <code>UserPromptSubmit</code> e comando <code>/brain-status</code>): reporta <code>mode</code>, <code>connected</code>, <code>project</code>, <code>backend</code>, <code>details</code> (URL/transporte/JAR) e <code>latency</code> — mesmo contrato exposto em <code>GET /api/brain/health</code> e refletido no badge online/offline do Dashboard.</li>
@@ -663,7 +664,7 @@ html{scroll-behavior:auto}
       <a href="changelog.html">Changelog</a>
       <a href="https://github.com/AllanSantos-DV/claude-code-plugins">GitHub</a>
     </div>
-    <div class="legal">MIT · Allan Santos · claude-code-boss v3.18.0</div>
+    <div class="legal">MIT · Allan Santos · claude-code-boss v3.19.0</div>
   </div>
 </footer>
 
