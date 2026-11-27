@@ -35686,6 +35686,34 @@ test('boss-band: pt-BR numbers, the band line and /boss — a failure is shown, 
   assert(md.includes('| Custo desta sessão | US$ 1,23 |') && md.includes('| Token Guard, 30 dias | 111,1 mil tokens (52,5 mil medidos + 58,6 mil estimados) |'), md);
   assert(md.includes('| Brain | no ar — mcp-memory, 5 ms |') && md.includes('377 lições; 231 memórias citadas de 1.108 injetadas'), md);
   assert(band.bossMarkdown({ costUsd: 1, error: 'boom' }).includes('Daemon do Brain sem resposta: boom'));
+  const off = { ...summary, tokenGuard: { ...summary.tokenGuard, sessionTokens: 0, active: false, inactiveReason: 'daemon fora do ar' } };
+  assertEq(band.bandLine({ costUsd: 1, summary: off }), 'Boss · sessão US$ 1,00 · Token Guard inativo: daemon fora do ar · Brain no ar', 'an inactive guard is said, not shown as −0');
+  assert(band.bossMarkdown({ costUsd: 1, summary: off }).includes('| Token Guard | inativo: daemon fora do ar |'));
+  assert(band.bandLine({ summary: { ...summary, tokenGuard: { ...summary.tokenGuard, active: null } } }).includes('Token Guard −9 mil'), 'unknown state keeps the numbers');
+});
+
+test('boss-summary.tokenGuardStatus: active/inactiveReason from token-guard status --json, cached a minute; an unusable answer is logged once and gives null', () => {
+  const { tokenGuardStatus, summarizeBoss } = require('./boss-summary.js');
+  let calls = 0;
+  const T = 1e12;
+  const ok = (j) => () => { calls++; return JSON.stringify(j); };
+  assertEq(tokenGuardStatus({ exec: ok({ active: false, inactiveReason: 'hook http apontando para outra porta' }), now: T }), { active: false, inactiveReason: 'hook http apontando para outra porta' });
+  assertEq(tokenGuardStatus({ exec: ok({ active: true }), now: T + 30_000 }).active, false, 'cached inside the minute');
+  assertEq(calls, 1);
+  assertEq(tokenGuardStatus({ exec: ok({ active: true }), now: T + 61_000 }), { active: true });
+  assertEq(tokenGuardStatus({ exec: ok({ active: null, inactiveReason: 'sem registro dos alvos' }), now: T + 130_000 }), { active: null, inactiveReason: 'sem registro dos alvos' });
+  const errors = [];
+  const orig = console.error; console.error = (m) => errors.push(String(m));
+  try {
+    assertEq(tokenGuardStatus({ exec: () => 'modo: block', now: T + 200_000 }), null, 'plain text (older token-guard) is not guessed at');
+    assertEq(tokenGuardStatus({ exec: () => 'modo: block', now: T + 270_000 }), null);
+    assertEq(tokenGuardStatus({ exec: () => { throw new Error('spawn token-guard ENOENT'); }, now: T + 340_000 }), null);
+  } finally { console.error = orig; }
+  assertEq(errors.length, 2, 'the same failure is logged once: ' + JSON.stringify(errors));
+  assert(/older than 2\.20\.1/.test(errors[0]) && /ENOENT/.test(errors[1]), errors.join(' | '));
+  const s = summarizeBoss([], { connected: true }, { guard: { active: false, inactiveReason: 'x' } });
+  assert(s.tokenGuard.active === false && s.tokenGuard.inactiveReason === 'x');
+  assert(!('active' in summarizeBoss([], { connected: true }, { guard: null }).tokenGuard), 'no guard answer: no field');
 });
 
 test('boss-summary.summarizeBoss: 30-day savings like the Curation panel, per-session exact savings of the last day, Brain with a reason CODE and no path', () => {

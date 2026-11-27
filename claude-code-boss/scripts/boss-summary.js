@@ -33,12 +33,47 @@ const DAY_MS = 86400_000;
 
 const tokens = (chars) => Math.round((Number(chars) || 0) / CHARS_PER_TOKEN);
 
+const GUARD_TTL_MS = 60_000;
+const GUARD_TIMEOUT_MS = 5000;
+const guardCache = { at: 0, value: null, lastError: '' };
+
+/**
+ * Whether the token-guard kit is in force, from `token-guard status --json` (`active`: true, false or
+ * null; `inactiveReason` when it is not). Cached for a minute: the daemon answers every session's poll.
+ * A kit that cannot be asked (not installed, older than the `--json` status) is logged once and gives null.
+ * @param {{exec?: Function, now?: number}} [deps]
+ * @returns {{active: boolean|null, inactiveReason?: string}|null}
+ */
+function tokenGuardStatus({ exec, now = Date.now() } = {}) {
+  if (now - guardCache.at < GUARD_TTL_MS) return guardCache.value;
+  guardCache.at = now;
+  const run = exec || (() => require('child_process').execFileSync(
+    process.platform === 'win32' ? 'token-guard.cmd' : 'token-guard', ['status', '--json'],
+    { encoding: 'utf8', timeout: GUARD_TIMEOUT_MS, windowsHide: true, shell: process.platform === 'win32' }));
+  let value = null;
+  let error = '';
+  try {
+    const j = JSON.parse(run());
+    if (j && (typeof j.active === 'boolean' || j.active === null)) {
+      value = { active: j.active, ...(j.inactiveReason ? { inactiveReason: String(j.inactiveReason).slice(0, 160) } : {}) };
+    } else error = 'token-guard status --json has no "active" field (token-guard older than 2.20.1)';
+  } catch (err) {
+    error = err instanceof SyntaxError
+      ? 'token-guard status --json did not answer JSON (token-guard older than 2.20.1)'
+      : `token-guard status --json failed: ${err.message.split('\n')[0]}`;
+  }
+  if (error && error !== guardCache.lastError) console.error(`[boss-summary] ${error}`);
+  guardCache.lastError = error;
+  guardCache.value = value;
+  return value;
+}
+
 /**
  * @param {object[]} rows  metrics rows (curation + economy + value events) of the window
  * @param {object|null} health  probeHealth() answer, or null when the probe threw
- * @param {{now?:number, days?:number, healthError?:string, cache?:{turns:number, read:number, write:number, input:number}}} [opts]  cache: the window's cache.turn totals
+ * @param {{now?:number, days?:number, healthError?:string, cache?:{turns:number, read:number, write:number, input:number}, guard?:{active:boolean|null, inactiveReason?:string}|null}} [opts]  cache: the window's cache.turn totals; guard: tokenGuardStatus()
  */
-function summarizeBoss(rows, health, { now = Date.now(), days = DAYS, healthError, cache } = {}) {
+function summarizeBoss(rows, health, { now = Date.now(), days = DAYS, healthError, cache, guard } = {}) {
   const cur = summarizeCuration(rows);
   const recent = new Map(); // session id → its rows of the last day
   for (const r of rows) {
@@ -63,6 +98,7 @@ function summarizeBoss(rows, health, { now = Date.now(), days = DAYS, healthErro
       exactTokens: tokens(cur.shaped.savedChars + cur.exact.savedChars),
       estimatedTokens: tokens(cur.redirectSavings.estChars),
       bySession,
+      ...(guard ? { active: guard.active, ...(guard.inactiveReason ? { inactiveReason: guard.inactiveReason } : {}) } : {}),
     },
     value: { days, lessons: v.learned.total, cited: v.memoryCited, injected: v.retrievalPrecision.injected },
     compaction: { days, ...compactionCacheBrief(rows, cache ? { cache } : {}) },
@@ -184,7 +220,7 @@ async function run() {
     healthError = err && err.message ? err.message : String(err);
     console.error(`[boss-summary] brain health probe failed: ${healthError}`);
   }
-  return summarizeBoss(rows, health, { now, healthError, cache });
+  return summarizeBoss(rows, health, { now, healthError, cache, guard: tokenGuardStatus({ now }) });
 }
 
-module.exports = { run, summarizeBoss, createRowReader, dbStamp, DAYS };
+module.exports = { run, summarizeBoss, tokenGuardStatus, createRowReader, dbStamp, DAYS };

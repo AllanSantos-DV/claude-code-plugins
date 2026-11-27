@@ -55,7 +55,9 @@ export function bandLine({ costUsd, summary, error } = {}) {
     parts.push('consultando o daemon…');
   } else {
     const tg = summary.tokenGuard || {};
-    parts.push(`Token Guard −${fmtTokens(tg.sessionTokens)} tokens na sessão (${tg.days || 30}d: −${fmtTokens(tg.savedTokens)})`);
+    parts.push(tg.active === false
+      ? `Token Guard inativo: ${shortErr(tg.inactiveReason || 'sem motivo informado')}`
+      : `Token Guard −${fmtTokens(tg.sessionTokens)} tokens na sessão (${tg.days || 30}d: −${fmtTokens(tg.savedTokens)})`);
     parts.push(brainWord(summary.brain));
   }
   return parts.join(' · ');
@@ -91,6 +93,7 @@ export function bossMarkdown({ costUsd, summary, error } = {}) {
     '| | |',
     '|---|---|',
     `| Custo desta sessão | ${cost} |`,
+    ...(tg.active === false ? [`| Token Guard | inativo: ${shortErr(tg.inactiveReason || 'sem motivo informado')} |`] : []),
     `| Token Guard nesta sessão | ${fmtTokens(tg.sessionTokens)} tokens poupados |`,
     `| Token Guard, ${days} dias | ${fmtTokens(tg.savedTokens)} tokens (${fmtTokens(tg.exactTokens)} medidos + ${fmtTokens(tg.estimatedTokens)} estimados) |`,
     `| Brain | ${brain} |`,
