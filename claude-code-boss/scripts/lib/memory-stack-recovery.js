@@ -209,10 +209,15 @@ const frontmatter = (text) => {
   for (const line of m[1].split(/\r?\n/)) { const kv = /^([\w-]+):\s*(.*)$/.exec(line); if (kv) meta[kv[1]] = kv[2].trim(); }
   return { meta, body: m[2].trim() };
 };
+const fold = (s) => String(s || '').toLowerCase().normalize('NFKD').replace(/\p{M}+/gu, '');
 /** The lowercase words of a text longer than two characters, accents folded. */
-const tokens = (s) => new Set(String(s || '').toLowerCase().normalize('NFKD').replace(/[^\p{L}\p{N}]+/gu, ' ').split(' ').filter((w) => w.length > 2));
+const tokens = (s) => new Set(fold(s).replace(/[^\p{L}\p{N}]+/gu, ' ').split(' ').filter((w) => w.length > 2));
+const NEGATIONS = new Set(['nao', 'nunca', 'sem', 'not', 'never', 'no']);
+/** The negation words of a text, which the length filter of `tokens` would otherwise drop. */
+const negations = (s) => new Set(fold(s).replace(/n['’]t\b/g, ' not').split(/[^\p{L}\p{N}]+/u).filter((w) => NEGATIONS.has(w)));
 /**
- * How much two texts overlap, as the share of words they have in common.
+ * How much two texts overlap, as the share of words they have in common. Texts that negate
+ * different things are never alike, however many words they share.
  * @param {string} a
  * @param {string} b
  * @returns {number} 0 (nothing in common) to 1 (the same words)
@@ -220,6 +225,8 @@ const tokens = (s) => new Set(String(s || '').toLowerCase().normalize('NFKD').re
 function similarity(a, b) {
   const x = tokens(a); const y = tokens(b);
   if (!x.size || !y.size) return 0;
+  const nx = negations(a); const ny = negations(b);
+  if (nx.size !== ny.size || [...nx].some((t) => !ny.has(t))) return 0;
   let inter = 0;
   for (const t of x) if (y.has(t)) inter++;
   return inter / (x.size + y.size - inter);
@@ -249,8 +256,8 @@ function projectCwd(slugDir) {
   return null;
 }
 
-/** The auto-memory files (`~/.claude/projects/<slug>/memory/*.md`) written at or after `since`. */
-function listMemoryFiles({ env = process.env, since }) {
+/** The auto-memory files (`~/.claude/projects/<slug>/memory/*.md`) written at or after `since`; a file whose date cannot be read is added to `failed`. */
+function listMemoryFiles({ env = process.env, since, failed = [] }) {
   const root = path.join(home(env), '.claude', 'projects');
   const out = [];
   let slugs = [];
@@ -262,7 +269,9 @@ function listMemoryFiles({ env = process.env, since }) {
     for (const n of names) {
       if (!n.endsWith('.md') || n === 'MEMORY.md') continue;
       const file = path.join(dir, n);
-      if (fs.statSync(file).mtimeMs >= since) out.push({ file, slugDir: path.join(root, slug) });
+      let mtimeMs;
+      try { mtimeMs = fs.statSync(file).mtimeMs; } catch (err) { failed.push(`${n}: ${err.message}`); continue; }
+      if (mtimeMs >= since) out.push({ file, slugDir: path.join(root, slug) });
     }
   }
   return out;
@@ -276,7 +285,7 @@ function listMemoryFiles({ env = process.env, since }) {
  */
 async function replayFileMemories({ backend, env = process.env, since, ledger, deadline, now = Date.now, resolveProject = (o) => require('../../engine/lib/project-id.js').tryResolveProjectId(o) }) {
   const r = { copied: 0, skippedDuplicate: 0, unmapped: 0, failed: [], scanned: 0 };
-  const files = listMemoryFiles({ env, since });
+  const files = listMemoryFiles({ env, since, failed: r.failed });
   const cwds = new Map();
   let worked = 0;
   for (const { file, slugDir } of files) {
@@ -315,7 +324,9 @@ async function replayFileMemories({ backend, env = process.env, since, ledger, d
 const bounded = async (name, promise, ms) => {
   const s = await settleWithin(promise, ms);
   if (s.status === 'ok') return s.value;
-  throw new Error(s.status === 'timeout' ? `${name} did not finish within ${ms} ms` : `${name}: ${s.err && s.err.message || s.err}`);
+  const err = new Error(s.status === 'timeout' ? `${name} did not finish within ${ms} ms` : `${name}: ${s.err && s.err.message || s.err}`);
+  err.timedOut = s.status === 'timeout';
+  throw err;
 };
 
 /** What the screens show: the state file, with a recovered state that fades to ok after a day. */
@@ -391,11 +402,19 @@ async function recoverMemoryStack(opts = {}) {
 
     let p = await bounded('health probe', Promise.resolve(probe()), STAGE_MS.probe);
     let c = classifyStack(p);
+    /** A stage that ran past its budget keeps running, so the server it was starting may still come up: its /health once more, or null. */
+    const answeredAfterTimeout = async (result) => {
+      if (result.ok || !result.timedOut) return null;
+      const again = await bounded('health probe', Promise.resolve(probe()), STAGE_MS.probe).catch((err) => { log(`health probe after a timed-out stage failed: ${err.message}`); return null; });
+      return again && again.health ? again : null;
+    };
     if (!p.health && previous && now() - (previous.launchFailedAt || 0) < LAUNCH_RETRY_MS) {
       log(`server start skipped: it failed less than ${LAUNCH_RETRY_MS / 60000} minutes ago (${previous.message})`);
     } else if (!p.health) {
       const launch = d.launch || (() => require('./mcp-bootstrap/launcher.js').runLauncher({ env }));
-      const L = await bounded('server start', Promise.resolve(launch()), STAGE_MS.launch).catch((err) => ({ ok: false, error: err.message }));
+      let L = await bounded('server start', Promise.resolve(launch()), STAGE_MS.launch).catch((err) => ({ ok: false, error: err.message, timedOut: err.timedOut }));
+      const late = await answeredAfterTimeout(L);
+      if (late) { p = late; L = { ok: true, version: late.health.version }; }
       if (L.ok) say('server-start', 'done', `The memory server is running again (v${L.version || '?'}).`);
       else {
         say('server-start', 'failed', `The memory server did not start: ${L.error}`, 'Fix the cause shown, then open a new session; the Boss tries again.');
@@ -408,7 +427,8 @@ async function recoverMemoryStack(opts = {}) {
 
     if (p.health && c.casaNeedsModel && !(previous && now() - (previous.modelRestartAt || 0) < MODEL_RESTART_COOLDOWN_MS)) {
       const userValue = (userEnv && userEnv.get('CASA_MODEL_DIR')) || env.CASA_MODEL_DIR;
-      const model = !userValue ? findLocalModelDir({ env })
+      const bossValueGone = !!userValue && !hasModel(userValue) && !!previous && previous.modelWrittenByBoss === userValue;
+      const model = !userValue || bossValueGone ? findLocalModelDir({ env })
         : hasModel(userValue) ? { dir: userValue, source: 'CASA_MODEL_DIR', configured: true }
           : { invalid: userValue };
       if (model && model.invalid) say('model', 'failed', `CASA_MODEL_DIR points at ${model.invalid}, which has no model files.`, 'Fix or remove that variable: the Boss never overwrites a value you set.');
@@ -418,14 +438,20 @@ async function recoverMemoryStack(opts = {}) {
       else {
         save({ modelRestartAt: now(), modelTriedDir: model.dir });
         previous = { ...(previous || {}), modelRestartAt: now(), modelTriedDir: model.dir };
-        if (!model.configured && userEnv) userEnv.set('CASA_MODEL_DIR', model.dir);
+        if (!model.configured && userEnv) {
+          userEnv.set('CASA_MODEL_DIR', model.dir);
+          save({ modelWrittenByBoss: model.dir });
+          previous = { ...previous, modelWrittenByBoss: model.dir };
+        }
         env.CASA_MODEL_DIR = model.dir;
         const restart = d.restart || (() => defaultRestart({ env }));
-        const R = await bounded('server restart', Promise.resolve(restart()), STAGE_MS.model).catch((err) => ({ ok: false, error: err.message }));
+        let R = await bounded('server restart', Promise.resolve(restart()), STAGE_MS.model).catch((err) => ({ ok: false, error: err.message, timedOut: err.timedOut }));
+        if (await answeredAfterTimeout(R)) R = { ok: true };
         if (!R.ok) say('model', 'failed', `Found the model in ${model.source} (${model.dir}) but the restart failed: ${R.error}`, 'Restart the memory server once; the variable CASA_MODEL_DIR is already set.');
         else {
           for (let i = 0; i < 20; i++) { await sleep(1000); p = await bounded('health probe', Promise.resolve(probe()), STAGE_MS.probe); c = classifyStack(p); if (p.health && !c.casaDown) break; }
-          if (c.casaDown) say('model', 'failed', `CASA_MODEL_DIR was set to ${model.dir} (${model.source}) and the server restarted, but the embeddings house is still down.`, 'See ~/.casa-de-embeddings logs.');
+          if (!p.health) say('model', 'failed', `CASA_MODEL_DIR was set to ${model.dir} (${model.source}) and the server was restarted, but it does not answer: ${p.error || 'no reply'}.`, 'See ~/.mcp-memory/logs/daemon.log; the Boss tries again at the next session start.');
+          else if (c.casaDown) say('model', 'failed', `CASA_MODEL_DIR was set to ${model.dir} (${model.source}) and the server restarted, but the embeddings house is still down.`, 'See ~/.casa-de-embeddings logs.');
           else say('model', 'done', `The embeddings house now uses the model found in ${model.source}; CASA_MODEL_DIR points at ${model.dir}.`);
         }
       }

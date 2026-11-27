@@ -75,6 +75,23 @@ const runtimeSweep = require('./runtime-sweep.js');
 
 const SEP = '\n\n';
 
+const AUTO_UPDATE_CEILING_MS = 120000;
+const BACKGROUND_MARGIN_MS = 30000;
+const LAUNCH_WAIT_PROBES = 10;
+const MODEL_WAIT_PROBES = 20;
+const PROBE_PAUSE_MS = 1000;
+
+/**
+ * Ceiling of the background memory step: the update, then the stack recovery at its worst case —
+ * every bounded stage plus the two loops that probe once a second after a start and after a
+ * model restart (memory-stack-recovery.js hard-codes their counts; the stage budgets come from it).
+ */
+function memoryStepCeilingMs() {
+  const s = require('./lib/memory-stack-recovery.js').DEFAULT_STAGE_MS;
+  const waits = (LAUNCH_WAIT_PROBES + MODEL_WAIT_PROBES) * (PROBE_PAUSE_MS + s.probe);
+  return AUTO_UPDATE_CEILING_MS + s.env + s.probe + s.launch + s.model + s.replay + waits + BACKGROUND_MARGIN_MS;
+}
+
 // Marks the detached copy (argv stays untouched: the hook command's signature must not change its behavior).
 const BACKGROUND_ENV = 'CCB_SESSION_START_BACKGROUND';
 
@@ -88,7 +105,7 @@ const DETECTORS = [
     try { update = await brainDaemonEnsure.runAutoUpdateInBackground(event); } catch (err) { console.error(`[session-start] mcp-memory auto-update: ${err.message}`); }
     await brainDaemonEnsure.runMemoryStackRecoveryInBackground(event);
     return update;
-  } }, timeoutMs: 420000, bg: true },
+  } }, timeoutMs: memoryStepCeilingMs(), bg: true },
   { name: 'memory-rotate', mod: memoryRotate, timeoutMs: 10000, bg: true },
   { name: 'runtime-sweep', mod: runtimeSweep, timeoutMs: 5000, bg: true },
   { name: 'session-whitelist', mod: sessionWhitelist, timeoutMs: 5000 },

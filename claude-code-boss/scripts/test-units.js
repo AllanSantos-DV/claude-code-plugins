@@ -22284,6 +22284,15 @@ test('session-start-dispatcher.DETECTORS: 19 detectors, correct order + shape (m
     'auto-update deve permanecer dentro do dispatcher, nunca como hook separado');
 });
 
+test('session-start-dispatcher: the background memory step outlasts the update plus the stack recovery at its worst case, so a slow recovery is never cut off', () => {
+  const d = require('./session-start-dispatcher.js');
+  const s = require('./lib/memory-stack-recovery.js').DEFAULT_STAGE_MS;
+  const recoveryWorstMs = s.env + s.probe + s.launch + 10 * (1000 + s.probe) + s.model + 20 * (1000 + s.probe) + s.replay;
+  const step = d.DETECTORS.find((x) => x.name === 'mcp-memory-auto-update');
+  assertEq(recoveryWorstMs, 434000, 'the worst case the recovery can spend');
+  assert(step.bg === true && step.timeoutMs >= 120000 + recoveryWorstMs, `ceiling ${step.timeoutMs} ms must cover the update (120000) + ${recoveryWorstMs}`);
+});
+
 test('session-start-dispatcher.dispatch: no SessionStart de COMPACT roda so o que o contexto compactado pode ter perdido + o daemon (era 1,0 s com todos os 18)', async () => {
   const d = require('./session-start-dispatcher.js');
   const ran = [];
@@ -38696,6 +38705,103 @@ test('memory-stack-recovery: it only runs for a managed mcp-memory server, never
   assertEq(toasts, 1, 'and the same failure is notified once');
 });
 
+test('memory-stack-recovery: a CASA_MODEL_DIR the Boss wrote itself is replaced by a model that exists once its folder is gone', async () => {
+  const rec = require('./lib/memory-stack-recovery.js');
+  const w = stackWorld();
+  const own = path.join(w.home, '.mcp-memory', 'model');
+  const hub = path.join(w.home, '.cache', 'huggingface', 'hub', 'models--org--e5', 'snapshots', 'abc');
+  fs.mkdirSync(path.dirname(hub), { recursive: true });
+  fs.renameSync(own, hub);
+  let clock = Date.now();
+  let phase = 0;
+  const restartedWith = [];
+  const env = { USERPROFILE: w.home };
+  const run = () => rec.recoverMemoryStack({ config: STACK_CONFIG, deps: w.deps({ env, now: () => clock, probe: async () => ({ health: w.healthy(phase ? 'ok' : 'missing') }), restart: async () => { restartedWith.push(env.CASA_MODEL_DIR); phase = 1; return { ok: true }; } }) });
+  await run();
+  assertEq(w.store.get('CASA_MODEL_DIR'), hub, 'the Boss wrote the hub snapshot');
+  fs.rmSync(hub, { recursive: true, force: true });
+  fs.mkdirSync(own, { recursive: true });
+  fs.writeFileSync(path.join(own, 'model.onnx'), '');
+  fs.writeFileSync(path.join(own, 'tokenizer.json'), '{}');
+  phase = 0;
+  clock += 31 * 60 * 1000;
+  const second = await run();
+  assertEq(restartedWith, [hub, own], JSON.stringify(second.steps.map((s) => s.detail)));
+  assertEq(w.store.get('CASA_MODEL_DIR'), own, 'the stale value the Boss wrote is replaced by the model that exists');
+});
+
+test('memory-stack-recovery: a model step whose restart never answers within its budget is done when the server answers afterwards', async () => {
+  const rec = require('./lib/memory-stack-recovery.js');
+  const w = stackWorld();
+  let phase = 0;
+  const r = await rec.recoverMemoryStack({ config: STACK_CONFIG, deps: w.deps({ stageMs: { model: 30 }, probe: async () => ({ health: w.healthy(phase ? 'ok' : 'missing') }), restart: () => { phase = 1; return new Promise(() => {}); } }) });
+  assert(!r.steps.some((s) => s.status === 'failed'), JSON.stringify(r.steps.map((s) => `${s.step}:${s.status}:${s.detail}`)));
+  assert(r.steps.some((s) => s.step === 'model' && s.status === 'done'), 'the model step is done');
+});
+
+test('memory-stack-recovery: a model restart after which the server never answers is a failed step with the cause, never a done one', async () => {
+  const rec = require('./lib/memory-stack-recovery.js');
+  const w = stackWorld();
+  let restarted = false;
+  const r = await rec.recoverMemoryStack({ config: STACK_CONFIG, deps: w.deps({ probe: async () => (restarted ? { error: 'ECONNREFUSED' } : { health: w.healthy('missing') }), restart: async () => { restarted = true; return { ok: true }; } }) });
+  const model = r.steps.filter((s) => s.step === 'model');
+  assertEq(model.map((s) => s.status), ['failed'], JSON.stringify(model));
+  assert(/ECONNREFUSED/.test(model[0].detail) && model[0].nextAction, model[0].detail);
+  assertEq(r.state, 'critical', 'and the final state agrees');
+});
+
+test('memory-stack-recovery: a server start that outlasts its budget but answers afterwards is done, not failed, and does not block the next retry', async () => {
+  const rec = require('./lib/memory-stack-recovery.js');
+  const w = stackWorld();
+  let probes = 0;
+  const r = await rec.recoverMemoryStack({ config: STACK_CONFIG, deps: w.deps({ stageMs: { launch: 30 }, probe: async () => (++probes === 1 ? { error: 'ECONNREFUSED' } : { health: w.healthy('ok') }), launch: () => new Promise(() => {}) }) });
+  assert(!r.steps.some((s) => s.status === 'failed'), JSON.stringify(r.steps.map((s) => `${s.step}:${s.status}:${s.detail}`)));
+  assert(r.steps.some((s) => s.step === 'server-start' && s.status === 'done'), 'the start is done');
+  assert(!w.toasts.some((t) => /needs attention/.test(t.title)), 'no alarm');
+  assertEq(JSON.parse(fs.readFileSync(path.join(w.home, 'g', 'state.json'), 'utf8')).launchFailedAt || null, null, 'no retry block was recorded');
+});
+
+test('memory-stack-recovery: a negated rule is not skipped as a duplicate of the rule it negates, in English and in Portuguese', async () => {
+  const rec = require('./lib/memory-stack-recovery.js');
+  const home = tempDir('ccb-replay-negation-');
+  const put = (p, c) => { const f = path.join(home, p); fs.mkdirSync(path.dirname(f), { recursive: true }); fs.writeFileSync(f, c); };
+  put('.claude/projects/p/s1.jsonl', `${JSON.stringify({ cwd: 'C:\\work\\p' })}\n`);
+  const rule = (n, name, body) => put(`.claude/projects/p/memory/${n}.md`, `---\nname: ${name}\ndescription: ${name}\ntype: feedback\n---\n${body}\n`);
+  rule('pt', 'Mocks nos testes', 'Não usar mocks nos testes de unidade');
+  rule('en', 'Mocks in tests', "Don't use mocks in tests unit");
+  const held = [
+    { id: 'a', title: 'Mocks nos testes', summary: 'Mocks nos testes', content: 'Usar mocks nos testes de unidade' },
+    { id: 'b', title: 'Mocks in tests', summary: 'Mocks in tests', content: 'Use mocks in tests unit' },
+  ];
+  const saved = [];
+  const backend = { init: async () => {}, get: async () => null, search: async () => held, save: async (e) => { saved.push(e.title); return e.id; } };
+  const r = await rec.replayFileMemories({ backend, env: { USERPROFILE: home }, since: 0, ledger: {}, deadline: Infinity, resolveProject: () => 'p-id' });
+  assertEq(saved.sort(), ['Mocks in tests', 'Mocks nos testes'], JSON.stringify(r));
+});
+
+test('memory-stack-recovery: accented words are folded whole, so the same text with and without accents is identical', () => {
+  const rec = require('./lib/memory-stack-recovery.js');
+  assertEq(rec.similarity('Prefira ação rápida nas respostas', 'Prefira acao rapida nas respostas'), 1, 'accents do not split or drop words');
+});
+
+test('memory-stack-recovery: a memory file that cannot be read for its date is reported as failed and the others are still copied', async () => {
+  const rec = require('./lib/memory-stack-recovery.js');
+  const home = tempDir('ccb-replay-stat-');
+  const put = (p, c) => { const f = path.join(home, p); fs.mkdirSync(path.dirname(f), { recursive: true }); fs.writeFileSync(f, c); return f; };
+  put('.claude/projects/p/s1.jsonl', `${JSON.stringify({ cwd: 'C:\\work\\p' })}\n`);
+  const mem = (n) => put(`.claude/projects/p/memory/${n}.md`, `---\nname: ${n}\ndescription: ${n} rule\ntype: feedback\n---\nBody of the ${n} memory file.\n`);
+  const broken = mem('broken');
+  mem('fine');
+  const saved = [];
+  const backend = { init: async () => {}, get: async () => null, search: async () => [], save: async (e) => { saved.push(e.title); return e.id; } };
+  const realStat = fs.statSync;
+  fs.statSync = (p, ...a) => { if (p === broken) throw Object.assign(new Error('ENOENT: no such file'), { code: 'ENOENT' }); return realStat(p, ...a); };
+  let r;
+  try { r = await rec.replayFileMemories({ backend, env: { USERPROFILE: home }, since: 0, ledger: {}, deadline: Infinity, resolveProject: () => 'p-id' }); } finally { fs.statSync = realStat; }
+  assertEq(saved, ['fine'], 'the readable file is copied');
+  assert(r.failed.some((f) => /^broken\.md: /.test(f)), JSON.stringify(r.failed));
+});
+
 test('passthrough redirect: a failed cd after || is not followed, and a repo in the home folder is not the project of every folder under it', () => {
   const { planRedirect } = require('./lib/curation-redirect.js');
   const { execFileSync } = require('child_process');
@@ -38723,6 +38829,21 @@ test('passthrough redirect: a failed cd after || is not followed, and a repo in 
   } finally {
     for (const [k, v] of Object.entries(saved)) { if (v === undefined) delete process.env[k]; else process.env[k] = v; }
   }
+});
+
+test('passthrough redirect: a leading cd into a worktree is followed even when a || comes later in the command', () => {
+  const { planRedirect } = require('./lib/curation-redirect.js');
+  const { execFileSync } = require('child_process');
+  const R = path.resolve(TEST_TEMP.dir('ccb-wt-tail-or-'));
+  const W = path.resolve(TEST_TEMP.dir('ccb-wt-tail-or-other-'));
+  for (const d of [R, W]) execFileSync('git', ['init', '-q', d], { windowsHide: true });
+  fs.mkdirSync(path.join(require('./curation-paths.js').curationHome(R), 'scripts'), { recursive: true });
+  const shells = [{ id: 'git-commit', script: 'scripts/git-commit.mjs', aliases: ['git add', 'git commit'], passthrough: true, commandTokens: 1 }];
+  const w = W.replace(/\\/g, '/');
+  const plan = planRedirect(`cd "${w}" && git add -A && git commit -m x || true`, shells, R, { cwd: R });
+  const acting = path.resolve(W).replace(/\\/g, '/');
+  assertEq(plan.replaced.length, 2, 'both git parts are redirected');
+  assert(plan.replaced.every((r) => r.to.includes(`CCB_PROJECT_ROOT="${acting}"`)), `the worktree the shell commits in: ${plan.rewritten}`);
 });
 
 test('passthrough redirect: the script acts in the project root unless the command itself moves, and a cd into another repo acts in that repo root', () => {
@@ -38785,6 +38906,27 @@ test('memory-stack-recovery: the session-start step leaves a notice the next pro
   fs.writeFileSync(path.join(w.home, 'g', 'state.json'), JSON.stringify({ state: 'ok', message: 'The memory stack is healthy.', updatedAt: Date.now() }));
   const skipped = await rec.recoverMemoryStack({ config: STACK_CONFIG, deps });
   assertEq(skipped.skipped, true, 'a healthy state checked minutes ago is not rechecked on every session start');
+});
+
+test('dashboard memory stack: a server the user owns shows ok/untouched, not the last critical the recovery wrote before they moved to it', async () => {
+  const dash = require('./dashboard.js');
+  const rec = require('./lib/memory-stack-recovery.js');
+  const ask = () => { let body = null; dash.getMemoryStack({}, { writeHead() {}, end(b) { body = JSON.parse(b); } }); return body; };
+  const mcpMemory = (extra) => ({ backend: { type: 'mcp-memory', mcpMemory: { transport: 'http', ...extra } } });
+  const stale = () => { fs.mkdirSync(path.dirname(rec.stateFile()), { recursive: true }); fs.writeFileSync(rec.stateFile(), JSON.stringify({ state: 'critical', message: 'The memory server did not start.', nextAction: 'Fix it.', steps: [], updatedAt: Date.now() })); };
+  await withUserConfig(mcpMemory({ serverUrl: 'http://10.0.0.9:1' }), async () => {
+    stale();
+    const own = ask().stack;
+    assertEq([own.state, own.untouched], ['ok', true], 'the user server has no Boss recovery to show');
+  });
+  await withUserConfig({ backend: { type: 'local' } }, async () => {
+    stale();
+    assertEq(ask().stack.state, 'ok', 'the local store has none either');
+  });
+  await withUserConfig(mcpMemory({}), async () => {
+    stale();
+    assertEq(ask().stack.state, 'critical', 'a server the Boss manages still shows its state');
+  });
 });
 
 (async () => {

@@ -253,7 +253,9 @@ function passthroughMatch(text, profiles) {
 }
 
 /**
- * Plan the rewrite of `command`.
+ * Plan the rewrite of `command`. Each part runs in the hook's cwd moved by the `cd` parts before
+ * it, except that a `cd` after a `||` may not run (not followed) and a part right after `cd … ||`
+ * runs only when that cd failed (back where the cd started).
  * @returns {{rewritten:string|null, replaced:Array<{shellId:string, from:string, to:string}>, uncovered:string[]}}
  */
 function planRedirect(command, shells, projectRoot, { reportPath = '', ps = false, cwd = '' } = {}) {
@@ -264,15 +266,21 @@ function planRedirect(command, shells, projectRoot, { reportPath = '', ps = fals
   if (!parts) return { rewritten: null, replaced, uncovered };
   const profiles = profilesFor(shells);
   if (!profiles.length) return { rewritten: null, replaced, uncovered };
-  // Where each part runs: the hook's cwd, moved by the `cd` parts before it. After a `||` a failed
-  // `cd` would leave the next part where it was, so the move is not followed.
-  const followCd = !/\|\|/.test(String(command || ''));
   let dir = cwd || null;
   let followed = false;
-  for (const p of parts) {
+  let beforeCd = null;
+  let afterCd = false;
+  for (let i = 0; i < parts.length; i++) {
+    const p = parts[i];
+    const afterOr = i > 0 && parts[i - 1].sep === '||';
+    if (afterOr && afterCd) ({ dir, followed } = beforeCd);
     const text = p.text.trim();
     const moved = cdTarget(dir, text);
-    if (moved !== undefined) { if (followCd) { dir = moved; followed = true; } continue; }
+    afterCd = false;
+    if (moved !== undefined) {
+      if (!afterOr) { beforeCd = { dir, followed }; dir = moved; followed = true; afterCd = true; }
+      continue;
+    }
     const inProject = !dir || !projectRoot || path.relative(path.resolve(projectRoot), path.resolve(dir)) === '' || isInside(projectRoot, dir);
     const callerRoot = dir && (followed || !inProject) ? repoRootOf(dir) || '' : '';
     if (!text || classifySegment(text) !== 'task') continue;

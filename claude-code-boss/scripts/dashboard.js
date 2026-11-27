@@ -1727,9 +1727,19 @@ function getMcpWizardStatus(req, res) {
   }
 }
 
+/**
+ * GET /api/brain/memory-stack: the recovery state of the memory stack. Only a server the Boss
+ * manages (mcp-memory with no address set) has one; for any other backend the last state the
+ * recovery wrote is stale, so an ok/untouched stack is answered instead.
+ */
 function getMemoryStack(req, res) {
   try {
-    const stack = require('./lib/memory-stack-recovery.js').readStack();
+    const backend = require('../engine/lib/brain-config.js').load().backend || {};
+    const managed = backend.type === 'mcp-memory'
+      && require('./lib/mcp-memory-minimum.js').describeServer({ serverUrl: (backend.mcpMemory || {}).serverUrl, daemon: { running: false }, jar: null }).management === 'local';
+    const stack = managed
+      ? require('./lib/memory-stack-recovery.js').readStack()
+      : { state: 'ok', message: 'The memory server is not managed by the Boss: nothing to recover.', nextAction: '', steps: [], untouched: true };
     json(res, { ok: true, stack });
   } catch (err) {
     console.error(`[DASHBOARD] /api/brain/memory-stack failed: ${err.message}`);
@@ -2839,4 +2849,4 @@ if (require.main === module) startDashboardServer();
 // exported so a test can call it with a fake res ({writeHead,end}) and assert
 // on the exact JSON it serializes — otherwise a bug in byokSafe (e.g. `x || null`
 // silently turning a valid `0` into `null`) would never be caught by any test.
-module.exports = { getBrainBackend, postMemoryDisable, getCurationProjects, getCurationShells, deleteCurationShell, getValueSummary, getOutcomeSummary, getTuningRecommendations, _metricsMemo, getDoctorSwitchedOff, postDoctorUndo, getDoctorConfig, saveDoctorConfig, writeRouterOverride, resolveRouterFlags, getRouterConfig, fetchByokModelIds, getByokModels, opensWithField, postPluginUpdate, getProjectMarker, saveProjectMarker, saveCompactionConfig, getPhaseRestartMeasure, scanServerKb, quickKbList, brainBackendStatus, moveBrainEntryScope };
+module.exports = { getBrainBackend, postMemoryDisable, getCurationProjects, getCurationShells, deleteCurationShell, getValueSummary, getOutcomeSummary, getTuningRecommendations, _metricsMemo, getDoctorSwitchedOff, postDoctorUndo, getDoctorConfig, saveDoctorConfig, writeRouterOverride, resolveRouterFlags, getRouterConfig, fetchByokModelIds, getByokModels, opensWithField, postPluginUpdate, getProjectMarker, saveProjectMarker, saveCompactionConfig, getPhaseRestartMeasure, scanServerKb, quickKbList, brainBackendStatus, moveBrainEntryScope, getMemoryStack };
