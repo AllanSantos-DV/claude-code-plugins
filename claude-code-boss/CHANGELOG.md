@@ -2,6 +2,9 @@
 
 ## [Unreleased]
 
+### Changed
+- **Opt-out da atualização automática com o nome padrão:** `CLAUDE_CODE_BOSS_NO_AUTO_UPDATE=1` desliga a atualização automática e a consulta de versão; `CLAUDE_CODE_BOSS_AUTO_UPDATE=0` segue valendo como alias.
+
 ## [3.19.0] - 2026-11-26
 
 ### Added

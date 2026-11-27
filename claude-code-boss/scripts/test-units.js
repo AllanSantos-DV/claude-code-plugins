@@ -30316,7 +30316,7 @@ test('update-notice: "version available" cached 6h and told once per version; "p
     latest = '3.5.0';
     assertEq((await u.refreshLatest({ root, dir, env: {}, now: T0 + 7 * 3600e3, fetchLatest })).latest, '3.5.0', 're-checked after 6h');
     const avail = u.takeUpdateNotices({ root, dir, env: E });
-    assert(avail.length === 1 && /3\.5\.0 disponível \(instalada: 3\.4\.0\)/.test(avail[0]) && /CLAUDE_CODE_BOSS_AUTO_UPDATE=0/.test(avail[0]) && !avail[0].includes('\n'), JSON.stringify(avail));
+    assert(avail.length === 1 && /3\.5\.0 disponível \(instalada: 3\.4\.0\)/.test(avail[0]) && /CLAUDE_CODE_BOSS_NO_AUTO_UPDATE=1/.test(avail[0]) && !avail[0].includes('\n'), JSON.stringify(avail));
     assertEq(u.takeUpdateNotices({ root, dir, env: E }), [], 'available told once per version');
     assert(/chega sozinha/.test(avail[0]) && !/NÃO vai rodar/.test(avail[0]), `no blocking env: promises the automatic update: ${avail[0]}`);
     // Claude Code's plugin auto-update pass switched off by env: the notice names the variable and the override
@@ -30384,6 +30384,12 @@ test('update-notice: "version available" cached 6h and told once per version; "p
     assertEq((await u.refreshLatest({ root, dir: path.join(base, 'g2'), env: off, now: T0, fetchLatest })).status, 'disabled', 'opt-out: no check');
     assertEq(calls, 2, 'no request while opted out');
     assertEq(m.ensureAutoUpdate({ pluginRoot: path.join(base, 'claude', 'plugins', 'cache', 'mkt', 'p', '1'), env: off }).status, 'disabled', 'opt-out: auto-update not switched on');
+    for (const env of [{ CLAUDE_CODE_BOSS_NO_AUTO_UPDATE: '1' }, { CLAUDE_CODE_BOSS_NO_AUTO_UPDATE: 'true' }]) {
+      assertEq((await u.refreshLatest({ root, dir: path.join(base, 'g2'), env, now: T0, fetchLatest })).status, 'disabled', `NO_AUTO_UPDATE=${env.CLAUDE_CODE_BOSS_NO_AUTO_UPDATE}: no check`);
+      assertEq(m.ensureAutoUpdate({ pluginRoot: path.join(base, 'claude', 'plugins', 'cache', 'mkt', 'p', '1'), env }).status, 'disabled', 'NO_AUTO_UPDATE: auto-update not switched on');
+    }
+    assert(!u.autoUpdateDisabled({ CLAUDE_CODE_BOSS_NO_AUTO_UPDATE: '0' }) && !u.autoUpdateDisabled({}), 'NO_AUTO_UPDATE=0 and unset leave auto-update on');
+    assertEq(calls, 2, 'no request under NO_AUTO_UPDATE');
     // a failing lookup is loud and leaves the throttle open
     const failed = await u.refreshLatest({ root, dir: path.join(base, 'g3'), env: {}, now: T0, fetchLatest: async () => { throw new Error('GitHub API 403'); } });
     assert(failed.status === 'error' && /403/.test(failed.error), JSON.stringify(failed));

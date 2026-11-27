@@ -13,7 +13,7 @@
  * gives both commands in order, and a clone still behind the published release STALE_MS after it
  * was first seen behind, with auto-update on, is told once as a refresh that is not arriving.
  *
- * Opt-out: CLAUDE_CODE_BOSS_AUTO_UPDATE=0|false|off|no — no auto-update switch-on
+ * Opt-out: CLAUDE_CODE_BOSS_NO_AUTO_UPDATE=1|true|on|yes (alias: CLAUDE_CODE_BOSS_AUTO_UPDATE=0|false|off|no) — no auto-update switch-on
  * (marketplace-autoupdate.js) and no GitHub check. The local "updated" message still shows.
  */
 const fs = require('fs');
@@ -29,6 +29,7 @@ const STALE_MS = 3600 * 1000;
 const PLUGIN = 'claude-code-boss';
 const DEFAULT_MARKETPLACE = 'allansantos-plugins';
 const OFF = /^(0|false|off|no)$/i;
+const ON = /^(1|true|on|yes)$/i;
 
 /** The two commands that bring a release in, in the order that works. */
 function updateCommands(marketplace) {
@@ -61,8 +62,14 @@ function marketplaceCopy(root, env) {
   }
 }
 
+/**
+ * Whether the user opted out of the auto-update switch-on and the GitHub check.
+ * @param {object} [env] environment to read (default process.env)
+ * @returns {boolean} true for CLAUDE_CODE_BOSS_NO_AUTO_UPDATE=1|true|on|yes or the alias CLAUDE_CODE_BOSS_AUTO_UPDATE=0|false|off|no
+ */
 function autoUpdateDisabled(env = process.env) {
-  return OFF.test(String(env.CLAUDE_CODE_BOSS_AUTO_UPDATE || '').trim());
+  return ON.test(String(env.CLAUDE_CODE_BOSS_NO_AUTO_UPDATE || '').trim())
+    || OFF.test(String(env.CLAUDE_CODE_BOSS_AUTO_UPDATE || '').trim());
 }
 
 /**
@@ -163,7 +170,7 @@ function takeLocked(file, installed, env, root, now) {
     const how = blockedBy
       ? `A atualização automática NÃO vai rodar: ${blockedBy} está definido no ambiente desta sessão e desliga as atualizações de plugin do Claude Code; defina também FORCE_AUTOUPDATE_PLUGINS=1, ou atualize à mão.`
       : 'Com a atualização automática ligada ela chega sozinha numa próxima sessão.';
-    out.push(`claude-code-boss: versão ${st.latest} disponível (instalada: ${installed}). ${how} Para atualizar agora, rode ${updateCommands(copy.name)}: o update lê a cópia local do marketplace e, sem o primeiro comando, responde que já está na última versão. Novidades: ${CHANGELOG_URL}. Desligar os avisos e a atualização automática: CLAUDE_CODE_BOSS_AUTO_UPDATE=0.`);
+    out.push(`claude-code-boss: versão ${st.latest} disponível (instalada: ${installed}). ${how} Para atualizar agora, rode ${updateCommands(copy.name)}: o update lê a cópia local do marketplace e, sem o primeiro comando, responde que já está na última versão. Novidades: ${CHANGELOG_URL}. Desligar os avisos e a atualização automática: CLAUDE_CODE_BOSS_NO_AUTO_UPDATE=1.`);
     next.announcedLatest = st.latest;
   }
   const behind = copy && (copy.error || compareSemver(st.latest, copy.version) > 0);

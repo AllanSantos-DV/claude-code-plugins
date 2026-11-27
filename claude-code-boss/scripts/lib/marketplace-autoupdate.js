@@ -37,7 +37,7 @@ function readJson(file) {
 
 /**
  * Enable auto-update when nobody chose yet. Returns { status, marketplace? }:
- * 'disabled' (CLAUDE_CODE_BOSS_AUTO_UPDATE=0) | 'not-marketplace' | 'already-done' |
+ * 'disabled' (CLAUDE_CODE_BOSS_NO_AUTO_UPDATE=1, or the alias CLAUDE_CODE_BOSS_AUTO_UPDATE=0) | 'not-marketplace' | 'already-done' |
  * 'explicit' (user's choice kept) | 'enabled' | 'error'.
  */
 function ensureAutoUpdate({ pluginRoot, env = process.env, markerDir, write } = {}) {
