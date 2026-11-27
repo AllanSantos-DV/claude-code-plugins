@@ -63,6 +63,7 @@ function toast({ title, body }, deps = {}) {
     const child = deps.spawn
       ? deps.spawn('powershell.exe', args, { windowsHide: true, stdio: 'ignore', detached: true })
       : cp.spawn('powershell.exe', args, { windowsHide: true, stdio: 'ignore', detached: true });
+    if (child && typeof child.on === 'function') child.on('error', (err) => console.error(`[win-toast] powershell could not be started: ${err.message}`));
     if (child && typeof child.unref === 'function') child.unref();
     out.shown = true;
   } catch (err) { out.error = `toast not raised: ${err.message}`; }

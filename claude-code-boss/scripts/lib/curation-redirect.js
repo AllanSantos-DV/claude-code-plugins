@@ -121,10 +121,11 @@ function isInside(dir, p) {
  * `~` is not the project of every folder under it.
  */
 function repoRootOf(dir) {
+  const sameDir = (a, b) => (process.platform === 'win32' ? a.toLowerCase() === b.toLowerCase() : a === b);
   const homeDir = path.resolve(os.homedir());
   let d = path.resolve(dir);
   for (;;) {
-    if (d === homeDir) return null;
+    if (sameDir(d, homeDir)) return null;
     if (fs.existsSync(path.join(d, '.git'))) return d;
     const up = path.dirname(d);
     if (up === d) return null;
@@ -267,11 +268,13 @@ function planRedirect(command, shells, projectRoot, { reportPath = '', ps = fals
   // `cd` would leave the next part where it was, so the move is not followed.
   const followCd = !/\|\|/.test(String(command || ''));
   let dir = cwd || null;
+  let followed = false;
   for (const p of parts) {
     const text = p.text.trim();
     const moved = cdTarget(dir, text);
-    if (moved !== undefined) { if (followCd) dir = moved; continue; }
-    const callerRoot = dir ? repoRootOf(dir) || '' : '';
+    if (moved !== undefined) { if (followCd) { dir = moved; followed = true; } continue; }
+    const inProject = !dir || !projectRoot || path.relative(path.resolve(projectRoot), path.resolve(dir)) === '' || isInside(projectRoot, dir);
+    const callerRoot = dir && (followed || !inProject) ? repoRootOf(dir) || '' : '';
     if (!text || classifySegment(text) !== 'task') continue;
     // Output sent to a FILE (`> log`, `>> log`, `2> err`, `&> all`) means the raw output is
     // wanted on disk (typically grepped next) — rewriting would store the curated summary

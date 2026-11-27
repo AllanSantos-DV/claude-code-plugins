@@ -91,7 +91,7 @@ function loadState() {
     const sp = wizardStateFile();
     if (fs.existsSync(sp)) {
       _state = JSON.parse(fs.readFileSync(sp, 'utf8'));
-      if (_state && _state.status) return settleOrphanedRun(_state);
+      if (_state && _state.status) { _state = settleOrphanedRun(_state); return _state; }
     }
   } catch { /* corrupted */ }
   _state = { step: 0, total: 5, status: 'idle', progress: 0, details: [], startedAt: null, finishedAt: null, error: null };

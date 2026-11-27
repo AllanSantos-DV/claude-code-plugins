@@ -13092,6 +13092,33 @@ test('FASE-G mcp-wizard: reset limpa estado persistido; getState devolve idle (r
   }
 });
 
+test('mcp-wizard: a persisted run with no live runner is failed on the first read and on every cached read, and start() then begins a new run instead of being refused', async () => {
+  const saved = process.env.CLAUDE_PLUGIN_DATA;
+  const tmp = tempDir('ccb-wiz-orphan-');
+  try {
+    process.env.CLAUDE_PLUGIN_DATA = tmp;
+    delete require.cache[require.resolve('./lib/mcp-wizard.js')];
+    const wizard = require('./lib/mcp-wizard.js');
+    const stPath = wizard.wizardStateFile();
+    fs.mkdirSync(path.dirname(stPath), { recursive: true });
+    fs.writeFileSync(stPath, JSON.stringify({ step: 3, total: 5, status: 'running', progress: 60, details: [], startedAt: '2020-01-01T00:00:00.000Z', finishedAt: null, error: null, projectId: 'old-run' }));
+    assertEq(wizard.getState().status, 'failed', 'first read');
+    assertEq(wizard.getState().status, 'failed', 'second read, from the cache');
+    const began = JSON.parse(JSON.stringify(await wizard.start('new-run', { serverUrl: 'http://127.0.0.1:1' })));
+    assertEq([began.status, began.projectId], ['running', 'new-run'], 'a new run began');
+    assert(began.startedAt !== '2020-01-01T00:00:00.000Z', 'it is not the stale run served again');
+    for (let i = 0; i < 150 && wizard.getState().status === 'running'; i++) await new Promise((r) => setTimeout(r, 100));
+    const end = wizard.getState();
+    assertEq(end.status, 'failed', 'the unreachable server ends the run');
+    assert(/did not answer \/health/.test(end.error), end.error);
+  } finally {
+    if (saved === undefined) delete process.env.CLAUDE_PLUGIN_DATA;
+    else process.env.CLAUDE_PLUGIN_DATA = saved;
+    delete require.cache[require.resolve('./lib/mcp-wizard.js')];
+    try { fs.rmSync(tmp, { recursive: true, force: true }); } catch (_) { void _; }
+  }
+});
+
 test('mcp-wizard.ensureJar: hash bate → verified; hash não bate → mismatch (remove arquivo); sem hash publicado → unverified (não finge verificação)', async () => {
   const mcpWizard = require('./lib/mcp-wizard.js');
   const { PassThrough } = require('stream');
@@ -38502,6 +38529,17 @@ test('memory-stack-recovery: old jars go only after the running one is confirmed
   assertEq(rec.findLocalModelDir({ env }).ambiguous.length, 2, 'two embedders in the cache are reported, not guessed');
 });
 
+test('memory-stack-recovery: a server whose /health carries no uptime is not trusted as settled, so no old jar is removed and the reason names the two minutes', () => {
+  const rec = require('./lib/memory-stack-recovery.js');
+  const w = stackWorld();
+  const { uptimeMs, ...noUptime } = w.healthy('ok');
+  void uptimeMs;
+  const r = rec.removeOldJars({ health: noUptime, env: { USERPROFILE: w.home } });
+  assertEq(r.removed.length, 0, 'nothing removed');
+  assert(/two minutes/.test(r.reason), `reason: ${r.reason}`);
+  assert(fs.existsSync(path.join(w.home, '.mcp-memory', 'lib', 'mcp-memory-server-3.1.1.jar')), 'the previous version is still there');
+});
+
 test('memory-stack-recovery: the registry adapter and the toast never open a window; a toast is recorded for proof; the state screen fades and exposes a stuck recovery', async () => {
   const rec = require('./lib/memory-stack-recovery.js');
   const calls = [];
@@ -38537,6 +38575,74 @@ test('memory-stack-recovery: the registry adapter and the toast never open a win
   const stuck = rec.readStack({ file, now: () => at });
   assertEq(stuck.state, 'critical', 'a recovery that never finished is shown as critical');
   assert(/never finished/.test(stuck.message), stuck.message);
+});
+
+test('win-toast.toast: a powershell that cannot start is logged through the child error event instead of crashing the caller', () => {
+  const { EventEmitter } = require('events');
+  const { toast } = require('./lib/win-toast.js');
+  const child = Object.assign(new EventEmitter(), { unref() {} });
+  const logged = [];
+  const realError = console.error;
+  console.error = (...a) => logged.push(a.join(' '));
+  try {
+    const t = toast({ title: 'a', body: 'b' }, { env: {}, platform: 'win32', spawn: () => child });
+    assert(t.shown, JSON.stringify(t));
+    assertEq(child.listenerCount('error'), 1, 'an error listener is attached');
+    child.emit('error', new Error('spawn powershell.exe ENOENT'));
+  } finally { console.error = realError; }
+  assert(logged.some((l) => /powershell could not be started: spawn powershell\.exe ENOENT/.test(l)), JSON.stringify(logged));
+});
+
+test('memory-stack-recovery: a CASA_MODEL_DIR the user set in the registry is used as it is when the process env lacks it, even with another valid model in ~/.mcp-memory/model', async () => {
+  const rec = require('./lib/memory-stack-recovery.js');
+  const w = stackWorld();
+  const userDir = path.join(w.home, 'user-model');
+  fs.mkdirSync(userDir, { recursive: true });
+  fs.writeFileSync(path.join(userDir, 'model.onnx'), '');
+  fs.writeFileSync(path.join(userDir, 'tokenizer.json'), '{}');
+  w.store.set('CASA_MODEL_DIR', userDir);
+  const sets = [];
+  const userEnv = { ...w.userEnv, set: (n, v) => { sets.push(n); return w.userEnv.set(n, v); } };
+  const env = { USERPROFILE: w.home };
+  const restartedWith = [];
+  let phase = 0;
+  const r = await rec.recoverMemoryStack({ config: STACK_CONFIG, deps: w.deps({ env, userEnv, probe: async () => ({ health: w.healthy(phase ? 'ok' : 'missing') }), restart: async () => { restartedWith.push(env.CASA_MODEL_DIR); phase = 1; return { ok: true }; } }) });
+  assertEq(restartedWith, [userDir], 'the server restarts with the user value, not the one in ~/.mcp-memory/model');
+  assertEq(sets.filter((n) => n === 'CASA_MODEL_DIR').length, 0, 'the user variable is never written');
+  assertEq(w.store.get('CASA_MODEL_DIR'), userDir, 'and keeps its value');
+  assert(!r.steps.some((s) => /none is on this machine/.test(s.detail)), JSON.stringify(r.steps.map((s) => s.detail)));
+  assert(r.steps.some((s) => s.step === 'model' && s.status === 'done' && s.detail.includes(userDir)), 'the model step reports the user dir');
+});
+
+test('memory-stack-recovery: the same memory text in the folders of two projects is copied into both, and a second run copies nothing — the ledger is keyed by project and content', async () => {
+  const rec = require('./lib/memory-stack-recovery.js');
+  const home = tempDir('ccb-replay-two-');
+  const put = (p, c) => { const f = path.join(home, p); fs.mkdirSync(path.dirname(f), { recursive: true }); fs.writeFileSync(f, c); };
+  const text = '---\nname: Shared rule\ndescription: Shared rule text\ntype: feedback\n---\nKeep every test silent: no window, no sound, no network.\n';
+  for (const slug of ['proj-a', 'proj-b']) {
+    put(`.claude/projects/${slug}/s1.jsonl`, `${JSON.stringify({ cwd: `C:\\work\\${slug}` })}\n`);
+    put(`.claude/projects/${slug}/memory/shared.md`, text);
+  }
+  const stores = new Map();
+  const saves = [];
+  let current = null;
+  const backend = {
+    init: async ({ project }) => { current = project; if (!stores.has(project)) stores.set(project, []); },
+    get: async (id) => stores.get(current).find((x) => x.id === id) || null,
+    search: async () => stores.get(current).slice(),
+    save: async (e) => { stores.get(current).push(e); saves.push(current); return e.id; },
+  };
+  const resolveProject = ({ cwd }) => (/proj-b/.test(cwd) ? 'proj-b-id' : 'proj-a-id');
+  const ledger = {};
+  const run = () => rec.replayFileMemories({ backend, env: { USERPROFILE: home }, since: 0, ledger, deadline: Infinity, resolveProject });
+  const first = await run();
+  assertEq(first.copied, 2, JSON.stringify(first));
+  assertEq([...saves].sort(), ['proj-a-id', 'proj-b-id'], 'one save per project');
+  assertEq(Object.keys(ledger).length, 2, 'one ledger entry per project and content');
+  const second = await run();
+  assertEq(second.copied, 0, 'nothing copied again');
+  assertEq(second.skippedDuplicate, 2, 'both found in the ledger');
+  assertEq(saves.length, 2, 'no further save');
 });
 
 test('memory-stack-recovery: it only runs for a managed mcp-memory server, never overwrites a variable the user set, restarts only for a missing model, and reports a failed step as degraded even when the server is healthy', async () => {
@@ -38614,6 +38720,47 @@ test('passthrough redirect: a failed cd after || is not followed, and a repo in 
   try {
     const plan = planRedirect('git commit -q -m x', shells, project, { cwd: project });
     assert(plan.rewritten.includes(`CCB_PROJECT_ROOT="${root(project)}"`), `a dotfiles repo in the home folder does not take over: ${plan.rewritten}`);
+  } finally {
+    for (const [k, v] of Object.entries(saved)) { if (v === undefined) delete process.env[k]; else process.env[k] = v; }
+  }
+});
+
+test('passthrough redirect: the script acts in the project root unless the command itself moves, and a cd into another repo acts in that repo root', () => {
+  const { planRedirect } = require('./lib/curation-redirect.js');
+  const { execFileSync } = require('child_process');
+  const root = (p) => path.resolve(p).replace(/\\/g, '/');
+  const outer = path.resolve(TEST_TEMP.dir('ccb-redirect-outer-'));
+  execFileSync('git', ['init', '-q', outer], { windowsHide: true });
+  const project = path.join(outer, 'app');
+  const inner = path.join(project, 'src');
+  fs.mkdirSync(inner, { recursive: true });
+  fs.mkdirSync(path.join(require('./curation-paths.js').curationHome(project), 'scripts'), { recursive: true });
+  const other = path.resolve(TEST_TEMP.dir('ccb-redirect-other-'));
+  execFileSync('git', ['init', '-q', other], { windowsHide: true });
+  fs.mkdirSync(path.join(other, 'sub'));
+  const shells = [{ id: 'git-commit', script: 'scripts/git-commit.mjs', aliases: ['git add', 'git commit'], passthrough: true, commandTokens: 1 }];
+  const plain = planRedirect('git commit -q -m x', shells, project, { cwd: inner });
+  assert(plain.rewritten.includes(`CCB_PROJECT_ROOT="${root(project)}"`), `a cwd inside an enclosing repo does not replace the project root: ${plain.rewritten}`);
+  const moved = planRedirect(`cd "${path.join(other, 'sub').replace(/\\/g, '/')}" && git add -A`, shells, project, { cwd: inner });
+  assert(moved.rewritten.includes(`CCB_PROJECT_ROOT="${root(other)}"`), `a cd into another repo acts at its root: ${moved.rewritten}`);
+});
+
+test('passthrough redirect: on Windows a cd into the home folder spelled with another drive-letter case is still the home folder, not a work tree', () => {
+  if (process.platform !== 'win32') return;
+  const { planRedirect } = require('./lib/curation-redirect.js');
+  const fakeHome = path.resolve(TEST_TEMP.dir('ccb-home-case-'));
+  fs.mkdirSync(path.join(fakeHome, '.git'));
+  const project = path.join(fakeHome, 'work', 'app');
+  fs.mkdirSync(project, { recursive: true });
+  fs.mkdirSync(path.join(require('./curation-paths.js').curationHome(project), 'scripts'), { recursive: true });
+  const flipped = (fakeHome[0] === fakeHome[0].toUpperCase() ? fakeHome[0].toLowerCase() : fakeHome[0].toUpperCase()) + fakeHome.slice(1);
+  assert(flipped !== fakeHome, 'the drive letter case differs');
+  const shells = [{ id: 'git-commit', script: 'scripts/git-commit.mjs', aliases: ['git add', 'git commit'], passthrough: true, commandTokens: 1 }];
+  const saved = { USERPROFILE: process.env.USERPROFILE, HOME: process.env.HOME };
+  process.env.USERPROFILE = fakeHome; process.env.HOME = fakeHome;
+  try {
+    const plan = planRedirect(`cd "${flipped.replace(/\\/g, '/')}" && git commit -q -m x`, shells, project, { cwd: project });
+    assert(plan.rewritten.includes(`CCB_PROJECT_ROOT="${path.resolve(project).replace(/\\/g, '/')}"`), `a dotfiles repo in the home folder does not take over: ${plan.rewritten}`);
   } finally {
     for (const [k, v] of Object.entries(saved)) { if (v === undefined) delete process.env[k]; else process.env[k] = v; }
   }

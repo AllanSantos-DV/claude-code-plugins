@@ -1,3 +1,8 @@
+## Revisão independente da 3.19.0 (2026-11-26)
+
+- [x] **Achados e corrigidos na hora, com teste** (`scripts/lib/memory-stack-recovery.js`, `scripts/lib/mcp-wizard.js`, `scripts/lib/curation-redirect.js`, `scripts/lib/win-toast.js`): um `CASA_MODEL_DIR` válido do usuário era trocado por outro modelo achado em disco; o estado `running` órfão do assistente de ativação continuava em cache depois de resolvido; a mesma memória em dois projetos só era copiada para um; o redirecionamento passava a raiz git como `CCB_PROJECT_ROOT` mesmo sem `cd`, e a comparação com a pasta home diferenciava maiúsculas no Windows; o toast não tinha ouvinte de erro do spawn; um `/health` sem `uptimeMs` pulava a espera de dois minutos antes de apagar versões antigas.
+- [x] **Sem mudança, decidido:** o reinício do servidor depois de achar o modelo usa `SIGTERM` (no Windows termina o processo sem parada graciosa), o mesmo mecanismo da atualização automática do servidor (`scripts/lib/mcp-daemon-restart.js`); nenhum ponto de parada graciosa do servidor é usado no projeto.
+
 ## Lente de funcionalidades irmãs da 3.19.0 (2026-11-26)
 
 - [x] **Decidido (Jarvis, 26/11): o reuso de scripts curados entre projetos só como comando explícito de cópia para uma casa compartilhada (aditivo), numa versão futura; a variante em que o redirecionamento resolve apelidos de qualquer projeto foi descartada.** Candidatas aditivas listadas e não construídas agora: recall de lições no lançamento de subagente (PreToolUse Agent|Task), recall de decisão antes de commit/PR, painel de promoções com desfazer no dashboard, lições em forma de regra sugeridas como política, recibo de lição por turno.

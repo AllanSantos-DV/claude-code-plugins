@@ -185,7 +185,8 @@ function removeOldJars({ health, env = process.env }) {
   const running = String(health && health.version || '');
   if (health.status !== 'healthy' || (health.checks && health.checks.database !== 'ok')) return { removed: [], reason: 'the server is not healthy' };
   if (L.compareVersions(running, newest.version) !== 0) return { removed: [], reason: `the running version ${running} is not the newest jar ${newest.version}` };
-  if (Number(health.uptimeMs) < JAR_SETTLE_MS) return { removed: [], reason: 'the server has been up for under two minutes' };
+  const upMs = Number(health.uptimeMs);
+  if (!Number.isFinite(upMs) || upMs < JAR_SETTLE_MS) return { removed: [], reason: 'the server has been up for under two minutes' };
   const removed = [];
   const locked = [];
   for (const sub of ['lib', 'server']) {
@@ -284,13 +285,14 @@ async function replayFileMemories({ backend, env = process.env, since, ledger, d
     let text;
     try { text = fs.readFileSync(file, 'utf8'); } catch (err) { r.failed.push(`${path.basename(file)}: ${err.message}`); continue; }
     const id = idFor(text);
-    if (ledger[id]) { r.skippedDuplicate++; continue; }
-    if (++worked > REPLAY_MAX_FILES) { r.failed.push(`${path.basename(file)}: more than ${REPLAY_MAX_FILES} new files in one run; the rest continues at the next run`); break; }
-    const fm = frontmatter(text);
-    if (!fm || !fm.meta.name || !fm.body) { r.failed.push(`${path.basename(file)}: no name/description/body frontmatter`); continue; }
     if (!cwds.has(slugDir)) cwds.set(slugDir, projectCwd(slugDir));
     const cwd = cwds.get(slugDir);
     const project = cwd && resolveProject({ cwd });
+    const ledgerKey = project ? `${project}:${id}` : id;
+    if (ledger[ledgerKey]) { r.skippedDuplicate++; continue; }
+    if (++worked > REPLAY_MAX_FILES) { r.failed.push(`${path.basename(file)}: more than ${REPLAY_MAX_FILES} new files in one run; the rest continues at the next run`); break; }
+    const fm = frontmatter(text);
+    if (!fm || !fm.meta.name || !fm.body) { r.failed.push(`${path.basename(file)}: no name/description/body frontmatter`); continue; }
     if (!project) { r.unmapped++; continue; }
     try {
       await backend.init({ project });
@@ -304,7 +306,7 @@ async function replayFileMemories({ backend, env = process.env, since, ledger, d
         await backend.save({ id, title: fm.meta.name, summary: fm.meta.description || '', content: { detail: fm.body }, type: fm.meta.type === 'feedback' ? 'lesson' : 'knowledge', tags: ['replayed-from-file'], confidence: 0.6, source: { kind: 'memory-file', file: path.basename(file) } });
         r.copied++;
       } else r.skippedDuplicate++;
-      ledger[id] = { file: path.basename(file), at: now() };
+      ledger[ledgerKey] = { file: path.basename(file), at: now() };
     } catch (err) { r.failed.push(`${path.basename(file)}: ${err.message}`); }
   }
   return r;
@@ -406,7 +408,9 @@ async function recoverMemoryStack(opts = {}) {
 
     if (p.health && c.casaNeedsModel && !(previous && now() - (previous.modelRestartAt || 0) < MODEL_RESTART_COOLDOWN_MS)) {
       const userValue = (userEnv && userEnv.get('CASA_MODEL_DIR')) || env.CASA_MODEL_DIR;
-      const model = userValue && !hasModel(userValue) ? { invalid: userValue } : findLocalModelDir({ env });
+      const model = !userValue ? findLocalModelDir({ env })
+        : hasModel(userValue) ? { dir: userValue, source: 'CASA_MODEL_DIR', configured: true }
+          : { invalid: userValue };
       if (model && model.invalid) say('model', 'failed', `CASA_MODEL_DIR points at ${model.invalid}, which has no model files.`, 'Fix or remove that variable: the Boss never overwrites a value you set.');
       else if (model && model.ambiguous) say('model', 'failed', `Several embedding models are in the hub cache (${model.ambiguous.join(', ')}) and the Boss cannot tell which one the server uses.`, 'Set CASA_MODEL_DIR to the right folder, or copy the model to ~/.mcp-memory/model.');
       else if (!model) say('model', 'failed', 'The embeddings house has no model and none is on this machine.', 'Download the model once (the proxy may block it) or copy it to ~/.mcp-memory/model.');
