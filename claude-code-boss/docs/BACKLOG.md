@@ -1,3 +1,10 @@
+## Fechamento da 3.19.0 (2026-11-27)
+
+- [x] **Achados e corrigidos na hora, com teste** (`scripts/lib/curation-redirect.js`, `scripts/brain-daemon-ensure.js`): `cd d || exit 1; cmd` deixava `cmd` sem redirecionamento (a parte de fallback que termina marcava o cwd como incerto); o aviso de atualização do servidor de memória era gravado sem escrita atômica e podia ser perdido por quem o consome no meio da escrita.
+- [x] **Achado e corrigido na hora, com teste — `no` inglês como negação** (`scripts/lib/memory-stack-recovery.js`): tirar `no` (contração portuguesa de em+o) fazia "no retries on 429" e "retries on 429" parecerem a mesma memória no replay; `no` agora conta como negação só em texto sem palavra marcadora do português.
+- [x] **Registrado, decisão de escopo (não muda o uso): achados de código vizinho** (revisão da lente irmã): `scripts/lesson-promote.js:218` (`renderList`) lista movimentos de escopo como se fossem promoções (`scope-move.js:30` grava `rule:'MOVE'`); `scripts/lib/shells-prune.js:136` (`restoreShells`) sem chamador nem CLI.
+- [x] **Candidatas irmãs aditivas adicionais (não construídas; decisão de escopo do dono: nada além do pedido):** desfazer de movimento de escopo no dashboard (`moveId` já devolvido), desfazer de poda de scripts curados (`restoreShells`), lição por arquivo antes da edição (reusa `policy-glob-inject`).
+
 ## Revisão independente da 3.19.0 (2026-11-26)
 
 - [x] **Achados e corrigidos na hora, com teste** (`scripts/lib/memory-stack-recovery.js`, `scripts/lib/mcp-wizard.js`, `scripts/lib/curation-redirect.js`, `scripts/lib/win-toast.js`): um `CASA_MODEL_DIR` válido do usuário era trocado por outro modelo achado em disco; o estado `running` órfão do assistente de ativação continuava em cache depois de resolvido; a mesma memória em dois projetos só era copiada para um; o redirecionamento passava a raiz git como `CCB_PROJECT_ROOT` mesmo sem `cd`, e a comparação com a pasta home diferenciava maiúsculas no Windows; o toast não tinha ouvinte de erro do spawn; um `/health` sem `uptimeMs` pulava a espera de dois minutos antes de apagar versões antigas.

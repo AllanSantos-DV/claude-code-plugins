@@ -176,7 +176,7 @@ async function runAutoUpdateInBackground(event, deps = {}) {
   if (result && result.advisory) {
     const file = noticeFile(deps.dir);
     fs.mkdirSync(path.dirname(file), { recursive: true });
-    fs.writeFileSync(file, result.advisory);
+    require('../engine/lib/atomic-write.js').writeFileAtomic(file, result.advisory);
     once.logDetail(result.status === 'error' ? `mcp-memory auto-update failed: ${result.error}` : `mcp-memory server upgraded ${result.from} → ${result.version}`, { base: deps.dir });
   }
   return result;

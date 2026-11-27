@@ -220,8 +220,19 @@ const fold = (s) => String(s || '').toLowerCase().normalize('NFKD').replace(/\p{
 /** The lowercase words of a text longer than two characters, accents folded. */
 const tokens = (s) => new Set(fold(s).replace(/[^\p{L}\p{N}]+/gu, ' ').split(' ').filter((w) => w.length > 2));
 const NEGATIONS = new Set(['nao', 'nunca', 'sem', 'not', 'never']);
-/** The negation words of a text, which the length filter of `tokens` would otherwise drop. */
-const negations = (s) => new Set(fold(s).replace(/n['’]t\b/g, ' not').split(/[^\p{L}\p{N}]+/u).filter((w) => NEGATIONS.has(w)));
+const PORTUGUESE = new Set(['de', 'que', 'uma', 'para', 'com', 'os', 'as', 'em', 'do', 'da', 'nao', 'por', 'se']);
+/**
+ * The negation words of a text, which the length filter of `tokens` would otherwise drop. `no` counts
+ * only opening a clause of a text with no Portuguese marker word: elsewhere, and in Portuguese, it is
+ * the contraction of em + o.
+ */
+const negations = (s) => {
+  const text = fold(s).replace(/n['’]t\b/g, ' not');
+  const words = text.split(/[^\p{L}\p{N}]+/u);
+  const found = new Set(words.filter((w) => NEGATIONS.has(w)));
+  if (!words.some((w) => PORTUGUESE.has(w)) && /(^|[.,;:!?]\s*)no\s/.test(text)) found.add('no');
+  return found;
+};
 /**
  * How much two texts overlap, as the share of words they have in common. Texts that negate
  * different things are never alike, however many words they share.

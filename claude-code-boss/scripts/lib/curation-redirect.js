@@ -276,6 +276,8 @@ function planRedirect(command, shells, projectRoot, { reportPath = '', ps = fals
     const p = parts[i];
     const afterOr = i > 0 && parts[i - 1].sep === '||';
     const onFallback = afterOr && afterCd;
+    // `cd d || exit 1`: what follows runs only when the cd succeeded, so the moved cwd still holds.
+    if (onFallback && /^(exit|return)(\s|$)/.test(p.text.trim())) { afterCd = false; continue; }
     if (onFallback) ({ dir, followed } = beforeCd);
     const text = p.text.trim();
     const moved = cdTarget(dir, text);

@@ -38867,6 +38867,8 @@ test('memory-stack-recovery: the Portuguese contraction "no" (em + o) is not a n
   const rec = require('./lib/memory-stack-recovery.js');
   assertEq(rec.similarity('Usar cache no servidor', 'Usar cache servidor'), 1, '"no servidor" says the same as "servidor"');
   assertEq(rec.similarity('Do not use cache servidor', 'Use cache servidor'), 0, '"not" still separates a rule from its negation');
+  assertEq(rec.similarity('No retries on 429 responses', 'Retries on 429 responses'), 0, 'English "no" opening a clause negates');
+  assertEq(rec.similarity('No servidor de cache use sempre', 'Servidor de cache use sempre'), 1, 'Portuguese "No servidor" does not');
 });
 
 test('memory-stack-recovery: accented words are folded whole, so the same text with and without accents is identical', () => {
@@ -38930,7 +38932,10 @@ test('passthrough redirect: a part whose cwd depends on whether a cd on a || bra
   fs.mkdirSync(path.join(require('./curation-paths.js').curationHome(R), 'scripts'), { recursive: true });
   const shells = [{ id: 'git-commit', script: 'scripts/git-commit.mjs', aliases: ['git add', 'git commit'], passthrough: true, commandTokens: 1 }];
   const w = W.replace(/\\/g, '/');
-  assertEq(planRedirect(`cd "${w}" || exit 1; git add -A`, shells, R, { cwd: R }).rewritten, null, 'the cd may have run: a part after ; has no known cwd');
+  const guarded = planRedirect(`cd "${w}" || exit 1; git add -A`, shells, R, { cwd: R });
+  assertEq(guarded.replaced.length, 1, 'a cd guarded by || exit: the part after ; runs only when the cd succeeded');
+  assert(guarded.replaced[0].to.includes(`CCB_PROJECT_ROOT="${path.resolve(W).replace(/\\/g, '/')}"`), `acts in the cd target: ${guarded.rewritten}`);
+  assertEq(planRedirect(`cd "${w}" || echo no; git add -A`, shells, R, { cwd: R }).rewritten, null, 'a fallback that does not terminate: the part after ; has no known cwd');
   assertEq(planRedirect(`test -f a || cd "${w}"; git add -A`, shells, R, { cwd: R }).rewritten, null, 'the cd on the || branch may have run');
   assertEq(planRedirect(`cd "${w}" || echo no && git add -A`, shells, R, { cwd: R }).rewritten, null, 'joined by && after the fallback is just as uncertain');
 });
