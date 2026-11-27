@@ -2,12 +2,6 @@
 
 ## [Unreleased]
 
-### Fixed
-- **A faixa de status diz "Token Guard inativo: <motivo>" em vez de "−0"** quando o token-guard (2.20.1 ou mais novo) informa que não está valendo; o `/boss` ganha a linha correspondente.
-- **O hook de regras por escopo responde dentro de um prazo próprio (3,5 s, abaixo dos 5 s do hook):** com o servidor de memória lento ou parado ele devolve a resposta válida sem as regras, com uma linha visível, e o próximo prompt tenta de novo; uma resposta que chega depois do prazo não marca regra alguma como entregue. O orçamento da consulta caiu de 4 s para 3 s.
-### Changed
-- **Opt-out da atualização automática com o nome padrão:** `CLAUDE_CODE_BOSS_NO_AUTO_UPDATE=1` desliga a atualização automática e a consulta de versão; `CLAUDE_CODE_BOSS_AUTO_UPDATE=0` segue valendo como alias.
-
 ## [3.19.0] - 2026-11-26
 
 ### Added
@@ -16,6 +10,11 @@
 ### Fixed
 - **Um `git commit` redirecionado para o script curado agora age onde o comando roda** (`scripts/lib/curation-redirect.js`): o redirecionamento passava sempre a raiz da sessão em `CCB_PROJECT_ROOT`, então `cd <worktree> && git add -A && git commit` commitava a árvore principal. A raiz passada agora é a da árvore de trabalho em que o comando roda (o `cd` inicial é seguido); a pasta de curadoria e a busca do script continuam na raiz da sessão.
 - **O assistente de ativação do servidor não fica preso** (`scripts/lib/mcp-wizard.js`, `dashboard/index.html`): uma ativação gravada como `running` por um processo que morreu vira `failed` e pode ser repetida, e o painel mostra o motivo real em vez de "Failed to start".
+- **A faixa de status diz "Token Guard inativo: <motivo>" em vez de "−0"** quando o token-guard (2.20.1 ou mais novo) informa que não está valendo; o `/boss` ganha a linha correspondente.
+- **O hook de regras por escopo responde dentro de um prazo próprio (3,5 s, abaixo dos 5 s do hook):** com o servidor de memória lento ou parado ele devolve a resposta válida sem as regras, com uma linha visível, e o próximo prompt tenta de novo; uma resposta que chega depois do prazo não marca regra alguma como entregue. O orçamento da consulta caiu de 4 s para 3 s.
+
+### Changed
+- **Opt-out da atualização automática com o nome padrão:** `CLAUDE_CODE_BOSS_NO_AUTO_UPDATE=1` desliga a atualização automática e a consulta de versão; `CLAUDE_CODE_BOSS_AUTO_UPDATE=0` segue valendo como alias.
 
 ## [3.18.0] - 2026-11-24
 
