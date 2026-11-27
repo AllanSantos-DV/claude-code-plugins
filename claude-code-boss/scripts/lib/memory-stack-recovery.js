@@ -34,6 +34,9 @@ const STUCK_RECOVERING_MS = 10 * 60 * 1000;
 const FRESH_OK_MS = 5 * 60 * 1000;
 const LAUNCH_RETRY_MS = 10 * 60 * 1000;
 const SIMILAR_AT = 0.8;
+const LAUNCH_WAIT_PROBES = 10;
+const MODEL_WAIT_PROBES = 20;
+const PROBE_PAUSE_MS = 1000;
 const DEFAULT_STAGE_MS = { env: 8000, probe: 6000, launch: 90000, model: 60000, replay: 60000, jars: 10000 };
 
 const stateFile = () => path.join(require('../../engine/lib/data-dir.js').globalDir(), 'memory-stack-state.json');
@@ -86,6 +89,10 @@ function neutralizeObsoleteEnv({ userEnv, env = process.env, backupDir, now = Da
 
 const EMBEDDING_MODEL_NAME = /e5|bge|gte|minilm|mpnet|embed|sentence|labse|nomic|jina/i;
 const hasModel = (dir) => !!dir && MODEL_FILES.every((f) => fs.existsSync(path.join(dir, f)));
+/** Were the model files of `dir` written after `since`? A file whose date cannot be read counts as not newer. */
+const modelRewrittenSince = (dir, since) => MODEL_FILES.some((f) => {
+  try { return fs.statSync(path.join(dir, f)).mtimeMs > since; } catch (err) { console.error(`[memory-stack] cannot read the date of ${f} in ${dir}: ${err.message}`); return false; }
+});
 
 /**
  * An embedding model already on disk, in the order the server itself keeps it: the variable already
@@ -212,7 +219,7 @@ const frontmatter = (text) => {
 const fold = (s) => String(s || '').toLowerCase().normalize('NFKD').replace(/\p{M}+/gu, '');
 /** The lowercase words of a text longer than two characters, accents folded. */
 const tokens = (s) => new Set(fold(s).replace(/[^\p{L}\p{N}]+/gu, ' ').split(' ').filter((w) => w.length > 2));
-const NEGATIONS = new Set(['nao', 'nunca', 'sem', 'not', 'never', 'no']);
+const NEGATIONS = new Set(['nao', 'nunca', 'sem', 'not', 'never']);
 /** The negation words of a text, which the length filter of `tokens` would otherwise drop. */
 const negations = (s) => new Set(fold(s).replace(/n['’]t\b/g, ' not').split(/[^\p{L}\p{N}]+/u).filter((w) => NEGATIONS.has(w)));
 /**
@@ -280,16 +287,17 @@ function listMemoryFiles({ env = process.env, since, failed = [] }) {
 /**
  * Copy the memories that were written to files while the server was down into the server, once
  * each: a file already copied (same content) or a memory the server already holds is skipped,
- * and no file is ever deleted.
+ * and no file is ever deleted. `abort.aborted` set by the caller stops the copy at the next file
+ * or before the next save: a replay that timed out keeps running otherwise, after its lock is gone.
  * @returns {{copied:number, skippedDuplicate:number, unmapped:number, failed:string[], scanned:number}}
  */
-async function replayFileMemories({ backend, env = process.env, since, ledger, deadline, now = Date.now, resolveProject = (o) => require('../../engine/lib/project-id.js').tryResolveProjectId(o) }) {
+async function replayFileMemories({ backend, env = process.env, since, ledger, deadline, abort = { aborted: false }, now = Date.now, resolveProject = (o) => require('../../engine/lib/project-id.js').tryResolveProjectId(o) }) {
   const r = { copied: 0, skippedDuplicate: 0, unmapped: 0, failed: [], scanned: 0 };
   const files = listMemoryFiles({ env, since, failed: r.failed });
   const cwds = new Map();
   let worked = 0;
   for (const { file, slugDir } of files) {
-    if (now() > deadline) { r.failed.push(`${path.basename(file)}: the replay budget ran out; the rest continues at the next run`); break; }
+    if (abort.aborted || now() > deadline) { r.failed.push(`${path.basename(file)}: the replay budget ran out; the rest continues at the next run`); break; }
     r.scanned++;
     let text;
     try { text = fs.readFileSync(file, 'utf8'); } catch (err) { r.failed.push(`${path.basename(file)}: ${err.message}`); continue; }
@@ -311,6 +319,7 @@ async function replayFileMemories({ backend, env = process.env, since, ledger, d
         const hits = await backend.search(`${fm.meta.name} ${fm.meta.description || ''}`, { limit: 5 });
         dup = (hits || []).some((h) => similarity(wanted, [h.title, h.summary, typeof h.content === 'string' ? h.content : h.content && h.content.detail].filter(Boolean).join('\n')) >= SIMILAR_AT);
       }
+      if (abort.aborted) break;
       if (!dup) {
         await backend.save({ id, title: fm.meta.name, summary: fm.meta.description || '', content: { detail: fm.body }, type: fm.meta.type === 'feedback' ? 'lesson' : 'knowledge', tags: ['replayed-from-file'], confidence: 0.6, source: { kind: 'memory-file', file: path.basename(file) } });
         r.copied++;
@@ -363,7 +372,8 @@ async function recoverMemoryStack(opts = {}) {
   const steps = [];
   let previous = null;
   try { previous = readJsonLoud(file, 'memory-stack-state'); } catch (err) { log(`state file unreadable, starting a new one: ${err.message}`); }
-  const save = (patch) => writeJsonAtomic(file, { ...(previous || {}), ...patch, steps: steps.slice(-30), updatedAt: now() });
+  let written = { ...(previous || {}) };
+  const save = (patch) => { written = { ...written, ...patch }; writeJsonAtomic(file, { ...written, steps: steps.slice(-30), updatedAt: now() }); };
   const noticeBase = globalDir;
   const say = (step, status, detail, nextAction) => {
     steps.push({ step, status, detail, nextAction: nextAction || '', at: now() });
@@ -402,26 +412,25 @@ async function recoverMemoryStack(opts = {}) {
 
     let p = await bounded('health probe', Promise.resolve(probe()), STAGE_MS.probe);
     let c = classifyStack(p);
-    /** A stage that ran past its budget keeps running, so the server it was starting may still come up: its /health once more, or null. */
-    const answeredAfterTimeout = async (result) => {
-      if (result.ok || !result.timedOut) return null;
-      const again = await bounded('health probe', Promise.resolve(probe()), STAGE_MS.probe).catch((err) => { log(`health probe after a timed-out stage failed: ${err.message}`); return null; });
-      return again && again.health ? again : null;
-    };
     if (!p.health && previous && now() - (previous.launchFailedAt || 0) < LAUNCH_RETRY_MS) {
       log(`server start skipped: it failed less than ${LAUNCH_RETRY_MS / 60000} minutes ago (${previous.message})`);
     } else if (!p.health) {
       const launch = d.launch || (() => require('./mcp-bootstrap/launcher.js').runLauncher({ env }));
       let L = await bounded('server start', Promise.resolve(launch()), STAGE_MS.launch).catch((err) => ({ ok: false, error: err.message, timedOut: err.timedOut }));
-      const late = await answeredAfterTimeout(L);
-      if (late) { p = late; L = { ok: true, version: late.health.version }; }
-      if (L.ok) say('server-start', 'done', `The memory server is running again (v${L.version || '?'}).`);
-      else {
+      // A start that ran past its budget keeps running: the same probe window decides whether it came up.
+      const pending = !L.ok && !!L.timedOut;
+      const reportStart = () => {
+        if (L.ok) return say('server-start', 'done', `The memory server is running again (v${L.version || '?'}).`);
         say('server-start', 'failed', `The memory server did not start: ${L.error}`, 'Fix the cause shown, then open a new session; the Boss tries again.');
         save({ launchFailedAt: now() });
         previous = { ...(previous || {}), launchFailedAt: now() };
+      };
+      if (!pending) reportStart();
+      for (let i = 0; i < LAUNCH_WAIT_PROBES && !p.health && (L.ok || pending); i++) { await sleep(PROBE_PAUSE_MS); p = await bounded('health probe', Promise.resolve(probe()), STAGE_MS.probe); }
+      if (pending) {
+        if (p.health) L = { ok: true, version: p.health.version };
+        reportStart();
       }
-      for (let i = 0; i < 10 && !p.health && L.ok; i++) { await sleep(1000); p = await bounded('health probe', Promise.resolve(probe()), STAGE_MS.probe); }
       c = classifyStack(p);
     }
 
@@ -434,7 +443,7 @@ async function recoverMemoryStack(opts = {}) {
       if (model && model.invalid) say('model', 'failed', `CASA_MODEL_DIR points at ${model.invalid}, which has no model files.`, 'Fix or remove that variable: the Boss never overwrites a value you set.');
       else if (model && model.ambiguous) say('model', 'failed', `Several embedding models are in the hub cache (${model.ambiguous.join(', ')}) and the Boss cannot tell which one the server uses.`, 'Set CASA_MODEL_DIR to the right folder, or copy the model to ~/.mcp-memory/model.');
       else if (!model) say('model', 'failed', 'The embeddings house has no model and none is on this machine.', 'Download the model once (the proxy may block it) or copy it to ~/.mcp-memory/model.');
-      else if (previous && previous.modelTriedDir === model.dir) log(`model step skipped: ${model.dir} was already tried and the house is still down`);
+      else if (previous && previous.modelTriedDir === model.dir && !modelRewrittenSince(model.dir, previous.modelRestartAt || 0)) log(`model step skipped: ${model.dir} was already tried and the house is still down`);
       else {
         save({ modelRestartAt: now(), modelTriedDir: model.dir });
         previous = { ...(previous || {}), modelRestartAt: now(), modelTriedDir: model.dir };
@@ -446,11 +455,13 @@ async function recoverMemoryStack(opts = {}) {
         env.CASA_MODEL_DIR = model.dir;
         const restart = d.restart || (() => defaultRestart({ env }));
         let R = await bounded('server restart', Promise.resolve(restart()), STAGE_MS.model).catch((err) => ({ ok: false, error: err.message, timedOut: err.timedOut }));
-        if (await answeredAfterTimeout(R)) R = { ok: true };
-        if (!R.ok) say('model', 'failed', `Found the model in ${model.source} (${model.dir}) but the restart failed: ${R.error}`, 'Restart the memory server once; the variable CASA_MODEL_DIR is already set.');
+        const pending = !R.ok && !!R.timedOut;
+        const restartFailed = () => say('model', 'failed', `Found the model in ${model.source} (${model.dir}) but the restart failed: ${R.error}`, 'Restart the memory server once; the variable CASA_MODEL_DIR is already set.');
+        if (!R.ok && !pending) restartFailed();
         else {
-          for (let i = 0; i < 20; i++) { await sleep(1000); p = await bounded('health probe', Promise.resolve(probe()), STAGE_MS.probe); c = classifyStack(p); if (p.health && !c.casaDown) break; }
-          if (!p.health) say('model', 'failed', `CASA_MODEL_DIR was set to ${model.dir} (${model.source}) and the server was restarted, but it does not answer: ${p.error || 'no reply'}.`, 'See ~/.mcp-memory/logs/daemon.log; the Boss tries again at the next session start.');
+          for (let i = 0; i < MODEL_WAIT_PROBES; i++) { await sleep(PROBE_PAUSE_MS); p = await bounded('health probe', Promise.resolve(probe()), STAGE_MS.probe); c = classifyStack(p); if (p.health && !c.casaDown) break; }
+          if (pending && (!p.health || c.casaDown)) restartFailed();
+          else if (!p.health) say('model', 'failed', `CASA_MODEL_DIR was set to ${model.dir} (${model.source}) and the server was restarted, but it does not answer: ${p.error || 'no reply'}.`, 'See ~/.mcp-memory/logs/daemon.log; the Boss tries again at the next session start.');
           else if (c.casaDown) say('model', 'failed', `CASA_MODEL_DIR was set to ${model.dir} (${model.source}) and the server restarted, but the embeddings house is still down.`, 'See ~/.casa-de-embeddings logs.');
           else say('model', 'done', `The embeddings house now uses the model found in ${model.source}; CASA_MODEL_DIR points at ${model.dir}.`);
         }
@@ -464,7 +475,8 @@ async function recoverMemoryStack(opts = {}) {
         let ledger = {};
         try { ledger = readJsonLoud(ledgerFile, 'memory-stack-replayed') || {}; } catch (err) { log(`replay ledger unreadable, copies are re-checked by content: ${err.message}`); }
         const since = previous && previous.outageSince ? previous.outageSince - 24 * 60 * 60 * 1000 : now() - REPLAY_WINDOW_MS;
-        const rep = await bounded('memory replay', replayFileMemories({ backend, env, since, ledger, deadline: now() + STAGE_MS.replay - 2000, now, resolveProject: d.resolveProject }), STAGE_MS.replay).catch((err) => ({ error: err.message }));
+        const abort = { aborted: false };
+        const rep = await bounded('memory replay', replayFileMemories({ backend, env, since, ledger, deadline: now() + STAGE_MS.replay - 2000, abort, now, resolveProject: d.resolveProject }), STAGE_MS.replay).catch((err) => { abort.aborted = true; return { error: err.message }; });
         if (rep.error) say('replay', 'failed', `Copying the memories saved in files failed: ${rep.error}`, 'The files are kept; the Boss retries at the next run.');
         else {
           writeJsonAtomic(ledgerFile, ledger);

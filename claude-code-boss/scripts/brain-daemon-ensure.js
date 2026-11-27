@@ -215,12 +215,14 @@ async function runMemoryStackRecoveryInBackground(event, deps = {}) {
 function takeAutoUpdateNotice({ dir } = {}) {
   const texts = [];
   for (const file of [noticeFile(dir), stackNoticeFile(dir)]) {
-    let text;
-    try { text = fs.readFileSync(file, 'utf8'); } catch (err) {
-      if (err.code !== 'ENOENT') console.error(`[brain-daemon-ensure] notice unreadable (${file}): ${err.message}`);
+    const claim = `${file}.${process.pid}.claim`;
+    try { fs.renameSync(file, claim); } catch (err) {
+      if (err.code !== 'ENOENT') console.error(`[brain-daemon-ensure] notice not claimed (${file}): ${err.message}`);
       continue;
     }
-    try { fs.unlinkSync(file); } catch (err) { console.error(`[brain-daemon-ensure] notice not removed (${file}): ${err.message}`); }
+    let text = '';
+    try { text = fs.readFileSync(claim, 'utf8'); } catch (err) { console.error(`[brain-daemon-ensure] notice unreadable (${claim}): ${err.message}`); }
+    try { fs.unlinkSync(claim); } catch (err) { console.error(`[brain-daemon-ensure] notice not removed (${claim}): ${err.message}`); }
     if (text) texts.push(text);
   }
   return texts.length ? texts.join('\n') : null;
