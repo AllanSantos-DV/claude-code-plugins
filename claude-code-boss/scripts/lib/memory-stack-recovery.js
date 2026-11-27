@@ -183,7 +183,7 @@ function fetchHealth({ env = process.env, timeoutMs = 4000 } = {}) {
 
 /**
  * Remove the server versions older than the one running, once the running one is confirmed healthy.
- * @returns {{removed: string[], kept?: string, reason?: string}}
+ * @returns {{removed: string[], locked: string[], kept?: string, reason?: string}}
  */
 function removeOldJars({ health, env = process.env }) {
   const L = require('./mcp-bootstrap/launcher.js');
