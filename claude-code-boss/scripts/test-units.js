@@ -11173,6 +11173,40 @@ test('scope-rules: a lookup failure is shown once, signed, and retried on the ne
   }
 });
 
+test('scope-rules-hook: a server that never answers gets a bounded, degraded but valid answer with one visible line; the late reply changes nothing and the next prompt asks again', async () => {
+  const hook = require('./scope-rules-hook.js');
+  const client = require('./lib/scoped-rules-client.js');
+  const sr = require('./lib/scope-rules.js');
+  const hookTimeoutMs = require('../hooks/hooks.json').hooks.UserPromptSubmit.flatMap((g) => g.hooks).find((h) => h.tool === 'hook_scope_rules').timeout * 1000;
+  assert(hook.DEADLINE_MS > client.BUDGET_MS && hook.DEADLINE_MS <= hookTimeoutMs - 1000, `deadline ${hook.DEADLINE_MS} ms: past the lookup budget (${client.BUDGET_MS}), 1 s under the ${hookTimeoutMs} ms hook timeout`);
+  const base = tempDir('ccb-sr-deadline-');
+  const saved = process.env.CLAUDE_PROJECT_DIR;
+  delete process.env.CLAUDE_PROJECT_DIR;
+  const errors = [];
+  const orig = console.error; console.error = (m) => errors.push(String(m));
+  try {
+    let release;
+    const stuck = () => new Promise((resolve) => { release = () => resolve({ rules: [{ id: 'rule:sempre:a', text: 'regra a' }] }); });
+    const t0 = Date.now();
+    const out = await hook.run({ hook_event_name: 'UserPromptSubmit', session_id: 's-deadline' }, { base, lookup: stuck, deadlineMs: 80 });
+    assert(Date.now() - t0 < 1000, 'answered at the deadline, not when the server did');
+    assertEq(out.context, '', 'a valid answer without the rules');
+    assert(out.notice.startsWith('[hook-origin=claude-code-boss]') && /não respondeu em 80 ms/.test(out.notice) && !out.notice.includes('\n'), out.notice);
+    assert(errors.some((e) => /no answer within 80 ms/.test(e)), 'the log says it too');
+    const second = await hook.run({ hook_event_name: 'UserPromptSubmit', session_id: 's-deadline-2' }, { base, lookup: () => new Promise(() => {}), deadlineMs: 40 });
+    assertEq(second.notice, '', 'the same stall is told once');
+    release();
+    await new Promise((r) => setTimeout(r, 30));
+    assertEq(sr.readState('s-deadline', base).delivered.length, 0, 'the late reply marked nothing as delivered');
+    const again = await hook.run({ hook_event_name: 'UserPromptSubmit', session_id: 's-deadline' }, { base, lookup: async () => ({ rules: [{ id: 'rule:sempre:a', text: 'regra a' }] }), deadlineMs: 80 });
+    assert(again.context.includes('rule:sempre:a'), 'the next prompt delivers the rules');
+  } finally {
+    console.error = orig;
+    if (saved !== undefined) process.env.CLAUDE_PROJECT_DIR = saved;
+    fs.rmSync(base, { recursive: true, force: true });
+  }
+});
+
 /** Throwaway HTTP server answering the scoped-rules route; returns {url, port, bodies, close}. */
 function startScopedRulesServer(handler) {
   const bodies = [];

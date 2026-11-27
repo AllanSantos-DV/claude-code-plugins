@@ -24,8 +24,8 @@ const { RETRY_DELAYS_MS, isRefused, refusedCode, sleep } = require('./refused-re
 const { makeResolver } = require('./graph/daemon.js');
 
 const DOWN_MS = 30_000;
-// The live server answered in 0.9-2.2 s: a 2 s cap dropped the rules of about one prompt in five.
-const BUDGET_MS = 4000;
+// The live server answered in 0.9-2.2 s (a cold one took past 4 s): a 2 s cap dropped the rules of about one prompt in five. Kept under the hook's own deadline (scope-rules-hook.js), itself under its 5 s timeout.
+const BUDGET_MS = 3000;
 
 let downUntil = 0;
 

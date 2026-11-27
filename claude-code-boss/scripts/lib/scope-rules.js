@@ -225,11 +225,12 @@ async function defaultLookup({ files, projectId }) {
  * are shown once per session.
  * @param {object} event hook payload (session_id)
  * @param {{base?: string, maxChars: number, setMaxChars?: number, root?: string, projectId?: string, onTouch?: boolean,
- *   lookup?: (q: {files: string[], projectId?: string}) => Promise<{rules: object[]}|null>}} opts
+ *   lookup?: (q: {files: string[], projectId?: string}) => Promise<{rules: object[]}|null>, expired?: () => boolean}} opts
+ *   expired: true once the hook gave up waiting; a late reply is then dropped without touching the session state
  *   lookup resolves null when the memory backend is not mcp-memory (no rules to ask for)
  * @returns {Promise<{context: string, notice: string}>}
  */
-async function inject(event, { base, maxChars, setMaxChars = SET_MAX_CHARS, root, projectId, onTouch = false, lookup = defaultLookup } = {}) {
+async function inject(event, { base, maxChars, setMaxChars = SET_MAX_CHARS, root, projectId, onTouch = false, lookup = defaultLookup, expired = () => false } = {}) {
   const none = { context: '', notice: '' };
   const sid = (event && (event.session_id || event.sessionId)) || '';
   if (!safeId(sid)) return none;
@@ -252,6 +253,8 @@ async function inject(event, { base, maxChars, setMaxChars = SET_MAX_CHARS, root
     const shown = notices.notice({ key: NOTICE_KEY, signature: String(err.code || 'error'), text: `${ORIGIN} regras do dono por escopo não chegaram: ${err.message}`, detail: err.stack || err.message, base });
     return { context: '', notice: shown || '' };
   }
+  // The hook already answered without the rules: nothing is marked delivered, the next prompt asks again.
+  if (expired()) return none;
   if (!reply) return none;
   notices.recovered(NOTICE_KEY, { base });
 
@@ -287,4 +290,13 @@ async function inject(event, { base, maxChars, setMaxChars = SET_MAX_CHARS, root
   return { context, notice };
 }
 
-module.exports = { parseRuleId, triggersFor, recordTouched, resetInjected, forget, relativeFiles, select, render, inject, readState };
+/**
+ * The one-line notice for a hook that gave up waiting for the memory server, shown once until a lookup works again.
+ * @param {{base?: string, ms: number}} o
+ * @returns {string} the line, or '' when it was already shown
+ */
+function deadlineNotice({ base, ms }) {
+  return notices.notice({ key: NOTICE_KEY, signature: 'deadline', text: `${ORIGIN} regras do dono por escopo: o servidor de memória não respondeu em ${ms} ms; este turno segue sem elas e o próximo prompt tenta de novo`, detail: `hook_scope_rules gave up after ${ms} ms`, base }) || '';
+}
+
+module.exports = { deadlineNotice, parseRuleId, triggersFor, recordTouched, resetInjected, forget, relativeFiles, select, render, inject, readState };

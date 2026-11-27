@@ -2,6 +2,9 @@
 
 ## [Unreleased]
 
+### Fixed
+- **A faixa de status diz "Token Guard inativo: <motivo>" em vez de "−0"** quando o token-guard (2.20.1 ou mais novo) informa que não está valendo; o `/boss` ganha a linha correspondente.
+- **O hook de regras por escopo responde dentro de um prazo próprio (3,5 s, abaixo dos 5 s do hook):** com o servidor de memória lento ou parado ele devolve a resposta válida sem as regras, com uma linha visível, e o próximo prompt tenta de novo; uma resposta que chega depois do prazo não marca regra alguma como entregue. O orçamento da consulta caiu de 4 s para 3 s.
 ### Changed
 - **Opt-out da atualização automática com o nome padrão:** `CLAUDE_CODE_BOSS_NO_AUTO_UPDATE=1` desliga a atualização automática e a consulta de versão; `CLAUDE_CODE_BOSS_AUTO_UPDATE=0` segue valendo como alias.
 

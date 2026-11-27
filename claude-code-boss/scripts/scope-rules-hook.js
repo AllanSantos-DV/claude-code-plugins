@@ -10,6 +10,8 @@ const scopeRules = require('./lib/scope-rules.js');
 const hooksConfig = require('./lib/hooks-config.js');
 const { hookEnv } = require('./lib/hook-context.js');
 
+/** The hook answers by this, well under its 5 s timeout, whatever the memory server does. */
+const DEADLINE_MS = 3500;
 const TOUCH_TOOL = /^(Read|Edit|Write|MultiEdit|NotebookEdit)$/;
 
 function touchedPath(ev) {
@@ -19,10 +21,24 @@ function touchedPath(ev) {
 
 /**
  * @param {object} event hook payload
- * @param {{lookup?: Function, base?: string}} [deps] test seams passed through to scopeRules.inject
+ * @param {{lookup?: Function, base?: string, deadlineMs?: number}} [deps] test seams passed through to scopeRules.inject; deadlineMs: how long the hook waits before answering without the rules
  * @returns {Promise<{context: string, notice: string}>} context for the model's additionalContext, notice for the owner's screen
  */
 async function run(event, deps = {}) {
+  const ms = deps.deadlineMs || DEADLINE_MS;
+  let over = false;
+  let timer;
+  const late = new Promise((resolve) => {
+    timer = setTimeout(() => {
+      over = true;
+      console.error(`[scope-rules] no answer within ${ms} ms: the hook answers without the rules`);
+      resolve({ context: '', notice: scopeRules.deadlineNotice({ base: deps.base, ms }) });
+    }, ms);
+  });
+  try { return await Promise.race([work(event, { ...deps, expired: () => over }), late]); } finally { clearTimeout(timer); }
+}
+
+async function work(event, deps) {
   const ev = event || {};
   const none = { context: '', notice: '' };
   const cfg = hooksConfig.getScopeRules();
@@ -37,4 +53,4 @@ async function run(event, deps = {}) {
   return scopeRules.inject(ev, { ...deps, maxChars: cfg.maxChars, root, projectId: projectId || undefined, onTouch });
 }
 
-module.exports = { run, touchedPath };
+module.exports = { run, touchedPath, DEADLINE_MS };
