@@ -188,12 +188,12 @@ function fetchHealth({ env = process.env, timeoutMs = 4000 } = {}) {
 function removeOldJars({ health, env = process.env }) {
   const L = require('./mcp-bootstrap/launcher.js');
   const newest = L.newestInstalledJar(env);
-  if (!newest) return { removed: [], reason: 'no server jar installed' };
+  if (!newest) return { removed: [], locked: [], reason: 'no server jar installed' };
   const running = String(health && health.version || '');
-  if (health.status !== 'healthy' || (health.checks && health.checks.database !== 'ok')) return { removed: [], reason: 'the server is not healthy' };
-  if (L.compareVersions(running, newest.version) !== 0) return { removed: [], reason: `the running version ${running} is not the newest jar ${newest.version}` };
+  if (health.status !== 'healthy' || (health.checks && health.checks.database !== 'ok')) return { removed: [], locked: [], reason: 'the server is not healthy' };
+  if (L.compareVersions(running, newest.version) !== 0) return { removed: [], locked: [], reason: `the running version ${running} is not the newest jar ${newest.version}` };
   const upMs = Number(health.uptimeMs);
-  if (!Number.isFinite(upMs) || upMs < JAR_SETTLE_MS) return { removed: [], reason: 'the server has been up for under two minutes' };
+  if (!Number.isFinite(upMs) || upMs < JAR_SETTLE_MS) return { removed: [], locked: [], reason: 'the server has been up for under two minutes' };
   const removed = [];
   const locked = [];
   for (const sub of ['lib', 'server']) {
@@ -499,7 +499,7 @@ async function recoverMemoryStack(opts = {}) {
       if (c.state === 'ok') {
         const jars = removeOldJars({ health: p.health, env });
         if (jars.removed.length) say('old-version', 'done', `Removed the previous server version${jars.removed.length > 1 ? 's' : ''}: ${jars.removed.join(', ')} (v${jars.kept} is healthy).`);
-        if (jars.locked.length) log(`old-version: could not remove ${jars.locked.join('; ')}; the next run tries again`);
+        if (jars.locked && jars.locked.length) log(`old-version: could not remove ${jars.locked.join('; ')}; the next run tries again`);
       }
     }
 

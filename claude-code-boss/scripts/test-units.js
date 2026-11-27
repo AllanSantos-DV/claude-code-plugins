@@ -38658,6 +38658,14 @@ test('memory-stack-recovery: a server whose /health carries no uptime is not tru
   assert(fs.existsSync(path.join(w.home, '.mcp-memory', 'lib', 'mcp-memory-server-3.1.1.jar')), 'the previous version is still there');
 });
 
+test('memory-stack-recovery: a healthy server that is too young for the old-jar removal does not stop the recovery', async () => {
+  const rec = require('./lib/memory-stack-recovery.js');
+  const w = stackWorld();
+  const r = await rec.recoverMemoryStack({ config: STACK_CONFIG, force: true, deps: w.deps({ probe: async () => ({ health: { ...w.healthy('ok'), uptimeMs: 10000 } }) }) });
+  assert(!/recovery stopped/.test(r.message || ''), 'the recovery did not stop: ' + r.message);
+  assertEq(r.state === 'critical', false, 'state: ' + r.state + ' ' + r.message);
+});
+
 test('memory-stack-recovery: the registry adapter and the toast never open a window; a toast is recorded for proof; the state screen fades and exposes a stuck recovery', async () => {
   const rec = require('./lib/memory-stack-recovery.js');
   const calls = [];
