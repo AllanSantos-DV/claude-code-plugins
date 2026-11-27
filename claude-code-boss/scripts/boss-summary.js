@@ -47,25 +47,44 @@ const guardCache = { at: 0, value: null, lastError: '' };
 function tokenGuardStatus({ exec, now = Date.now() } = {}) {
   if (now - guardCache.at < GUARD_TTL_MS) return guardCache.value;
   guardCache.at = now;
-  const run = exec || (() => require('child_process').execFileSync(
+  if (exec) {
+    let out = '';
+    let failure = null;
+    try { out = exec(); } catch (err) { failure = err; out = (err && err.stdout) || ''; }
+    settleGuard(out, failure);
+    return guardCache.value;
+  }
+  // Asynchronous: the daemon's event loop also serves the hooks' deadlines, and the kit is a Node shim that takes a second.
+  require('child_process').execFile(
     process.platform === 'win32' ? 'token-guard.cmd' : 'token-guard', ['status', '--json'],
-    { encoding: 'utf8', timeout: GUARD_TIMEOUT_MS, windowsHide: true, shell: process.platform === 'win32' }));
+    { encoding: 'utf8', timeout: GUARD_TIMEOUT_MS, windowsHide: true, shell: process.platform === 'win32' },
+    (err, stdout) => settleGuard(stdout, err));
+  return guardCache.value;
+}
+
+/**
+ * Stores the kit's answer. A non-zero exit that still printed its JSON counts as the answer: the
+ * inactive kit is the case the status exists for.
+ * @param {string} out stdout of `token-guard status --json`
+ * @param {Error|null} failure the spawn error, if any
+ */
+function settleGuard(out, failure) {
   let value = null;
   let error = '';
-  try {
-    const j = JSON.parse(run());
-    if (j && (typeof j.active === 'boolean' || j.active === null)) {
-      value = { active: j.active, ...(j.inactiveReason ? { inactiveReason: String(j.inactiveReason).slice(0, 160) } : {}) };
-    } else error = 'token-guard status --json has no "active" field (token-guard older than 2.20.1)';
-  } catch (err) {
-    error = err instanceof SyntaxError
-      ? 'token-guard status --json did not answer JSON (token-guard older than 2.20.1)'
-      : `token-guard status --json failed: ${err.message.split('\n')[0]}`;
-  }
+  if (String(out || '').trim() || !failure) {
+    try {
+      const j = JSON.parse(out);
+      if (j && (typeof j.active === 'boolean' || j.active === null)) {
+        value = { active: j.active, ...(j.inactiveReason ? { inactiveReason: String(j.inactiveReason).slice(0, 160) } : {}) };
+      } else error = 'token-guard status --json has no "active" field (token-guard older than 2.20.1)';
+    } catch (err) {
+      void err;
+      error = 'token-guard status --json did not answer JSON (token-guard older than 2.20.1)';
+    }
+  } else error = `token-guard status --json failed: ${failure.message.split('\n')[0]}`;
   if (error && error !== guardCache.lastError) console.error(`[boss-summary] ${error}`);
   guardCache.lastError = error;
   guardCache.value = value;
-  return value;
 }
 
 /**

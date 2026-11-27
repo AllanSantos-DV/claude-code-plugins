@@ -35750,6 +35750,30 @@ test('boss-summary.tokenGuardStatus: active/inactiveReason from token-guard stat
   assert(!('active' in summarizeBoss([], { connected: true }, { guard: null }).tokenGuard), 'no guard answer: no field');
 });
 
+test('boss-summary.tokenGuardStatus: a non-zero exit that still printed its JSON is the answer, the inactive kit being the case the status exists for', () => {
+  const { tokenGuardStatus } = require('./boss-summary.js');
+  const failing = Object.assign(new Error('Command failed: token-guard status --json'), { stdout: JSON.stringify({ active: false, inactiveReason: 'sem registro dos alvos' }) });
+  assertEq(tokenGuardStatus({ exec: () => { throw failing; }, now: Date.now() + 10_000_000 }), { active: false, inactiveReason: 'sem registro dos alvos' });
+});
+
+test('scope-rules inject: a lookup that rejects after the hook answered changes no state and tells nothing', async () => {
+  const sr = require('./lib/scope-rules.js');
+  const base = tempDir('ccb-sr-late-reject-');
+  const errors = [];
+  const orig = console.error; console.error = (m) => errors.push(String(m));
+  try {
+    sr.recordTouched('s-late-reject', path.join(ROOT, 'a.js'), { base });
+    const out = await sr.inject({ session_id: 's-late-reject' }, { base, maxChars: 4000, lookup: async () => { throw Object.assign(new Error('late boom'), { code: 'ECONNREFUSED' }); }, expired: () => true });
+    assertEq(out, { context: '', notice: '' }, 'nothing to tell: the hook already answered');
+    assert(!errors.some((e) => /lookup failed/.test(e)), 'a late failure is not logged as a fresh one: ' + errors.join(' | '));
+    const live = await sr.inject({ session_id: 's-late-reject' }, { base, maxChars: 4000, lookup: async () => { throw Object.assign(new Error('boom now'), { code: 'ECONNREFUSED' }); } });
+    assert(/boom now/.test(live.notice), 'the live failure is still told once, the late one did not use the notice up: ' + live.notice);
+  } finally {
+    console.error = orig;
+    fs.rmSync(base, { recursive: true, force: true });
+  }
+});
+
 test('boss-summary.summarizeBoss: 30-day savings like the Curation panel, per-session exact savings of the last day, Brain with a reason CODE and no path', () => {
   const bs = require('./boss-summary.js');
   const now = Date.now();

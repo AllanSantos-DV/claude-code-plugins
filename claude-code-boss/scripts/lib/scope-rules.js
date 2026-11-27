@@ -249,6 +249,7 @@ async function inject(event, { base, maxChars, setMaxChars = SET_MAX_CHARS, root
   try {
     reply = await lookup({ files, projectId });
   } catch (err) {
+    if (expired()) return none;
     console.error(`[scope-rules] lookup failed: ${err.message}`);
     const shown = notices.notice({ key: NOTICE_KEY, signature: String(err.code || 'error'), text: `${ORIGIN} regras do dono por escopo não chegaram: ${err.message}`, detail: err.stack || err.message, base });
     return { context: '', notice: shown || '' };
