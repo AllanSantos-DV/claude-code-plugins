@@ -2,6 +2,11 @@
 
 ## [Unreleased]
 
+## [3.19.1] - 2026-11-27
+
+### Fixed
+- **A recuperação da memória não para mais num servidor saudável que ainda é novo** (`scripts/lib/memory-stack-recovery.js`): o passo que remove jars antigos devolvia um resultado sem a lista `locked` quando o servidor tinha menos de dois minutos de uptime ou rodava outra versão, e a leitura dessa lista derrubava a recuperação inteira com `Cannot read properties of undefined (reading 'length')` a cada início de sessão. O resultado agora é sempre completo e o chamador não assume a chave.
+
 ## [3.19.0] - 2026-11-26
 
 ### Added
